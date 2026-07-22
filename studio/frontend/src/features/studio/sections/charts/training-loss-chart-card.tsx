@@ -22,8 +22,9 @@ import {
 } from "recharts";
 import type { ScaleMode } from "./types";
 import {
-  CHART_SYNC_ID,
   CHART_CONTAINER_CLASS,
+  CHART_FONT_SIZE,
+  CHART_SYNC_ID,
   DEFAULT_CHART_MARGIN,
   DEFAULT_Y_AXIS_WIDTH,
   formatAxisMetric,
@@ -96,7 +97,7 @@ export function TrainingLossChartCard({
               tickLine={false}
               axisLine={false}
               tickMargin={8}
-              fontSize={10}
+              fontSize={CHART_FONT_SIZE}
               tickFormatter={(value) => formatStepTick(Number(value))}
               interval="preserveStartEnd"
             />
@@ -107,7 +108,7 @@ export function TrainingLossChartCard({
               axisLine={false}
               tickMargin={8}
               tickCount={5}
-              fontSize={10}
+              fontSize={CHART_FONT_SIZE}
               width={DEFAULT_Y_AXIS_WIDTH}
               tickFormatter={(value) => {
                 const num = Number(value);
@@ -152,7 +153,7 @@ export function TrainingLossChartCard({
                     value: formatMetric(avgRaw),
                   }),
                   position: "insideTopRight",
-                  fontSize: 10,
+                  fontSize: CHART_FONT_SIZE,
                   fill: "#3b82f6",
                 }}
               />

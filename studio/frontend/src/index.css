@@ -577,6 +577,11 @@ html[data-code-font-size] :is(pre, code, kbd, samp) {
 	font-size: var(--custom-code-font-size) !important;
 }
 
+/* Scale inherited text without changing the root rem used by layout tokens. */
+body {
+	font-size: calc(1rem * var(--ui-font-scale, 1));
+}
+
 /* Pointer cursors: hand cursor over interactive elements. */
 html.pointer-cursors
 	:is(

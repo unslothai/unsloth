@@ -510,11 +510,14 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
+  // Scale typography without changing the root rem or layout dimensions.
   if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    style.fontSize = `${c.uiFontSize}px`;
+    setVar("--ui-font-scale", String(c.uiFontSize / UI_FONT_SIZE_RANGE.default));
   } else {
-    style.removeProperty("font-size");
+    setVar("--ui-font-scale", null);
   }
+  // Clear the root size used by older builds.
+  style.removeProperty("font-size");
 
   if (c.codeFontSize !== null) {
     el.setAttribute("data-code-font-size", "");

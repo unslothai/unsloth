@@ -9,6 +9,7 @@ export const DEFAULT_VISIBLE_POINTS = 160;
 export const CHART_CONTAINER_CLASS = "h-[220px] w-full";
 export const DEFAULT_CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 4 };
 export const DEFAULT_Y_AXIS_WIDTH = 45;
+export const CHART_FONT_SIZE = "calc(10px * var(--ui-font-scale, 1))";
 const TRAILING_ZEROES_RE = /\.?0+$/;
 const NEGATIVE_ZERO_RE = /^-0$/;
 
