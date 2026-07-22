@@ -156,6 +156,7 @@ def _clean_scraped_text(text: str) -> str:
         kept.append(line)
     return _BLANK_RUN.sub("\n\n", "\n".join(kept)).strip()
 
+
 _REPORT_SYSTEM_PROMPT = """You are writing a rigorous, self-contained research report.
 
 Research standards:
@@ -459,7 +460,6 @@ def _loaded_context_length() -> int | None:
     # GGUF / llama.cpp keeps context on its own backend (checked first, like the API layer).
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama = get_llama_cpp_backend()
         if getattr(llama, "is_loaded", False):
             ctx = _positive_int_or_none(getattr(llama, "context_length", None))

@@ -68,7 +68,8 @@ def _create(
             "inferenceRequest": {"model": "local-model"},
             "ragScope": rag_scope,
             "instructions": instructions,
-            "budgets": budgets or {
+            "budgets": budgets
+            or {
                 "maxSteps": 5,
                 "maxSources": 15,
                 "modelTimeoutSeconds": 30,
@@ -208,7 +209,9 @@ def test_loaded_context_length_reads_orchestrator(monkeypatch):
         active_model_name = "Qwen2.5-14B-Instruct"
         models = {"Qwen2.5-14B-Instruct": {"context_length": 8192}}
 
-    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _Orchestrator(), raising = False)
+    monkeypatch.setattr(
+        core_inference, "get_inference_backend", lambda: _Orchestrator(), raising = False
+    )
     assert worker._loaded_context_length() == 8192
     assert worker._synthesis_evidence_budget() < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
@@ -1342,7 +1345,15 @@ def _patch_web_rank(monkeypatch, *, retrieve = None):
     ``retrieve_web_chunks`` output (whose retrieval/ranking is covered in test_web_rank.py)."""
     from core.rag import web_rank
 
-    def default_retrieve(pages, query, *, top_n, min_score, char_budget = None, **kwargs):
+    def default_retrieve(
+        pages,
+        query,
+        *,
+        top_n,
+        min_score,
+        char_budget = None,
+        **kwargs,
+    ):
         blocks, sources = [], []
         for i, page in enumerate(pages, 1):
             text = page.get("text") or ""
@@ -1359,22 +1370,22 @@ def _patch_web_rank(monkeypatch, *, retrieve = None):
 
 def _bare_supervisor(monkeypatch):
     from core import research_runs as worker
-
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     return worker, supervisor
 
 
-def _run_search_then_finish(monkeypatch, fake_tool, *, retrieve = None):
+def _run_search_then_finish(
+    monkeypatch,
+    fake_tool,
+    *,
+    retrieve = None,
+):
     """Drive one search step (which auto-scrapes) followed by finish, and return the
     completed run plus the synthesis prompts the model was given."""
     from core import research_runs as worker
 
     _patch_web_rank(monkeypatch, retrieve = retrieve)
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     decisions = iter(
         (
             json.dumps({"action": "search", "title": "Find", "query": "grounding evidence"}),
@@ -1384,7 +1395,14 @@ def _run_search_then_finish(monkeypatch, fake_tool, *, retrieve = None):
     synthesis_prompts = []
     report = "# Report\n\nGrounded finding [source](https://a.example.com)."
 
-    async def fake_stream_completion(run, messages, *, json_mode = False, report_progress = True, **kwargs):
+    async def fake_stream_completion(
+        run,
+        messages,
+        *,
+        json_mode = False,
+        report_progress = True,
+        **kwargs,
+    ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
             return json.dumps(_plan()), "planned", "stop"
@@ -1419,7 +1437,10 @@ def test_auto_scrape_retrieves_page_chunks_into_synthesis_evidence(research_home
         url = arguments.get("url")
         if url:
             url_calls.append(url)
-            return {"https://a.example.com": "ALPHA_PAGE_BODY", "https://b.example.com": "BETA_PAGE_BODY"}[url]
+            return {
+                "https://a.example.com": "ALPHA_PAGE_BODY",
+                "https://b.example.com": "BETA_PAGE_BODY",
+            }[url]
         return _two_source_search()
 
     completed, synthesis_prompts = _run_search_then_finish(monkeypatch, fake_tool)
@@ -1439,7 +1460,10 @@ def test_auto_scrape_persists_chunk_excerpt_for_resume(research_home, monkeypatc
     def fake_tool(name, arguments, *args, **kwargs):
         url = arguments.get("url")
         if url:
-            return {"https://a.example.com": "ALPHA_PAGE_BODY", "https://b.example.com": "BETA_PAGE_BODY"}[url]
+            return {
+                "https://a.example.com": "ALPHA_PAGE_BODY",
+                "https://b.example.com": "BETA_PAGE_BODY",
+            }[url]
         return _two_source_search()
 
     completed, _ = _run_search_then_finish(monkeypatch, fake_tool)
@@ -1523,9 +1547,7 @@ def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
 
     _create(budgets = _SCRAPE_BUDGETS)
     _patch_web_rank(monkeypatch)
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     decisions = iter(
         (
             json.dumps({"action": "search", "title": "Find", "query": "q"}),
@@ -1534,7 +1556,14 @@ def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
     )
     captured = {}
 
-    async def fake_stream_completion(run, messages, *, json_mode = False, report_progress = True, **kwargs):
+    async def fake_stream_completion(
+        run,
+        messages,
+        *,
+        json_mode = False,
+        report_progress = True,
+        **kwargs,
+    ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
             return json.dumps(_plan()), "p", "stop"
@@ -1563,13 +1592,16 @@ def test_auto_scrape_respects_char_budgets(research_home, monkeypatch):
     _patch_web_rank(monkeypatch)
     # space-separated so page cleaning keeps it (a single 50k-char token is stripped as junk)
     monkeypatch.setattr(worker, "execute_tool", lambda *a, **k: "yy " * 20_000)
-    step_sources = [
-        {"url": f"https://s{i}.example.com", "title": f"S{i}"} for i in range(3)
-    ]
+    step_sources = [{"url": f"https://s{i}.example.com", "title": f"S{i}"} for i in range(3)]
     section, fetched = asyncio.run(
         supervisor._auto_scrape_sources(
-            {"id": "run-x"}, "question", step_sources, set(),
-            limit = worker._AUTO_SCRAPE_TOP_K, tool_timeout = 10, website_policy = None,
+            {"id": "run-x"},
+            "question",
+            step_sources,
+            set(),
+            limit = worker._AUTO_SCRAPE_TOP_K,
+            tool_timeout = 10,
+            website_policy = None,
         )
     )
     # the folded evidence is bounded chunks, not the 150k of raw page bodies
@@ -1591,8 +1623,13 @@ def test_auto_scrape_falls_back_when_no_relevant_chunks(research_home, monkeypat
     step_sources = [{"url": "https://s.example.com", "title": "S"}]
     section, fetched = asyncio.run(
         supervisor._auto_scrape_sources(
-            {"id": "run-x"}, "find the special token", step_sources, set(),
-            limit = worker._AUTO_SCRAPE_TOP_K, tool_timeout = 10, website_policy = None,
+            {"id": "run-x"},
+            "find the special token",
+            step_sources,
+            set(),
+            limit = worker._AUTO_SCRAPE_TOP_K,
+            tool_timeout = 10,
+            website_policy = None,
         )
     )
     assert section == ""
@@ -1671,8 +1708,13 @@ def test_auto_scrape_honors_numeric_limit(research_home, monkeypatch):
     step_sources = [{"url": f"https://s{i}.example.com", "title": f"S{i}"} for i in range(3)]
     _section, fetched = asyncio.run(
         supervisor._auto_scrape_sources(
-            {"id": "run-x"}, "question", step_sources, set(),
-            limit = 1, tool_timeout = 10, website_policy = None,
+            {"id": "run-x"},
+            "question",
+            step_sources,
+            set(),
+            limit = 1,
+            tool_timeout = 10,
+            website_policy = None,
         )
     )
     assert len(called) == 1
