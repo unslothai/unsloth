@@ -233,9 +233,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         # container both evades the sensitive-key scan when its inner keys are unlisted (e.g.
         # {"kb_id": {"auth": "sk-..."}}) and would reach retrieval code that expects a scalar scope
         # id, so reject any non-scalar value outright.
-        non_scalar = any(
-            isinstance(value, (dict, list, tuple)) for value in rag_scope.values()
-        )
+        non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
     budgets = {

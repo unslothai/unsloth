@@ -686,9 +686,7 @@ def test_delete_thread_cancels_active_research_run(research_home):
     cancelled: list[str] = []
     request = SimpleNamespace(
         app = SimpleNamespace(
-            state = SimpleNamespace(
-                research_supervisor = SimpleNamespace(cancel = cancelled.append)
-            )
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
         )
     )
     chat_history._cancel_active_research(request, ["thread-1"])
@@ -1265,13 +1263,16 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
     )
     _create(user_message_id = "user-inj", assistant_message_id = None)
 
-    supervisor = worker.ResearchSupervisor(
-        SimpleNamespace(state = SimpleNamespace(server_port = 1))
-    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     captured: dict = {}
 
     async def fake_stream_completion(
-        run, messages, *, json_mode = False, report_progress = True, **kwargs
+        run,
+        messages,
+        *,
+        json_mode = False,
+        report_progress = True,
+        **kwargs,
     ):
         captured["planner"] = messages[1]["content"]
         return json.dumps(_plan()), "Planned.", "stop"

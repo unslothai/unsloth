@@ -672,9 +672,7 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(
-    request: Request, current_subject: str = Depends(get_current_subject)
-):
+async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
     _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
     clear_chat_history()
     return {"status": "deleted"}
