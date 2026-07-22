@@ -884,6 +884,26 @@ def test_resolve_physical_ids_ignores_rocr_on_cuda_wheel(monkeypatch):
     assert LlamaCppBackend._resolve_visible_physical_ids() is None
 
 
+def test_resolve_physical_ids_ignores_rocr_on_windows(monkeypatch):
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable: Windows HIP has no ROCr
+    # layer, so a stray ROCR var there does not mask the runtime. Reading it as
+    # the ordinal->physical mapping would label ordinal 0 with a stale ROCR id
+    # while the runtime still enumerates every adapter, so auto-selection could
+    # budget one card and pin another (#7272 review). HIP must still be honoured.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+rocm7.2.1"  # AMD SDK wheel
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() is None
+    # HIP precedence is unchanged on Windows.
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
+
+
 # ── Diffusion single-device selection ───────────────────────────────────────
 
 
