@@ -52,6 +52,7 @@ const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
 const MODEL_RESULT_LIMIT = 7;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
+const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
 // Backend PATH detection is only meaningful in the desktop app on a loopback
 // backend; a browser loopback URL may be an SSH/port forward to another host.
@@ -285,6 +286,7 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
     flag: "--persist / --no-persist",
     descKey: "settings.agents.options.persist",
   },
+  { flag: "--as-subagent", descKey: "settings.agents.options.asSubagent" },
   { flag: "--api-key", descKey: "settings.agents.options.apiKey" },
   { flag: "--yolo", descKey: "settings.agents.options.yolo" },
 ];
@@ -327,6 +329,96 @@ function CommandBlock({ command }: { command: string }) {
           strokeWidth={2}
         />
       </button>
+    </div>
+  );
+}
+
+function SubagentSection({
+  agent,
+  commandModel,
+}: {
+  agent: AgentDetails;
+  commandModel: string;
+}) {
+  const t = useT();
+  const command = `unsloth start ${agent.id} --as-subagent --model ${commandModel}`;
+  const prompt =
+    agent.id === "opencode"
+      ? t("settings.agents.subagent.opencodePrompt")
+      : t("settings.agents.subagent.defaultPrompt");
+  const commandCopy = useCopyButton(command);
+  const promptCopy = useCopyButton(prompt);
+
+  if (!SUBAGENT_AGENT_IDS.has(agent.id)) {
+    return null;
+  }
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-muted/10 p-3">
+      <div className="flex flex-col gap-1">
+        <span className="text-xs font-medium text-foreground">
+          {t("settings.agents.subagent.title")}
+        </span>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          {t("settings.agents.subagent.description", { agent: agent.name })}
+        </p>
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[11px] font-medium text-foreground">
+            {t("settings.agents.subagent.setupCommand")}
+          </span>
+          <button
+            type="button"
+            onClick={commandCopy.copy}
+            aria-label={t("settings.agents.subagent.copySetupCommand")}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <HugeiconsIcon
+              icon={commandCopy.copied ? Tick02Icon : Copy01Icon}
+              className={cn(
+                "size-3.5",
+                commandCopy.copied && "text-control-accent",
+              )}
+            />
+            {commandCopy.copied
+              ? t("settings.agents.copied")
+              : t("settings.agents.copy")}
+          </button>
+        </div>
+        <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+          {command}
+        </code>
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[11px] font-medium text-foreground">
+            {t("settings.agents.subagent.usagePrompt", { agent: agent.name })}
+          </span>
+          <button
+            type="button"
+            onClick={promptCopy.copy}
+            aria-label={t("settings.agents.subagent.copyUsagePrompt")}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <HugeiconsIcon
+              icon={promptCopy.copied ? Tick02Icon : Copy01Icon}
+              className={cn(
+                "size-3.5",
+                promptCopy.copied && "text-control-accent",
+              )}
+            />
+            {promptCopy.copied
+              ? t("settings.agents.copied")
+              : t("settings.agents.copy")}
+          </button>
+        </div>
+        <code className="block min-w-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+          {prompt}
+        </code>
+      </div>
     </div>
   );
 }
@@ -781,6 +873,13 @@ export function AgentsTab() {
             {command}
           </code>
         </div>
+
+        <SubagentSection
+          key={`${selectedAgent}:${commandModel}`}
+          agent={selectedAgentDetails}
+          commandModel={commandModel}
+        />
+
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           {t("settings.agents.modelNote")}
         </p>

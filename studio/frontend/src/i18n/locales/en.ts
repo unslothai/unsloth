@@ -540,6 +540,17 @@ export const en = {
       copyGeneratedCommand: "Copy generated command",
       modelNote:
         "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth Studio.",
+      subagent: {
+        title: "Use a local model as a subagent",
+        description:
+          "Keep {agent} on its current model and delegate selected tasks to this local Unsloth model.",
+        setupCommand: "Setup command",
+        copySetupCommand: "Copy subagent setup command",
+        usagePrompt: "Then in {agent}, type:",
+        copyUsagePrompt: "Copy subagent usage prompt",
+        defaultPrompt: "Spawn a local agent to implement this function.",
+        opencodePrompt: "@unsloth find the cause of this test failure",
+      },
       quickstart: {
         title: "Build a command",
         description:
@@ -571,6 +582,8 @@ export const en = {
         serve: "Enable or disable the automatic local server.",
         launch: "Launch the agent, or just print the command and environment.",
         persist: "Keep Unsloth-managed agent storage between runs.",
+        asSubagent:
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, OpenCode, and Pi).",
         apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
