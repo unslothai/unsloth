@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -39,6 +40,14 @@ _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/downl
 
 _READY_TIMEOUT = 15.0  # seconds to wait for the URL + a registered edge connection
 _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
+
+# A registered edge connection does not mean the hostname resolves yet, so the
+# URL is fetched once before it is advertised.
+_PUBLIC_PROBE_PATH = "/api/health"
+_PUBLIC_PROBE_MARKER = "Unsloth UI Backend"
+_PUBLIC_PROBE_TIMEOUT = 10.0
+_PUBLIC_PROBE_ATTEMPT_TIMEOUT = 5.0
+_PUBLIC_PROBE_RETRY_DELAY = 1.0
 
 
 def _windows_hidden_kwargs() -> dict:
@@ -191,6 +200,31 @@ def ensure_cloudflared() -> Optional[str]:
         return None
 
 
+def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
+    import json
+    import urllib.request
+
+    probe_url = f"{url.rstrip('/')}{_PUBLIC_PROBE_PATH}"
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            req = urllib.request.Request(
+                probe_url, headers = {"User-Agent": "unsloth-studio"}
+            )
+            with urllib.request.urlopen(
+                req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT
+            ) as response:
+                body = response.read(4096)
+            if json.loads(body).get("service") == _PUBLIC_PROBE_MARKER:
+                return True
+        except Exception:
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_PUBLIC_PROBE_RETRY_DELAY, remaining))
+
+
 class CloudflareTunnel:
     """A cloudflared quick tunnel to http://localhost:<port>. Best-effort throughout.
 
@@ -322,11 +356,12 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
     """Start a quick tunnel and return its public URL once it is actually
     serving, or None (best-effort).
 
-    Waits for cloudflared to both mint the URL and register an edge connection
-    before returning, so the caller never advertises a URL that yields Cloudflare
-    error 1033 (HTTP 530). If a URL is minted but no connection registers within
-    the window (e.g. quic is blocked on this network), retries once forcing the
-    http2 protocol. On any failure the tunnel is stopped and None is returned.
+    Waits for cloudflared to both mint the URL and register an edge connection,
+    then fetches /api/health over the public URL, so the caller never advertises
+    a link that yields Cloudflare error 1033 (HTTP 530) or an unresolvable host.
+    If a URL is minted but never becomes usable within the window (e.g. quic is
+    blocked on this network), retries once forcing the http2 protocol. On any
+    failure the tunnel is stopped and None is returned.
     """
     global _active_tunnel, _shutdown_requested
     binary = ensure_cloudflared()
@@ -352,6 +387,8 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
         try:
             tunnel.start()
             url = tunnel.wait_for_ready(timeout)
+            if url and not verify_public_url(url):
+                url = None
         except Exception:
             url = None
         if url:

@@ -403,9 +403,149 @@ def test_reader_ignores_api_endpoint_failure_line():
     assert t.error == "cloudflared exited before emitting a tunnel URL"
 
 
+# ── public reachability probe ────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self, size = -1):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _patch_urlopen(monkeypatch, handler):
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: handler(req))
+
+
+def test_verify_public_url_accepts_studio_marker(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["url"] = req.full_url
+        return _FakeResponse(b'{"status":"healthy","service":"Unsloth UI Backend"}')
+
+    _patch_urlopen(monkeypatch, handler)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert seen["url"] == "https://words.trycloudflare.com/api/health"
+
+
+def test_verify_public_url_retries_then_succeeds(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if len(calls) < 3:
+            raise OSError("Name or service not known")
+        return _FakeResponse(b'{"service":"Unsloth UI Backend"}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert len(calls) == 3
+
+
+def test_verify_public_url_rejects_unreachable_host(monkeypatch):
+    def handler(req):
+        raise OSError("Name or service not known")
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0.05) is False
+
+
+def test_verify_public_url_rejects_foreign_responder(monkeypatch):
+    # e.g. a Cloudflare error page: no service marker in the body.
+    _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b"<html>error 1033</html>"))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0.05) is False
+
+
+@pytest.fixture(autouse = True)
+def _stub_public_probe(monkeypatch, request):
+    # start_studio_tunnel tests use fake hostnames; keep them off the network.
+    if not request.node.name.startswith("test_start_studio_tunnel"):
+        return
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+
+
 def test_start_studio_tunnel_no_binary(monkeypatch):
     monkeypatch.setattr(ct, "ensure_cloudflared", lambda: None)
     assert ct.start_studio_tunnel(8080) is None
+
+
+def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatch):
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: False)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None, "http2"]
+    assert ct._active_tunnel is None
+
+
+def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
+    probed = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            self.protocol = protocol
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    def _probe(url, **kw):
+        probed.append(url)
+        return len(probed) > 1
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", _probe)
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
+        assert probed == ["https://words.trycloudflare.com"] * 2
+    finally:
+        ct.stop_studio_tunnel()
 
 
 def test_start_studio_tunnel_registers_before_wait(monkeypatch):
