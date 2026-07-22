@@ -1963,7 +1963,14 @@ def test_download_progress_ignores_fully_cached_bytes(capsys):
 def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
-    def http_json(method, url, key, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         assert url.endswith("/api/inference/status"), url
         return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
 
@@ -1979,8 +1986,7 @@ def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert (
-        "Switching the Unsloth server from owner/model-GGUF:Q4_K_M to owner/model-GGUF:Q8_0."
-        in out
+        "Switching the Unsloth server from owner/model-GGUF:Q4_K_M to owner/model-GGUF:Q8_0." in out
     )
     assert "every attached session" in out
 
