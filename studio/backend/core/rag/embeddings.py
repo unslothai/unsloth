@@ -22,6 +22,7 @@ from typing import Callable
 
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
+from utils.utils import hf_env_offline
 
 from . import config
 
@@ -119,30 +120,55 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         return ()
 
 
-def _guard_model_security(name: str) -> None:
+def _guard_model_security(name: str, local_only: bool = False) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable
     scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
+
+    ``local_only`` (offline) inspects the local cache; subdir probes are skipped (they'd hit the
+    network and hang, and the offline gate walks the whole snapshot anyway).
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
 
         token = _ambient_hf_token()
-        # Union the audio-model load roots with the ST module dirs so a flagged pickle
-        # directly under a Transformer module dir (0_Transformer/) blocks instead of
-        # passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
-        )
-        blocked = evaluate_file_security(name, hf_token = token, load_subdirs = load_subdirs).blocked
+        if local_only:
+            load_subdirs = ()
+        else:
+            # Union audio-model load roots with ST module dirs so a flagged pickle under a
+            # Transformer module dir blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (*security_load_subdirs(name, token), *_st_module_subdirs(name, token))
+                )
+            )
+        blocked = evaluate_file_security(
+            name, hf_token = token, load_subdirs = load_subdirs, local_only_load = local_only
+        ).blocked
     except Exception:
         return
     if blocked:
-        raise UnsafeEmbeddingModelError(
-            f"Embedding model {name!r} is flagged as unsafe by Hugging Face's security "
-            "scan; refusing to load. Set a different RAG embedding model."
+        reason = (
+            "has cached pickle weights that cannot be security-scanned offline and no "
+            "safetensors alternative"
+            if local_only
+            else "is flagged as unsafe by Hugging Face's security scan"
         )
+        raise UnsafeEmbeddingModelError(
+            f"Embedding model {name!r} {reason}; refusing to load. "
+            "Set a different RAG embedding model."
+        )
+
+
+def _st_accepts_local_files_only(st_cls) -> bool:
+    """Whether this SentenceTransformer version accepts local_files_only; passing it to an
+    older constructor raises, so gate on the signature."""
+    try:
+        import inspect
+        return "local_files_only" in inspect.signature(st_cls.__init__).parameters
+    except Exception:
+        return False
 
 
 def _get(model_name: str | None = None):
@@ -150,6 +176,9 @@ def _get(model_name: str | None = None):
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
     name = model_name or config.effective_embedding_model()
+    # Capture offline state once so the gate and the load agree (no window where the gate is
+    # skipped as offline but the constructor then reaches the network).
+    local_only = hf_env_offline()
     with _lock:
         if _model is None or _name != name:
             _install_torchao_stub_once()
@@ -157,8 +186,20 @@ def _get(model_name: str | None = None):
 
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
-            _guard_model_security(name)
-            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
+            _guard_model_security(name, local_only)
+            st_kwargs = dict(device = device, model_kwargs = dtype_kwargs("float16"))
+            load_target = name
+            if local_only:
+                from utils.utils import hf_cache_snapshot_dir
+                snapshot = hf_cache_snapshot_dir(name)
+                if snapshot is not None:
+                    # Load from the local snapshot dir: a local path never touches the Hub, so
+                    # this is offline-safe on ANY sentence-transformers version (even ones
+                    # predating local_files_only).
+                    load_target = str(snapshot)
+                elif _st_accepts_local_files_only(SentenceTransformer):
+                    st_kwargs["local_files_only"] = True
+            _model = SentenceTransformer(load_target, **st_kwargs)
             _name = name
         return _model
 
