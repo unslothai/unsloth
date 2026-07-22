@@ -1400,9 +1400,7 @@ class TestInstallShStructure:
                     f.write("#!/bin/sh\nexit 1\n")
                 os.chmod(p, 0o755)
             script = (
-                "set -euo pipefail\n"
-                + chain.group(0)
-                + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
+                "set -euo pipefail\n" + chain.group(0) + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
             )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
             r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
