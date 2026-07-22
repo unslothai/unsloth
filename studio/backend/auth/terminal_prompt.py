@@ -236,6 +236,10 @@ def prompt_for_password_change(
                 out.write(f"Password must be at least {min_length} characters; try again.\n")
                 out.flush()
                 continue
+            if not new_password.strip():
+                out.write("Password cannot consist only of spaces; try again.\n")
+                out.flush()
+                continue
             if is_current_password(new_password):
                 out.write(
                     "New password must differ from the current bootstrap password; try again.\n"

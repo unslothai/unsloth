@@ -494,6 +494,11 @@ async def change_password(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Current password is incorrect",
         )
+    if not payload.new_password.strip():
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot consist only of spaces",
+        )
     if payload.current_password == payload.new_password:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
