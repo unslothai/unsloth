@@ -176,6 +176,21 @@ def _repo_id_from_datasets_cache_dir(name: str) -> str | None:
     return repo_id if _is_valid_repo_id(repo_id) else None
 
 
+def _is_processed_dataset_cache_path(repo_id: str, cache_path: str) -> bool:
+    """True when *cache_path* is this repo's processed Arrow cache dir
+    (``<owner>___<repo>`` directly under an HF_DATASETS_CACHE root). Such rows
+    have no Hub ``datasets--`` layout, so they are deleted via the processed
+    path and must not be rejected as an invalid cache_path."""
+    try:
+        resolved = Path(cache_path).expanduser().resolve(strict = False)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.name.lower() != repo_id.replace("/", "___").lower():
+        return False
+    roots = {r.resolve(strict = False) for r in _hf_datasets_cache_roots()}
+    return resolved.parent.resolve(strict = False) in roots
+
+
 def _processed_dataset_cache_size(path: Path) -> int:
     total = 0
     try:
@@ -367,9 +382,15 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             owners.setdefault(owner, []).append((hf_cache, repo_info))
 
     target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
-    if target_root is None:
+    # A processed-only dataset row sends its Arrow cache path (<owner>___<repo>
+    # under HF_DATASETS_CACHE), which is not a Hub datasets-- dir, so
+    # resolve_delete_target_root returns None. Accept it and fall through to the
+    # processed-cache delete rather than rejecting a legitimate row.
+    if target_root is None and not (
+        cache_path and _is_processed_dataset_cache_path(repo_id, cache_path)
+    ):
         raise HTTPException(status_code = 400, detail = "Invalid cache_path")
-    candidate_entries = owners.get(target_root, [])
+    candidate_entries = owners.get(target_root, []) if target_root is not None else []
     matched_repo_ids = resolve_destructive_repo_ids(
         repo_id,
         [str(repo_info.repo_id) for _hf_cache, repo_info in candidate_entries],
@@ -408,11 +429,15 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
 
     # ``scan_cache_dir()`` skips blob-only/corrupt repos the revision delete
     # can't touch, yet the fallback scanner shows them; purge the whole dir.
-    cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)
-    partial_purged = purge_partial_repo("dataset", repo_id, root = target_root)
-    state_purged = (
-        download_manifest.purge_all_state_for_repo("dataset", repo_id, hub_cache = target_root) > 0
-    )
+    # Only for a Hub cache target; a processed-only path has no Hub dir/state.
+    cache_purged = partial_purged = state_purged = False
+    if target_root is not None:
+        cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)
+        partial_purged = purge_partial_repo("dataset", repo_id, root = target_root)
+        state_purged = (
+            download_manifest.purge_all_state_for_repo("dataset", repo_id, hub_cache = target_root)
+            > 0
+        )
     if not (deleted or processed_deleted or cache_purged or partial_purged or state_purged):
         raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}

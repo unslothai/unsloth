@@ -136,6 +136,30 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
     assert (other_hub / "datasets--Org--Data").exists()
 
 
+def test_delete_processed_only_dataset_accepts_processed_cache_path(monkeypatch, tmp_path):
+    """A processed-only dataset row sends its Arrow cache path (<owner>___<repo>
+    under HF_DATASETS_CACHE), which is not a Hub datasets-- dir. The delete must
+    accept it and run the processed-cache delete instead of raising 400."""
+    datasets_root = tmp_path / "datasets"
+    processed_dir = datasets_root / "Org___Data"
+    processed_dir.mkdir(parents = True)
+
+    # No Hub-cache copy exists; only the processed Arrow cache holds this repo.
+    monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
+    monkeypatch.setattr(cache_inventory, "_hf_datasets_cache_roots", lambda: [datasets_root])
+    processed_calls: list[str] = []
+    monkeypatch.setattr(
+        cache_inventory,
+        "_delete_processed_dataset_cache",
+        lambda repo_id: (processed_calls.append(repo_id) or True, []),
+    )
+
+    result = cache_inventory._delete_cached_dataset_blocking("Org/Data", str(processed_dir))
+
+    assert result == {"status": "deleted", "repo_id": "Org/Data"}
+    assert processed_calls == ["Org/Data"]
+
+
 def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
     """A blob-only ``datasets--owner--repo`` dir (no usable snapshot/refs) is
     fully removable: purge_partial_repo alone clears only ``.incomplete`` files
