@@ -73,12 +73,12 @@ def test_validated_transformers_repo_downloads(monkeypatch):
     monkeypatch.setattr(
         stt_module,
         "validate_remote_model",
-        lambda model, hf_token=None: {"model": model, "revision": revision},
+        lambda model, hf_token = None: {"model": model, "revision": revision},
     )
     monkeypatch.setattr(
         stt_module,
         "start_model_download",
-        lambda model, hf_token=None, revision=None: started.append((model, revision)),
+        lambda model, hf_token = None, revision = None: started.append((model, revision)),
     )
     monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": True})
 

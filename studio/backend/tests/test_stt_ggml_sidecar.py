@@ -34,8 +34,8 @@ from core.inference.stt_sidecar import (
 def isolate_runtime_and_stub_audio_decoder(monkeypatch, tmp_path):
     """Unit tests exercise orchestration, not PyAV container parsing."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.delenv("WHISPER_SERVER_PATH", raising=False)
-    monkeypatch.delenv("UNSLOTH_WHISPER_CPP_PATH", raising=False)
+    monkeypatch.delenv("WHISPER_SERVER_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_WHISPER_CPP_PATH", raising = False)
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(
         ggml_module,
@@ -68,7 +68,6 @@ def test_custom_repo_ids_are_rejected():
 
 def test_curated_ids_mirror_transformers_sidecar():
     from core.inference.stt_sidecar import STT_MODELS
-
     assert list(GGML_STT_MODELS.keys()) == list(STT_MODELS.keys())
 
 

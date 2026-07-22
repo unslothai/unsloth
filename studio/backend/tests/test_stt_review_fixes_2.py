@@ -193,7 +193,7 @@ def test_validate_remote_model_returns_the_validated_revision(monkeypatch):
             expand = None,
             timeout = None,
         ):
-            return SimpleNamespace(config={"model_type": "whisper"}, sha=revision)
+            return SimpleNamespace(config = {"model_type": "whisper"}, sha = revision)
 
     import huggingface_hub
 
@@ -218,7 +218,7 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
         def model_info(
             self,
             repo,
-            revision=None,
+            revision = None,
             files_metadata = None,
             timeout = None,
         ):
@@ -229,9 +229,9 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
                 "model.safetensors",
             )
             siblings = [
-                SimpleNamespace(rfilename=name, size=10, blob_id=name, lfs=None) for name in names
+                SimpleNamespace(rfilename = name, size = 10, blob_id = name, lfs = None) for name in names
             ]
-            return SimpleNamespace(siblings=siblings, sha=head_revision)
+            return SimpleNamespace(siblings = siblings, sha = head_revision)
 
     import huggingface_hub
 
@@ -240,7 +240,7 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
 
     state = stt_sidecar_module._SnapshotDownloadState()
     # The revision resolved at validation time wins over the current head.
-    state._run("someone/custom-whisper", None, revision=validated_revision)
+    state._run("someone/custom-whisper", None, revision = validated_revision)
     assert captured["revision"] == validated_revision
     patterns = captured["allow_patterns"]
     assert "model.safetensors" in patterns and "tokenizer.json" in patterns

@@ -71,14 +71,14 @@ _STT_PYTORCH_WEIGHTS = "pytorch_model.bin"
 _STT_REVISION_RECORD_VERSION = 1
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _SelectedHubFile:
     path: str
     size: int
     blob_key: Optional[str]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _CachedSttSnapshot:
     path: Optional[Path]
     is_multilingual: Optional[bool]
@@ -234,7 +234,6 @@ def _repo_cache_dir(repo: str) -> Path:
 
 def _revision_record_path(repo: str) -> Path:
     from utils.paths.storage_roots import cache_root
-
     digest = hashlib.sha256(repo.encode("utf-8")).hexdigest()
     return cache_root() / "stt-revisions" / f"{digest}.json"
 
@@ -246,8 +245,8 @@ def _write_revision_record(repo: str, revision: str) -> None:
     path = _revision_record_path(repo)
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tmp.open("w", encoding="utf-8") as handle:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with tmp.open("w", encoding = "utf-8") as handle:
             json.dump(
                 {
                     "version": _STT_REVISION_RECORD_VERSION,
@@ -262,7 +261,7 @@ def _write_revision_record(repo: str, revision: str) -> None:
     except OSError as exc:
         logger.debug("Could not persist STT revision for %s: %s", repo, exc)
         try:
-            tmp.unlink(missing_ok=True)
+            tmp.unlink(missing_ok = True)
         except OSError:
             pass
 
@@ -312,7 +311,7 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
 
     ref = _repo_cache_dir(repo) / "refs" / "main"
     try:
-        revision = ref.read_text(encoding="utf-8").strip()
+        revision = ref.read_text(encoding = "utf-8").strip()
     except OSError:
         revision = ""
     snapshot = _safe_snapshot_for_revision(repo, revision)
@@ -328,7 +327,7 @@ def _find_complete_cached_snapshot(model: Optional[str]) -> Optional[Path]:
                 for path in snapshots.iterdir()
                 if path.is_dir() and _HF_COMMIT_SHA.fullmatch(path.name)
             ),
-            reverse=True,
+            reverse = True,
         )
     except OSError:
         return None
@@ -344,9 +343,9 @@ def _selected_file_from_sibling(sibling) -> _SelectedHubFile:
     lfs = getattr(sibling, "lfs", None)
     blob_key = getattr(lfs, "sha256", None) or getattr(sibling, "blob_id", None)
     return _SelectedHubFile(
-        path=sibling.rfilename,
-        size=max(0, int(getattr(sibling, "size", 0) or 0)),
-        blob_key=blob_key if isinstance(blob_key, str) and blob_key else None,
+        path = sibling.rfilename,
+        size = max(0, int(getattr(sibling, "size", 0) or 0)),
+        blob_key = blob_key if isinstance(blob_key, str) and blob_key else None,
     )
 
 
@@ -393,10 +392,9 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
 
     try:
         from huggingface_hub import HfApi
-
         info = HfApi(token = hf_token or False).model_info(
             repo,
-            expand=["config", "sha"],
+            expand = ["config", "sha"],
             timeout = 10,
         )
     except Exception as exc:
@@ -642,7 +640,6 @@ def download_status() -> dict:
 def _training_active() -> bool:
     try:
         from core.training import get_training_backend
-
         return bool(get_training_backend().is_training_active())
     except Exception:
         return False
@@ -652,7 +649,6 @@ def _clear_device_cache(device: Optional[str]) -> None:
     gc.collect()
     try:
         import torch
-
         if device == "cuda":
             torch.cuda.empty_cache()
         elif device == "mps":
@@ -685,7 +681,6 @@ def _pick_device():
     except Exception as exc:
         logger.debug("STT device detection failed, using CPU: %s", exc)
         import torch
-
         return "cpu", torch.float32
 
 
@@ -915,9 +910,7 @@ class WhisperSttSidecar:
                 is_multilingual = getattr(generation_config, "is_multilingual", None)
                 return _CachedSttSnapshot(
                     path = None,
-                    is_multilingual = is_multilingual
-                    if isinstance(is_multilingual, bool)
-                    else None,
+                    is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None,
                 )
         snapshot_path = _find_complete_cached_snapshot(model_id)
         if snapshot_path is None:

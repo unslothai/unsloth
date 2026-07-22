@@ -157,7 +157,7 @@ def test_remote_custom_model_validation_requires_whisper_config(monkeypatch):
         def model_info(self, repo, **kwargs):
             calls.append(("model_info", repo, kwargs))
             return SimpleNamespace(
-                sha="a" * 40,
+                sha = "a" * 40,
                 config = {
                     "model_type": "whisper",
                     "architectures": ["WhisperForConditionalGeneration"],
@@ -208,11 +208,11 @@ def test_remote_custom_model_validation_requires_an_immutable_sha(monkeypatch):
             pass
 
         def model_info(self, _repo, **_kwargs):
-            return SimpleNamespace(sha=None, config={"model_type": "whisper"})
+            return SimpleNamespace(sha = None, config = {"model_type": "whisper"})
 
     monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
 
-    with pytest.raises(SttModelCompatibilityError, match="immutable revision"):
+    with pytest.raises(SttModelCompatibilityError, match = "immutable revision"):
         validate_remote_model("owner/custom-whisper")
 
 
@@ -496,7 +496,7 @@ def test_model_cache_preflight_uses_shared_offline_resolver(monkeypatch):
         lambda model: seen.append(model) or Path("/cached/model"),
     )
 
-    WhisperSttSidecar(keep_alive_seconds=0)._ensure_model_downloaded("small")
+    WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded("small")
 
     assert seen == ["small"]
 
@@ -923,7 +923,7 @@ def test_unload_releases_model_and_device():
 
 
 def _write_complete_snapshot(snapshot: Path, *, model_type: str = "whisper") -> None:
-    snapshot.mkdir(parents=True, exist_ok=True)
+    snapshot.mkdir(parents = True, exist_ok = True)
     (snapshot / "config.json").write_text(json.dumps({"model_type": model_type}))
     (snapshot / "preprocessor_config.json").write_text("{}")
     (snapshot / "tokenizer.json").write_text("{}")
@@ -931,7 +931,7 @@ def _write_complete_snapshot(snapshot: Path, *, model_type: str = "whisper") -> 
 
 
 def _sibling(name: str, size: int, key: str):
-    return SimpleNamespace(rfilename=name, size=size, blob_id=key, lfs=None)
+    return SimpleNamespace(rfilename = name, size = size, blob_id = key, lfs = None)
 
 
 def test_sha_snapshot_without_main_ref_survives_restart_and_cache_relocation(monkeypatch, tmp_path):
@@ -971,15 +971,15 @@ def test_corrupt_or_escaping_revision_record_is_ignored(monkeypatch, tmp_path):
         _REAL_FIND_COMPLETE_CACHED_SNAPSHOT,
     )
     record = stt_sidecar_module._revision_record_path(repo)
-    record.parent.mkdir(parents=True)
+    record.parent.mkdir(parents = True)
     record.write_text(json.dumps({"version": 1, "repo": repo, "revision": "../../outside"}))
     assert stt_sidecar_module._find_complete_cached_snapshot(repo) is None
 
     outside = tmp_path / "outside"
     _write_complete_snapshot(outside)
     snapshots = tmp_path / "hub" / "models--openai--whisper-tiny.en" / "snapshots"
-    snapshots.mkdir(parents=True)
-    (snapshots / ("d" * 40)).symlink_to(outside, target_is_directory=True)
+    snapshots.mkdir(parents = True)
+    (snapshots / ("d" * 40)).symlink_to(outside, target_is_directory = True)
     assert stt_sidecar_module._find_complete_cached_snapshot(repo) is None
 
 
@@ -994,7 +994,7 @@ def test_adapter_only_snapshot_is_not_complete(tmp_path):
 
 def test_snapshot_selection_prefers_safetensors_and_excludes_unrelated_files():
     info = SimpleNamespace(
-        siblings=[
+        siblings = [
             _sibling("config.json", 10, "config"),
             _sibling("preprocessor_config.json", 20, "preprocessor"),
             _sibling("tokenizer.json", 30, "tokenizer"),
@@ -1019,7 +1019,7 @@ def test_snapshot_selection_prefers_safetensors_and_excludes_unrelated_files():
 
 def test_snapshot_selection_includes_every_indexed_shard():
     info = SimpleNamespace(
-        siblings=[
+        siblings = [
             _sibling("config.json", 10, "config"),
             _sibling("model.safetensors.index.json", 5, "index"),
             _sibling("model-00001-of-00002.safetensors", 50, "shard1"),
@@ -1049,7 +1049,7 @@ def test_snapshot_selection_includes_every_indexed_shard():
 def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
     blobs = tmp_path / "hub" / "models--owner--whisper" / "blobs"
-    blobs.mkdir(parents=True)
+    blobs.mkdir(parents = True)
     (blobs / "one").write_bytes(b"x" * 10)
     (blobs / "two.incomplete").write_bytes(b"x" * 30)
     (blobs / "unrelated").write_bytes(b"x" * 1000)
@@ -1085,7 +1085,7 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
 
         def model_info(self, repo, **kwargs):
             calls.append(("info", repo, kwargs))
-            return SimpleNamespace(sha=revision, siblings=siblings)
+            return SimpleNamespace(sha = revision, siblings = siblings)
 
     def fake_snapshot_download(**kwargs):
         calls.append(("snapshot", kwargs))
@@ -1134,7 +1134,7 @@ def test_download_rejects_a_second_model_while_one_is_in_flight(monkeypatch):
     monkeypatch.setattr(
         state,
         "_run",
-        lambda repo, token, revision: release.wait(timeout=5),
+        lambda repo, token, revision: release.wait(timeout = 5),
     )
 
     state.start("small")
@@ -1219,7 +1219,7 @@ def test_preflight_rejects_partial_snapshot(monkeypatch, tmp_path, model_id):
     monkeypatch.setattr(stt_sidecar_module, "_snapshot_is_complete", _REAL_SNAPSHOT_IS_COMPLETE)
     repo = STT_MODELS.get(model_id, model_id)
     snapshot = tmp_path / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / ("b" * 40)
-    snapshot.mkdir(parents=True)
+    snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text('{"model_type": "whisper"}')
 
     with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
