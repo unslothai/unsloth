@@ -2182,6 +2182,16 @@ _infer_linux_amd_gfx_arch() {
         printf '%s\n' "$(printf '%s' "$UNSLOTH_ROCM_GFX_ARCH" | tr '[:upper:]' '[:lower:]')"
         return 0
     fi
+    # On WSL /proc/cpuinfo and lspci still report the host APU, but without the
+    # ROCDXG bridge (librocdxg over /dev/dxg) the AMD wheels can't reach the GPU;
+    # keep the CPU fallback there unless that runtime is present (the explicit
+    # override above still wins). Mirrors install_python_stack.py.
+    if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
+        for _d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
+            { [ -e "$_d/librocdxg.so" ] || [ -e "$_d/librocdxg.so.1" ]; } && _rocdxg=1 && break
+        done
+        [ -n "${_rocdxg:-}" ] || return 1
+    fi
     if grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null; then
         echo gfx1151
         return 0
@@ -2817,7 +2827,10 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # per-arch wheels like install.ps1 does on Windows (unslothai#7301).
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    ! _has_usable_nvidia_gpu && \
-   case "$(uname -s)" in Linux) true ;; *) false ;; esac; then
+   case "$(uname -s)" in Linux) true ;; *) false ;; esac && \
+   case "$_ARCH" in x86_64|amd64) true ;; *) false ;; esac; then
+    # ROCm torch wheels are x86_64-only; get_torch_index_url returns CPU on other
+    # arches, so an inferred/overridden gfx must not reroute arm64 to AMD wheels.
     case "$TORCH_INDEX_URL" in
         */cpu)
             _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)

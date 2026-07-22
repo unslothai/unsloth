@@ -3247,6 +3247,56 @@ class TestStrixRocm71Override:
         ):
             assert m._infer_linux_amd_gfx_arch() == "gfx1151"
 
+    def test_install_sh_infer_gfx_gated_on_wsl_runtime(self):
+        """install.sh's _infer_linux_amd_gfx_arch must, like the Python side, skip
+        the cpuinfo/lspci inference on WSL unless librocdxg is present -- the
+        override still returns first, so it stays authoritative."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        body = _extract_sh_function_body(source, "_infer_linux_amd_gfx_arch")
+        assert body, "could not extract _infer_linux_amd_gfx_arch"
+        override = body.find("UNSLOTH_ROCM_GFX_ARCH")
+        dxg = body.find("/dev/dxg")
+        rocdxg = body.find("librocdxg")
+        # Anchor on the first cpuinfo *inference* (the grep), not a comment mention.
+        infer = body.find("grep -qiE 'Ryzen AI Max")
+        assert override >= 0 and dxg >= 0 and rocdxg >= 0 and infer >= 0
+        assert "microsoft" in body, "WSL gate must also detect WSL via /proc/version"
+        assert override < dxg, "the explicit override must return before the WSL gate"
+        assert dxg < infer and rocdxg < infer, (
+            "the WSL/librocdxg gate must run before the cpuinfo/lspci inference"
+        )
+
+    def test_install_sh_reroute_is_x86_64_only(self):
+        """The Linux inferred-gfx reroute must be x86_64-only: ROCm torch wheels are
+        not published for arm64, so an inferred/overridden gfx must not push an
+        arm64 host to the AMD arch index (get_torch_index_url returns CPU there)."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        idx = source.find("_linux_inferred_gfx=$(_infer_linux_amd_gfx_arch")
+        assert idx >= 0, "reroute consumer not found"
+        window = source[max(0, idx - 400) : idx]
+        assert 'case "$_ARCH" in x86_64|amd64)' in window, (
+            "the inferred-gfx reroute must guard on x86_64|amd64 arch"
+        )
+
+    def test_amd_arch_index_url_linux_honors_amd_mirror(self):
+        """On Linux the inferred-gfx repair must honour UNSLOTH_AMD_ROCM_MIRROR (the
+        var install.sh uses), not the Windows mirror var, so a mirrored/air-gapped
+        Linux install does not silently fall back to repo.amd.com. Windows still
+        delegates to the Windows mirror path."""
+        m = stack_mod
+        with patch.object(m, "IS_WINDOWS", False), patch.dict(
+            os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": "https://mirror.local/rocm"}
+        ):
+            assert m._amd_arch_index_url("gfx1151") == "https://mirror.local/rocm/gfx1151/"
+        with patch.object(m, "IS_WINDOWS", False), patch.dict(
+            os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": ""}
+        ):
+            assert m._amd_arch_index_url("gfx1151") == "https://repo.amd.com/rocm/whl/gfx1151/"
+            assert m._amd_arch_index_url("gfx9999") is None
+        # Windows path is unchanged: delegate to the Windows mirror helper.
+        with patch.object(m, "IS_WINDOWS", True):
+            assert m._amd_arch_index_url("gfx1151") == m._windows_rocm_index_url("gfx1151")
+
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")

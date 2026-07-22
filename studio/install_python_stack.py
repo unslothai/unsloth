@@ -835,8 +835,22 @@ def _infer_linux_amd_gfx_arch() -> "str | None":
 
 
 def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
-    """Return repo.amd.com pip index URL for a gfx arch (Linux + Windows)."""
-    return _windows_rocm_index_url(gfx_arch)
+    """Return the AMD per-arch pip index URL for a gfx arch (Linux + Windows).
+
+    Windows honors UNSLOTH_ROCM_WINDOWS_MIRROR (via _windows_rocm_index_url);
+    Linux honors UNSLOTH_AMD_ROCM_MIRROR -- the same var install.sh uses -- so a
+    mirrored/air-gapped Linux repair reaches the index install.sh chose rather
+    than falling back to repo.amd.com. Both default to repo.amd.com when unset.
+    """
+    if IS_WINDOWS:
+        return _windows_rocm_index_url(gfx_arch)
+    arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
+    if arch_family is None:
+        return None
+    base = (
+        os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
+    ).rstrip("/")
+    return f"{base}/{arch_family}/"
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
