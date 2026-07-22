@@ -139,6 +139,25 @@ def test_sanitize_config_rejects_nested_rag_scope_secret():
         _sanitize_config(payload, {"modelId": "m"})
 
 
+def test_sanitize_config_rejects_nonscalar_rag_scope_value():
+    # A nested container under an allowed key evades the sensitive-key scan when its inner key is
+    # not on the sensitive list ("auth" is not), and a dict where a scalar scope id is expected
+    # would reach retrieval code. Non-scalar ragScope values must be rejected outright.
+    payload = _make_payload(ragScope = {"kb_id": {"auth": "sk-private-value"}})
+    with pytest.raises(Exception):
+        _sanitize_config(payload, {"modelId": "m"})
+    payload = _make_payload(ragScope = {"kb_id": ["a", "b"]})
+    with pytest.raises(Exception):
+        _sanitize_config(payload, {"modelId": "m"})
+
+
+def test_sanitize_config_accepts_scalar_rag_scope():
+    # A well-formed scalar ragScope must still validate so ordinary grounded runs are unaffected.
+    payload = _make_payload(ragScope = {"kb_id": "kb-123", "default_top_k": 5})
+    config = _sanitize_config(payload, {"modelId": "m"})
+    assert config["ragScope"] == {"kb_id": "kb-123", "default_top_k": 5}
+
+
 def test_sensitive_key_matches_prefixed_and_camelcase_variants():
     for key in (
         "apiKey",

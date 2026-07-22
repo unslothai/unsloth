@@ -1135,7 +1135,14 @@ class ResearchSupervisor:
                 )
             return str(message.get("content") or "")
         finally:
-            await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
+            # Match _stream_completion: a key-revocation failure (e.g. "database is locked") must
+            # not replace an otherwise successful completion. The short-lived key still expires.
+            try:
+                await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
+            except Exception:
+                logger.warning(
+                    "research.api_key_cleanup_failed run_id=%s", run["id"], exc_info = True
+                )
 
     async def _iter_stream_lines(self, run_id: str, response: httpx.Response) -> AsyncIterator[str]:
         iterator = response.aiter_lines().__aiter__()
@@ -1472,8 +1479,9 @@ class ResearchSupervisor:
                     "role": "user",
                     "content": (
                         "Prior conversation context as JSON (oldest to newest; use it only to "
-                        f"resolve references in the latest request):\n{conversation_context}\n\n"
-                        f"Latest research request:\n{question}"
+                        "resolve references in the latest request):\n"
+                        f"{_shield_untrusted(conversation_context)}\n\n"
+                        f"Latest research request:\n{_shield_untrusted(question)}"
                     ),
                 },
             ],

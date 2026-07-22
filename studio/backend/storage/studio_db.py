@@ -1926,7 +1926,7 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
 
 def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, message: dict) -> bool:
     row = conn.execute(
-        "SELECT parent_id, role, content_json, metadata_json, attachments_json "
+        "SELECT parent_id, role, content_json, metadata_json, attachments_json, created_at "
         "FROM chat_messages WHERE thread_id = ? AND id = ?",
         (thread_id, str(message["id"])),
     ).fetchone()
@@ -1936,6 +1936,9 @@ def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, mes
     def canon(value: object) -> str | None:
         return json.dumps(value, sort_keys = True) if value is not None else None
 
+    # created_at is compared too: without it a client could re-upsert a protected message with an
+    # unchanged body but a different timestamp and silently reorder the server-managed research
+    # prompt/response pair. Absent createdAt defaults to the stored value (a no-op re-sync).
     return (
         canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))
         or canon(message.get("metadata"))
@@ -1944,6 +1947,7 @@ def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, mes
         != canon(json.loads(row["attachments_json"]) if row["attachments_json"] else None)
         or (message.get("parentId") or None) != (row["parent_id"] or None)
         or str(message.get("role")) != str(row["role"])
+        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
     )
 
 

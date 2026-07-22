@@ -3358,10 +3358,11 @@ def _search_knowledge_base_with_budget(
         if deadline is not None and time.monotonic() >= deadline:
             return "Error: knowledge base search timed out."
 
-    # Release the admission slot exactly once, whether the search finishes or the caller stops
-    # waiting on timeout/cancel. Freeing it as soon as the caller gives up keeps a slow or hung
-    # retrieval from holding the sole slot forever and starving every later lookup; the detached
-    # worker then finishes without touching the slot.
+    # The running search owns the admission slot until it actually stops: release it exactly once,
+    # from whichever path terminates the work. When the caller gives up (timeout/cancel) the worker
+    # is still doing embedding/index/GPU work, so it -- not the caller -- keeps the slot and frees
+    # it in its finally. Releasing on caller timeout would let a second search enter while the first
+    # worker runs, defeating the capacity-of-one bound and stacking concurrent GPU/SQLite work.
     _slot_lock = threading.Lock()
     _slot_released = False
 
@@ -3402,11 +3403,11 @@ def _search_knowledge_base_with_budget(
         release_slot()
         raise
     while True:
+        # Caller gives up, but the worker thread still holds the slot and releases it in its
+        # finally when it truly finishes -- so concurrency stays bounded to one.
         if cancel_event is not None and cancel_event.is_set():
-            release_slot()
             return "Error: knowledge base search cancelled."
         if deadline is not None and time.monotonic() >= deadline:
-            release_slot()
             return "Error: knowledge base search timed out."
         wait = 0.05
         if deadline is not None:

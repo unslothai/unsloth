@@ -243,10 +243,11 @@ def test_knowledge_search_honors_cancellation_and_timeout(monkeypatch):
         tools._RAG_SEARCH_SLOT.release()
 
 
-def test_timed_out_search_frees_slot_for_next_lookup(monkeypatch):
-    # A search that outlives its timeout must not keep holding the sole RAG slot, or every later
-    # lookup would starve. The caller frees the slot when it stops waiting; the detached worker
-    # finishes later without re-holding it.
+def test_timed_out_search_keeps_slot_until_worker_exits(monkeypatch):
+    # A search that outlives its caller's timeout still owns the sole RAG slot: the running work is
+    # what consumes the embedding/index/GPU resource, so a second lookup must NOT be able to enter
+    # while the first worker is still alive (that would defeat the capacity-of-one bound). The slot
+    # frees only when the detached worker actually finishes.
     from core.inference import tools
 
     started = threading.Event()
@@ -264,8 +265,11 @@ def test_timed_out_search_frees_slot_for_next_lookup(monkeypatch):
         )
         assert "timed out" in timed_out.lower()
         assert started.is_set()
-        # The worker is still stalled, but the slot must be free for the next lookup.
-        assert tools._RAG_SEARCH_SLOT.acquire(timeout = 1)
+        # Worker still stalled -> slot held -> a would-be second search cannot acquire it.
+        assert not tools._RAG_SEARCH_SLOT.acquire(timeout = 0.2)
+        # Once the worker finishes, its finally releases the slot exactly once.
+        release.set()
+        assert tools._RAG_SEARCH_SLOT.acquire(timeout = 2)
         tools._RAG_SEARCH_SLOT.release()
     finally:
         release.set()
