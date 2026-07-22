@@ -333,10 +333,10 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 									`\n### Agent ${index + 1}${result.error ? " failed" : ""}\n\n${result.error || result.response}`,
 							),
 						].join("\n");
+			if (succeeded !== completedResults.length) throw new Error(response);
 			return {
 				content: [{ type: "text", text: response }],
 				details: details(),
-				isError: succeeded !== completedResults.length,
 			};
 		},
 	});

@@ -143,10 +143,25 @@ def test_pi_child_error_events_fail_the_tool_call(tmp_path):
     driver = tmp_path / "pi-driver.js"
     driver.write_text(
         """
-const event = {
-    type: "message_end",
-    message: { role: "assistant", stopReason: "error", errorMessage: "backend unreachable", content: [] },
-};
+const task = process.argv.at(-1).replace(/^Task: /, "");
+const event = task === "pass"
+    ? {
+          type: "message_end",
+          message: {
+              role: "assistant",
+              stopReason: "stop",
+              content: [{ type: "text", text: "PASS_OK" }],
+          },
+      }
+    : {
+          type: "message_end",
+          message: {
+              role: "assistant",
+              stopReason: "error",
+              errorMessage: "backend unreachable",
+              content: [],
+          },
+      };
 console.log(JSON.stringify(event));
 """,
         encoding = "utf-8",
@@ -178,16 +193,30 @@ test("child error events fail the tool call", async () => {{
         registerTool(value) {{ tool = value; }},
     }});
 
-    const result = await tool.execute(
+    const singleExecution = tool.execute(
         "call",
         {{ task: "fail" }},
         undefined,
         undefined,
         {{ cwd: {str(tmp_path)!r} }},
     );
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("backend unreachable");
-    expect(result.details.results[0].transcript).toHaveLength(1);
+    await expect(singleExecution).rejects.toThrow("backend unreachable");
+
+    const parallelExecution = tool.execute(
+        "call",
+        {{ tasks: ["pass", "fail"] }},
+        undefined,
+        undefined,
+        {{ cwd: {str(tmp_path)!r} }},
+    );
+    const parallelError = await parallelExecution.then(
+        () => "",
+        (error) => String(error),
+    );
+    expect(parallelError).toContain("Parallel: 1/2 local agents succeeded");
+    expect(parallelError).toContain("PASS_OK");
+    expect(parallelError).toContain("Agent 2 failed");
+    expect(parallelError).toContain("backend unreachable");
 }}, 10_000);
 """,
         encoding = "utf-8",
