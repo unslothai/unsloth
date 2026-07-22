@@ -190,6 +190,11 @@ def test_parse_manifest_rejects_unknown_schema(component):
 def test_parse_manifest_rejects_non_object(component):
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(["nope"], label = "m")
+    # An object without an 'artifacts' list is rejected too.
+    with pytest.raises(core.PrebuiltFallback):
+        component.ops.parse_manifest(
+            {"schema_version": 1, "component": component.descriptor.component}, label = "m"
+        )
 
 
 # ── Selection matrix ──
@@ -373,6 +378,238 @@ def test_fallback_policy_differs_per_descriptor(component):
             component.ops.select_artifact_with_fallback(manifest, host, "cuda")
 
 
+# ── Full-release CUDA matrix (the seven real linux-x64 CUDA profiles + their
+# SM coverage, from the live whisper release manifest; llama publishes the same
+# shape). select_artifact must match the host's compute caps + driver.
+_CUDA_PROFILES = {
+    "cuda12-legacy": ("cuda12", "legacy", ["50", "52", "60", "61"]),
+    "cuda12-older": ("cuda12", "older", ["70", "75", "80", "86", "89"]),
+    "cuda12-newer": ("cuda12", "newer", ["86", "89", "90", "100", "103", "120"]),
+    "cuda12-portable": (
+        "cuda12",
+        "portable",
+        ["70", "75", "80", "86", "89", "90", "100", "103", "120"],
+    ),
+    "cuda13-older": ("cuda13", "older", ["75", "80", "86", "89"]),
+    "cuda13-newer": ("cuda13", "newer", ["86", "89", "90", "100", "103", "120"]),
+    "cuda13-portable": ("cuda13", "portable", ["75", "80", "86", "89", "90", "100", "103", "120"]),
+}
+
+
+def _full_cuda_manifest(component):
+    artifacts = [artifact(backend = "cpu", asset = "cpu.tar.gz")]
+    for name, (line, cls, sms) in _CUDA_PROFILES.items():
+        artifacts.append(
+            artifact(
+                backend = "cuda",
+                asset = f"{name}.tar.gz",
+                runtime_line = line,
+                coverage_class = cls,
+                supported_sms = sms,
+                min_sm = int(sms[0]),
+                max_sm = int(sms[-1]),
+            )
+        )
+    return component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
+
+
+@pytest.mark.parametrize(
+    "caps,driver,expected",
+    [
+        (["10.0"], (13, 0), "cuda13-newer"),  # B200 sm_100: legacy/older rejected
+        (["10.0"], (12, 8), "cuda12-newer"),  # B200 on a CUDA-12 driver
+        (["9.0"], (13, 0), "cuda13-newer"),  # H100 sm_90
+        (["8.9"], (13, 0), "cuda13-older"),  # 4090 sm_89: tightest covering (75-89)
+        (["8.0"], (13, 0), "cuda13-older"),  # A100 sm_80
+        (["7.5"], (13, 0), "cuda13-older"),  # T4 sm_75
+        (["7.5"], (12, 4), "cuda12-older"),  # T4 on a CUDA-12 driver
+        ([], (13, 0), "cuda13-portable"),  # unknown caps -> portable only
+    ],
+)
+def test_select_cuda_full_release_matrix(component, caps, driver, expected):
+    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = tuple(caps),
+        driver_cuda_version = driver,
+    )
+    chosen = component.ops.select_artifact(_full_cuda_manifest(component), host, "cuda")
+    assert chosen is not None
+    assert chosen["asset"] == f"{expected}.tar.gz"
+
+
+def test_select_cuda_multi_gpu_requires_single_covering_artifact(component):
+    # T4 (75) + B200 (100): only a portable bundle covers both.
+    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = ("7.5", "10.0"),
+        driver_cuda_version = (13, 0),
+    )
+    chosen = component.ops.select_artifact(_full_cuda_manifest(component), host, "cuda")
+    assert chosen["asset"] == "cuda13-portable.tar.gz"
+
+
+def test_select_cuda_on_disk_runtime_gates_the_line(component):
+    # B200 under a CUDA-13 driver, but only cuda12 runtime libs on disk (e.g.
+    # torch-cuda12): the bundles don't ship libcudart/libcublas, so the cuda13
+    # line is unusable and selection must fall to cuda12-newer.
+    _with_runtime_lines(component, ["cuda12"])
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    chosen = component.ops.select_artifact(_full_cuda_manifest(component), host, "cuda")
+    assert chosen["asset"] == "cuda12-newer.tar.gz"
+
+
+def test_select_cuda_stable_under_manifest_shuffle(component):
+    import random
+
+    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    manifest = _full_cuda_manifest(component)
+    picks = set()
+    for seed in range(8):
+        shuffled = dict(manifest)
+        arts = list(manifest["artifacts"])
+        random.Random(seed).shuffle(arts)
+        shuffled["artifacts"] = arts
+        picks.add(component.ops.select_artifact(shuffled, host, "cuda")["asset"])
+    assert picks == {"cuda13-newer.tar.gz"}
+
+
+def test_select_cuda_dotted_manifest_sms_are_normalized(component):
+    # A manifest using "10.0"-style SMs must still cover a sm_100 host
+    # (supported_sms are normalized to bare SM strings before matching).
+    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    manifest = component.ops.parse_manifest(
+        manifest_for(
+            component,
+            [
+                artifact(
+                    backend = "cuda",
+                    asset = "cuda13-newer.tar.gz",
+                    runtime_line = "cuda13",
+                    coverage_class = "newer",
+                    supported_sms = ["8.6", "8.9", "9.0", "10.0"],
+                    min_sm = 86,
+                    max_sm = 100,
+                )
+            ],
+        ),
+        label = "m",
+    )
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = (13, 0),
+    )
+    assert component.ops.select_artifact(manifest, host, "cuda")["asset"] == "cuda13-newer.tar.gz"
+
+
+def test_select_cuda_targeted_artifact_missing_sm_metadata_rejected(component):
+    # A targeted (non-portable) bundle without supported_sms/min/max coverage
+    # metadata can never be proven to cover the host -> rejected, not guessed.
+    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    manifest = component.ops.parse_manifest(
+        manifest_for(
+            component,
+            [
+                artifact(
+                    backend = "cuda",
+                    asset = "cuda13-x.tar.gz",
+                    runtime_line = "cuda13",
+                    coverage_class = "newer",
+                )
+            ],
+        ),
+        label = "m",
+    )
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = ("9.0",),
+        driver_cuda_version = (13, 0),
+    )
+    assert component.ops.select_artifact(manifest, host, "cuda") is None
+
+
+def test_select_cuda_no_driver_version_none_then_fallback_policy(component):
+    # nvidia-smi present but no parseable CUDA version -> no CUDA line -> None,
+    # then the descriptor's fallback policy decides (cpu bundle vs no prebuilt).
+    _with_runtime_lines(component, ["cuda13", "cuda12"])
+    host = make_host(
+        component,
+        has_usable_nvidia = True,
+        compute_caps = ("10.0",),
+        driver_cuda_version = None,
+    )
+    manifest = _full_cuda_manifest(component)
+    assert component.ops.select_artifact(manifest, host, "cuda") is None
+    if component.falls_back_to_cpu:
+        chosen, backend, used_fallback = component.ops.select_artifact_with_fallback(
+            manifest, host, "cuda"
+        )
+        assert (chosen["asset"], backend, used_fallback) == ("cpu.tar.gz", "cpu", True)
+    else:
+        with pytest.raises(core.PrebuiltFallback):
+            component.ops.select_artifact_with_fallback(manifest, host, "cuda")
+
+
+# ── ROCm family matrix (real gfx family -> mapped_targets shapes) ──
+_ROCM_FAMILIES = [
+    ("gfx103X", ["gfx1030", "gfx1031", "gfx1032"]),
+    ("gfx110X", ["gfx1100", "gfx1101", "gfx1102"]),
+    ("gfx120X", ["gfx1200", "gfx1201"]),
+    ("gfx1151", ["gfx1151"]),
+    ("gfx90a", ["gfx90a"]),
+    ("gfx908", ["gfx908"]),
+]
+
+
+def _rocm_family_manifest(component):
+    artifacts = [artifact(backend = "cpu", asset = "cpu.tar.gz")]
+    for label, mapped in _ROCM_FAMILIES:
+        artifacts.append(
+            artifact(
+                backend = "rocm",
+                asset = f"rocm-{label}.tar.gz",
+                gfx_target = label,
+                mapped_targets = mapped,
+            )
+        )
+    return component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
+
+
+@pytest.mark.parametrize(
+    "gfx,expected",
+    [
+        ("gfx1030", "gfx103X"),
+        ("gfx1100", "gfx110X"),
+        ("gfx1201", "gfx120X"),
+        ("gfx1151", "gfx1151"),
+        ("gfx90a", "gfx90a"),
+        ("gfx908", "gfx908"),
+        ("gfx110X", "gfx110X"),  # family token forwarded by the updater
+    ],
+)
+def test_select_rocm_family_and_exact_matching(component, gfx, expected):
+    host = make_host(component, has_rocm = True, rocm_gfx = gfx)
+    chosen = component.ops.select_artifact(_rocm_family_manifest(component), host, "rocm")
+    assert chosen["asset"] == f"rocm-{expected}.tar.gz"
+
+
 def test_macos_min_os_gate(component):
     manifest = component.ops.parse_manifest(
         manifest_for(
@@ -410,15 +647,92 @@ def test_macos_min_os_gate(component):
     assert chosen["asset"] == "metal-new.tar.gz"
 
 
+def _metal_artifact(asset, min_os):
+    return artifact(
+        os_ = "macos",
+        arch = "arm64",
+        backend = "metal",
+        asset = asset,
+        min_os = min_os,
+    )
+
+
+def _arm_mac_host(component, macos_version):
+    return make_host(
+        component,
+        os_token = "macos",
+        arch_token = "arm64",
+        is_macos = True,
+        is_apple_silicon = True,
+        macos_version = macos_version,
+    )
+
+
+def test_macos_min_os_filters_to_compatible_bundle(component):
+    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
+    manifest = component.ops.parse_manifest(
+        manifest_for(
+            component,
+            [
+                _metal_artifact("metal-new.tar.gz", "macos-15.0"),
+                _metal_artifact("metal.tar.gz", "macos-13.0"),
+            ],
+        ),
+        label = "m",
+    )
+    host = _arm_mac_host(component, (14, 0))
+    assert component.ops.select_artifact(manifest, host, "metal")["asset"] == "metal.tar.gz"
+
+
+def test_macos_min_os_unknown_host_version_keeps_artifact(component):
+    # Unknown host macOS version -> defer to runtime validation, don't reject.
+    manifest = component.ops.parse_manifest(
+        manifest_for(component, [_metal_artifact("metal-new.tar.gz", "macos-15.0")]), label = "m"
+    )
+    host = _arm_mac_host(component, None)
+    assert component.ops.select_artifact(manifest, host, "metal")["asset"] == "metal-new.tar.gz"
+
+
+def test_macos_min_os_accepts_bare_version_format(component):
+    # A bare "14.0" (no 'macos-' prefix) must still parse, for forward-compat.
+    manifest = component.ops.parse_manifest(
+        manifest_for(component, [_metal_artifact("metal.tar.gz", "14.0")]), label = "m"
+    )
+    host = _arm_mac_host(component, (13, 0))
+    assert component.ops.select_artifact(manifest, host, "metal") is None  # 13.0 < 14.0
+
+
+def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
+    host14 = _arm_mac_host(component, (14, 0))
+    # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
+    assert component.ops.macos_min_os_ok(host14, "macos-14.0") is True
+    assert component.ops.macos_min_os_ok(host14, "macos-15.0") is False
+    assert component.ops.macos_min_os_ok(host14, "13.3") is True  # bare also parses
+    assert component.ops.macos_min_os_ok(host14, None) is True  # unknown -> defer
+    host_unknown = _arm_mac_host(component, None)
+    assert component.ops.macos_min_os_ok(host_unknown, "macos-15.0") is True
+
+
 # ── Backend resolution ──
 def test_resolve_backend_auto_and_validation(component):
     gpu_host = make_host(component, has_usable_nvidia = True)
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = True) == "cpu"
+    # --cpu-fallback wins over an explicit backend too.
+    assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback = True) == "cpu"
+    # An explicit supported backend passes through untouched.
+    assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback = False) == "vulkan"
     mac_host = make_host(
         component, os_token = "macos", arch_token = "arm64", is_macos = True, is_apple_silicon = True
     )
     assert component.ops.resolve_backend(mac_host, None, cpu_fallback = False) == "metal"
+    # Intel mac has no Metal bundle in the P0 matrix -> cpu.
+    intel_mac = make_host(component, os_token = "macos", arch_token = "x64", is_macos = True)
+    assert component.ops.resolve_backend(intel_mac, "auto", cpu_fallback = False) == "cpu"
+    rocm_host = make_host(component, has_rocm = True, rocm_gfx = "gfx1100")
+    assert component.ops.resolve_backend(rocm_host, "auto", cpu_fallback = False) == "rocm"
+    bare_host = make_host(component)
+    assert component.ops.resolve_backend(bare_host, None, cpu_fallback = False) == "cpu"
     with pytest.raises(core.PrebuiltFallback):
         component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback = False)
 
@@ -459,6 +773,15 @@ def test_parse_release_checksums_fails_closed(component, mutation):
     payload.update(mutation)
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_release_checksums("r", "v1", payload)
+
+
+def test_parse_release_checksums_rejects_non_object(component):
+    with pytest.raises(core.PrebuiltFallback):
+        component.ops.parse_release_checksums("r", "v1", ["not", "a", "dict"])
+
+
+def test_expected_sha256_covered_asset_plain_lookup(component):
+    assert component.ops.expected_sha256_for({"a.tar.gz": "0" * 64}, "a.tar.gz") == "0" * 64
 
 
 def test_expected_sha256_missing_asset_fails_closed(component):
@@ -506,10 +829,92 @@ def test_extract_archive_rejects_zip_symlink(tmp_path):
     archive = tmp_path / "link.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         info = zipfile.ZipInfo("link")
+        info.create_system = 3
         info.external_attr = 0o120777 << 16
         zf.writestr(info, "target")
+    with pytest.raises(core.PrebuiltFallback, match = "zip archive contained a symlink entry"):
+        core.extract_archive(archive, tmp_path / "out")
+
+
+def test_extract_archive_rejects_absolute_zip_member(tmp_path):
+    archive = tmp_path / "abs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("/etc/passwd", b"pwn")
     with pytest.raises(core.PrebuiltFallback):
         core.extract_archive(archive, tmp_path / "out")
+
+
+def test_extract_archive_allows_safe_tar_symlink_chain(tmp_path):
+    archive = tmp_path / "bundle.tar.gz"
+    payload = b"shared-object"
+    with tarfile.open(archive, "w:gz") as tar:
+        versioned = tarfile.TarInfo("libllama.so.0.0.1")
+        versioned.size = len(payload)
+        tar.addfile(versioned, io.BytesIO(payload))
+        soname = tarfile.TarInfo("libllama.so.0")
+        soname.type = tarfile.SYMTYPE
+        soname.linkname = "libllama.so.0.0.1"
+        tar.addfile(soname)
+        linker_name = tarfile.TarInfo("libllama.so")
+        linker_name.type = tarfile.SYMTYPE
+        linker_name.linkname = "libllama.so.0"
+        tar.addfile(linker_name)
+    destination = tmp_path / "extract"
+    core.extract_archive(archive, destination)
+    assert (destination / "libllama.so.0.0.1").read_bytes() == payload
+    assert (destination / "libllama.so.0").is_symlink()
+    assert (destination / "libllama.so").is_symlink()
+    assert (destination / "libllama.so").resolve().read_bytes() == payload
+
+
+def test_extract_archive_allows_safe_tar_hardlink(tmp_path):
+    archive = tmp_path / "bundle.tar.gz"
+    payload = b"quantize"
+    with tarfile.open(archive, "w:gz") as tar:
+        target = tarfile.TarInfo("llama-quantize")
+        target.size = len(payload)
+        tar.addfile(target, io.BytesIO(payload))
+        hardlink = tarfile.TarInfo("llama-quantize-copy")
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "llama-quantize"
+        tar.addfile(hardlink)
+    destination = tmp_path / "extract"
+    core.extract_archive(archive, destination)
+    assert (destination / "llama-quantize-copy").read_bytes() == payload
+    assert not (destination / "llama-quantize-copy").is_symlink()
+
+
+def test_extract_archive_rejects_absolute_tar_symlink_target(tmp_path):
+    archive = tmp_path / "bundle.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo("libllama.so")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "/tmp/libllama.so.0"
+        tar.addfile(entry)
+    with pytest.raises(core.PrebuiltFallback, match = "archive link used an absolute target"):
+        core.extract_archive(archive, tmp_path / "extract")
+
+
+def test_extract_archive_rejects_escaping_tar_symlink_target(tmp_path):
+    archive = tmp_path / "bundle.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo("libllama.so")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "../outside/libllama.so.0"
+        tar.addfile(entry)
+    with pytest.raises(core.PrebuiltFallback, match = "archive link escaped destination"):
+        core.extract_archive(archive, tmp_path / "extract")
+
+
+def test_extract_archive_rejects_unresolved_tar_symlink_target(tmp_path):
+    archive = tmp_path / "bundle.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        entry = tarfile.TarInfo("libllama.so")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "libllama.so.0"
+        tar.addfile(entry)
+    with pytest.raises(core.PrebuiltFallback, match = "unresolved link entries"):
+        core.extract_archive(archive, tmp_path / "extract")
 
 
 def test_extract_archive_rejects_unknown_format(tmp_path):
@@ -624,9 +1029,6 @@ def test_install_fingerprint_is_stable_and_sensitive(component):
 def test_write_and_match_marker(component, tmp_path):
     host = make_host(component)
     install_dir = tmp_path / "install"
-    bin_dir = component.ops.runtime_bin_dir(install_dir, host)
-    bin_dir.mkdir(parents = True)
-    (bin_dir / component.ops.server_binary_name(host)).write_bytes(b"bin")
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
     )
@@ -638,7 +1040,14 @@ def test_write_and_match_marker(component, tmp_path):
         backend = "cpu",
         asset_sha256 = "0" * 64,
     )
+    # No marker on disk yet -> not a match.
+    assert not component.ops.existing_install_matches(install_dir, host, selection)
+    bin_dir = component.ops.runtime_bin_dir(install_dir, host)
+    bin_dir.mkdir(parents = True)
     component.ops.write_prebuilt_metadata(install_dir, selection)
+    # Marker alone is not enough: the server binary must exist too.
+    assert not component.ops.existing_install_matches(install_dir, host, selection)
+    (bin_dir / component.ops.server_binary_name(host)).write_bytes(b"bin")
     marker = json.loads((install_dir / component.descriptor.metadata_filename).read_text())
     assert marker["component"] == component.descriptor.component
     assert marker["install_fingerprint"] == selection.fingerprint()
@@ -651,6 +1060,145 @@ def test_write_and_match_marker(component, tmp_path):
         }
     )
     assert not component.ops.existing_install_matches(install_dir, host, other)
+
+
+# ── Host/GPU token helpers (component-independent core functions) ──
+# Value tables moved verbatim from the llama characterization suite; these are
+# pure functions with no descriptor sensitivity, so they run unparameterized.
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("8.6", "86"),
+        ("07.05", "75"),
+        ("75", "75"),
+        (86, "86"),
+        ("", None),
+        ("  ", None),
+        ("x.y", None),
+        ("8.6.0", None),
+        ("9.0", "90"),
+    ],
+)
+def test_normalize_compute_cap(value, expected):
+    assert core.normalize_compute_cap(value) == expected
+
+
+@pytest.mark.parametrize(
+    "values,expected",
+    [
+        (["8.6", "86", "8.6"], ["86"]),  # deduplication
+        (["9.0", "7.5", "8.6"], ["75", "86", "90"]),  # numeric sort
+        (["8.6", "bad", "", "7.5"], ["75", "86"]),  # drops invalid
+        ([], []),
+    ],
+)
+def test_normalize_compute_caps(values, expected):
+    assert core.normalize_compute_caps(values) == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, None),
+        ("", []),
+        ("-1", []),
+        ("0", ["0"]),
+        ("0,1,2", ["0", "1", "2"]),
+        (" 0 , 1 ", ["0", "1"]),
+    ],
+)
+def test_parse_cuda_visible_devices(value, expected):
+    assert core.parse_cuda_visible_devices(value) == expected
+
+
+@pytest.mark.parametrize(
+    "visible,expected",
+    [
+        (["0", "1", "2"], True),
+        (["GPU-abc123"], True),
+        (None, False),
+        ([], False),
+        (["0", "MIG-device"], False),
+    ],
+)
+def test_supports_explicit_visible_device_matching(visible, expected):
+    assert core.supports_explicit_visible_device_matching(visible) is expected
+
+
+_GPU_ROWS = [
+    ("0", "GPU-aaa", "8.6"),
+    ("1", "GPU-bbb", "7.5"),
+    ("2", "GPU-ccc", "8.9"),
+]
+
+
+@pytest.mark.parametrize(
+    "visible,expected_indices",
+    [
+        (None, [0, 1, 2]),  # no filter returns all
+        ([], []),
+        (["0", "2"], [0, 2]),  # filter by index
+        (["gpu-bbb"], [1]),  # UUID match is case insensitive
+        (["0", "0"], [0]),  # same device requested twice is deduplicated
+        (["99"], []),  # unknown token matches nothing
+    ],
+)
+def test_select_visible_gpu_rows(visible, expected_indices):
+    expected = [_GPU_ROWS[i] for i in expected_indices]
+    assert core.select_visible_gpu_rows(_GPU_ROWS, visible) == expected
+
+
+@pytest.mark.parametrize(
+    "driver,expected",
+    [
+        (None, []),
+        ((11, 8), []),
+        ((12, 4), ["cuda12"]),
+        ((13, 0), ["cuda13", "cuda12"]),
+        ((14, 0), ["cuda14", "cuda13", "cuda12"]),  # future major derives lines
+    ],
+)
+def test_compatible_linux_runtime_lines(driver, expected):
+    host = SimpleNamespace(driver_cuda_version = driver)
+    assert core.compatible_linux_runtime_lines(host) == expected
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("12.6", "cuda12"),
+        ("13.0", "cuda13"),
+        ("11.8", None),
+        (None, None),
+        ("", None),
+    ],
+)
+def test_runtime_line_from_cuda_version(value, expected):
+    assert core.runtime_line_from_cuda_version(value) == expected
+
+
+def _caps_host(caps):
+    return SimpleNamespace(compute_caps = list(caps))
+
+
+def test_host_is_blackwell_includes_datacenter_parts():
+    assert core.host_is_blackwell(_caps_host(["10.0"])) is True  # B200 sm_100
+    assert core.host_is_blackwell(_caps_host(["10.3"])) is True  # B300 sm_103
+    assert core.host_is_blackwell(_caps_host(["12.0"])) is True  # RTX 50 sm_120
+    assert core.host_is_blackwell(_caps_host(["12.1"])) is True  # DGX Spark sm_121
+    assert core.host_is_blackwell(_caps_host(["9.0"])) is False  # Hopper
+    assert core.host_is_blackwell(_caps_host(["8.0"])) is False  # Ampere
+    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True  # highest cap wins
+
+
+def test_blackwell_min_toolkit_is_sm_aware():
+    # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
+    f = core.blackwell_min_toolkit_for_host
+    assert f(_caps_host(["10.0"])) == (12, 8)  # B200
+    assert f(_caps_host(["12.0"])) == (12, 8)  # RTX 50
+    assert f(_caps_host(["10.3"])) == (12, 9)  # B300
+    assert f(_caps_host(["12.1"])) == (12, 9)  # DGX Spark
+    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
 
 
 # ── The ops seam ──

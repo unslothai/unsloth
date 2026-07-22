@@ -210,28 +210,6 @@ def test_detect_host_unsupported(monkeypatch, system, machine):
 
 
 # ── Backend override + auto-detect ──
-def test_auto_detect_backend_prefers_metal_on_apple_silicon():
-    assert M.auto_detect_backend(_host("macos", "arm64")) == "metal"
-    # Intel mac has no Metal bundle in the P0 matrix -> cpu.
-    assert M.auto_detect_backend(_host("macos", "x64")) == "cpu"
-
-
-def test_auto_detect_backend_nvidia_then_rocm_then_cpu():
-    assert M.auto_detect_backend(_host("linux", "x64", has_usable_nvidia = True)) == "cuda"
-    assert M.auto_detect_backend(_host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1100")) == "rocm"
-    assert M.auto_detect_backend(_host("linux", "x64")) == "cpu"
-
-
-def test_resolve_backend_override_and_cpu_fallback():
-    host = _host("linux", "x64", has_usable_nvidia = True)
-    assert M.resolve_backend(host, "auto", cpu_fallback = False) == "cuda"
-    assert M.resolve_backend(host, "vulkan", cpu_fallback = False) == "vulkan"
-    # --cpu-fallback wins over both detection and an explicit backend.
-    assert M.resolve_backend(host, "cuda", cpu_fallback = True) == "cpu"
-    with pytest.raises(PrebuiltFallback):
-        M.resolve_backend(host, "tpu", cpu_fallback = False)
-
-
 def test_apply_host_overrides_clears_cuda_fields():
     base = _host(
         "linux",
@@ -274,7 +252,10 @@ def test_whisper_server_path_layout():
     assert M.whisper_server_path(Path("/w"), win) == Path("/w/build/bin/Release/whisper-server.exe")
 
 
-# ── Manifest parse + rejection ──
+# ── Manifest parse + basic selection (wiring pin; the rejection matrix, the
+# CUDA/ROCm coverage matrices, extraction guards, resolver payload shape and
+# macOS min_os gating are asserted against the real whisper descriptor in
+# tests/studio/install/test_prebuilt_core.py) ──
 def test_parse_manifest_ok_and_basic_selection():
     cpu_asset = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"
     manifest = M.parse_manifest(_manifest([_artifact("linux", "x64", "cpu", cpu_asset, "a" * 64)]))
@@ -284,23 +265,6 @@ def test_parse_manifest_ok_and_basic_selection():
     # CPU/Metal need no per-GPU coverage: first os/arch/backend match / None.
     assert M.select_artifact(manifest, host, "cpu")["asset"] == cpu_asset
     assert M.select_artifact(manifest, host, "metal") is None
-
-
-def test_parse_manifest_rejects_wrong_component():
-    with pytest.raises(PrebuiltFallback):
-        M.parse_manifest(_manifest([], component = "llama.cpp"))
-
-
-def test_parse_manifest_rejects_unknown_schema():
-    with pytest.raises(PrebuiltFallback):
-        M.parse_manifest(_manifest([], schema_version = 999))
-
-
-def test_parse_manifest_rejects_non_object_and_missing_artifacts():
-    with pytest.raises(PrebuiltFallback):
-        M.parse_manifest(["not", "a", "dict"])
-    with pytest.raises(PrebuiltFallback):
-        M.parse_manifest({"schema_version": 1, "component": "whisper.cpp"})
 
 
 # ── Coverage-aware CUDA selection (shared with install_llama_prebuilt.py) ──
@@ -341,232 +305,6 @@ def _cuda_manifest() -> dict:
     return M.parse_manifest(_manifest(artifacts))
 
 
-@pytest.mark.parametrize(
-    "caps,driver,expected",
-    [
-        (["10.0"], (13, 0), "cuda13-newer"),  # B200 sm_100: legacy/older rejected
-        (["10.0"], (12, 8), "cuda12-newer"),  # B200 on a CUDA-12 driver
-        (["9.0"], (13, 0), "cuda13-newer"),  # H100 sm_90
-        (["8.9"], (13, 0), "cuda13-older"),  # 4090 sm_89: tightest covering (75-89)
-        (["8.0"], (13, 0), "cuda13-older"),  # A100 sm_80
-        (["7.5"], (13, 0), "cuda13-older"),  # T4 sm_75
-        (["7.5"], (12, 4), "cuda12-older"),  # T4 on a CUDA-12 driver
-        ([], (13, 0), "cuda13-portable"),  # unknown caps -> portable only
-    ],
-)
-def test_cuda_selection_matrix(caps, driver, expected):
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = tuple(caps),
-        driver_cuda_version = driver,
-    )
-    artifact = M.select_artifact(_cuda_manifest(), host, "cuda")
-    assert artifact is not None
-    assert artifact["asset"] == f"whisper-linux-x64-{expected}.tar.gz"
-
-
-def test_cuda_multi_gpu_requires_single_covering_artifact():
-    # T4 (75) + B200 (100): only a portable bundle covers both.
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("7.5", "10.0"),
-        driver_cuda_version = (13, 0),
-    )
-    assert (
-        M.select_artifact(_cuda_manifest(), host, "cuda")["asset"]
-        == "whisper-linux-x64-cuda13-portable.tar.gz"
-    )
-
-
-def test_cuda_on_disk_runtime_gates_the_line(monkeypatch):
-    # B200 under a CUDA-13 driver, but only cuda12 runtime libs on disk (e.g.
-    # torch-cuda12): the bundles don't ship libcudart/libcublas, so the cuda13
-    # line is unusable and selection must fall to cuda12-newer.
-    monkeypatch.setattr(M, "detected_cuda_runtime_lines", lambda *, is_windows: ["cuda12"])
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    assert (
-        M.select_artifact(_cuda_manifest(), host, "cuda")["asset"]
-        == "whisper-linux-x64-cuda12-newer.tar.gz"
-    )
-
-
-def test_cuda_no_on_disk_runtime_returns_none(monkeypatch):
-    # No CUDA runtime libraries anywhere -> no usable line -> None (CPU fallback).
-    monkeypatch.setattr(M, "detected_cuda_runtime_lines", lambda *, is_windows: [])
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    assert M.select_artifact(_cuda_manifest(), host, "cuda") is None
-
-
-def test_cuda_selection_stable_under_manifest_shuffle():
-    import random
-
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    manifest = _cuda_manifest()
-    picks = set()
-    for seed in range(8):
-        shuffled = dict(manifest)
-        arts = list(manifest["artifacts"])
-        random.Random(seed).shuffle(arts)
-        shuffled["artifacts"] = arts
-        picks.add(M.select_artifact(shuffled, host, "cuda")["asset"])
-    assert picks == {"whisper-linux-x64-cuda13-newer.tar.gz"}
-
-
-def test_cuda_torch_preference_tie_break_on_non_blackwell():
-    # sm_89 with both lines usable; torch built for cuda12 moves that line first
-    # (Blackwell hosts ignore torch and prefer the highest covering major).
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("8.9",),
-        driver_cuda_version = (13, 0),
-        torch_runtime_line = "cuda12",
-    )
-    assert (
-        M.select_artifact(_cuda_manifest(), host, "cuda")["asset"]
-        == "whisper-linux-x64-cuda12-older.tar.gz"
-    )
-
-
-def test_cuda_manifest_dotted_sms_are_normalized():
-    # A manifest using "10.0"-style SMs must still cover a sm_100 host (llama
-    # parity: supported_sms are normalized to bare SM strings before matching).
-    art = _artifact(
-        "linux",
-        "x64",
-        "cuda",
-        "whisper-linux-x64-cuda13-newer.tar.gz",
-        "b" * 64,
-        runtime_line = "cuda13",
-        coverage_class = "newer",
-        supported_sms = ["8.6", "8.9", "9.0", "10.0"],
-        min_sm = 86,
-        max_sm = 100,
-    )
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = (13, 0),
-    )
-    manifest = M.parse_manifest(_manifest([art]))
-    assert M.select_artifact(manifest, host, "cuda")["asset"] == art["asset"]
-
-
-def test_cuda_targeted_artifact_missing_sm_metadata_rejected():
-    # A targeted (non-portable) bundle without supported_sms/min/max coverage
-    # metadata can never be proven to cover the host -> rejected, not guessed.
-    art = _artifact(
-        "linux",
-        "x64",
-        "cuda",
-        "whisper-linux-x64-cuda13-x.tar.gz",
-        "b" * 64,
-        runtime_line = "cuda13",
-        coverage_class = "newer",
-    )
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("9.0",),
-        driver_cuda_version = (13, 0),
-    )
-    assert M.select_artifact(M.parse_manifest(_manifest([art])), host, "cuda") is None
-
-
-def test_cuda_no_driver_version_returns_none_then_cpu_fallback():
-    # nvidia-smi present but no parseable CUDA version -> no CUDA line -> None,
-    # and select_artifact_with_cpu_fallback then serves the CPU bundle.
-    host = _host(
-        "linux",
-        "x64",
-        has_usable_nvidia = True,
-        compute_caps = ("10.0",),
-        driver_cuda_version = None,
-    )
-    manifest = _cuda_manifest()
-    assert M.select_artifact(manifest, host, "cuda") is None
-    artifact, backend, used_cpu = M.select_artifact_with_cpu_fallback(manifest, host, "cuda")
-    assert backend == "cpu" and used_cpu is True
-
-
-# ── Coverage-aware ROCm selection ──
-def _rocm_manifest() -> dict:
-    artifacts = [_artifact("linux", "x64", "cpu", "whisper-linux-x64-cpu.tar.gz", "a" * 64)]
-    families = [
-        ("gfx103X", ["gfx1030", "gfx1031", "gfx1032"]),
-        ("gfx110X", ["gfx1100", "gfx1101", "gfx1102"]),
-        ("gfx120X", ["gfx1200", "gfx1201"]),
-        ("gfx1151", ["gfx1151"]),
-        ("gfx90a", ["gfx90a"]),
-        ("gfx908", ["gfx908"]),
-    ]
-    for label, mapped in families:
-        artifacts.append(
-            _artifact(
-                "linux",
-                "x64",
-                "rocm",
-                f"whisper-linux-x64-rocm-{label}.tar.gz",
-                "b" * 64,
-                gfx_target = label,
-                mapped_targets = mapped,
-            )
-        )
-    return M.parse_manifest(_manifest(artifacts))
-
-
-@pytest.mark.parametrize(
-    "gfx,expected",
-    [
-        ("gfx1030", "gfx103X"),
-        ("gfx1100", "gfx110X"),
-        ("gfx1201", "gfx120X"),
-        ("gfx1151", "gfx1151"),
-        ("gfx90a", "gfx90a"),
-        ("gfx908", "gfx908"),
-        ("gfx110X", "gfx110X"),  # family token forwarded by the updater
-    ],
-)
-def test_rocm_family_and_exact_matching(gfx, expected):
-    host = _host("linux", "x64", has_rocm = True, rocm_gfx = gfx)
-    assert (
-        M.select_artifact(_rocm_manifest(), host, "rocm")["asset"]
-        == f"whisper-linux-x64-rocm-{expected}.tar.gz"
-    )
-
-
-def test_rocm_unbuilt_arch_in_family_returns_none():
-    # gfx1033 is in the gfx103 family but not a built mapped_target -> no bundle.
-    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1033")
-    assert M.select_artifact(_rocm_manifest(), host, "rocm") is None
-
-
 # ── Traversal-safe extraction ──
 def _add_file(
     tar: tarfile.TarFile,
@@ -578,22 +316,6 @@ def _add_file(
     info.size = len(data)
     info.mode = mode
     tar.addfile(info, io.BytesIO(data))
-
-
-def test_extract_rejects_path_traversal(tmp_path):
-    archive = tmp_path / "evil.tar.gz"
-    with tarfile.open(archive, "w:gz") as tar:
-        _add_file(tar, "../escape.txt", b"pwn")
-    with pytest.raises(PrebuiltFallback):
-        M.extract_archive(archive, tmp_path / "out")
-
-
-def test_extract_rejects_absolute_member(tmp_path):
-    archive = tmp_path / "evil.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("/etc/passwd", b"pwn")
-    with pytest.raises(PrebuiltFallback):
-        M.extract_archive(archive, tmp_path / "out")
 
 
 def test_extract_tar_gz_preserves_exec_and_libs(tmp_path):
@@ -766,50 +488,6 @@ def test_busy_lock_maps_to_exit_busy(tmp_path, monkeypatch):
 
 
 # ── Resolver JSON shape ──
-def test_resolve_prebuilt_reports_available(tmp_path, monkeypatch):
-    host = _host("linux", "x64")
-    asset = M.whisper_asset_name(RELEASE_TAG, host, "cpu")
-    _install_env(monkeypatch, tmp_path, host, asset = asset, sha256 = "a" * 64)
-    payload = M.resolve_prebuilt(
-        host,
-        published_repo = "unslothai/whisper.cpp",
-        published_release_tag = None,
-        backend = "cpu",
-        cpu_fallback = False,
-    )
-    assert payload["prebuilt_available"] is True
-    assert payload["repo"] == "unslothai/whisper.cpp"
-    assert payload["release_tag"] == RELEASE_TAG
-    assert payload["backend"] == "cpu"
-    assert payload["asset"] == asset
-    assert payload["os"] == "linux" and payload["arch"] == "x64"
-
-
-def test_resolve_prebuilt_reports_unavailable(monkeypatch):
-    host = _host("linux", "x64")
-
-    def boom(repo, *, published_release_tag = None):
-        raise PrebuiltFallback("no release")
-
-    monkeypatch.setattr(M, "fetch_release_for_install", boom)
-    payload = M.resolve_prebuilt(
-        host,
-        published_repo = "unslothai/whisper.cpp",
-        published_release_tag = None,
-        backend = "cpu",
-        cpu_fallback = False,
-    )
-    assert payload == {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
-
-
-def test_emit_resolver_output_json_and_plain(capsys):
-    payload = {"prebuilt_available": True, "asset": "whisper-x-linux-x64-cpu.tar.gz"}
-    M.emit_resolver_output(payload, output_format = "json")
-    assert json.loads(capsys.readouterr().out.strip())["asset"] == payload["asset"]
-    M.emit_resolver_output(payload, output_format = "plain")
-    assert capsys.readouterr().out.strip() == payload["asset"]
-
-
 def test_resolve_mode_keeps_stdout_json_only(monkeypatch, capsys):
     # Even in a CUDA host where selection emits diagnostics, --resolve-prebuilt
     # must keep stdout to exactly the JSON line (setup.sh / whisper_cpp_update.py
@@ -881,107 +559,6 @@ def test_resolve_mode_unexpected_error_reports_unavailable(monkeypatch, capsys):
     assert payload == {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
 
 
-# ── macOS min_os enforcement ──
-def test_macos_min_os_filters_incompatible_metal():
-    host = _host("macos", "arm64", macos_version = (14, 0))
-    manifest = M.parse_manifest(
-        _manifest(
-            [
-                _artifact(
-                    "macos",
-                    "arm64",
-                    "metal",
-                    "whisper-macos-arm64-metal-new.tar.gz",
-                    "b" * 64,
-                    min_os = "macos-15.0",
-                ),
-                _artifact(
-                    "macos",
-                    "arm64",
-                    "metal",
-                    "whisper-macos-arm64-metal.tar.gz",
-                    "a" * 64,
-                    min_os = "macos-13.0",
-                ),
-            ]
-        )
-    )
-    # host 14.0 can't load the 15.0 bundle; the 13.0 bundle is picked instead.
-    assert M.select_artifact(manifest, host, "metal")["asset"] == "whisper-macos-arm64-metal.tar.gz"
-
-
-def test_macos_min_os_excludes_all_when_host_too_old():
-    host = _host("macos", "arm64", macos_version = (13, 0))
-    manifest = M.parse_manifest(
-        _manifest(
-            [
-                _artifact(
-                    "macos",
-                    "arm64",
-                    "metal",
-                    "whisper-macos-arm64-metal-new.tar.gz",
-                    "b" * 64,
-                    min_os = "macos-15.0",
-                )
-            ]
-        )
-    )
-    assert M.select_artifact(manifest, host, "metal") is None
-
-
-def test_macos_min_os_unknown_host_version_keeps_artifact():
-    # Unknown host macOS version -> defer to runtime validation, don't reject.
-    host = _host("macos", "arm64", macos_version = None)
-    manifest = M.parse_manifest(
-        _manifest(
-            [
-                _artifact(
-                    "macos",
-                    "arm64",
-                    "metal",
-                    "whisper-macos-arm64-metal-new.tar.gz",
-                    "b" * 64,
-                    min_os = "macos-15.0",
-                )
-            ]
-        )
-    )
-    assert (
-        M.select_artifact(manifest, host, "metal")["asset"]
-        == "whisper-macos-arm64-metal-new.tar.gz"
-    )
-
-
-def test_macos_min_os_accepts_bare_version_format():
-    # A bare "14.0" (no 'macos-' prefix) must still parse, for forward-compat.
-    host = _host("macos", "arm64", macos_version = (13, 0))
-    manifest = M.parse_manifest(
-        _manifest(
-            [
-                _artifact(
-                    "macos",
-                    "arm64",
-                    "metal",
-                    "whisper-macos-arm64-metal.tar.gz",
-                    "a" * 64,
-                    min_os = "14.0",
-                )
-            ]
-        )
-    )
-    assert M.select_artifact(manifest, host, "metal") is None  # 13.0 < 14.0
-
-
-def test_macos_min_os_ok_helper_handles_prefix_and_bare():
-    host14 = _host("macos", "arm64", macos_version = (14, 0))
-    # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
-    assert M._macos_min_os_ok(host14, "macos-14.0") is True
-    assert M._macos_min_os_ok(host14, "macos-15.0") is False
-    assert M._macos_min_os_ok(host14, "13.3") is True  # bare also parses
-    assert M._macos_min_os_ok(host14, None) is True  # unknown -> defer
-    assert M._macos_min_os_ok(_host("macos", "arm64"), "macos-15.0") is True  # host ver unknown
-
-
 # ── --rocm-gfx / --has-rocm overrides (llama parity) ──
 def test_rocm_gfx_override_implies_has_rocm():
     # --rocm-gfx alone (no --has-rocm) must enable ROCm and clear NVIDIA, else the
@@ -1000,35 +577,6 @@ def test_rocm_gfx_override_implies_has_rocm():
     assert out.has_usable_nvidia is False
     assert out.compute_caps == () and out.driver_cuda_version is None
     assert M.auto_detect_backend(out) == "rocm"
-
-
-# ── existing_install_matches contract ──
-def test_existing_install_matches_requires_marker_and_binary(tmp_path):
-    host = _host("linux", "x64")
-    selection = M.InstallSelection(
-        published_repo = "unslothai/whisper.cpp",
-        release_tag = RELEASE_TAG,
-        upstream_tag = UPSTREAM_TAG,
-        source_commit = SOURCE_COMMIT,
-        asset = "whisper-x-linux-x64-cpu.tar.gz",
-        asset_sha256 = "a" * 64,
-        backend = "cpu",
-        runtime_line = None,
-        coverage = {},
-        studio_protocol = STUDIO_PROTOCOL,
-    )
-    install_dir = tmp_path / "whisper.cpp"
-    assert M.existing_install_matches(install_dir, host, selection) is False  # no marker
-    # marker present but binary missing -> not a match
-    server = M.whisper_server_path(install_dir, host)
-    server.parent.mkdir(parents = True, exist_ok = True)
-    M.write_prebuilt_metadata(install_dir, selection)
-    assert M.existing_install_matches(install_dir, host, selection) is False
-    server.write_text("#!/bin/sh\n")
-    assert M.existing_install_matches(install_dir, host, selection) is True
-    # a different backend has a different fingerprint -> not a match
-    other = M.InstallSelection(**{**selection.__dict__, "backend": "cuda"})
-    assert M.existing_install_matches(install_dir, host, other) is False
 
 
 # ── On-disk CUDA runtime detection (exact SONAMEs over llama's dir scan) ──

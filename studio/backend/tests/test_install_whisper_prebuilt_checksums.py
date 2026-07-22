@@ -48,64 +48,10 @@ def _index(**overrides) -> dict:
     return payload
 
 
-# parse_release_checksums.
-
-
-def test_parse_release_checksums_valid():
-    out = iwp.parse_release_checksums(_REPO, _TAG, _index())
-    assert out["whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz"] == _A
-    assert out["whisper-v1.9.1-unsloth.1-linux-x64-cuda12-portable.tar.gz"] == _B
-
-
-def test_parse_release_checksums_rejects_wrong_component():
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.parse_release_checksums(_REPO, _TAG, _index(component = "llama.cpp"))
-
-
-def test_parse_release_checksums_rejects_wrong_schema():
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.parse_release_checksums(_REPO, _TAG, _index(schema_version = 999))
-
-
-def test_parse_release_checksums_rejects_release_tag_mismatch():
-    # A redirected/renamed release whose index names a different tag is refused.
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.parse_release_checksums(_REPO, _TAG, _index(release_tag = "v1.9.1-unsloth.2"))
-
-
-def test_parse_release_checksums_rejects_no_usable_entries():
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.parse_release_checksums(_REPO, _TAG, _index(artifacts = {"x": {"sha256": "nope"}}))
-
-
-def test_parse_release_checksums_rejects_non_dict():
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.parse_release_checksums(_REPO, _TAG, ["not", "a", "dict"])
-
-
-# expected_sha256_for.
-
-
-def test_expected_sha256_for_covered_asset():
-    checks = {"a.tar.gz": _A}
-    assert iwp.expected_sha256_for(checks, "a.tar.gz") == _A
-
-
-def test_expected_sha256_for_uncovered_fails_closed():
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.expected_sha256_for({"a.tar.gz": _A}, "b.tar.gz")
-
-
-def test_expected_sha256_for_manifest_agreement_ok():
-    checks = {"a.tar.gz": _A}
-    assert iwp.expected_sha256_for(checks, "a.tar.gz", manifest_sha256 = _A) == _A
-
-
-def test_expected_sha256_for_manifest_disagreement_refused():
-    checks = {"a.tar.gz": _A}
-    with pytest.raises(iwp.PrebuiltFallback):
-        iwp.expected_sha256_for(checks, "a.tar.gz", manifest_sha256 = _B)
-
+# parse_release_checksums / expected_sha256_for are prebuilt_core re-exports;
+# their valid/fail-closed matrix is asserted against the real whisper
+# descriptor in tests/studio/install/test_prebuilt_core.py. The download-host
+# fast-path tests below still route through this module's parse wrapper.
 
 # release tag resolution.
 
