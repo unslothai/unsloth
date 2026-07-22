@@ -280,16 +280,23 @@ console.log(JSON.stringify({{
     result: {{ content: [{{ type: "text", text: `TOOL_${{task}}` }}] }},
     isError: false,
 }}));
+const toolResult = {{
+    role: "toolResult",
+    toolCallId: `tool_${{task}}`,
+    toolName: "read",
+    content: [{{ type: "text", text: `TOOL_${{task}}` }}],
+    isError: false,
+}};
+// Current Pi emits a completed tool result both as message_end and in the
+// following turn_end. Preserve it once in the transcript.
+console.log(JSON.stringify({{
+    type: "message_end",
+    message: toolResult,
+}}));
 console.log(JSON.stringify({{
     type: "turn_end",
     message: event.message,
-    toolResults: [{{
-        role: "toolResult",
-        toolCallId: `tool_${{task}}`,
-        toolName: "read",
-        content: [{{ type: "text", text: `TOOL_${{task}}` }}],
-        isError: false,
-    }}],
+    toolResults: [toolResult],
 }}));
 """,
         encoding = "utf-8",

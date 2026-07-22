@@ -183,19 +183,30 @@ async function runLocalAgent(
 	let childError = "";
 	let aborted = false;
 	const result: LocalAgentResult = { task, response: "", transcript: [] };
+	const transcriptEntries = new Set<string>();
+	const appendTranscript = (messages: any[]): boolean => {
+		let changed = false;
+		for (const message of messages) {
+			const entry = JSON.stringify(message);
+			if (transcriptEntries.has(entry)) continue;
+			transcriptEntries.add(entry);
+			result.transcript.push(message);
+			changed = true;
+		}
+		return changed;
+	};
 	const processLine = (line: string) => {
 		try {
 			const event = JSON.parse(line);
-			if (event.type === "message_end" && event.message) {
-				result.transcript.push(event.message);
+			if (event.type === "message_end" && event.message && appendTranscript([event.message])) {
 				onProgress(result);
 			}
 			if (
 				event.type === "turn_end" &&
 				Array.isArray(event.toolResults) &&
-				event.toolResults.length
+				event.toolResults.length &&
+				appendTranscript(event.toolResults)
 			) {
-				result.transcript.push(...event.toolResults);
 				onProgress(result);
 			}
 			if (event.type !== "message_end") return;
