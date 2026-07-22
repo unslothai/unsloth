@@ -555,7 +555,7 @@ export const en = {
       quickstart: {
         title: "Build a command",
         description:
-          "Launch an agent against your first available local model. Swap claude for any supported agent below.",
+          "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
         noneDetected: "No supported agent CLIs were found on your PATH.",
         installed: "Installed",
       },
@@ -574,7 +574,8 @@ export const en = {
         title: "Common options",
         description:
           "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
-        model: "Select a model. Defaults to the first available.",
+        model:
+          "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
         contextLength:
           "Set the requested context length (alias: --max-seq-length).",
         ggufVariant: "Choose the GGUF quantization variant.",

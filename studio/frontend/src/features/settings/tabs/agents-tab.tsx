@@ -55,6 +55,7 @@ const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
 const MODEL_RESULT_LIMIT = 7;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
+const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
 // Backend PATH detection is only meaningful in the desktop app on a loopback
@@ -338,8 +339,11 @@ const REMOTE_CMD_WINDOWS = `$env:UNSLOTH_STUDIO_URL = "https://studio.example.co
 $env:UNSLOTH_API_KEY = "sk-unsloth-..."
 unsloth start claude`;
 
-const PASSTHROUGH_CMD = `unsloth start claude --continue
-unsloth start codex --persist resume --last`;
+// Independent alternatives, each with its own copy button (not one script).
+const PASSTHROUGH_COMMANDS = [
+  "unsloth start claude --continue",
+  "unsloth start codex --persist resume --last",
+];
 
 const DRY_RUN_CMD = "unsloth start claude --no-launch";
 
@@ -367,6 +371,9 @@ function CommandBlock({ command }: { command: string }) {
           strokeWidth={2}
         />
       </button>
+      <output className="sr-only" aria-live="polite">
+        {copied ? t("settings.agents.copied") : ""}
+      </output>
     </div>
   );
 }
@@ -374,7 +381,7 @@ function CommandBlock({ command }: { command: string }) {
 // Quote a --model value for copy-paste. Safe identifiers are left as-is; only
 // values with shell metacharacters (e.g. a local path with spaces) are quoted.
 function quoteShellArg(value: string, windows: boolean): string {
-  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) {
+  if (SAFE_SHELL_ARG_PATTERN.test(value)) {
     return value;
   }
   return windows ? `'${psSingle(value)}'` : `'${shSingle(value)}'`;
@@ -984,8 +991,10 @@ export function AgentsTab() {
         title={t("settings.agents.passthrough.title")}
         description={t("settings.agents.passthrough.description")}
       >
-        <div className="pt-2">
-          <CommandBlock command={PASSTHROUGH_CMD} />
+        <div className="flex flex-col gap-2 pt-2">
+          {PASSTHROUGH_COMMANDS.map((command) => (
+            <CommandBlock key={command} command={command} />
+          ))}
         </div>
       </SettingsSection>
 
