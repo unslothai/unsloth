@@ -570,24 +570,28 @@ def purge_state(
     when anything was present on disk before the call. Idempotent.
 
     With ``hub_cache`` set, only that cache's scoped state (plus any legacy
-    unscoped file) is removed, so purging one cache's copy never clears another
-    cache's resumable/cancel state."""
+    unscoped file that belongs to it) is removed, so purging one cache's copy
+    never clears another cache's resumable/cancel state."""
     if hub_cache is None:
         paths = (
             *_all_matching_state_paths(manifests_dir(), repo_type, repo_id, variant),
             *_all_matching_state_paths(cancelled_dir(), repo_type, repo_id, variant),
         )
     else:
-        paths = tuple(
-            p
-            for p in (
-                manifest_path(repo_type, repo_id, variant, hub_cache = hub_cache),
-                marker_path(repo_type, repo_id, variant, hub_cache = hub_cache),
-                manifest_path(repo_type, repo_id, variant),
-                marker_path(repo_type, repo_id, variant),
-            )
-            if p is not None
-        )
+        requested = _canonical_hub_cache(hub_cache)
+        candidates = [
+            manifest_path(repo_type, repo_id, variant, hub_cache = hub_cache),
+            marker_path(repo_type, repo_id, variant, hub_cache = hub_cache),
+        ]
+        # Legacy unscoped state is shared: an unowned file belongs to the active
+        # cache (per _legacy_state_applies), so only purge it when it belongs to
+        # the cache being deleted -- else deleting an inactive cache would erase
+        # the active cache's resume/cancel state.
+        for path_factory in (manifest_path, marker_path):
+            legacy = path_factory(repo_type, repo_id, variant)
+            if legacy is not None and _legacy_state_applies(legacy, requested):
+                candidates.append(legacy)
+        paths = tuple(p for p in candidates if p is not None)
     removed = False
     for path in paths:
         try:
