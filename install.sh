@@ -2206,8 +2206,10 @@ get_torch_index_url() {
         # unknown-arch box might be Strix and would get the broken _grouped_mm
         # wheels. Probe gfx the same way the reroute does; if it is unreadable, stay
         # on CPU and point the user at the fix instead of guessing.
-        _amd_gfx_probe=""
-        if command -v rocminfo >/dev/null 2>&1; then
+        # A user-supplied UNSLOTH_ROCM_GFX_ARCH is authoritative (setup.sh honors it
+        # for llama.cpp too); otherwise probe rocminfo/amd-smi like the reroute does.
+        _amd_gfx_probe=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        if [ -z "$_amd_gfx_probe" ] && command -v rocminfo >/dev/null 2>&1; then
             _amd_gfx_probe=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_amd_gfx_probe" ] && command -v amd-smi >/dev/null 2>&1; then
@@ -2892,8 +2894,10 @@ case "$_torch_index_leaf" in
         # || true on each probe: no gfx match makes grep exit 1, which under
         # set -euo pipefail would abort the installer before the next fallback
         # runs (now that the case matches every rocm* index, not just rocm7.1).
-        _gfx_all=""
-        if command -v rocminfo >/dev/null 2>&1; then
+        # A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing (mirrors setup.sh
+        # and the display block), so a Strix override still reaches the arch index.
+        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
             _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then

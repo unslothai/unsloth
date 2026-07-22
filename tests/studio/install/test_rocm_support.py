@@ -1543,6 +1543,62 @@ class TestInstallShStructure:
             "/opt/rocm-*/bin/hipcc" in window
         ), "the hipcc gate must also accept a versioned /opt/rocm-*/bin/hipcc toolchain"
 
+    def test_gfx_unknown_guard_honors_override(self):
+        """A user-set UNSLOTH_ROCM_GFX_ARCH must seed the gfx probe before the CPU
+        fallback: an air-gapped/rocminfo-less Strix host that names its arch should
+        still reach a rocm index instead of being forced to CPU."""
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        body = _extract_sh_function_body(source, "get_torch_index_url")
+        seed = body.find('_amd_gfx_probe=$(printf')
+        assert seed >= 0, "the gfx gate must seed _amd_gfx_probe from UNSLOTH_ROCM_GFX_ARCH"
+        assert "UNSLOTH_ROCM_GFX_ARCH" in body[seed : seed + 80]
+        assert seed < body.find(
+            "rocminfo 2>/dev/null | grep -oE 'gfx"
+        ), "the override must be read before probing rocminfo"
+        assert seed < body.find(
+            'if [ -z "$_amd_gfx_probe" ]; then'
+        ), "the override must be read before the CPU fallback guard"
+
+    def test_gfx_override_seeds_reroute_without_tools(self):
+        """The Strix reroute must honour UNSLOTH_ROCM_GFX_ARCH even when rocminfo and
+        amd-smi are absent, so a manual override reaches the arch index; with no
+        override and no tools it must stay empty (no false Strix routing)."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the probe block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        block = re.search(
+            r'^        _gfx_all=\$\(printf[^\n]*\n.*?(?=^        _strix_gfx="")',
+            source, re.S | re.M
+        )
+        assert block, "could not extract the gfx-detection block"
+        with tempfile.TemporaryDirectory() as d:
+            # Shim rocminfo/amd-smi to enumerate nothing, so only the override can
+            # supply a gfx (keeps coreutils on PATH for tr/grep/printf).
+            for name in ("rocminfo", "amd-smi"):
+                p = os.path.join(d, name)
+                with open(p, "w", encoding = "utf-8") as f:
+                    f.write("#!/bin/sh\nexit 0\n")
+                os.chmod(p, 0o755)
+            script = (
+                'set -euo pipefail\nHIP_VISIBLE_DEVICES=""\nROCR_VISIBLE_DEVICES=""\n'
+                + block.group(0)
+                + '\nprintf "OK:%s\\n" "$_gfx_all"\n'
+            )
+            def run(**extra):
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
+                return subprocess.run(
+                    [shell, "-c", script], env = env, capture_output = True, text = True
+                )
+            r = run(UNSLOTH_ROCM_GFX_ARCH = "GFX1151")
+            assert r.returncode == 0, f"override probe aborted: {r.stderr}"
+            assert "OK:gfx1151" in r.stdout, f"override not honoured/lowercased: {r.stdout!r}"
+            r2 = run()
+            assert r2.returncode == 0, f"empty probe aborted: {r2.stderr}"
+            assert "OK:\n" in r2.stdout or r2.stdout.strip() == "OK:", (
+                f"no override + no tools must leave gfx empty: {r2.stdout!r}"
+            )
+
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
         sh_path = PACKAGE_ROOT / "install.sh"
@@ -3301,7 +3357,8 @@ class TestStrixRocm71Override:
             pytest.skip("bash needed to execute the probe block")
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         block = re.search(
-            r'^        _gfx_all=""\n.*?(?=^        _strix_gfx="")', source, re.S | re.M
+            r'^        _gfx_all=\$\(printf[^\n]*\n.*?(?=^        _strix_gfx="")',
+            source, re.S | re.M
         )
         assert block, "could not extract the gfx-detection block"
         with tempfile.TemporaryDirectory() as d:
