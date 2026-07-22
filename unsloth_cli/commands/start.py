@@ -1489,12 +1489,7 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
 
 
 def write_codex_subagent_bridge(
-    base: str,
-    key: str,
-    model: dict,
-    home: Path,
-    *,
-    yolo: bool,
+    base: str, key: str, model: dict, home: Path, *, yolo: bool
 ) -> Path:
     """Write private config for an explicit local Codex child launched through MCP."""
     child_home = home / "child"

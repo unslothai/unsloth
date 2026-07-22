@@ -227,6 +227,7 @@ def _response(
     elif method == "ping":
         result = {}
     elif method == "tools/list":
+
         def tool_definition(name: str, description: str, read_only: bool) -> dict:
             return {
                 "name": name,
@@ -254,9 +255,7 @@ def _response(
 
         tools = [tool_definition(tool_name, _SUBAGENT_DESCRIPTION, False)]
         if read_only_tool_name and run_read_only_agent:
-            tools.append(
-                tool_definition(read_only_tool_name, _SUBAGENT_PLAN_DESCRIPTION, True)
-            )
+            tools.append(tool_definition(read_only_tool_name, _SUBAGENT_PLAN_DESCRIPTION, True))
         result = {"tools": tools}
     elif method == "tools/call":
         params = request.get("params") or {}

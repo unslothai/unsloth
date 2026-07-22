@@ -1033,17 +1033,12 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert override.startswith(prefix)
     server = _parse_toml("server = " + override.removeprefix(prefix))["server"]
     assert server["command"] == sys.executable
-    assert server["args"] == [
-        "-c",
-        server["args"][1],
-        str(bridge_path),
-    ]
+    assert server["args"] == ["-c", server["args"][1], str(bridge_path)]
     assert "sys.path.insert" in server["args"][1]
     assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][1]
     assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
     assert (
-        f"developer_instructions={json.dumps(start._CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}"
-        in command
+        f"developer_instructions={json.dumps(start._CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}" in command
     )
     assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
