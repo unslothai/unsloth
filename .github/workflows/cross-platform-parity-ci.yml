@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs installer parity and autostart opt-out tests on Windows and macOS.
+# Runs installer parity and autostart opt-out tests across all three platforms.
 #
-# Why: that test is the guard that install.sh and install.ps1 stay in
-# sync, but today it only runs on ubuntu-latest (auto-discovered by
-# studio-backend-ci.yml's "Repo tests (CPU)" job). The test reads both
-# installer scripts, and on Windows Path.read_text() defaults to the
-# cp1252 locale encoding, so a non-cp1252 byte in install.sh (it already
-# contains a U+274C) raises UnicodeDecodeError there even though Linux and
-# macOS default to UTF-8. The reads were pinned to encoding="utf-8" in
-# #6166; this job keeps that from silently regressing by exercising the
-# test on the platforms it claims parity for. Pure pytest, no GPU,
-# sub-second, so the matrix is cheap.
+# Why: the parity test guards that install.sh and install.ps1 stay in sync.
+# It originally ran only on ubuntu-latest through studio-backend-ci.yml.
+# On Windows, Path.read_text() defaults to the cp1252 locale encoding, so a
+# non-cp1252 byte in install.sh raises UnicodeDecodeError even though Linux
+# and macOS default to UTF-8. The reads were pinned to encoding="utf-8" in
+# #6166; this matrix keeps that from silently regressing. Pure pytest, no GPU,
+# sub-second, so the matrix is cheap. Linux also runs the POSIX rollback test
+# under dash, matching the supported curl-to-sh installer path.
 
 name: Cross-platform parity
 
@@ -23,6 +21,7 @@ on:
       - 'install.ps1'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
@@ -32,6 +31,7 @@ on:
       - 'install.ps1'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/python/test_cross_platform_parity.py'
+      - 'tests/sh/test_install_rollback_lifecycle.sh'
       - 'tests/studio/test_install_rollback_lifecycle.ps1'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -73,3 +73,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_install_rollback_lifecycle.ps1
+      - name: POSIX rollback lifecycle tests
+        if: runner.os == 'Linux'
+        run: sh tests/sh/test_install_rollback_lifecycle.sh
