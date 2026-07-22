@@ -52,9 +52,12 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     re.IGNORECASE,
 )
 _QUERY_CREDENTIAL = re.compile(
-    r"""(?ix)\b(?:api[\s_-]?key|access[\s_-]?token|password|secret|token)\s*[:=]\s*
+    r"""(?ix)\b(?:api[\s_-]?key|access[\s_-]?token|authorization|password|secret|token)\s*[:=]\s*
     (?:"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,;]+)"""
 )
+# Bearer authorization tokens carry no key=value label, so the credential pattern above misses
+# them; the length floor keeps ordinary prose ("bearer of bad news") from matching.
+_QUERY_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _QUERY_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _QUERY_PRIVATE_ID = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _QUERY_OPAQUE_TOKEN = re.compile(
@@ -314,6 +317,7 @@ def _shield_untrusted(text: str) -> str:
 
 def _sanitize_public_query(query: str) -> str:
     query = _QUERY_CREDENTIAL.sub(" ", query)
+    query = _QUERY_BEARER.sub(" ", query)
     query = _QUERY_EMAIL.sub(" ", query)
     query = _QUERY_PRIVATE_ID.sub(" ", query)
     query = _QUERY_OPAQUE_TOKEN.sub(" ", query)
@@ -505,17 +509,24 @@ def _bounded_synthesis_evidence(
 ) -> str:
     if not notes:
         return "(none)"
+    if max_chars <= 0:
+        return ""
+    # Split the budget evenly across every note so a small context still keeps a slice of every
+    # research step. A per-note floor would let the earliest notes consume the whole budget and
+    # the final slice would drop later steps entirely.
     separator = "\n\n"
-    per_note = max(
-        min(1000, max_chars),
-        (max_chars - len(separator) * (len(notes) - 1)) // len(notes),
-    )
+    available = max(0, max_chars - len(separator) * (len(notes) - 1))
+    base, remainder = divmod(available, len(notes))
+    suffix = "\n[Evidence truncated]"
     bounded = []
-    for note in notes:
-        if len(note) <= per_note:
+    for index, note in enumerate(notes):
+        limit = base + (1 if index < remainder else 0)
+        if len(note) <= limit:
             bounded.append(note)
+        elif limit <= len(suffix):
+            bounded.append(note[:limit])
         else:
-            bounded.append(note[: per_note - 24].rstrip() + "\n[Evidence truncated]")
+            bounded.append(note[: limit - len(suffix)].rstrip() + suffix)
     return separator.join(bounded)[:max_chars]
 
 
@@ -1631,9 +1642,9 @@ class ResearchSupervisor:
                         "role": "user",
                         "content": (
                             f"Conversation context JSON:\n{_shield_untrusted(conversation_context)}\n\n"
-                            f"Question:\n{question}\n\n"
+                            f"Question:\n{_shield_untrusted(question)}\n\n"
                             f"Approved plan (guidance only):\n"
-                            f"{json.dumps(run['plan'], ensure_ascii = False)}\n\n"
+                            f"{_shield_untrusted(json.dumps(run['plan'], ensure_ascii = False))}\n\n"
                             f"Actions remaining after this one: {max_steps - position - 1}\n"
                             f"<untrusted_web_evidence>\n"
                             f"Gathered sources:\n{_shield_untrusted(source_catalog) or '(none)'}\n\n"
@@ -1906,9 +1917,9 @@ class ResearchSupervisor:
                     "content": (
                         f"<conversation_context_json>\n{_shield_untrusted(conversation_context)}\n"
                         f"</conversation_context_json>\n\n"
-                        f"<research_question>\n{question}\n"
+                        f"<research_question>\n{_shield_untrusted(question)}\n"
                         f"</research_question>\n\n"
-                        f"<approved_plan>\n{json.dumps(run['plan'], ensure_ascii = False)}\n"
+                        f"<approved_plan>\n{_shield_untrusted(json.dumps(run['plan'], ensure_ascii = False))}\n"
                         f"</approved_plan>\n\n"
                         f"<source_catalog>\n{_shield_untrusted(source_catalog) or '(no web sources gathered)'}\n"
                         f"</source_catalog>\n\n"

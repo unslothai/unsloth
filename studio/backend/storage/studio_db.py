@@ -1926,7 +1926,7 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
 
 def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, message: dict) -> bool:
     row = conn.execute(
-        "SELECT parent_id, role, content_json, metadata_json "
+        "SELECT parent_id, role, content_json, metadata_json, attachments_json "
         "FROM chat_messages WHERE thread_id = ? AND id = ?",
         (thread_id, str(message["id"])),
     ).fetchone()
@@ -1940,6 +1940,8 @@ def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, mes
         canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))
         or canon(message.get("metadata"))
         != canon(json.loads(row["metadata_json"]) if row["metadata_json"] else None)
+        or canon(message.get("attachments"))
+        != canon(json.loads(row["attachments_json"]) if row["attachments_json"] else None)
         or (message.get("parentId") or None) != (row["parent_id"] or None)
         or str(message.get("role")) != str(row["role"])
     )
@@ -2824,6 +2826,11 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             conn.rollback()
             return False
+        if str(message_id) in _research_message_ids(conn, str(row["thread_id"])):
+            conn.rollback()
+            raise ChatMessageProtectedError(
+                "Research prompts and responses are server-managed and cannot be edited"
+            )
 
         attachments = _json_loads(row["attachments_json"], None)
         updated_attachments_json = row["attachments_json"]

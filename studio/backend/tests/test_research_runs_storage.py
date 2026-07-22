@@ -232,6 +232,17 @@ def test_bounded_synthesis_evidence_respects_small_budget():
     assert len(evidence) <= 3_072
 
 
+def test_bounded_synthesis_evidence_keeps_every_step_on_small_budget():
+    # A small context budget must still surface a slice of every research step. The old per-note
+    # floor let the earliest notes fill the budget so the final slice dropped the later steps.
+    from core import research_runs as worker
+
+    notes = [f"### Step {index}\n" + "x" * 600 for index in range(12)]
+    evidence = worker._bounded_synthesis_evidence(notes, 1_500)
+    assert len(evidence) <= 1_500
+    assert all(f"### Step {index}" in evidence for index in range(12))
+
+
 def test_report_is_recovered_from_substantial_synthesis_reasoning():
     from core import research_runs as worker
 
@@ -629,6 +640,25 @@ def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
         {"type": "text", "text": "server update"}
     ]
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
+
+
+def test_sync_rejects_changing_research_message_attachments(research_home):
+    _create()
+    messages = studio_db.list_chat_messages("thread-1")
+    edited = [
+        {**message, "attachments": [{"id": "att-1", "name": "leak.pdf"}]}
+        if message["id"] == "user-1"
+        else message
+        for message in messages
+    ]
+    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
+        studio_db.sync_chat_messages("thread-1", edited)
+
+
+def test_delete_attachment_rejects_research_message(research_home):
+    _create()
+    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
+        studio_db.delete_chat_attachment("user-1", "any-attachment")
 
 
 def test_revision_hash_conflicts_and_idempotent_approval(research_home):

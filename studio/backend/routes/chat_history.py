@@ -403,7 +403,17 @@ def delete_attachment(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """Remove one attachment from its chat message."""
-    if not delete_chat_attachment(message_id, attachment_id):
+    try:
+        deleted = delete_chat_attachment(message_id, attachment_id)
+    except ChatMessageProtectedError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.delete_attachment_conflict",
+            log = logger,
+        ) from exc
+    if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
     return {"ok": True}
 
