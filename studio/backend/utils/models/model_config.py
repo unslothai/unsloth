@@ -2111,6 +2111,19 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Returns:
         True if embedding model, else False (default for local paths or errors).
     """
+    from utils.utils import hf_env_offline
+
+    # Offline (remote repo): reclassify from the local HF cache on EVERY call, before and without
+    # consulting the process memo. Never call the Hub -- a DNS-dead session hangs on model_info
+    # retries -- and never trust or record a memo here: an online lookup can memoize True from
+    # tags without any weights cached, so returning that once the session goes offline (the studio
+    # flips HF_HUB_OFFLINE in-process on a dead DNS) would accept a repo _get() cannot load; a
+    # cached negative could likewise be invalidated by a later cache materialization. A cached
+    # modules.json marks a Sentence-Transformers repo, mirroring the local-path check below. The
+    # probe is local-filesystem only, so recomputing per call is cheap.
+    if not is_local_path(model_name) and hf_env_offline():
+        return _embedding_marker_in_hf_cache(model_name)
+
     cache_key = (model_name, hf_token)
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
@@ -2119,16 +2132,6 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     if is_local_path(model_name):
         local_dir = normalize_path(model_name)
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
-        _embedding_detection_cache[cache_key] = is_emb
-        return is_emb
-
-    # Offline: never call the Hub -- a DNS-dead session hangs on model_info retries.
-    # Classify from the local cache the load will use: a cached modules.json marks a
-    # Sentence-Transformers repo, mirroring the local-path check above.
-    from utils.utils import hf_env_offline
-
-    if hf_env_offline():
-        is_emb = _embedding_marker_in_hf_cache(model_name)
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
 

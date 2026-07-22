@@ -274,6 +274,35 @@ def test_offline_slashless_resolves_via_alias(hf_cache, monkeypatch):
         assert _is_embedding_model("all-MiniLM-L6-v2") is True
 
 
+def test_offline_ignores_stale_online_memo(hf_cache, monkeypatch):
+    # An online lookup memoizes True for an UNCACHED repo (tags say embedding, no weights). Once
+    # the session goes offline (the studio flips HF_HUB_OFFLINE in-process on a dead DNS),
+    # is_embedding_model must reclassify from the empty cache and return False -- not the stale
+    # online True that would make settings accept a repo _get() cannot load.
+    with patch(
+        "huggingface_hub.model_info",
+        side_effect = lambda *a, **k: SimpleNamespace(
+            tags = ["sentence-transformers"], pipeline_tag = None
+        ),
+    ):
+        assert _is_embedding_model("org/uncached-emb") is True  # memoized True online
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    with _no_network():
+        assert _is_embedding_model("org/uncached-emb") is False  # recomputed from empty cache
+
+
+def test_offline_recomputes_after_cache_materializes(hf_cache, monkeypatch):
+    # Offline, an uncached repo is False; because the offline branch never records a memo, once
+    # its snapshot materializes (another process populates the shared cache) the next call
+    # re-reports True instead of returning a stale negative.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    with _no_network():
+        assert _is_embedding_model("org/later") is False  # uncached
+        _make_cache(hf_cache, "org/later", {"modules.json": MODULES_JSON})
+        assert _is_embedding_model("org/later") is True  # cache now present, no stale negative
+
+
 # ── is_embedding_model: online (bounded + fallback) ──────────────
 
 
