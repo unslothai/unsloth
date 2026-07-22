@@ -619,51 +619,61 @@ def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
     assert not (tmp_path / "model-catalog.json").exists()
 
 
-def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatch):
+def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
-    path = start.write_codex_subagent_config(BASE, "private-token", local, tmp_path)
-    agent = _parse_toml(path.read_text())
-    assert agent["name"] == "unsloth"
-    assert "local agent" in agent["description"].lower()
-    assert agent["model_provider"] == start._CODEX_PROFILE
-    assert agent["model"] == local["id"]
-    assert agent["model_context_window"] == MODEL["context_length"]
-    assert agent["model_providers"][start._CODEX_PROFILE] == {
-        "name": "Unsloth Studio",
-        "base_url": f"{BASE}/v1",
-        "wire_api": "responses",
-        "auth": {
-            "command": sys.executable,
-            "args": [
-                "-c",
-                "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
-                str(tmp_path / "unsloth-auth.json"),
-            ],
-            "timeout_ms": 5000,
-        },
+    path = start.write_codex_subagent_bridge(
+        BASE,
+        "private-token",
+        local,
+        tmp_path,
+        yolo = False,
+    )
+    assert json.loads(path.read_text()) == {
+        "api_key": "private-token",
+        "codex_home": str(tmp_path / "child"),
+        "bypass_permissions": False,
     }
-    assert json.loads((tmp_path / "unsloth-auth.json").read_text()) == {"token": "private-token"}
-    catalog = json.loads((tmp_path / agent["model_catalog_json"]).read_text())
+    assert path.stat().st_mode & 0o077 == 0
+    profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == local["id"]
+    assert profile["model_provider"] == start._CODEX_PROFILE
+    assert profile["model_context_window"] == MODEL["context_length"]
+    config = _parse_toml((tmp_path / "child" / "config.toml").read_text())
+    assert config["model_providers"][start._CODEX_PROFILE]["base_url"] == f"{BASE}/v1"
+    catalog = json.loads((tmp_path / "child" / profile["model_catalog_json"]).read_text())
     assert catalog["models"][0]["slug"] == local["id"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
-def test_codex_subagent_auth_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
+def test_codex_subagent_bridge_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
-    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
     monkeypatch.setattr(
         start.shutil,
         "which",
         lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex.exe",
     )
-
-    path = start.write_codex_subagent_config(BASE, "private-token", MODEL, tmp_path)
-    auth = _parse_toml(path.read_text())["model_providers"][start._CODEX_PROFILE]["auth"]
-
-    assert auth["command"] == "wsl.exe"
-    assert auth["args"][:5] == ["-d", "Ubuntu", "--", sys.executable, "-c"]
-    assert auth["args"][-1] == str(tmp_path / "unsloth-auth.json")
+    flags = start._codex_subagent_flags(tmp_path / "subagent.json")
+    prefix = f"mcp_servers.{start._CODEX_SUBAGENT_MCP_SERVER}="
+    override = next(value for value in flags if value.startswith(prefix))
+    server = _parse_toml("server = " + override.removeprefix(prefix))["server"]
+    assert server["command"] == "wsl.exe"
+    assert server["args"] == [
+        "-d",
+        "Ubuntu",
+        "--",
+        sys.executable,
+        "-c",
+        server["args"][5],
+        str(tmp_path / "subagent.json"),
+    ]
+    assert "sys.path.insert" in server["args"][5]
+    assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][5]
+    assert server["required"] is True
+    assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
+    assert (
+        f"developer_instructions={json.dumps(start._CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}" in flags
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -1003,8 +1013,6 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[0] == "codex"
-    assert command[1:3] == ["--enable", "multi_agent"]
-    assert "agents.max_depth=1" in command
     assert "--oss" not in command
     assert "--profile" not in command
     assert "--model" not in command
@@ -1012,11 +1020,30 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert start._CODEX_ENV_KEY not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
-    agent_path = home / "unsloth.toml"
-    agent = _parse_toml(agent_path.read_text())
-    assert agent["model"] == MODEL["id"] + ":UD-Q4_K_XL"
-    assert "env_key" not in agent["model_providers"][start._CODEX_PROFILE]
-    assert f"agents.unsloth.config_file={json.dumps(str(agent_path))}" in command
+    bridge_path = home / "subagent.json"
+    bridge = json.loads(bridge_path.read_text())
+    assert bridge["api_key"] == "sk-unsloth-feedfacefeedface"
+    assert bridge["codex_home"] == str(home / "child")
+    assert bridge["bypass_permissions"] is False
+    profile = _parse_toml((home / "child" / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == MODEL["id"] + ":UD-Q4_K_XL"
+    prefix = f"mcp_servers.{start._CODEX_SUBAGENT_MCP_SERVER}="
+    override = next(value for value in command if value.startswith(prefix))
+    assert override.startswith(prefix)
+    server = _parse_toml("server = " + override.removeprefix(prefix))["server"]
+    assert server["command"] == sys.executable
+    assert server["args"] == [
+        "-c",
+        server["args"][1],
+        str(bridge_path),
+    ]
+    assert "sys.path.insert" in server["args"][1]
+    assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][1]
+    assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
+    assert (
+        f"developer_instructions={json.dumps(start._CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}"
+        in command
+    )
     assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
 

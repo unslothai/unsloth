@@ -85,6 +85,16 @@ _SUBAGENT_INSTRUCTIONS = (
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
+_CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
+_CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
+_CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
+_CODEX_SUBAGENT_PARENT_INSTRUCTIONS = (
+    "When the user asks to spawn an Unsloth agent or local agent, call "
+    f"mcp__{_CODEX_SUBAGENT_MCP_SERVER}__{_CODEX_SUBAGENT_MCP_TOOL} with the complete task. "
+    "Do not use the built-in spawn_agent tool for those requests. Return the local agent's "
+    "result to the user. Other subagent requests may use the built-in tools normally."
+)
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
@@ -1468,59 +1478,26 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         typer.echo(f"Updated {profile}")
 
 
-def write_codex_subagent_config(base: str, key: str, model: dict, home: Path) -> Path:
-    """Write a session-scoped Codex custom agent without replacing the main model."""
-    home.mkdir(parents = True, exist_ok = True)
-    model_id = model["id"]
-    window = model.get("context_length") or model.get("max_context_length")
-    catalog_name = "unsloth-model-catalog.json"
-    text = (
-        f"name = {json.dumps(_SUBAGENT_NAME)}\n"
-        f"description = {json.dumps(_SUBAGENT_DESCRIPTION)}\n"
-        f"developer_instructions = {json.dumps(_SUBAGENT_INSTRUCTIONS)}\n"
-        f"model_provider = {json.dumps(_CODEX_PROFILE)}\n"
-        f"model = {json.dumps(model_id)}\n"
+def write_codex_subagent_bridge(
+    base: str,
+    key: str,
+    model: dict,
+    home: Path,
+    *,
+    yolo: bool,
+) -> Path:
+    """Write private config for an explicit local Codex child launched through MCP."""
+    child_home = home / "child"
+    write_codex_config(base, model, child_home)
+    path = home / "subagent.json"
+    _write_private_json(
+        path,
+        {
+            "api_key": key,
+            "codex_home": str(child_home),
+            "bypass_permissions": yolo,
+        },
     )
-    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
-        catalog = home / catalog_name
-        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
-        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
-            catalog.write_text(catalog_text, encoding = "utf-8")
-            typer.echo(f"Updated {catalog}")
-        text += f"model_catalog_json = {json.dumps(catalog_name)}\n"
-    if window:
-        text += f"model_context_window = {int(window)}\n"
-    credential = home / "unsloth-auth.json"
-    _write_private_json(credential, {"token": key})
-    auth_command = sys.executable
-    auth_args = [
-        "-c",
-        "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
-        str(credential),
-    ]
-    if _wsl_windows_executable(["codex"]):
-        auth_command = "wsl.exe"
-        auth_args = [
-            "-d",
-            os.environ["WSL_DISTRO_NAME"],
-            "--",
-            sys.executable,
-            *auth_args,
-        ]
-    text += (
-        f"\n{_PROVIDER_HEADER}\n"
-        'name = "Unsloth Studio"\n'
-        f"base_url = {json.dumps(base + '/v1')}\n"
-        'wire_api = "responses"\n'
-        f"\n{_PROVIDER_HEADER[:-1]}.auth]\n"
-        f"command = {json.dumps(auth_command)}\n"
-        f"args = {json.dumps(auth_args)}\n"
-        "timeout_ms = 5000\n"
-    )
-    path = home / f"{_SUBAGENT_NAME}.toml"
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.write_text(text, encoding = "utf-8")
-        typer.echo(f"Updated {path}")
     return path
 
 
@@ -1655,16 +1632,36 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
 
 
 def _codex_subagent_flags(path: Path) -> list[str]:
-    config_path = _agent_config_path(path, ["codex"])
+    command = sys.executable
+    package_root = str(Path(__file__).resolve().parents[2])
+    bootstrap = (
+        f"import sys;sys.path.insert(0,{json.dumps(package_root)});"
+        f"from {_CODEX_SUBAGENT_MCP_MODULE} import main;main()"
+    )
+    args = ["-c", bootstrap, str(path)]
+    if _wsl_windows_executable(["codex"]):
+        command = "wsl.exe"
+        args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            "-c",
+            bootstrap,
+            str(path),
+        ]
+    server = (
+        "{ "
+        f"command = {json.dumps(command)}, "
+        f"args = {json.dumps(args)}, "
+        f"required = true, enabled_tools = [{json.dumps(_CODEX_SUBAGENT_MCP_TOOL)}], "
+        "startup_timeout_sec = 15, tool_timeout_sec = 3600 }"
+    )
     return [
-        "--enable",
-        "multi_agent",
         "-c",
-        "agents.max_depth=1",
+        f"developer_instructions={json.dumps(_CODEX_SUBAGENT_PARENT_INSTRUCTIONS)}",
         "-c",
-        f"agents.{_SUBAGENT_NAME}.description={json.dumps(_SUBAGENT_DESCRIPTION)}",
-        "-c",
-        f"agents.{_SUBAGENT_NAME}.config_file={json.dumps(config_path)}",
+        f"mcp_servers.{_CODEX_SUBAGENT_MCP_SERVER}={server}",
     ]
 
 
@@ -2583,15 +2580,21 @@ def codex(
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         with _session_config("codex-subagent", launch, persist = persist) as home:
-            agent_config = write_codex_subagent_config(base, key, subagent_model, home)
+            bridge_config = write_codex_subagent_bridge(
+                base,
+                key,
+                subagent_model,
+                home,
+                yolo = yolo,
+            )
             command = [
                 "codex",
-                *_codex_subagent_flags(agent_config),
+                *_codex_subagent_flags(bridge_config),
                 *_yolo_command_flags("codex", yolo),
                 *ctx.args,
             ]
             typer.echo(
-                "Unsloth is available as the `unsloth` local agent. "
+                "Unsloth is available as a local agent. "
                 "Ask Codex to spawn an Unsloth or local agent."
             )
             _run(

@@ -196,7 +196,11 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
     return _result_text(stdout)
 
 
-def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) -> dict | None:
+def _response(
+    request: dict,
+    run_agent: Callable[[str], str] = run_local_agent,
+    tool_name: str = "unsloth_agent",
+) -> dict | None:
     request_id = request.get("id")
     method = request.get("method")
     if request_id is None:
@@ -214,7 +218,7 @@ def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) 
         result = {
             "tools": [
                 {
-                    "name": "unsloth_agent",
+                    "name": tool_name,
                     "title": "Unsloth local agent",
                     "description": _SUBAGENT_DESCRIPTION,
                     "inputSchema": {
@@ -241,7 +245,7 @@ def _response(request: dict, run_agent: Callable[[str], str] = run_local_agent) 
     elif method == "tools/call":
         params = request.get("params") or {}
         arguments = params.get("arguments") or {}
-        task = arguments.get("task") if params.get("name") == "unsloth_agent" else None
+        task = arguments.get("task") if params.get("name") == tool_name else None
         if not isinstance(task, str) or not task.strip():
             result = {
                 "content": [{"type": "text", "text": "A non-empty task is required."}],
@@ -269,6 +273,7 @@ def serve(
     stdin: Any = sys.stdin,
     stdout: Any = sys.stdout,
     run_agent: Callable[[str, threading.Event], str] = run_local_agent,
+    tool_name: str = "unsloth_agent",
 ) -> None:
     active: dict[object, threading.Event] = {}
     workers: list[threading.Thread] = []
@@ -308,6 +313,7 @@ def serve(
             response = _response(
                 request,
                 run_agent = lambda task: run_agent(task, cancel_event),
+                tool_name = tool_name,
             )
             if not cancel_event.is_set():
                 send(response)
@@ -343,7 +349,7 @@ def serve(
                     worker.start()
                     response = None
                 else:
-                    response = _response(request)
+                    response = _response(request, tool_name = tool_name)
             except Exception as exc:
                 response = {
                     "jsonrpc": "2.0",
