@@ -330,9 +330,7 @@ async def list_cached_datasets_response() -> dict:
         ) from exc
 
 
-async def delete_cached_dataset_response(
-    repo_id: str, cache_path: Optional[str] = None
-) -> dict:
+async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str] = None) -> dict:
     """Remove a cached dataset repo from the HF cache."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")

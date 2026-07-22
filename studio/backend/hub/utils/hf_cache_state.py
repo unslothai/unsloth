@@ -182,7 +182,10 @@ def iter_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
 
 
 def iter_destructive_repo_cache_dirs(
-    repo_type: str, repo_id: str, *, root: Optional[Path] = None
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
 ) -> Iterator[Path]:
     target = repo_cache_dir_name(repo_type, repo_id)
     folded_target = target.lower()
@@ -291,7 +294,12 @@ def _prune_empty_dirs(root: Path) -> bool:
     return removed
 
 
-def purge_partial_repo(repo_type: str, repo_id: str, *, root: Optional[Path] = None) -> bool:
+def purge_partial_repo(
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
+) -> bool:
     removed = False
     for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root = root):
         blobs_dir = entry / "blobs"
@@ -308,7 +316,12 @@ def purge_partial_repo(repo_type: str, repo_id: str, *, root: Optional[Path] = N
     return removed
 
 
-def purge_repo_cache_dirs(repo_type: str, repo_id: str, *, root: Optional[Path] = None) -> bool:
+def purge_repo_cache_dirs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
+) -> bool:
     removed = False
     for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root = root):
         try:
@@ -321,9 +334,7 @@ def purge_repo_cache_dirs(repo_type: str, repo_id: str, *, root: Optional[Path] 
     return removed
 
 
-def scoped_delete_root(
-    repo_type: str, repo_id: str, cache_path: Optional[str]
-) -> Optional[Path]:
+def scoped_delete_root(repo_type: str, repo_id: str, cache_path: Optional[str]) -> Optional[Path]:
     """Resolve the single cache root a delete of this repo may touch.
 
     Returns the active hub cache when *cache_path* is falsy, the owning cache
@@ -342,8 +353,11 @@ def scoped_delete_root(
         return None
     expected = repo_cache_dir_name(repo_type, repo_id).lower()
     repo_dir = next(
-        (candidate for candidate in (resolved, *resolved.parents)
-         if candidate.name.lower() == expected),
+        (
+            candidate
+            for candidate in (resolved, *resolved.parents)
+            if candidate.name.lower() == expected
+        ),
         None,
     )
     if repo_dir is None:

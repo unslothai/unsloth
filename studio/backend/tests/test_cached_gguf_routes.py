@@ -926,7 +926,12 @@ def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
 def test_legacy_delete_delegates_to_shared_service(monkeypatch):
     calls = []
 
-    async def shared(repo_id, variant, hf_token, cache_path = None):
+    async def shared(
+        repo_id,
+        variant,
+        hf_token,
+        cache_path = None,
+    ):
         calls.append((repo_id, variant, hf_token, cache_path))
         return {"status": "deleted", "repo_id": repo_id}
 
