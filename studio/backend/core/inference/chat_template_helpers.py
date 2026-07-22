@@ -15,6 +15,11 @@ from typing import Optional
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
+# Invisible joiner so neutralized markup still *looks* like the original tag in
+# the UI / model quote, but no longer matches structural parsers or special-token
+# exact strings (issue #7066: a literal </think> in user text / mid-thought
+# quotes prematurely closes the thinking block).
+_THINK_NEUTRAL_ZW = "\u200b"
 _GEMMA_CHANNEL_START = "<|channel>"
 _GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
@@ -23,6 +28,96 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + "\\n",
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
+
+# Control / think markers that must not appear as raw text in non-assistant
+# turns (user / system / tool). Escaping them keeps chat templates, think
+# extractors, and ChatML stop sequences from treating user content as markup.
+_NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
+    (_THINK_CLOSE, f"</{_THINK_NEUTRAL_ZW}think>"),
+    (_THINK_OPEN, f"<{_THINK_NEUTRAL_ZW}think>"),
+    ("<|im_start|>", f"<|{_THINK_NEUTRAL_ZW}im_start|>"),
+    ("<|im_end|>", f"<|{_THINK_NEUTRAL_ZW}im_end|>"),
+)
+
+
+def neutralize_think_markup(text: str) -> str:
+    """Neutralize structural ``<think>`` / ``</think>`` inside free text.
+
+    Used when wrapping ``reasoning_content`` into synthetic think tags or when
+    a mid-thought literal close must stay inside the reasoning drawer (#7066).
+    """
+    if not text or (_THINK_OPEN not in text and _THINK_CLOSE not in text):
+        return text
+    return text.replace(_THINK_CLOSE, f"</{_THINK_NEUTRAL_ZW}think>").replace(
+        _THINK_OPEN, f"<{_THINK_NEUTRAL_ZW}think>"
+    )
+
+
+def neutralize_non_assistant_control_markup(text: str) -> str:
+    """Neutralize think + ChatML control markers in user/system/tool text (#7066)."""
+    if not text:
+        return text
+    out = text
+    for src, dst in _NON_ASSISTANT_CONTROL_MARKERS:
+        if src in out:
+            out = out.replace(src, dst)
+    return out
+
+
+def neutralize_message_content_for_role(role: Optional[str], content):
+    """Apply control-markup neutralization to non-assistant message content.
+
+    Assistant turns keep real ``<think>`` structure (and ``reasoning_content``).
+    String content and OpenAI text parts are rewritten; other part types pass
+    through. Returns ``content`` unchanged when nothing needed rewriting.
+    """
+    if (role or "").strip().lower() == "assistant":
+        return content
+    if isinstance(content, str):
+        return neutralize_non_assistant_control_markup(content)
+    if isinstance(content, list):
+        changed = False
+        out = []
+        for part in content:
+            if isinstance(part, str):
+                new_part = neutralize_non_assistant_control_markup(part)
+                changed = changed or new_part is not part and new_part != part
+                out.append(new_part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                new_text = neutralize_non_assistant_control_markup(part["text"])
+                if new_text != part["text"]:
+                    out.append({**part, "text": new_text})
+                    changed = True
+                else:
+                    out.append(part)
+            else:
+                out.append(part)
+        return out if changed else content
+    return content
+
+
+def neutralize_control_markup_in_messages(messages: list) -> list:
+    """Return a copy of ``messages`` with non-assistant control markup neutralized.
+
+    No-op (returns the same list object) when nothing changes, so callers can
+    keep byte-identical prompts on the common path.
+    """
+    if not messages:
+        return messages
+    changed = False
+    out: list = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        content = msg.get("content")
+        new_content = neutralize_message_content_for_role(msg.get("role"), content)
+        if new_content is not content and new_content != content:
+            out.append({**msg, "content": new_content})
+            changed = True
+        else:
+            out.append(msg)
+    return out if changed else messages
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
@@ -376,7 +471,7 @@ def apply_chat_template_for_generation(
         raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
 
     try:
-        return _render(messages)
+        return _render(neutralize_control_markup_in_messages(messages))
     except Exception:
         # Strict tool templates reject the JSON-string ``arguments`` form via
         # TypeError or a broad Jinja raise_exception, so retry with dicts coerced.
@@ -384,7 +479,7 @@ def apply_chat_template_for_generation(
         normalized = _normalize_tool_call_arguments(messages)
         if normalized is messages:
             raise
-        return _render(normalized)
+        return _render(neutralize_control_markup_in_messages(normalized))
 
 
 def render_native_template(

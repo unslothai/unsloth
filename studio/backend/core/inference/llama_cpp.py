@@ -10267,6 +10267,13 @@ class LlamaCppBackend:
                                 # in <think> tags for the frontend parser.
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
+                                    from core.inference.chat_template_helpers import (
+                                        neutralize_think_markup,
+                                    )
+
+                                    # Literal </think> inside reasoning_content must
+                                    # not close the synthetic <think> wrapper (#7066).
+                                    reasoning = neutralize_think_markup(reasoning)
                                     reasoning_text += reasoning
                                     if not in_thinking:
                                         cumulative += "<think>"

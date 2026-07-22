@@ -7,6 +7,8 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
+/** Invisible joiner so literal think tags in reasoning text do not close the panel (#7066). */
+const THINK_NEUTRAL_ZW = "\u200b";
 
 // ContentPart from @assistant-ui/react has readonly fields, so coalescing via
 // `last.text += text` fails (TS2540). Instead replace the last element with a
@@ -32,9 +34,22 @@ function appendReasoningPart(parts: ContentPart[], text: string): void {
   parts.push({ type: "reasoning", text });
 }
 
-export function parseAssistantContent(
-  raw: string,
-): ContentPart[] {
+/**
+ * Neutralize structural `<think>` / `</think>` markers inside free text so a
+ * literal close tag in reasoning (or a user quote) cannot prematurely end the
+ * thinking block (#7066).
+ */
+export function neutralizeThinkMarkup(text: string): string {
+  if (!text) return text;
+  if (!text.includes(THINK_OPEN_TAG) && !text.includes(THINK_CLOSE_TAG)) {
+    return text;
+  }
+  return text
+    .replaceAll(THINK_CLOSE_TAG, `</${THINK_NEUTRAL_ZW}think>`)
+    .replaceAll(THINK_OPEN_TAG, `<${THINK_NEUTRAL_ZW}think>`);
+}
+
+export function parseAssistantContent(raw: string): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
     return parts;

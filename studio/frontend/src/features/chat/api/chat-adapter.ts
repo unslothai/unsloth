@@ -84,6 +84,7 @@ import {
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
+  neutralizeThinkMarkup,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
@@ -658,7 +659,9 @@ function extractDeltaText(delta: unknown): string {
       else if (typeof obj.content === "string") out += obj.content;
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
       const thinking = extractReasoningText(obj);
-      if (thinking) out += `<think>${thinking}</think>`;
+      // Neutralize literal </think> inside provider thinking parts so the
+      // synthetic wrapper cannot close early (#7066).
+      if (thinking) out += `<think>${neutralizeThinkMarkup(thinking)}</think>`;
     }
   }
   return out;
@@ -3908,11 +3911,15 @@ export function createOpenAIStreamAdapter(
               }
 
               if (reasoning) {
+                // Neutralize literal think markers inside reasoning_content so
+                // a mid-thought "</think>" (e.g. echoing the user) cannot close
+                // the synthetic <think> wrapper early (#7066).
+                const safeReasoning = neutralizeThinkMarkup(reasoning);
                 if (!reasoningContentOpen) {
-                  cumulativeText += `<think>${reasoning}`;
+                  cumulativeText += `<think>${safeReasoning}`;
                   reasoningContentOpen = true;
                 } else {
-                  cumulativeText += reasoning;
+                  cumulativeText += safeReasoning;
                 }
               }
               if (delta) {

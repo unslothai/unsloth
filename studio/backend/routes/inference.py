@@ -10722,6 +10722,26 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
     return 0
 
 
+def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
+    """True when ``</think>`` looks like quoted/code content, not a block end.
+
+    Mid-reasoning mentions of the close tag (echoing the user, discussing a
+    training script) must stay inside the thinking drawer (#7066). A structural
+    close is typically bare — not wrapped in quotes or backticks.
+
+    Both flanks must be non-empty: Python's ``"" in needles`` is True, so an
+    empty before/after (close at buffer start / end) must not count as quoted.
+    """
+    end = close_idx + len(_RESPONSES_THINK_CLOSE)
+    before = buffer[close_idx - 1] if close_idx > 0 else ""
+    after = buffer[end] if end < len(buffer) else ""
+    if not before or not after:
+        return False
+    if before in "\"'`" and after in "\"'`":
+        return True
+    return False
+
+
 class _ResponsesReasoningExtractor:
     """Split local <think> markup into Responses reasoning and visible text."""
 
@@ -10747,7 +10767,12 @@ class _ResponsesReasoningExtractor:
         visible_parts: list[str] = []
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
-            reasoning_parts.append(structured_reasoning)
+            # Structured reasoning never uses think tags as delimiters (the
+            # channel already is reasoning). Neutralize any literal markers so
+            # downstream <think> wrappers / UI parsers cannot close early (#7066).
+            from core.inference.chat_template_helpers import neutralize_think_markup
+
+            reasoning_parts.append(neutralize_think_markup(structured_reasoning))
         if text:
             self._buffer += text
         if not self._parse_think_markers:
@@ -10759,6 +10784,21 @@ class _ResponsesReasoningExtractor:
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
+                    # Quoted / backticked </think> is content (user echo, script
+                    # discussion), not the structural end of reasoning (#7066).
+                    if _is_literal_think_close(self._buffer, close_idx):
+                        from core.inference.chat_template_helpers import (
+                            neutralize_think_markup,
+                        )
+
+                        reasoning_parts.append(
+                            self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
+                        )
+                        reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
+                        self._buffer = self._buffer[
+                            close_idx + len(_RESPONSES_THINK_CLOSE) :
+                        ]
+                        continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                     )
@@ -14006,6 +14046,12 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
+    # Neutralize think / ChatML markers in user/system/tool turns so a literal
+    # </think> (or <|im_start|>) in the prompt cannot close a thinking block or
+    # inject ChatML turns when echoed mid-reasoning (#7066).
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    messages = neutralize_control_markup_in_messages(messages)
 
     if not payload.image_base64:
         return messages
