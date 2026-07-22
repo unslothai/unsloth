@@ -10,7 +10,14 @@ from pathlib import Path
 
 WORKDIR = Path(__file__).resolve().parents[2]
 MODEL_SELECTOR = (
-    WORKDIR / "studio" / "frontend" / "src" / "components" / "assistant-ui" / "model-selector.tsx"
+    WORKDIR
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "model-picker"
+    / "components"
+    / "model-selector.tsx"
 )
 APP_SIDEBAR = WORKDIR / "studio" / "frontend" / "src" / "components" / "app-sidebar.tsx"
 

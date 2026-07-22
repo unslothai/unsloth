@@ -310,6 +310,80 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     assert b._pump_running is False
 
 
+def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
+    # Stop-without-save interrupted before its complete event: /status must not
+    # keep serving the cleared run's output_dir.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._should_stop = True
+    b._cancel_requested = True
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert b._output_dir is None
+    assert finalized.get("status") == "stopped"
+    assert finalized.get("output_dir") is None
+    assert finalized.get("clear_output_dir") is True
+
+
+def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._should_stop = True
+    b._cancel_requested = False
+    b._output_dir = "/out/x"
+    b.current_job_id = "job-x"
+    b._terminal_finalize_payload = {
+        "status": "error",
+        "error_message": "checkpoint failed",
+        "output_dir": "/out/x",
+        "clear_output_dir": False,
+        "resume_blocked": True,
+        "expected_job_id": "job-x",
+    }
+
+    b._pump_loop()
+
+    assert b._output_dir == "/out/x"
+    assert finalized.get("status") == "error"
+    assert finalized.get("output_dir") == "/out/x"
+    assert finalized.get("clear_output_dir") is False
+    assert finalized.get("resume_blocked") is True
+
+
+def test_dead_worker_crash_preserves_output_dir(monkeypatch):
+    # A crash (no stop requested) after output_dir was emitted must keep the dir
+    # in the error finalize: checkpoints under it may still exist.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert finalized.get("status") == "error"
+    assert finalized.get("output_dir") == "/out/x"
+    assert finalized.get("clear_output_dir") is False
+
+
 def test_start_training_clears_stale_pump_running_flag():
     # A prior pump that died abnormally leaves _pump_running True. The next
     # start_training must clear it during reset so the start-time watchdog can't

@@ -5,7 +5,7 @@
 Chat history API routes backed by studio.db.
 """
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -19,13 +19,16 @@ from storage.studio_db import (
     clear_chat_history,
     count_chat_threads,
     count_forks_for_message,
+    delete_chat_attachment,
     delete_chat_threads,
     delete_chat_project,
     ensure_chat_project_workspace,
     fork_chat_thread,
+    get_chat_attachment,
     get_chat_project,
     get_chat_thread,
     get_chat_message,
+    list_chat_attachments_page,
     list_chat_projects,
     list_chat_legacy_imports,
     list_chat_settings,
@@ -279,6 +282,131 @@ async def delete_threads(
     return {"status": "deleted"}
 
 
+@router.get("/attachments")
+def list_attachments(
+    limit: Annotated[int, Query(ge = 1, le = 100)] = 50,
+    offset: Annotated[int, Query(ge = 0)] = 0,
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """One bounded page of chat uploads for the settings Data tab."""
+    attachments, next_offset = list_chat_attachments_page(limit = limit, offset = offset)
+    return {"attachments": attachments, "nextOffset": next_offset}
+
+
+def _decode_attachment_base64(payload: str) -> bytes:
+    """Strict base64 decode of a stored payload.
+
+    Normalizes first: strips whitespace, fixes padding, accepts the URL-safe
+    alphabet. validate=False would silently drop bad characters and serve
+    corrupted bytes instead of failing, so raise 422 on anything else.
+    """
+    import base64
+
+    normalized = "".join(payload.split())
+    altchars = b"-_" if ("-" in normalized or "_" in normalized) else None
+    normalized += "=" * (-len(normalized) % 4)
+    try:
+        return base64.b64decode(normalized, altchars = altchars, validate = True)
+    except Exception as exc:  # noqa: BLE001 - corrupt stored payload
+        raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
+
+
+_AUDIO_FORMAT_MEDIA_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
+def _safe_image_media_type(media_type: str) -> str:
+    """Clamp a data-URL media type to something inert to render.
+
+    Imported chats store image parts verbatim, so the embedded type can be
+    text/html or image/svg+xml; echoing those would execute markup with the
+    app origin when opened. Anything not a plain raster type downloads as
+    bytes instead.
+    """
+    lowered = media_type.strip().lower()
+    if lowered.startswith("image/") and lowered != "image/svg+xml":
+        return lowered
+    return "application/octet-stream"
+
+
+@router.get("/attachments/{message_id}/{attachment_id}/file")
+def get_attachment_file(
+    message_id: str,
+    attachment_id: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Serve one attachment's stored content: image or audio bytes, or
+    extracted text."""
+    import urllib.parse
+
+    from fastapi.responses import Response
+
+    attachment = get_chat_attachment(message_id, attachment_id)
+    if attachment is None:
+        raise HTTPException(status_code = 404, detail = "Attachment not found")
+
+    attachment_content_type = attachment.get("contentType")
+    texts: list[str] = []
+    for part in attachment.get("content") or []:
+        if not isinstance(part, dict):
+            continue
+        image = part.get("image")
+        if isinstance(image, str) and image[:5].lower() == "data:":
+            header, _, payload = image.partition(",")
+            media_type = _safe_image_media_type(
+                header[5:].split(";", 1)[0] or "application/octet-stream"
+            )
+            if "base64" not in header.lower():
+                # RFC 2397 non-base64 form stores percent-encoded bytes.
+                data = urllib.parse.unquote_to_bytes(payload)
+                return Response(content = data, media_type = media_type)
+            data = _decode_attachment_base64(payload)
+            return Response(content = data, media_type = media_type)
+        # Audio parts: the attachment adapter stores {data, format} with raw
+        # base64; compare chats store a bare base64 string.
+        audio = part.get("audio")
+        if isinstance(audio, dict) or (isinstance(audio, str) and audio):
+            if isinstance(audio, dict):
+                payload = audio.get("data")
+                audio_format = audio.get("format")
+            else:
+                payload = audio.rsplit(",", 1)[-1]
+                audio_format = None
+            if isinstance(payload, str) and payload:
+                data = _decode_attachment_base64(payload)
+                media_type = (
+                    attachment_content_type
+                    if isinstance(attachment_content_type, str)
+                    and attachment_content_type.startswith("audio/")
+                    else _AUDIO_FORMAT_MEDIA_TYPES.get(
+                        str(audio_format or "").lower(), "application/octet-stream"
+                    )
+                )
+                return Response(content = data, media_type = media_type)
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+    if texts:
+        return Response(content = "\n".join(texts), media_type = "text/plain; charset=utf-8")
+    raise HTTPException(status_code = 404, detail = "Attachment has no stored content")
+
+
+@router.delete("/attachments/{message_id}/{attachment_id}")
+def delete_attachment(
+    message_id: str,
+    attachment_id: str,
+    current_subject: str = Depends(get_current_subject),
+) -> dict:
+    """Remove one attachment from its chat message."""
+    if not delete_chat_attachment(message_id, attachment_id):
+        raise HTTPException(status_code = 404, detail = "Attachment not found")
+    return {"ok": True}
+
+
 @router.get("/projects", response_model = ChatProjectListResponse)
 async def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
@@ -409,7 +537,7 @@ async def get_thread_message(
 
 
 @router.put("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
-async def save_thread_message(
+def save_thread_message(
     thread_id: str,
     message_id: str,
     payload: ChatMessage,
@@ -432,7 +560,7 @@ async def save_thread_message(
 
 
 @router.put("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def replace_thread_messages(
+def replace_thread_messages(
     thread_id: str,
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),

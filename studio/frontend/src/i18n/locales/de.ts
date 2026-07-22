@@ -112,7 +112,7 @@ export const de = {
         "Wird verwendet, um gated Modelle zu laden und Artefakte zu pushen.",
       hideToken: "Token verbergen",
       showToken: "Token anzeigen",
-      tokenSaved: "Token gespeichert",
+      tokenValidated: "Token validiert",
       password: "Passwort",
       passwordDescription:
         "Ändern Sie das Passwort für dieses Unsloth-Konto.",

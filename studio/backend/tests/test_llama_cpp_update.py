@@ -83,6 +83,7 @@ def _write_install(
     repo: str = "unslothai/llama.cpp",
     asset: str | None = None,
     release_tag: str | None = None,
+    force_cpu: bool | None = None,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -99,6 +100,8 @@ def _write_install(
     }
     if asset is not None:
         marker["asset"] = asset
+    if force_cpu is not None:
+        marker["force_cpu"] = force_cpu
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -496,6 +499,47 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
 
 
+@pytest.mark.parametrize(
+    "force_cpu, expect_flag",
+    [
+        # A deliberate CPU install (marker force_cpu=True) re-asserts --force-cpu on
+        # update so detect_host on a GPU host cannot re-route and revive the crash
+        # (#7213); --force-cpu also re-persists the flag for the next update.
+        (True, True),
+        # A transient fallback (or a legacy marker without the flag) stays free to
+        # heal to a GPU bundle (#6097).
+        (False, False),
+        (None, False),
+    ],
+)
+def test_start_update_cpu_fallback_preserved_by_flag(monkeypatch, tmp_path, force_cpu, expect_flag):
+    asset = "llama-b9493-bin-ubuntu-x64.tar.gz"
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493", asset = asset, force_cpu = force_cpu)
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    captured: dict = {}
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b9518", asset = asset, force_cpu = force_cpu)
+
+    _patch_installer_popen(monkeypatch, lines = ["installed\n"], on_start = _on_start)
+
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+    assert ("--force-cpu" in captured["cmd"]) is expect_flag
+    assert "--cpu-fallback" not in captured["cmd"]
+
+
 def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595")
@@ -679,7 +723,7 @@ def test_install_cmd_rocm_marker_forwards_gfx(monkeypatch, tmp_path):
     assert "--rocm-gfx" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--has-rocm" not in cmd
-    assert "--cpu-fallback" not in cmd
+    assert "--force-cpu" not in cmd
     assert "--simple-policy" not in cmd
     assert "--published-repo" in cmd and "unslothai/llama.cpp" in cmd
 
@@ -693,17 +737,17 @@ def test_install_cmd_fork_rocm_marker_forwards_has_rocm(monkeypatch, tmp_path):
 
 
 def test_install_cmd_ggml_cpu_marker_has_no_cpu_fallback(monkeypatch, tmp_path):
-    # Legacy CPU installs recorded a ggml-org marker (new installs use the fork).
-    # Re-running into the same install-dir/repo reproduces the same CPU bundle;
-    # --cpu-fallback (which force-drops GPU detection) is reserved for setup.sh's
-    # arm64 rescue and must not appear here.
+    # Legacy CPU installs recorded a ggml-org marker (new installs use the fork) with
+    # no force_cpu field. Re-running into the same install-dir/repo reproduces the same
+    # CPU bundle; --force-cpu (the persisted-CPU re-assert) must not appear for a marker
+    # that never recorded a deliberate CPU choice, so it can still heal to GPU (#6097).
     cmd = _capture_install_cmd(
         monkeypatch,
         tmp_path,
         repo = "ggml-org/llama.cpp",
         asset = "llama-b9334-bin-ubuntu-x64.tar.gz",
     )
-    assert "--cpu-fallback" not in cmd
+    assert "--force-cpu" not in cmd
     assert "--rocm-gfx" not in cmd
     assert "--has-rocm" not in cmd
     assert "--simple-policy" not in cmd
@@ -717,7 +761,7 @@ def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tm
     assert "--simple-policy" not in cmd
     assert "--rocm-gfx" not in cmd
     assert "--has-rocm" not in cmd
-    assert "--cpu-fallback" not in cmd
+    assert "--force-cpu" not in cmd
 
 
 def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):

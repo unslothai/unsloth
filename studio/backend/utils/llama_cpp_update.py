@@ -383,6 +383,7 @@ def _run_llama_phase(
     script: Path,
     pin_release_tag: Optional[str],
     set_progress,
+    force_cpu: bool = False,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -428,6 +429,12 @@ def _run_llama_phase(
         if pin_release_tag:
             cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
+        # Re-assert a deliberate CPU install (--force-cpu) so detect_host on a GPU host
+        # does not re-route to a GPU/Vulkan bundle and revive the crash (#7213). --force-cpu
+        # (not --cpu-fallback) also re-persists force_cpu, keeping the choice across future
+        # updates. A natural fallback (or a legacy marker without the flag) heals to GPU (#6097).
+        if force_cpu:
+            cmd.append("--force-cpu")
         logger.info("llama update: installing", cmd = " ".join(cmd))
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
         # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm
@@ -541,6 +548,7 @@ def _plan_llama_phase() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
+        force_cpu = bool(marker.get("force_cpu"))
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -582,6 +590,8 @@ def _plan_llama_phase() -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
+        # Source builds carry no forced-CPU marker, so nothing to preserve here.
+        force_cpu = False
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -603,6 +613,7 @@ def _plan_llama_phase() -> dict:
             "script": script,
             "pin_release_tag": pin_release_tag,
             "from_tag": from_tag,
+            "force_cpu": force_cpu,
         }
     }
 
@@ -648,6 +659,7 @@ def start_update() -> dict:
                         llama_spec["script"],
                         llama_spec["pin_release_tag"],
                         set_progress,
+                        force_cpu = llama_spec.get("force_cpu", False),
                     )
                 )
                 if llama_spec

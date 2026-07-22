@@ -57,6 +57,11 @@ import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
+  chatContentPartAttachmentIdFromSignature,
+  chatContentPartAttachmentSignature,
+  onChatAttachmentDeleted,
+} from "./utils/chat-attachment-events";
+import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
@@ -889,6 +894,168 @@ function useStudioRuntimeAdapters(
   pairId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
+
+  // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
+  // repository otherwise keeps the attachment, and a later repo-to-storage sync
+  // (e.g. deleting a message in the thread) would write it back.
+  useEffect(() => {
+    let active = true;
+    let pendingDeletion = Promise.resolve();
+    const unsubscribe = onChatAttachmentDeleted((event) => {
+      pendingDeletion = pendingDeletion.then(async () => {
+        if (!active) return;
+        const { messageId, attachmentId } = event;
+        try {
+          const thread = aui.thread();
+          if (attachmentId.startsWith("content-part-sha256-")) {
+            for (let attempt = 0; attempt < 3 && active; attempt += 1) {
+              const exported = thread.export();
+              const target = exported.messages.find(
+                (item) => item.message.id === messageId,
+              );
+              if (!target || !Array.isArray(target.message.content)) return;
+              const content = target.message.content;
+
+              const signatures = content.map((part) =>
+                chatContentPartAttachmentSignature(part),
+              );
+              const ids = await Promise.all(
+                signatures.map((signature) =>
+                  signature === null
+                    ? null
+                    : chatContentPartAttachmentIdFromSignature(signature),
+                ),
+              );
+              const targetAttachments = (
+                target.message as {
+                  attachments?: readonly { id: string }[];
+                }
+              ).attachments;
+              const hasTargetAttachment =
+                Array.isArray(targetAttachments) &&
+                targetAttachments.some(
+                  (attachment) => attachment.id === attachmentId,
+                );
+              if (
+                (!ids.includes(attachmentId) && !hasTargetAttachment) ||
+                !active
+              ) {
+                return;
+              }
+
+              // Preserve any messages added or streamed while WebCrypto ran.
+              // Retry if the target's managed content itself changed.
+              const latest = thread.export();
+              const latestTarget = latest.messages.find(
+                (item) => item.message.id === messageId,
+              );
+              const latestContent = latestTarget?.message.content;
+              if (!Array.isArray(latestContent)) return;
+              const latestSignatures = latestContent.map((part) =>
+                chatContentPartAttachmentSignature(part),
+              );
+              if (
+                signatures.length !== latestSignatures.length ||
+                signatures.some(
+                  (signature, index) => signature !== latestSignatures[index],
+                )
+              ) {
+                continue;
+              }
+
+              const messages = latest.messages.map((item) => {
+                if (item.message.id !== messageId) return item;
+                const attachments = (
+                  item.message as {
+                    attachments?: readonly { id: string }[];
+                  }
+                ).attachments;
+                return {
+                  ...item,
+                  message: {
+                    ...item.message,
+                    content: latestContent.filter(
+                      (_, index) => ids[index] !== attachmentId,
+                    ),
+                    ...(Array.isArray(attachments)
+                      ? {
+                          attachments: attachments.filter(
+                            (attachment) =>
+                              attachment.id !== attachmentId,
+                          ),
+                        }
+                      : {}),
+                  } as typeof item.message,
+                };
+              });
+              if (active) thread.import({ ...latest, messages });
+              return;
+            }
+            return;
+          }
+
+          const exported = thread.export();
+          let changed = false;
+          const messages = exported.messages.map((item) => {
+            if (item.message.id !== messageId) return item;
+            const message = item.message;
+            const attachments = (
+              message as { attachments?: readonly { id: string }[] }
+            ).attachments;
+            if (
+              Array.isArray(attachments) &&
+              attachments.some(
+                (attachment) => attachment.id === attachmentId,
+              )
+            ) {
+              changed = true;
+              return {
+                ...item,
+                message: {
+                  ...message,
+                  attachments: attachments.filter(
+                    (attachment) => attachment.id !== attachmentId,
+                  ),
+                } as typeof message,
+              };
+            }
+            if (/^content-part-[0-9]+$/.test(attachmentId)) {
+              // Legacy synthetic id for a blob stored as a message content part.
+              const idx = Number(attachmentId.slice("content-part-".length));
+              const content = message.content;
+              if (
+                !Array.isArray(content) ||
+                !Number.isInteger(idx) ||
+                idx < 0 ||
+                idx >= content.length
+              ) {
+                return item;
+              }
+              const part = content[idx] as { type?: string };
+              if (part?.type !== "image" && part?.type !== "audio") return item;
+              changed = true;
+              return {
+                ...item,
+                message: {
+                  ...message,
+                  content: content.filter((_, i) => i !== idx),
+                } as typeof message,
+              };
+            }
+            return item;
+          });
+          if (changed && active) thread.import({ ...exported, messages });
+        } catch {
+          // No active thread mounted: storage already holds the truth.
+        }
+      });
+      return pendingDeletion;
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [aui]);
 
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({

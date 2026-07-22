@@ -764,6 +764,7 @@ class TrainingBackend:
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
         self._lock = threading.Lock()
+        self._run_intent_lock = threading.RLock()
 
         # Stop watchdog: after a stop is requested, escalates to force_terminate()
         # if the worker does not exit on its own within a bounded time. The watched
@@ -776,6 +777,7 @@ class TrainingBackend:
         self._progress = TrainingProgress()
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
+        self._cancel_cleanup_output_dir: Optional[str] = None
 
         # Throttled training-status logging to the server log (not one line/step).
         self._last_progress_log_ts: float = 0.0
@@ -795,6 +797,8 @@ class TrainingBackend:
         # Job metadata
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
+        self._resume_source_run_id: Optional[str] = None
+        self._terminal_finalize_payload: Optional[dict] = None
 
         # DB persistence
         self._metric_buffer: list[dict] = []
@@ -822,6 +826,7 @@ class TrainingBackend:
         job_id: str,
         *,
         before_spawn = None,
+        resume_source_run_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
@@ -959,6 +964,7 @@ class TrainingBackend:
             self.current_job_id = job_id
             self._should_stop = False
             self._cancel_requested = False
+            self._cancel_cleanup_output_dir = None
             self._complete_seen.clear()
             self._progress = TrainingProgress(
                 is_training = True, status_message = "Initializing training..."
@@ -975,7 +981,10 @@ class TrainingBackend:
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
             self.eval_enabled = False
-            self._output_dir = None
+            self._output_dir = config.get("output_dir") if resume_source_run_id else None
+            self._progress.output_dir = self._output_dir
+            self._resume_source_run_id = resume_source_run_id
+            self._terminal_finalize_payload = None
             self._metric_buffer.clear()
             self._run_finalized = False
             self._db_run_created = False
@@ -993,6 +1002,17 @@ class TrainingBackend:
             # in history during model loading and a fast terminal worker can't race the
             # pump into a duplicate create/finalize. From here the pump only finalizes.
             self._ensure_db_run_created()
+            if resume_source_run_id and not self._db_run_created:
+                if proc.is_alive():
+                    proc.terminate()
+                proc.join(timeout = 5.0)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(timeout = 2.0)
+                self._progress.is_training = False
+                self._progress.error = "Resume checkpoint is no longer available."
+                self._spawn_in_progress = False
+                return False
 
             # Assign handles and start the pump together under the lock so a concurrent
             # poll can't see a live _proc with no pump and spawn a duplicate.
@@ -1014,28 +1034,75 @@ class TrainingBackend:
 
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
-        self._should_stop = True
-        if not save:
-            self._cancel_requested = True
-        with self._lock:
-            if self._stop_queue is not None:
-                try:
-                    self._stop_queue.put({"type": "stop", "save": save})
-                except (OSError, ValueError):
-                    pass
-            # Update progress immediately for responsive UI.
-            self._progress.status_message = (
-                "Stopping training and saving checkpoint..." if save else "Cancelling training..."
-            )
-        # Guarantee the run finalizes even if the worker wedges after saving.
-        self._start_stop_watchdog(cancel = not save)
+        with self._run_intent_lock:
+            with self._lock:
+                run_id = self.current_job_id
+            if not save and run_id:
+                persist_error: Optional[Exception] = None
+                for attempt in range(_DB_FINALIZE_RETRIES):
+                    try:
+                        from storage.studio_db import mark_run_cancel_requested
+
+                        self._ensure_db_run_created()
+                        with self._lock:
+                            terminal_payload = self._terminal_finalize_payload
+                            if (
+                                terminal_payload
+                                and terminal_payload.get("expected_job_id") == run_id
+                            ):
+                                return False
+                            if not mark_run_cancel_requested(run_id):
+                                if self._db_run_created:
+                                    return False
+                                raise RuntimeError(
+                                    "Training run disappeared before cancellation persisted"
+                                )
+                            if self.current_job_id != run_id:
+                                return False
+                            self._should_stop = self._cancel_requested = True
+                            self._cancel_cleanup_output_dir = self._output_dir
+                            self._output_dir = self._progress.output_dir = None
+                        persist_error = None
+                        break
+                    except Exception as exc:
+                        persist_error = exc
+                        if attempt + 1 < _DB_FINALIZE_RETRIES:
+                            time.sleep(_DB_FINALIZE_RETRY_S)
+                if persist_error is not None:
+                    raise RuntimeError("Failed to persist Stop-without-Save") from persist_error
+            with self._lock:
+                if self.current_job_id != run_id:
+                    return False
+                if save or not run_id:
+                    self._should_stop = True
+                if not save and not run_id:
+                    self._cancel_requested = True
+                    self._cancel_cleanup_output_dir = self._output_dir
+                    self._output_dir = self._progress.output_dir = None
+                if self._stop_queue is not None:
+                    try:
+                        self._stop_queue.put({"type": "stop", "save": save})
+                    except (OSError, ValueError):
+                        pass
+                self._progress.status_message = (
+                    "Stopping training and saving checkpoint..."
+                    if save
+                    else "Cancelling training..."
+                )
+        self._start_stop_watchdog(cancel = not save, expected_job_id = run_id)
         return True
 
-    def _start_stop_watchdog(self, cancel: bool) -> None:
+    def _start_stop_watchdog(
+        self,
+        cancel: bool,
+        expected_job_id: Optional[str] = None,
+    ) -> None:
         """Start a daemon that force-terminates the worker if a requested stop does not
         exit on its own. No-op if no worker is alive or a live watchdog already watches
         this proc (a stale watchdog on an old proc never blocks a new run's watcher)."""
         with self._lock:
+            if expected_job_id is not None and self.current_job_id != expected_job_id:
+                return
             proc = self._proc
             if proc is None or not proc.is_alive():
                 return
@@ -1116,8 +1183,9 @@ class TrainingBackend:
         watched_job_id: Optional[str] = None,
     ) -> None:
         """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
-        even if the worker is wedged in driver teardown; preserves output_dir so a saved
-        checkpoint is kept. No-ops if a new run already replaced the watched worker, so a
+        even if the worker is wedged in driver teardown; preserves output_dir on a save so
+        the checkpoint is kept, and clears it on a cancel (Stop without saving must not
+        offer resume/export). No-ops if a new run already replaced the watched worker, so a
         stale watchdog never marks a fresh run stopped or drops its handle.
 
         Supersession is checked on both the watched proc and job id: start_training sets
@@ -1137,7 +1205,18 @@ class TrainingBackend:
                 return  # a new run is already starting up; leave its state alone
             run_id = self.current_job_id  # == watched_job_id
             self._progress.is_training = False
-            self._progress.status_message = "Training stopped."
+        terminal_payload = self._terminal_finalize_kwargs()
+        status = terminal_payload["status"]
+        error_message = terminal_payload.get("error_message")
+        output_dir = terminal_payload["output_dir"]
+        clear_output_dir = terminal_payload["clear_output_dir"]
+        resume_blocked = bool(terminal_payload.get("resume_blocked"))
+        with self._lock:
+            if self.current_job_id != run_id:
+                return
+            self._progress.status_message = error_message or "Training stopped."
+            if error_message:
+                self._progress.error = error_message
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
@@ -1151,7 +1230,8 @@ class TrainingBackend:
             batch: list = []
             final_step = final_loss = duration = None
             loss_history: list = []
-            output_dir = self._output_dir
+            if clear_output_dir:
+                self._output_dir = self._progress.output_dir = None
             if claim:
                 self._run_finalized = True  # claim this run's finalize
                 batch = list(self._metric_buffer)
@@ -1164,7 +1244,17 @@ class TrainingBackend:
                 loss_history = list(self.loss_history)
         if claim:
             self._finish_stopped_run(
-                run_id, output_dir, batch, final_step, final_loss, duration, loss_history
+                run_id,
+                output_dir,
+                batch,
+                final_step,
+                final_loss,
+                duration,
+                loss_history,
+                status = status,
+                error_message = error_message,
+                clear_output_dir = clear_output_dir,
+                resume_blocked = resume_blocked,
             )
         with self._lock:
             if target_proc is None or self._proc is target_proc:
@@ -1179,6 +1269,10 @@ class TrainingBackend:
         final_loss: Optional[float],
         duration: Optional[float],
         loss_history: list,
+        status: str = "stopped",
+        error_message: Optional[str] = None,
+        clear_output_dir: bool = False,
+        resume_blocked: bool = False,
     ) -> None:
         """Record a force-stopped run finished by its captured id, from state snapshotted
         under the lock. insert_metrics_batch upserts and finish_run is an idempotent UPDATE,
@@ -1197,14 +1291,16 @@ class TrainingBackend:
                 sparkline = downsample(loss_history, 50)
                 finish_run(
                     id = run_id,
-                    status = "stopped",
+                    status = status,
                     ended_at = datetime.now(timezone.utc).isoformat(),
                     final_step = final_step,
                     final_loss = final_loss,
                     duration_seconds = duration,
                     loss_sparkline = _json.dumps(sparkline),
                     output_dir = output_dir,
-                    error_message = None,
+                    error_message = error_message,
+                    clear_output_dir = clear_output_dir,
+                    resume_blocked = resume_blocked,
                 )
                 return
             except Exception:
@@ -1234,7 +1330,7 @@ class TrainingBackend:
                 logger.info("Force-terminating training subprocess (pid=%s)", proc.pid)
                 proc.terminate()
             cancelled = self._cancel_requested
-            output_dir = self._output_dir
+            output_dir = self._cancel_cleanup_output_dir or self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -1598,16 +1694,59 @@ class TrainingBackend:
                             )
 
                 self._ensure_db_run_created()
-                self._finalize_run_in_db(
-                    status = "stopped" if self._should_stop else "error",
-                    error_message = None
-                    if self._should_stop
-                    else "Training process terminated unexpectedly",
-                )
+                terminal_payload = self._terminal_finalize_kwargs()
+                with self._lock:
+                    if terminal_payload["clear_output_dir"]:
+                        self._output_dir = self._progress.output_dir = None
+                    if terminal_payload.get("error_message"):
+                        self._progress.error = terminal_payload["error_message"]
+                        self._progress.status_message = terminal_payload["error_message"]
+                self._finalize_run_in_db(**terminal_payload)
             except Exception:
                 logger.exception("Training event pump: finalization after worker exit failed")
             self._pump_running = False
             return
+
+    def _has_current_resume_checkpoint(self, output_dir, step) -> bool:
+        # A valid checkpoint at the current step means the stop-and-save landed on
+        # disk even if the worker died before confirming it.
+        if not output_dir or not isinstance(step, int) or step <= 0:
+            return False
+        from core.training.resume import get_resume_checkpoint_path
+        return get_resume_checkpoint_path(output_dir, expected_step = step) is not None
+
+    def _terminal_finalize_kwargs(self) -> dict:
+        with self._lock:
+            job_id = self.current_job_id
+            payload = self._terminal_finalize_payload
+            if payload and payload.get("expected_job_id") == job_id:
+                return dict(payload)
+            cancel, stopped = self._cancel_requested, self._should_stop
+            output_dir = None if cancel else self._output_dir
+            step = self._progress.step
+            existing_error = self._progress.error
+        status, error, blocked = (
+            ("stopped", None, cancel)
+            if stopped
+            else (
+                "error",
+                existing_error or "Training process terminated unexpectedly",
+                False,
+            )
+        )
+        # Block only when no valid current-step checkpoint actually landed.
+        if stopped and not cancel and not self._has_current_resume_checkpoint(output_dir, step):
+            status = "error"
+            error = "Stop and Save ended before a valid current-step checkpoint was written."
+            blocked = True
+        return {
+            "status": status,
+            "error_message": error,
+            "output_dir": output_dir,
+            "clear_output_dir": cancel,
+            "resume_blocked": blocked,
+            "expected_job_id": job_id,
+        }
 
     def _handle_event(self, event: dict) -> None:
         """Apply a subprocess event to local state.
@@ -1767,6 +1906,15 @@ class TrainingBackend:
             elif etype == "eval_configured":
                 self.eval_enabled = True
 
+            elif etype == "output_dir":
+                event_output_dir = event.get("output_dir")
+                if self._cancel_requested:
+                    self._cancel_cleanup_output_dir = event_output_dir
+                    self._output_dir = self._progress.output_dir = None
+                else:
+                    self._output_dir = event_output_dir
+                    db_action = "persist_output_dir"
+
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
@@ -1781,7 +1929,12 @@ class TrainingBackend:
                 self._complete_seen.set()
                 self._progress.is_training = False
                 self._progress.is_completed = not stopped
-                self._output_dir = event.get("output_dir")
+                event_output_dir = event.get("output_dir")
+                if self._cancel_requested:
+                    self._cancel_cleanup_output_dir = event_output_dir
+                    self._output_dir = None
+                else:
+                    self._output_dir = event_output_dir
                 self._progress.output_dir = self._output_dir
                 self._progress.status_message = msg
                 if not self._db_run_created and self.current_job_id and self._db_config:
@@ -1791,11 +1944,16 @@ class TrainingBackend:
                 db_action_kwargs = {
                     "status": "stopped" if stopped else "completed",
                     "output_dir": self._output_dir,
+                    "clear_output_dir": self._cancel_requested,
+                    "expected_job_id": self.current_job_id,
                 }
+                self._terminal_finalize_payload = dict(db_action_kwargs)
 
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                if self._cancel_requested:
+                    self._output_dir = self._progress.output_dir = None
                 logger.error("Training error: %s", event.get("error"))
                 stack = event.get("stack", "")
                 if stack:
@@ -1804,29 +1962,36 @@ class TrainingBackend:
                     db_action = "create_and_finalize"
                 else:
                     db_action = "finalize"
+                stop_save_failed = (
+                    self._should_stop
+                    and not self._cancel_requested
+                    and not self._has_current_resume_checkpoint(
+                        self._output_dir, self._progress.step
+                    )
+                )
                 db_action_kwargs = {
-                    "status": "stopped" if self._should_stop else "error",
+                    "status": "stopped"
+                    if self._should_stop
+                    and not stop_save_failed
+                    and not event.get("keep_error_status")
+                    else "error",
                     "error_message": event.get("error", "Unknown error"),
+                    "output_dir": self._output_dir,
+                    "clear_output_dir": self._cancel_requested,
+                    "resume_blocked": stop_save_failed or bool(event.get("resume_blocked")),
+                    "expected_job_id": self.current_job_id,
                 }
+                self._terminal_finalize_payload = dict(db_action_kwargs)
 
         # --- DB I/O outside the lock ---
         if db_action == "create_run":
-            try:
-                from storage.studio_db import create_run
-
-                create_run(
-                    id = db_action_kwargs["job_id"],
-                    model_name = db_action_kwargs["model_name"],
-                    dataset_name = db_action_kwargs["dataset_name"],
-                    config_json = db_action_kwargs["config_json"],
-                    started_at = db_action_kwargs["started_at"],
-                    total_steps = db_action_kwargs["total_steps"],
-                )
-                self._db_run_created = True
+            self._ensure_db_run_created()
+            if self._db_run_created:
                 if db_action_kwargs["total_steps"]:
                     self._db_total_steps_set = True
-            except Exception:
-                logger.warning("Failed to create DB run record", exc_info = True)
+                self._persist_output_dir()
+        elif db_action == "persist_output_dir":
+            self._persist_output_dir()
         elif db_action == "create_and_finalize":
             self._ensure_db_run_created()
             self._finalize_run_in_db(**db_action_kwargs)
@@ -1844,6 +2009,22 @@ class TrainingBackend:
 
         if etype == "progress":
             self._log_training_progress()
+
+    def _persist_output_dir(self) -> None:
+        with self._lock:
+            if (
+                not self._output_dir
+                or not self.current_job_id
+                or not self._db_run_created
+                or self._cancel_requested
+            ):
+                return
+            run_id, output_dir = self.current_job_id, self._output_dir
+        try:
+            from storage.studio_db import update_run_output_dir
+            update_run_output_dir(run_id, output_dir)
+        except Exception:
+            logger.warning("Failed to persist output_dir", exc_info = True)
 
     def _log_training_progress(self) -> None:
         """One throttled training-status line to the server log (the per-step stream
@@ -1878,6 +2059,7 @@ class TrainingBackend:
         caller create at a time, and ``_db_run_created`` is published only after
         ``create_run`` commits, so a concurrent finalize never runs ``finish_run`` against a
         not-yet-inserted row (a zero-row UPDATE that would leave the run stuck as running)."""
+        self._run_intent_lock.acquire()
         with self._lock:
             if (
                 self._db_run_created
@@ -1885,6 +2067,7 @@ class TrainingBackend:
                 or not self.current_job_id
                 or not self._db_config
             ):
+                self._run_intent_lock.release()
                 return
             self._db_create_in_progress = True  # only one caller creates
             job_id = self.current_job_id
@@ -1901,6 +2084,12 @@ class TrainingBackend:
                 or _s3_dataset_name(db_config.get("s3_dataset"))
                 or "unknown"
             )
+            with self._lock:
+                if self.current_job_id != job_id:
+                    return
+                output_dir = self._output_dir
+                cancel_requested = self._cancel_requested
+                resumed_from_run_id = self._resume_source_run_id
             create_run(
                 id = job_id,
                 model_name = db_config["model_name"],
@@ -1908,6 +2097,9 @@ class TrainingBackend:
                 config_json = _json.dumps(db_config),
                 started_at = started_at,
                 total_steps = total_steps,
+                output_dir = output_dir,
+                cancel_requested = cancel_requested,
+                resumed_from_run_id = resumed_from_run_id,
             )
             created = True
         except Exception:
@@ -1922,12 +2114,15 @@ class TrainingBackend:
                     if created:
                         self._db_run_created = True  # publish only after the insert commits
                     self._db_create_in_progress = False
+            self._run_intent_lock.release()
 
     def _finalize_run_in_db(
         self,
         status: str,
         error_message: Optional[str] = None,
         output_dir: Optional[str] = None,
+        clear_output_dir: bool = False,
+        resume_blocked: bool = False,
         expected_job_id: Optional[str] = None,
     ) -> None:
         """Flush remaining metrics and mark a run finished in the DB. Claims the finalize
@@ -1950,26 +2145,33 @@ class TrainingBackend:
             duration = self._progress.elapsed_seconds
             loss_history = list(self.loss_history)
         self._flush_metrics_to_db(run_id = run_id)
-        try:
-            from storage.studio_db import finish_run
-            from utils.downsample import downsample
+        for attempt in range(_DB_FINALIZE_RETRIES):
+            try:
+                from storage.studio_db import finish_run
+                from utils.downsample import downsample
 
-            sparkline = downsample(loss_history, 50)
-            finish_run(
-                id = run_id,
-                status = status,
-                ended_at = datetime.now(timezone.utc).isoformat(),
-                final_step = final_step,
-                final_loss = final_loss,
-                duration_seconds = duration,
-                loss_sparkline = _json.dumps(sparkline),
-                output_dir = output_dir,
-                error_message = error_message,
-            )
-        except Exception:
-            with self._lock:
-                self._run_finalized = False  # unclaim so a later flush can retry
-            logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
+                finish_run(
+                    id = run_id,
+                    status = status,
+                    ended_at = datetime.now(timezone.utc).isoformat(),
+                    final_step = final_step,
+                    final_loss = final_loss,
+                    duration_seconds = duration,
+                    loss_sparkline = _json.dumps(downsample(loss_history, 50)),
+                    output_dir = output_dir,
+                    error_message = error_message,
+                    clear_output_dir = clear_output_dir,
+                    resume_blocked = resume_blocked,
+                )
+                return
+            except Exception:
+                if attempt + 1 < _DB_FINALIZE_RETRIES:
+                    time.sleep(_DB_FINALIZE_RETRY_S)
+                    continue
+                with self._lock:
+                    if self.current_job_id == run_id:
+                        self._run_finalized = False
+                logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
 
     def _flush_metrics_to_db(self, run_id: Optional[str] = None) -> None:
         """Flush buffered metrics to the DB and update live progress. The target run id,

@@ -8,6 +8,7 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -18,6 +19,10 @@ from utils import openai_auto_switch_settings as settings
 
 
 class _FakeBackend:
+    effective_parallel_slots = 1
+    _slot_save_binary = None
+    _gguf_path = None
+
     def __init__(
         self,
         loaded_id = None,
@@ -28,6 +33,22 @@ class _FakeBackend:
         self.is_loaded = loaded_id is not None
         self.hf_variant = hf_variant
         self._openai_advertised_id = advertised_id
+
+    def save_slots_for_resume(self, should_abort = None):
+        return None
+
+    def restore_slots_for_resume(self, manifest):
+        return None
+
+    def _slot_launch_fingerprint(self):
+        return ((), None, None, 1)
+
+    def _gguf_file_identity(self, path):
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return ((st.st_size, st.st_mtime_ns),)
 
 
 class _LoadRecorder:
@@ -47,16 +68,27 @@ class _LoadRecorder:
         request,
         fastapi_request,
         current_subject = None,
+        *,
+        current_request_counted = False,
     ):
+        # Mirror the production load boundary before recording any replacement.
+        await inference_route._wait_for_model_switch_idle(
+            current_request_counted = current_request_counted
+        )
         self.calls.append(request)
         if self.fail:
             from fastapi import HTTPException
             raise HTTPException(status_code = 503, detail = "load failed")
         self.backend.model_identifier = request.model_path
+        self.backend.hf_variant = getattr(request, "gguf_variant", None)
+        self.backend._gguf_path = request.model_path
         self.backend.is_loaded = True
         # Mirror _load_model_impl: a load advertises its own id until the
         # auto-switch caller overwrites it with the repo id.
         self.backend._openai_advertised_id = None
+        from core.inference import llama_keepwarm as kw
+
+        kw.note_model_loaded(self.backend)
         return None
 
 
@@ -68,7 +100,6 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     # gate that auto-switch already owns, so it calls the impl directly).
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
 
 def _run_hook(model = "some/model"):
@@ -444,6 +475,75 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert unloads == [1]  # freed once, not repeatedly
     stash = kw.get_last_unloaded_model()
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
+
+
+def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    backend = _FakeBackend("unsloth/Idle-GGUF")
+    manifests = []
+
+    def _save(should_abort = None):
+        if manifests:
+            return None
+        saved.write_bytes(b"kv")
+        manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": saved.name}]}
+        manifests.append(manifest)
+        return manifest
+
+    def _unload():
+        raise RuntimeError("cuda teardown failed")
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if manifests and not saved.exists():
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert manifests and not saved.exists()
+    assert kw._kv_resume is None
+
+
+def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
+    # PUT leaves keep-KV on but makes idle unload inactive: saved KV must go too.
+    import routes.settings as settings_route
+    from core.inference import llama_keepwarm as kw
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    saved.write_bytes(b"kv")
+    kw._kv_resume = {
+        "identity": ("m", None, "m"),
+        "dir": str(tmp_path),
+        "slots": [{"id": 0, "filename": saved.name}],
+    }
+    monkeypatch.setattr(settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True))
+    monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = False)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    assert resp.idle_unload_active is False and resp.auto_unload_keep_kv is True
+    assert kw._kv_resume is None and not saved.exists()
 
 
 def test_audio_generate_is_tracked_as_inference_path():
@@ -1110,10 +1210,9 @@ def test_middleware_ignores_non_post(monkeypatch):
 # ── review round 4: swap guard, idle variant identity, load-by-path, stash clear ──
 
 
-def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
-    # A cross-model swap must 409 (not kill) while another inference request is in
-    # flight; the requesting call itself is excluded from the count.
-    from fastapi import HTTPException
+def test_auto_switch_waits_for_another_inference_to_finish(monkeypatch):
+    # A cross-model swap queues while another request is generating, then loads
+    # after that request drains. The requesting call itself is excluded.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M")
@@ -1127,10 +1226,18 @@ def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # this request + another active one
     monkeypatch.setattr(kw, "_pending", 0)
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("org/B-GGUF:Q8_0")
-    assert exc.value.status_code == 409
-    assert rec.calls == []
+
+    async def _drive():
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
+        )
+        await asyncio.sleep(0.05)
+        assert rec.calls == []
+        kw._note_end()  # the other generation finishes; this request remains counted
+        await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(_drive())
+    assert len(rec.calls) == 1
 
 
 def test_auto_switch_swaps_when_only_caller_is_active(monkeypatch):
@@ -1316,13 +1423,12 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
     monkeypatch.setattr(kw, "_pending", 0)
     inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
     _run_hook("org/B-GGUF:Q8_0")
-    assert len(rec.calls) == 1  # loads once, no 409
+    assert len(rec.calls) == 1
 
 
-def test_swap_still_refused_when_other_request_targets_different_model(monkeypatch):
-    # A concurrent request heading to a different target still blocks the swap: the
-    # same-target exclusion must not swallow a genuinely conflicting request.
-    from fastapi import HTTPException
+def test_queued_different_target_does_not_deadlock_current_swap(monkeypatch):
+    # A concurrent request already queued for another target is not generating,
+    # so it must not prevent the current serialized swap from proceeding.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1337,10 +1443,8 @@ def test_swap_still_refused_when_other_request_targets_different_model(monkeypat
     monkeypatch.setattr(kw, "_inflight", 2)
     monkeypatch.setattr(kw, "_pending", 0)
     inference_route._note_switch_waiter(inference_route._switch_key("org/C-GGUF", "Q4_K_M"), 1)
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("org/B-GGUF:Q8_0")
-    assert exc.value.status_code == 409
-    assert rec.calls == []
+    _run_hook("org/B-GGUF:Q8_0")
+    assert len(rec.calls) == 1
 
 
 def test_v1_models_advertises_repo_id_not_load_path(monkeypatch):
@@ -1386,6 +1490,37 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
     assert "_load_model_impl" in src
 
 
+def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
+    # Both replacement directions drain active inference, then recheck whether a
+    # sidecar install reserved the lifecycle gate during that wait. Exact-model
+    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
+    gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
+    unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
+    standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
+    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+    already_loaded = src.index('status = "already_loaded"')
+
+    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
+    assert standard_wait < standard_sidecar_check < unload_gguf
+
+
+def test_switch_waiter_deregisters_before_swap_gate_release():
+    # A waiter left registered after the swap gate is released would let a swap on
+    # another event loop count the finished request as still queued, pass the drain
+    # early, and unload the model that request is about to generate against.
+    import inspect
+
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    deregister = src.index("_note_switch_waiter(key, -1)")
+    release = src.index("_auto_switch_process_lock.release()")
+    assert deregister < release
+
+
 def _anthropic_payload(max_tokens = None):
     from models.inference import AnthropicMessagesRequest, AnthropicMessage
     return AnthropicMessagesRequest(
@@ -1424,9 +1559,9 @@ def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
 # ── review round 6: concurrency ordering, external untrack, unload gate, ids ──
 
 
-def test_pending_same_target_request_does_not_force_409(monkeypatch):
+def test_pending_same_target_request_does_not_block_swap(monkeypatch):
     # A second same-target request blocked in the middleware (pending, not yet
-    # generating) must not make the first request 409: pending is excluded.
+    # generating) must not block the first request: pending is excluded.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1441,13 +1576,13 @@ def test_pending_same_target_request_does_not_force_409(monkeypatch):
     monkeypatch.setattr(kw, "_inflight", 1)  # just the caller
     monkeypatch.setattr(kw, "_pending", 1)  # second request blocked in middleware
     _run_hook("org/B-GGUF:Q8_0")
-    assert len(rec.calls) == 1  # loads once, no 409
+    assert len(rec.calls) == 1
 
 
-def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypatch):
+def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
     # The real middleware counts a concurrent same-model request as in-flight
-    # before it resolves and registers a target waiter. The raw-request waiter,
-    # registered before resolve, must still exclude it so the first request loads.
+    # before it resolves and registers a target waiter. Treat it as active until
+    # its target is known, then recognize it as another queued switch request.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1461,10 +1596,20 @@ def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypat
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # caller + a still-resolving twin
     monkeypatch.setattr(kw, "_pending", 0)
-    # The twin has only registered its raw requested model (not yet a target waiter).
-    inference_route._note_request_waiter(inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1)
-    _run_hook("org/B-GGUF:Q8_0")
-    assert len(rec.calls) == 1  # loads once, no 409
+    # The twin is still resolving, so it is counted in-flight but has not joined
+    # the concrete target queue yet.
+
+    async def _drive():
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
+        )
+        await asyncio.sleep(0.05)
+        assert rec.calls == []
+        inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
+        await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(_drive())
+    assert len(rec.calls) == 1
 
 
 def test_external_untrack_decrements_inflight_and_is_idempotent():
@@ -1500,11 +1645,9 @@ def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
     assert not backend.is_loaded  # torn down despite the active request
 
 
-def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
+def test_auto_switch_waits_when_unsloth_stream_active(monkeypatch):
     # The GGUF slot is empty but an Unsloth model is streaming (counted in-flight).
-    # _load_model_impl would unload it, so auto-switch must 409, not only when a
-    # GGUF is loaded.
-    from fastapi import HTTPException
+    # The replacement waits for it just as it does for a GGUF generation.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # no GGUF loaded
@@ -1518,10 +1661,18 @@ def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # an Unsloth stream + this request
     monkeypatch.setattr(kw, "_pending", 0)
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("org/B-GGUF:Q8_0")
-    assert exc.value.status_code == 409
-    assert rec.calls == []  # the active Unsloth model is not torn down
+
+    async def _drive():
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
+        )
+        await asyncio.sleep(0.05)
+        assert rec.calls == []
+        kw._note_end()
+        await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(_drive())
+    assert len(rec.calls) == 1
 
 
 def test_public_model_id_prefers_advertised_over_path():
@@ -2912,8 +3063,10 @@ def test_non_gguf_load_clears_reload_stash():
     # A non-GGUF (Transformers/Unsloth) load must clear the stash like the GGUF
     # branch, so it never lingers until the idle poll (or forever, idle-unload off).
     import inspect
+
     src = inspect.getsource(inference_route._load_model_impl)
-    assert src.count("note_model_loaded()") >= 2
+    assert src.count("note_model_loaded()") >= 1  # non-GGUF branch
+    assert "to_thread(note_model_loaded, llama_backend)" in src  # GGUF branch
 
 
 def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
@@ -3000,6 +3153,8 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         request,
         fastapi_request,
         current_subject = None,
+        *,
+        current_request_counted = False,
     ):
         with slock:
             state["cur"] += 1
@@ -3017,7 +3172,6 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
     barrier = threading.Barrier(2)
 
@@ -3119,6 +3273,495 @@ def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeyp
         monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
     )
     assert "Model auto-switch" in non_gguf_loaded
+
+
+# ── idle-unload KV persistence (slot save/restore) ──────────────────
+
+
+def _seed_kv_manifest(
+    tmp_path,
+    identity = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+    gguf = None,
+):
+    if gguf is None:
+        gguf_file = tmp_path / "model.gguf"
+        gguf_file.write_bytes(b"gguf")
+        gguf = str(gguf_file)
+    st = os.stat(gguf)
+    state_file = tmp_path / "resume-abc-slot0.bin"
+    state_file.write_bytes(b"kv")
+    return state_file, {
+        "identity": identity,
+        "dir": str(tmp_path),
+        "binary": ("/bin/llama-server", 111),
+        "gguf": gguf,
+        "gguf_stat": ((st.st_size, st.st_mtime_ns),),
+        "launch": ((), None, None, 1),
+        "slots": [{"id": 0, "filename": state_file.name, "n_saved": 42}],
+    }
+
+
+def _drive_idle_loop(
+    kw,
+    poll_seconds = 0.02,
+    run_for = 0.2,
+):
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = poll_seconds))
+        await asyncio.sleep(run_for)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+
+
+def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    events = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    manifest = {
+        "dir": str(tmp_path),
+        "binary": ("bin", 1),
+        "slots": [{"id": 0, "filename": "f.bin", "n_saved": 42}],
+    }
+
+    def _save(should_abort = None):
+        events.append("save")
+        return manifest
+
+    def _unload():
+        events.append("unload")
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    # KV must be saved while the server is still alive, then exactly one unload.
+    assert events == ["save", "unload"]
+    assert kw.get_last_unloaded_model()[:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
+    resume = kw.take_kv_resume()
+    assert resume is not None
+    assert resume["identity"][:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
+    assert resume["slots"][0]["filename"] == "f.bin"
+
+
+def test_idle_save_failure_still_unloads_plain(monkeypatch):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+
+    def _save(should_abort = None):
+        raise RuntimeError("slot save exploded")
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert unloads == [1]  # the save failure must not skip the unload
+    assert kw.get_last_unloaded_model() is not None
+    assert kw.take_kv_resume() is None
+
+
+def test_keep_kv_setting_off_skips_save(monkeypatch):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    saves, unloads = [], []
+    backend = _FakeBackend("unsloth/Idle-GGUF")
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = lambda *a, **k: saves.append(1)
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert saves == []
+    assert unloads == [1]
+    assert kw.take_kv_resume() is None
+
+
+def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    keep = {"on": True}
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: keep["on"])
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    state_file = tmp_path / "resume-mid-slot0.bin"
+    state_file.write_bytes(b"kv")
+    manifest = {
+        "dir": str(tmp_path),
+        "binary": ("bin", 1),
+        "slots": [{"id": 0, "filename": state_file.name, "n_saved": 1}],
+    }
+
+    def _save(should_abort = None):
+        keep["on"] = False  # user flips the toggle while the save runs
+        return manifest
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert unloads == [1]  # still unloads; only the stash is dropped
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    ttl = {"v": 0.005}
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: ttl["v"])
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    state_file = tmp_path / "resume-mid-slot0.bin"
+    state_file.write_bytes(b"kv")
+    manifest = {
+        "dir": str(tmp_path),
+        "binary": ("bin", 1),
+        "slots": [{"id": 0, "filename": state_file.name, "n_saved": 1}],
+    }
+
+    def _save(should_abort = None):
+        ttl["v"] = 0  # user turns idle unload off while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert unloads == []  # the unload was cancelled by the setting change
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_alias_reload_restores_slots_and_deletes_files(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # idle-unload emptied the backend
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    monkeypatch.setattr(kw, "_last_unloaded_model", (manifest["gguf"], "Q4_K_M"))
+    monkeypatch.setattr(kw, "_kv_resume", manifest)
+
+    _run_hook("gpt-4o-mini")
+    assert len(rec.calls) == 1
+    assert len(restored) == 1  # same model + binary: restore ran
+    assert not state_file.exists()  # state file deleted after the restore
+    assert kw._kv_resume is None
+
+
+def test_no_restore_when_different_model_loads(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 0)
+    state_file, manifest = _seed_kv_manifest(tmp_path)  # manifest is for model A
+    monkeypatch.setattr(kw, "_kv_resume", manifest)
+
+    _run_hook("unsloth/B-GGUF")
+    assert len(rec.calls) == 1
+    assert restored == []  # different model: never restored
+    assert not state_file.exists()  # but the stale files are gone
+    assert kw._kv_resume is None
+
+
+def test_restore_skipped_when_binary_changed(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
+    backend._gguf_path = manifest["gguf"]
+    backend._slot_save_binary = ("/bin/llama-server", 222)  # newer mtime
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    kw.restore_kv_resume(backend, manifest)
+    assert restored == []
+    assert not state_file.exists()
+
+
+def test_restore_skipped_when_launch_config_changed(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
+    backend._gguf_path = manifest["gguf"]
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    backend._slot_launch_fingerprint = lambda: (("--rope-freq-scale", "0.5"), None, None, 1)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    kw.restore_kv_resume(backend, manifest)
+    assert restored == []
+    assert not state_file.exists()
+
+
+def test_restore_skipped_when_gguf_rewritten_in_place(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    with open(manifest["gguf"], "wb") as fh:
+        fh.write(b"different weights")  # same path, new content
+    backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
+    backend._gguf_path = manifest["gguf"]
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    kw.restore_kv_resume(backend, manifest)
+    assert restored == []
+    assert not state_file.exists()
+
+
+def test_note_model_unloaded_purges_manifest_and_files(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
+    kw._set_kv_resume(manifest)
+    kw.note_model_unloaded()
+    assert kw.get_last_unloaded_model() is None
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_note_model_loaded_purges_manifest_and_files(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
+    kw._set_kv_resume(manifest)
+    kw.note_model_loaded()
+    assert kw.get_last_unloaded_model() is None
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_new_idle_save_purges_previous_manifest_files(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    old_file, old_manifest = _seed_kv_manifest(tmp_path)
+    kw._set_kv_resume(old_manifest)
+    new_file = tmp_path / "resume-def-slot0.bin"
+    new_file.write_bytes(b"kv2")
+    kw._set_kv_resume(
+        {
+            "identity": ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+            "dir": str(tmp_path),
+            "binary": ("/bin/llama-server", 111),
+            "slots": [{"id": 0, "filename": new_file.name, "n_saved": 7}],
+        }
+    )
+    assert not old_file.exists()  # replaced manifest's files purged
+    assert new_file.exists()
+    assert kw.take_kv_resume()["slots"][0]["filename"] == new_file.name
+
+
+def test_sweep_slot_save_dir_removes_only_resume_files(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(storage_roots, "llama_slot_cache_root", lambda: tmp_path)
+    stale = tmp_path / "resume-old-slot0.bin"
+    stale.write_bytes(b"kv")
+    other = tmp_path / "unrelated.txt"
+    other.write_text("keep")
+    kw.sweep_slot_save_dir()
+    assert not stale.exists()
+    assert other.exists()
+
+
+def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+
+    assert settings.get_auto_unload_keep_kv() is True  # default when never stored
+    assert settings.set_openai_auto_switch(True, 60, False)[2] is False
+    assert store[settings.AUTO_UNLOAD_KEEP_KV_SETTING_KEY] is False
+    assert settings.get_auto_unload_keep_kv() is False
+    # None leaves the stored value untouched (older clients can't reset it).
+    assert settings.set_openai_auto_switch(True, 60, None)[2] is False
+    assert store[settings.AUTO_UNLOAD_KEEP_KV_SETTING_KEY] is False
+    with pytest.raises(ValueError, match = "true or false"):
+        settings.set_openai_auto_switch(True, 60, "garbage")
+
+
+def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
+    # The loop's stale-stash purge must wait on the gate a mid-reload holds.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 3600)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic()
+    backend = _FakeBackend("unsloth/New-GGUF")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    kw._kv_resume = manifest
+    kw._last_unloaded_model = ("unsloth/A-GGUF", "Q4_K_M")
+
+    assert kw._lifecycle_lock.acquire(blocking = False)  # simulate in-flight reload
+    try:
+        _drive_idle_loop(kw)
+        assert kw._kv_resume is manifest  # purge deferred while the gate is held
+        assert state_file.exists()
+    finally:
+        kw._lifecycle_lock.release()
+    _drive_idle_loop(kw)
+    assert kw._kv_resume is None  # gate freed: genuinely stale stash purged
+    assert not state_file.exists()
+
+
+def test_put_route_disabling_keep_kv_purges_saved_state(monkeypatch, tmp_path):
+    import routes.settings as settings_route
+    import storage.studio_db as db
+    from core.inference import llama_keepwarm as kw
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    monkeypatch.setattr(kw, "_kv_resume", manifest)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_keep_kv = False)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    assert resp.auto_unload_keep_kv is False
+    assert kw._kv_resume is None
+    assert not state_file.exists()
+
+
+def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
+    # A keep-KV-only update must not materialize the env TTL as a stored value.
+    import routes.settings as settings_route
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
+
+    assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
+    enabled, idle, keep_kv = settings.set_openai_auto_switch(False, None, False)
+    assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
+    assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
+    assert (enabled, idle, keep_kv) == (False, 600, False)
+
+
+def test_load_impl_notes_loaded_with_backend_off_loop():
+    import inspect
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert "to_thread(note_model_loaded, llama_backend)" in src
+
+
+def test_restore_matches_gguf_realpath_across_naming(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    blob = tmp_path / "blob.gguf"
+    blob.write_bytes(b"gguf")
+    link = tmp_path / "snapshot.gguf"
+    try:
+        link.symlink_to(blob)
+    except OSError:
+        pytest.skip("symlinks unsupported on this host")
+
+    backend = _FakeBackend("/hf/snapshots/d7f5", hf_variant = None)
+    backend._gguf_path = str(link)  # reload resolved the symlink spelling
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+    state_file, manifest = _seed_kv_manifest(
+        tmp_path, identity = ("unsloth/A-GGUF", None, "unsloth/A-GGUF"), gguf = str(blob)
+    )
+
+    kw.restore_kv_resume(backend, manifest)
+    assert len(restored) == 1  # names differ, file identical: restore ran
+    assert not state_file.exists()
 
 
 def test_setter_rejects_idle_below_floor(monkeypatch):
