@@ -1244,9 +1244,9 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
             flush = True,
         )
         sys.exit(1)
-    if not supplied.strip():
+    if any(ch.isspace() for ch in supplied):
         print(
-            "Error: password cannot consist only of spaces; not starting.",
+            "Error: password cannot contain spaces; not starting.",
             file = sys.stderr,
             flush = True,
         )

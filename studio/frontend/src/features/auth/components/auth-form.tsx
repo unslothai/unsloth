@@ -196,7 +196,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     !isLoginMode &&
     (currentPassword.length < 8 ||
       newPassword.length < 8 ||
-      newPassword.trim().length === 0 ||
+      /\s/.test(newPassword) ||
       newPassword !== confirmPassword ||
       currentPassword === newPassword);
   const showPasswordMismatchWarning =
@@ -223,8 +223,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         setError("New password must be at least 8 characters.");
         return;
       }
-      if (newPassword.trim().length === 0) {
-        setError("New password cannot consist only of spaces.");
+      if (/\s/.test(newPassword)) {
+        setError("New password cannot contain spaces.");
         return;
       }
       if (newPassword !== confirmPassword) {

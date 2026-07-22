@@ -187,7 +187,16 @@ def test_loop_whitespace_only_reprompts(monkeypatch):
     ok, applied, out = _run_loop(monkeypatch, _keys(" " * 8, "long-enough-pw", "long-enough-pw"))
     assert ok is True
     assert applied == ["long-enough-pw"]
-    assert "only of spaces" in out
+    assert "contain spaces" in out
+
+
+def test_loop_password_with_inner_space_reprompts(monkeypatch):
+    ok, applied, out = _run_loop(
+        monkeypatch, _keys("has space pw", "long-enough-pw", "long-enough-pw")
+    )
+    assert ok is True
+    assert applied == ["long-enough-pw"]
+    assert "contain spaces" in out
 
 
 def test_loop_rejects_current_password(monkeypatch):

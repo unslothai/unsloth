@@ -196,7 +196,7 @@ export const en = {
         currentTooShort:
           "Current password must be at least {minLength} characters.",
         newTooShort: "New password must be at least {minLength} characters.",
-        newAllSpaces: "New password cannot consist only of spaces.",
+        newHasSpaces: "New password cannot contain spaces.",
         mismatch: "Passwords do not match.",
         samePassword:
           "New password must be different from your current password.",

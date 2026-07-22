@@ -51,10 +51,17 @@ def test_rejects_tabs_and_spaces_password(_user):
     assert excinfo.value.status_code == 400
 
 
-def test_allows_password_containing_spaces(_user, monkeypatch):
+def test_rejects_password_containing_spaces(_user):
+    with pytest.raises(HTTPException) as excinfo:
+        _change("correct horse battery")
+    assert excinfo.value.status_code == 400
+    assert "spaces" in excinfo.value.detail
+
+
+def test_allows_password_without_spaces(_user, monkeypatch):
     monkeypatch.setattr(auth_routes.storage, "update_password", lambda *args, **kwargs: True)
     monkeypatch.setattr(auth_routes, "create_access_token", lambda subject: "at")
     monkeypatch.setattr(auth_routes, "create_refresh_token", lambda subject: "rt")
-    token = _change("correct horse battery")
+    token = _change("correct-horse-battery")
     assert token.access_token == "at"
     assert token.must_change_password is False
