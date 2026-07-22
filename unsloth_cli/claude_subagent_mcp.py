@@ -213,6 +213,7 @@ def _response(
     tool_description: str | None = None,
     run_read_only_agent: Callable[[str], str] | None = None,
     read_only_tool_name: str | None = None,
+    instructions: str | None = None,
 ) -> dict | None:
     request_id = request.get("id")
     method = request.get("method")
@@ -225,6 +226,8 @@ def _response(
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "unsloth-local-agent", "version": "1.0.0"},
         }
+        if instructions:
+            result["instructions"] = instructions
     elif method == "ping":
         result = {}
     elif method == "tools/list":
@@ -303,6 +306,7 @@ def serve(
     tool_description: str | None = None,
     run_read_only_agent: Callable[[str, threading.Event], str] | None = None,
     read_only_tool_name: str | None = None,
+    instructions: str | None = None,
 ) -> None:
     active: dict[object, threading.Event] = {}
     workers: list[threading.Thread] = []
@@ -350,6 +354,7 @@ def serve(
                     else None
                 ),
                 read_only_tool_name = read_only_tool_name,
+                instructions = instructions,
             )
             if not cancel_event.is_set():
                 send(response)
@@ -395,6 +400,7 @@ def serve(
                             else None
                         ),
                         read_only_tool_name = read_only_tool_name,
+                        instructions = instructions,
                     )
             except Exception as exc:
                 response = {

@@ -28,6 +28,11 @@ from unsloth_cli.commands.start import (
 )
 
 _CANCEL_POLL_SECONDS = 0.1
+_SERVER_INSTRUCTIONS = (
+    "When the user asks to spawn an Unsloth agent or a local agent, call "
+    "spawn_local_agent with the complete task. Do not use Codex's built-in "
+    "spawn_agent for those requests. Use built-in agents for other subagent requests."
+)
 
 
 def _config() -> dict:
@@ -161,6 +166,7 @@ def main() -> None:
         run_agent = run_local_agent,
         tool_name = _CODEX_SUBAGENT_MCP_TOOL,
         tool_description = _CODEX_SUBAGENT_TOOL_DESCRIPTION,
+        instructions = _SERVER_INSTRUCTIONS,
     )
 
 

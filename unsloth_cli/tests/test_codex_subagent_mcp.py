@@ -30,6 +30,7 @@ def _write_config(tmp_path, *, bypass_permissions = False):
 def test_protocol_uses_codex_specific_tool_name():
     requests = "\n".join(
         [
+            json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize"}),
             json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
             json.dumps(
                 {
@@ -51,10 +52,12 @@ def test_protocol_uses_codex_specific_tool_name():
         run_agent = lambda task, cancel_event: f"completed: {task}",
         tool_name = bridge._CODEX_SUBAGENT_MCP_TOOL,
         tool_description = bridge._CODEX_SUBAGENT_TOOL_DESCRIPTION,
+        instructions = bridge._SERVER_INSTRUCTIONS,
     )
     responses = {
         response["id"]: response for response in map(json.loads, output.getvalue().splitlines())
     }
+    assert responses[0]["result"]["instructions"] == bridge._SERVER_INSTRUCTIONS
     assert responses[1]["result"]["tools"][0]["name"] == "spawn_local_agent"
     assert (
         "Use this tool instead of the built-in spawn_agent tool"
