@@ -2127,10 +2127,9 @@ _has_amd_rocm_gpu() {
     return 1
 }
 
-# Returns 0 if an AMD display GPU is on the PCI bus, regardless of whether ROCm
-# can use it. Used only to sharpen the "no GPU detected" hint: a Strix Halo iGPU
-# whose ROCm kernel interface (/dev/kfd) is absent shows here but not in
-# _has_amd_rocm_gpu. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
+# Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
+# (e.g. a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected"
+# hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
 _amd_gpu_present_via_pci() {
     [ -d /sys/bus/pci/devices ] || return 1
     for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
