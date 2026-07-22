@@ -1460,7 +1460,6 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const deepResearchEnabled = useChatRuntimeStore(
     (s) => s.deepResearchEnabled,
   );
@@ -1624,21 +1623,6 @@ const Composer: FC<{
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
-  // Two-row layout shows once the input wraps or a tool is on. Tools can
-  // pre-select before a model loads, so an active toggle expands it either way.
-  // Keep the composer expanded whenever the permission pill is visible.
-  const composerExpanded =
-    isMultiline ||
-    hasAttachments ||
-    hasPendingAudio ||
-    toolsEnabled ||
-    codeToolsEnabled ||
-    imageToolsEnabled ||
-    ragEnabled ||
-    artifactsEnabled ||
-    mcpEnabledForChat ||
-    effectiveDeepResearchEnabled ||
-    permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1951,25 +1935,21 @@ const Composer: FC<{
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
           />
-          {/* Permission-level pill: always visible, even while the pill row
-              is collapsed; opens the permission level dropdown. */}
+          {/* Permission-level pill: always visible and opens the permission
+              level dropdown. */}
           <PermissionModeComposerPill side={effectiveMenuSide} />
           {effectiveDeepResearchEnabled ? (
             <DeepResearchComposerButton
               onConfigure={() => setResearchWebsiteAccessOpen(true)}
             />
           ) : null}
-          {composerExpanded ? (
-            <>
-              <WebSearchToggle />
-              <CodeToolsToggle />
-              <ImagesToggle />
-              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-              {artifactsEnabled ? <ArtifactsToggle /> : null}
-              {mcpEnabledForChat ? (
-                <McpComposerButton side={effectiveMenuSide} />
-              ) : null}
-            </>
+          <WebSearchToggle />
+          <CodeToolsToggle />
+          <ImagesToggle />
+          <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+          {artifactsEnabled ? <ArtifactsToggle /> : null}
+          {mcpEnabledForChat ? (
+            <McpComposerButton side={effectiveMenuSide} />
           ) : null}
         </div>
         <ComposerPrimitive.Input
