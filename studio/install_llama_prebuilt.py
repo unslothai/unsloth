@@ -206,6 +206,8 @@ def staged_validation_enabled() -> bool:
         return True
     raw = os.environ.get("UNSLOTH_LLAMA_STAGED_VALIDATION", "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
