@@ -49,6 +49,12 @@ _PUBLIC_PROBE_TIMEOUT = 10.0
 _PUBLIC_PROBE_ATTEMPT_TIMEOUT = 5.0
 _PUBLIC_PROBE_RETRY_DELAY = 1.0
 
+# Wait for the hostname via DoH first: an early OS lookup negative-caches the
+# NXDOMAIN for up to 30 min.
+_DNS_WAIT_TIMEOUT = 45.0
+_DNS_POLL_DELAY = 2.0
+_DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
+
 
 def _windows_hidden_kwargs() -> dict:
     """Suppress a child console window on Windows; no-op elsewhere."""
@@ -200,9 +206,37 @@ def ensure_cloudflared() -> Optional[str]:
         return None
 
 
+def _wait_for_dns(host: str, timeout: float = _DNS_WAIT_TIMEOUT) -> None:
+    import json
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            req = urllib.request.Request(
+                _DOH_URL.format(host = host),
+                headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
+            )
+            with urllib.request.urlopen(req, timeout = 5) as response:
+                answered = bool(json.loads(response.read(65536)).get("Answer"))
+        except Exception:
+            return
+        if answered:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_DNS_POLL_DELAY, remaining))
+
+
 def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     import json
     import urllib.request
+    from urllib.parse import urlsplit
+
+    host = urlsplit(url).hostname
+    if host:
+        _wait_for_dns(host)
 
     probe_url = f"{url.rstrip('/')}{_PUBLIC_PROBE_PATH}"
     deadline = time.monotonic() + timeout
@@ -355,8 +389,8 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
     Waits for cloudflared to both mint the URL and register an edge connection,
     then fetches /api/health over the public URL, so the caller never advertises
     a link that yields Cloudflare error 1033 (HTTP 530) or an unresolvable host.
-    If a URL is minted but never becomes usable within the window (e.g. quic is
-    blocked on this network), retries once forcing the http2 protocol. On any
+    If a URL is minted but no connection registers within the window (e.g. quic
+    is blocked on this network), retries once forcing the http2 protocol. On any
     failure the tunnel is stopped and None is returned.
     """
     global _active_tunnel, _shutdown_requested
@@ -380,9 +414,11 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
             prior, _active_tunnel = _active_tunnel, tunnel
         if prior is not None:
             prior.stop()
+        registered = False
         try:
             tunnel.start()
             url = tunnel.wait_for_ready(timeout)
+            registered = url is not None
             if url and not verify_public_url(url):
                 url = None
         except Exception:
@@ -403,6 +439,9 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
         # No URL at all is an API/network failure, not a protocol one; forcing
         # http2 will not help, so do not burn another window on it.
         if not saw_url:
+            return None
+        # probe failure after registering is DNS propagation; http2 would not help
+        if registered:
             return None
     return None
 

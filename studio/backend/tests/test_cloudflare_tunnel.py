@@ -425,6 +425,46 @@ def _patch_urlopen(monkeypatch, handler):
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: handler(req))
 
 
+@pytest.fixture(autouse = True)
+def _stub_dns_wait(monkeypatch, request):
+    if request.node.name.startswith("test_verify_public_url"):
+        monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **kw: None)
+
+
+def test_wait_for_dns_polls_until_answer(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if len(calls) < 3:
+            return _FakeResponse(b'{"Status":3}')
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com")
+    assert len(calls) == 3
+    assert "name=words.trycloudflare.com" in calls[0]
+
+
+def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
+    _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b'{"Status":3}'))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", timeout = 0.05)
+
+
+def test_wait_for_dns_bails_on_doh_error(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        raise OSError("blocked")
+
+    _patch_urlopen(monkeypatch, handler)
+    ct._wait_for_dns("words.trycloudflare.com")
+    assert len(calls) == 1
+
+
 def test_verify_public_url_accepts_studio_marker(monkeypatch):
     seen = {}
 
@@ -435,6 +475,20 @@ def test_verify_public_url_accepts_studio_marker(monkeypatch):
     _patch_urlopen(monkeypatch, handler)
     assert ct.verify_public_url("https://words.trycloudflare.com") is True
     assert seen["url"] == "https://words.trycloudflare.com/api/health"
+
+
+def test_verify_public_url_waits_for_dns_first(monkeypatch):
+    order = []
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda host, **kw: order.append(("dns", host)))
+
+    def handler(req):
+        order.append(("probe", req.full_url))
+        return _FakeResponse(b'{"service":"Unsloth UI Backend"}')
+
+    _patch_urlopen(monkeypatch, handler)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert order[0] == ("dns", "words.trycloudflare.com")
+    assert order[1][0] == "probe"
 
 
 def test_verify_public_url_retries_then_succeeds(monkeypatch):
@@ -507,7 +561,7 @@ def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatc
     monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
     monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: False)
     assert ct.start_studio_tunnel(8080) is None
-    assert attempts == [None, "http2"]
+    assert attempts == [None]
     assert ct._active_tunnel is None
 
 
@@ -535,14 +589,14 @@ def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
 
     def _probe(url, **kw):
         probed.append(url)
-        return len(probed) > 1
+        return True
 
     monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
     monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
     monkeypatch.setattr(ct, "verify_public_url", _probe)
     try:
         assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
-        assert probed == ["https://words.trycloudflare.com"] * 2
+        assert probed == ["https://words.trycloudflare.com"]
     finally:
         ct.stop_studio_tunnel()
 
