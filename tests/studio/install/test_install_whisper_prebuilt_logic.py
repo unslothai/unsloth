@@ -278,9 +278,7 @@ def test_select_artifact_never_picks_fat_gpu_bundles():
     assert M.select_artifact(manifest, cuda_host, "cuda") is None
     rocm_host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1100")
     assert M.select_artifact(manifest, rocm_host, "rocm") is None
-    artifact, backend, used_fallback = M.select_artifact_with_fallback(
-        manifest, cuda_host, "cuda"
-    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(manifest, cuda_host, "cuda")
     assert artifact["asset"] == "whisper-linux-x64-cpu.tar.gz"
     assert backend == "cpu" and used_fallback is True
 
