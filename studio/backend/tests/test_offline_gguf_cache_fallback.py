@@ -231,6 +231,10 @@ class TestGgufVariantFileResolution:
             return f"/fake/{repo_id}/{filename}"
 
         monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+        )
         with (
             patch(
                 "huggingface_hub.list_repo_files",
@@ -498,6 +502,10 @@ class TestGgufVariantFileResolution:
             return f"/fake/{repo_id}/{filename}"
 
         monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+        )
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: files),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
