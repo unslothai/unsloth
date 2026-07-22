@@ -109,7 +109,6 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
     "result, call wait, or use a built-in subagent before calling the tool. Use built-in "
     "subagents for other delegation requests."
 )
-_CLAUDE_SUBAGENT_NAME = "local-subagent"
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
@@ -241,12 +240,6 @@ _AS_SUBAGENT_OPTION = typer.Option(
     "--as-subagent",
     rich_help_panel = _PANEL_SESSION,
     help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
-)
-_NATIVE_SUBAGENT_OPTION = typer.Option(
-    False,
-    "--native-subagent",
-    rich_help_panel = _PANEL_SESSION,
-    help = "Run Claude on Unsloth and add the model as a native Claude subagent.",
 )
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is
@@ -1828,35 +1821,6 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     return plugin
 
 
-def write_claude_native_subagent_plugin(path: Path, model: dict) -> Path:
-    """Write a session plugin whose native subagent runs on the local model."""
-    plugin = path / "unsloth-local-agent"
-    _write_private_json(
-        plugin / ".claude-plugin" / "plugin.json",
-        {
-            "name": "unsloth-local-agent",
-            "version": "1.0.0",
-            "description": _SUBAGENT_DESCRIPTION,
-            "author": {"name": "Unsloth AI"},
-        },
-    )
-    # A native subagent, not an MCP tool: the parent already runs on the local endpoint,
-    # so a `model:` frontmatter pin keeps delegated work on the local model in-process.
-    # json.dumps quotes each value so a `repo:quant` id stays a valid YAML scalar.
-    front = {
-        "name": _CLAUDE_SUBAGENT_NAME,
-        "description": _SUBAGENT_DESCRIPTION,
-        "model": model["id"],
-        "disallowedTools": "EnterPlanMode, ExitPlanMode",
-        "color": "purple",
-    }
-    header = "\n".join(f"{key}: {json.dumps(value)}" for key, value in front.items())
-    agent = plugin / "agents" / f"{_CLAUDE_SUBAGENT_NAME}.md"
-    agent.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
-    agent.write_text(f"---\n{header}\n---\n\n{_SUBAGENT_INSTRUCTIONS}\n", encoding = "utf-8")
-    return plugin
-
-
 def _codex_subagent_flags(path: Path) -> list[str]:
     command = sys.executable
     package_root = str(Path(__file__).resolve().parents[2])
@@ -2692,13 +2656,10 @@ def claude(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
-    native_subagent: bool = _NATIVE_SUBAGENT_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
-    if as_subagent and native_subagent:
-        _fail("Choose either --as-subagent or --native-subagent, not both.")
     base, key, entry = _connect(
         api_key,
         model,
@@ -2748,39 +2709,6 @@ def claude(
                 command,
                 launch = launch,
                 install_hint = install_hint,
-            )
-        return
-
-    if native_subagent:
-        # Native agents share the parent session's endpoint, so both the parent and
-        # delegated agents intentionally run on Unsloth in this mode.
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
-        subagent_model = {**entry, "id": subagent_id}
-        env = _claude_local_env(base, key, subagent_model)
-        with _session_config("claude-native-subagent", launch, persist = persist) as config:
-            plugin = write_claude_native_subagent_plugin(config, subagent_model)
-            command = [
-                "claude",
-                "--model",
-                subagent_id,
-                *_claude_flags(subagent_id),
-                "--plugin-dir",
-                _agent_config_path(plugin, ["claude"]),
-                *_yolo_command_flags("claude", yolo),
-                *ctx.args,
-            ]
-            typer.echo(
-                f"Unsloth is available as the native subagent '{_CLAUDE_SUBAGENT_NAME}'. "
-                "Ask Claude to delegate to it."
-            )
-            _run(
-                base,
-                subagent_model,
-                env,
-                command,
-                launch = launch,
-                install_hint = install_hint,
-                unset_env = _CLAUDE_ENV_UNSET,
             )
         return
 
