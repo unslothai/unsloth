@@ -1788,7 +1788,6 @@ const Composer: FC<{
       }
 
       if (interceptSend(event)) return;
-      clearStoredDraft();
 
       if (overlay) {
         const trimmed = composerText.trim();
@@ -1813,6 +1812,7 @@ const Composer: FC<{
           closeOverlay();
           return;
         }
+        clearStoredDraft();
         setImageToolsEnabled(true);
         setPendingImageEditReference({
           threadId: overlay.threadId ?? referenceThreadId,
@@ -1830,7 +1830,10 @@ const Composer: FC<{
             );
         });
         closeOverlay();
+        return;
       }
+
+      clearStoredDraft();
     },
     [
       aui,
