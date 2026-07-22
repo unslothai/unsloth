@@ -100,6 +100,56 @@ def test_stdio_cancellation_reaches_the_running_local_agent():
     assert output.getvalue() == ""
 
 
+def test_stdio_sigint_stops_the_running_local_agent(monkeypatch):
+    request = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": "call-1",
+            "method": "tools/call",
+            "params": {"name": "unsloth_agent", "arguments": {"task": "wait"}},
+        }
+    )
+    handlers = {}
+    started = bridge.threading.Event()
+    cancelled = []
+
+    def set_handler(signum, handler):
+        previous = handlers.get(signum, bridge.signal.SIG_DFL)
+        handlers[signum] = handler
+        return previous
+
+    monkeypatch.setattr(bridge.signal, "signal", set_handler)
+
+    class InterruptingInput:
+        def __init__(self):
+            self.sent = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if not self.sent:
+                self.sent = True
+                return request + "\n"
+            assert started.wait(timeout = 1)
+            handlers[bridge.signal.SIGINT](bridge.signal.SIGINT, None)
+            raise AssertionError("SIGINT handler must unwind the stdin loop")
+
+    def run_agent(task, cancel_event):
+        assert task == "wait"
+        started.set()
+        assert cancel_event.wait(timeout = 1)
+        # Real Claude Code sends SIGINT twice. The second one must not abort cleanup.
+        handlers[bridge.signal.SIGINT](bridge.signal.SIGINT, None)
+        cancelled.append(task)
+        raise RuntimeError("The local Claude agent was cancelled.")
+
+    output = io.StringIO()
+    bridge.serve(InterruptingInput(), output, run_agent = run_agent)
+    assert cancelled == ["wait"]
+    assert output.getvalue() == ""
+
+
 @pytest.mark.parametrize(
     ("bypass", "permission"),
     [("0", "acceptEdits"), ("1", "bypassPermissions")],

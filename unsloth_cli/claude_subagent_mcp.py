@@ -249,8 +249,30 @@ def serve(
 ) -> None:
     active: dict[object, threading.Event] = {}
     workers: list[threading.Thread] = []
-    state_lock = threading.Lock()
+    state_lock = threading.RLock()
     output_lock = threading.Lock()
+    shutdown_started = threading.Event()
+
+    def cancel_active() -> None:
+        with state_lock:
+            pending = list(active.values())
+        for cancel_event in pending:
+            cancel_event.set()
+
+    def handle_shutdown(_signum: int, _frame: Any) -> None:
+        # Claude Code stops stdio MCP servers with SIGINT when a tool call is
+        # cancelled, and may send it more than once. Only the first signal should
+        # unwind stdin; later signals must not interrupt process-tree cleanup.
+        first_signal = not shutdown_started.is_set()
+        shutdown_started.set()
+        cancel_active()
+        if first_signal:
+            raise KeyboardInterrupt
+
+    previous_handlers: dict[int, Any] = {}
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, handle_shutdown)
 
     def send(response: dict | None) -> None:
         if response is None:
@@ -307,13 +329,15 @@ def serve(
                     "error": {"code": -32603, "message": str(exc)},
                 }
             send(response)
+    except KeyboardInterrupt:
+        pass
     finally:
-        with state_lock:
-            pending = list(active.values())
-        for cancel_event in pending:
-            cancel_event.set()
+        cancel_active()
         for worker in workers:
-            worker.join()
+            if worker.ident is not None:
+                worker.join()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":
