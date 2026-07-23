@@ -6809,8 +6809,7 @@ async def _proxy_to_external_provider(
         # Callers opting out via tool_choice="none" skip the loop, mirroring
         # the local GGUF routing gate.
         and not (
-            payload.tool_choice == "none"
-            and not _explicit_studio_tool_loop_requested(payload)
+            payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload)
         )
     )
 
