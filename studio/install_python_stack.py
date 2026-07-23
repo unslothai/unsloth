@@ -94,6 +94,22 @@ def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
     return key is not None and key < _ROCM_ARCH_INDEX_FLOOR
 
 
+# MI50 / Radeon VII (gfx906, Vega 20): rocm6.4+/7.x wheels bundle ROCm libraries
+# whose Tensile kernels dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read
+# for gfx906", ROCm/TheRock#1844), failing at the first BLAS call. The rocm6.3
+# index is the last one whose wheels run on gfx906 (torch 2.7.0 verified on MI50
+# 32GB; up to 2.9 in community use). Uses the _default (<2.11) pkg specs -- the
+# rocm7.2 floor of 2.11 cannot be satisfied there. Mirrors install.sh.
+_GFX906_LEGACY_TAG = "rocm6.3"
+
+
+def _gfx906_needs_legacy_index(ver: tuple[int, int]) -> bool:
+    """True when the generic tag picked for the host ROCm version is newer than
+    rocm6.3, i.e. its wheels lack gfx906 kernels and must be rerouted."""
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return key is not None and key > (6, 3)
+
+
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset({"gfx120x-all", "gfx1151", "gfx1150"})
@@ -1755,6 +1771,29 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
+    # gfx906 (MI50 / Radeon VII): reroute to the last gfx906-capable wheel family
+    # (rocm6.3) when the host ROCm version would pick a newer, kernel-less index.
+    # An explicit ROCm pin is authoritative: never auto-reroute it.
+    _gfx906_override = False
+    if (
+        _strix_override_url is None
+        and _gfx906_needs_legacy_index(ver)
+        and _explicit_rocm_torch_index_url() is None
+    ):
+        gfx_codes = _detect_amd_gfx_codes()
+        _runtime_gfx = gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
+        if _runtime_gfx == "gfx906":
+            _gfx906_override = True
+            print(
+                f"\n   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "
+                f"{ver[0]}.{ver[1]}.\n"
+                f"   Routing torch install to the {_GFX906_LEGACY_TAG} index: the last official\n"
+                f"   wheel family shipping gfx906 kernels (newer rocm wheels fail at first\n"
+                f"   kernel launch on this GPU). gfx906 is a community-maintained legacy path:\n"
+                f"   16-bit LoRA and full finetuning work; bitsandbytes 4-bit QLoRA requires a\n"
+                f"   source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
+            )
+
     # The Strix override must fire even when has_hip_torch is True: an existing
     # torch.version.hip == "7.1" is exactly the broken combo it repairs.
     if _strix_override_url is not None and _strix_override_pkgs is not None:
@@ -1766,6 +1805,28 @@ def _ensure_rocm_torch() -> None:
         )
         pip_install(
             "ROCm torch (Strix arch-specific)",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            index_url,
+            constrain = False,
+        )
+        rocm_torch_ready = True
+    # gfx906 fires even when has_hip_torch is True: a +rocm7.x build IS the broken
+    # combo it repairs. A torch already on rocm6.3 wheels is left alone (falls to
+    # the branch below, where has_hip_torch short-circuits the reinstall).
+    elif _gfx906_override and _GFX906_LEGACY_TAG not in _installed_torch_ver:
+        index_url = f"{_PYTORCH_WHL_BASE}/{_GFX906_LEGACY_TAG}"
+        _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["_default"]
+        print(
+            f"   gfx906 legacy override -- installing torch from "
+            f"{_strip_index_url_credentials(index_url)}"
+        )
+        pip_install(
+            f"ROCm torch (gfx906, {_GFX906_LEGACY_TAG})",
             "--force-reinstall",
             "--no-cache-dir",
             _torch_pkg,

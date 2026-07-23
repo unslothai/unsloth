@@ -416,7 +416,12 @@ def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
     if spec is None:
         return
-    vllm_version = importlib_version("vllm")
+    # A findable spec with unreadable dist metadata (broken/partial vllm install)
+    # must not crash unsloth import; every other vllm probe here guards this too.
+    try:
+        vllm_version = importlib_version("vllm")
+    except Exception:
+        return
     if Version(vllm_version) < Version("0.10.1"):
         vllm_location = spec.origin
         if vllm_location is None:

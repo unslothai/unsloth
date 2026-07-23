@@ -117,6 +117,23 @@ DEVICE_COUNT: int = get_device_count()
 ALLOW_PREQUANTIZED_MODELS: bool = True
 # HSA_STATUS_ERROR_EXCEPTION checks - sometimes AMD fails for BnB
 ALLOW_BITSANDBYTES: bool = True
+# gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this
+# legacy GCN arch (ROCm dropped it after 6.3) - compiled graphs crash or miscompile
+# while the eager path trains fine. Default compile off; setdefault so a user
+# override wins.
+if DEVICE_TYPE == "hip":
+    try:
+        _gcn_arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0].strip().lower()
+    except Exception:
+        _gcn_arch = ""
+    if _gcn_arch == "gfx906":
+        os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+        os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+        os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+        print(
+            "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
+            "(community-maintained legacy GCN path)."
+        )
 if DEVICE_TYPE == "hip":
     try:
         import bitsandbytes

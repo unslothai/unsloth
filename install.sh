@@ -2925,6 +2925,34 @@ case "$_torch_index_leaf" in
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
         fi
+        # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
+        # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
+        # dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read for gfx906",
+        # ROCm/TheRock#1844), so a rocm6.4+/7.x index installs a torch that fails
+        # at the first BLAS call. The rocm6.3 index is the last one whose wheels
+        # run on gfx906 (torch 2.7.0 verified on MI50 32GB; up to 2.9 in community
+        # use). Reroute any newer picked index; leave rocm6.0-6.3 alone.
+        if [ "$_runtime_gfx" = "gfx906" ] && ! _rocm_leaf_below "$_torch_index_leaf" 6 4; then
+            echo "" >&2
+            echo "  [WARN] gfx906 (MI50 / Radeon VII / Vega 20) detected -- routing torch to the" >&2
+            echo "  [WARN] rocm6.3 index: it is the last wheel family that runs on gfx906 (newer" >&2
+            echo "  [WARN] rocm wheels ship without gfx906 BLAS kernels and fail at first use)." >&2
+            echo "  [WARN] gfx906 is a community-maintained legacy path: 16-bit LoRA and full" >&2
+            echo "  [WARN] finetuning work out of the box; bitsandbytes 4-bit QLoRA requires a" >&2
+            echo "  [WARN] source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd)." >&2
+            echo "" >&2
+            _amd_gfx906_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+            while [ "${_amd_gfx906_base%/}" != "$_amd_gfx906_base" ]; do
+                _amd_gfx906_base="${_amd_gfx906_base%/}"
+            done
+            TORCH_INDEX_URL="${_amd_gfx906_base}/rocm6.3"
+            # Reset to the default (<2.11) window: a rocm7.2 pick raised the floor
+            # to 2.11 above, which the rocm6.3 index (torch <= 2.9.x) cannot satisfy.
+            TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+            _amd_gpu_radeon=false
+        fi
         ;;
 esac
 fi  # _torch_index_pinned guard (Radeon + Strix reroute)

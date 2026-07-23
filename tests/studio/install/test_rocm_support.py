@@ -1072,6 +1072,142 @@ class TestEnsureRocmTorch:
         mock_pip.assert_not_called()
 
 
+# TEST: gfx906 (MI50 / Radeon VII) legacy reroute -- generic wheels after rocm6.3
+# lack gfx906 code objects, so torch must come from the rocm6.3 index.
+
+
+class TestGfx906LegacyReroute:
+    """gfx906 hosts on ROCm >= 6.4 must be rerouted to the rocm6.3 torch index;
+    hosts already on gfx906-capable wheels are left alone."""
+
+    def test_gfx906_needs_legacy_index_floor(self):
+        f = stack_mod._gfx906_needs_legacy_index
+        # rocm6.0-6.3 tags still ship gfx906 kernels: no reroute.
+        assert f((6, 3)) is False
+        assert f((6, 0)) is False
+        assert f((5, 0)) is False  # below any known tag
+        # Anything that picks a tag newer than rocm6.3 must reroute.
+        assert f((6, 4)) is True
+        assert f((7, 2)) is True
+        assert f((7, 14)) is True
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
+    def test_gfx906_on_rocm72_routes_to_rocm63(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """CPU torch on a ROCm 7.2 MI50 host installs from rocm6.3, not rocm7.2."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "rocm6.3" in torch_call
+        assert "rocm7.2" not in torch_call
+        # The _default (<2.11) window: the rocm7.2 2.11 floor cannot be satisfied
+        # on the rocm6.3 index (torch <= 2.9.x there).
+        assert "torch>=2.4,<2.11.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
+    def test_gfx906_repairs_existing_rocm72_torch(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """An installed +rocm7.2 torch IS the broken combo: reinstall from rocm6.3
+        even though has_hip_torch is True."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.2.12345|2.11.0+rocm7.2\n"
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "rocm6.3" in torch_call
+        assert "torch>=2.4,<2.11.0" in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
+    def test_gfx906_already_on_rocm63_left_alone(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """torch already on rocm6.3 wheels must not be reinstalled (no update loop)."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"6.3.42131|2.7.0+rocm6.3\n"
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        mock_pip.assert_not_called()
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100", "gfx906"])
+    def test_mixed_host_non_gfx906_runtime_target_skips_reroute(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """dGPU-first mixed host: runtime target gfx1100 keeps the generic index."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "rocm7.2" in torch_call
+        assert "rocm6.3" not in torch_call
+
+    def test_install_sh_has_gfx906_reroute(self):
+        """install.sh must mirror the Python reroute: gfx906 -> rocm6.3 index with
+        the same _default (<2.11) trio the Python side uses."""
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        block_start = source.find('"$_runtime_gfx" = "gfx906"')
+        assert block_start >= 0
+        block = source[block_start : block_start + 1600]
+        assert "/rocm6.3" in block
+        for spec in stack_mod._ROCM_TORCH_PKG_SPECS["_default"]:
+            assert spec in block
+
+    def test_device_type_defaults_compile_off_on_gfx906(self):
+        """unsloth/device_type.py must default Dynamo/compile off on gfx906
+        (user-overridable via setdefault)."""
+        source = (PACKAGE_ROOT / "unsloth" / "device_type.py").read_text(encoding = "utf-8")
+        gate_start = source.find("gfx906")
+        assert gate_start >= 0
+        gate_body = source[gate_start : gate_start + 800]
+        assert 'setdefault("TORCHDYNAMO_DISABLE", "1")' in gate_body
+        assert 'setdefault("TORCH_COMPILE_DISABLE", "1")' in gate_body
+        assert 'setdefault("UNSLOTH_COMPILE_DISABLE", "1")' in gate_body
+
+
 # TEST: install_python_stack.py -- torch-index MARKER mechanism (PR #6692)
 
 
