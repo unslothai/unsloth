@@ -1608,6 +1608,25 @@ def test_consume_positional_model_ignores_non_leading_and_explicit_model():
     assert model == "explicit/model" and rest == ["owner/repo"]
 
 
+def test_start_separator_preserves_model_shaped_agent_argument(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["codex", "--no-launch", "--", "owner/repo"],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[-2:] == ["--", "owner/repo"]
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["codex", "--no-launch", MODEL["id"], "--", "--continue"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[-2:] == ["--", "--continue"]
+
+
 def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monkeypatch):
     # `unsloth start claude unsloth/Model-GGUF` (no --model): the positional becomes the
     # model; the GGUF variant is left unset so the server's own quant preference selects it.
