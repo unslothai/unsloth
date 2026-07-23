@@ -32,7 +32,7 @@ import torch
 from transformers.modeling_outputs import BaseModelOutput
 from collections import OrderedDict
 from transformers.models.distilbert import modeling_distilbert
-from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask_for_sdpa
+from unsloth.models._attn_mask_compat import _prepare_4d_attention_mask_for_sdpa
 import transformers
 from packaging.version import Version
 import re
