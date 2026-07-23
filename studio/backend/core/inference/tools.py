@@ -2519,9 +2519,7 @@ def _windows_program_roots() -> list[str]:
         _CoTaskMemFree = ctypes.windll.ole32.CoTaskMemFree
         for fid in folder_ids:
             guid = ctypes.create_string_buffer(16)
-            ctypes.windll.ole32.CLSIDFromString(
-                wintypes.LPCWSTR(fid), ctypes.byref(guid)
-            )
+            ctypes.windll.ole32.CLSIDFromString(wintypes.LPCWSTR(fid), ctypes.byref(guid))
             ptr = ctypes.c_wchar_p()
             if _SHGet(ctypes.byref(guid), 0, None, ctypes.byref(ptr)) == 0:
                 if ptr.value:

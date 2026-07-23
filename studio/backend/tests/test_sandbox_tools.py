@@ -392,9 +392,7 @@ class TestSandboxEnvIsolation:
         evil = tmp_path / "attacker"
         (evil / "Git" / "cmd").mkdir(parents = True)
         # Resolver returns the genuine root; env is overridden to the evil dir.
-        monkeypatch.setattr(
-            tools_mod, "_windows_program_roots", lambda: [str(real_prog)]
-        )
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(real_prog)])
         monkeypatch.setenv("ProgramFiles", str(evil))
         monkeypatch.setattr(
             tools_mod.shutil, "which", lambda name: str(evil / "Git" / "cmd" / "git.exe")
@@ -417,9 +415,7 @@ class TestSandboxEnvIsolation:
             link.symlink_to(real_prog, target_is_directory = True)
         except (OSError, NotImplementedError):
             pytest.skip("symlink unsupported in this environment")
-        monkeypatch.setattr(
-            tools_mod, "_windows_program_roots", lambda: [str(real_prog)]
-        )
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(real_prog)])
         monkeypatch.setattr(
             tools_mod.shutil,
             "which",
