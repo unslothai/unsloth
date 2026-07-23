@@ -78,6 +78,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.tensorParallel ||
+    config.visionProjectorEnabled === false ||
     config.chatTemplateOverride != null ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
@@ -399,6 +400,7 @@ function GgufAdvancedSettings({
   onEditTemplate,
   layerCount,
   moeLayerCount,
+  isVision,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -407,6 +409,7 @@ function GgufAdvancedSettings({
   onEditTemplate: () => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isVision: boolean;
 }) {
   return (
     <>
@@ -529,6 +532,25 @@ function GgufAdvancedSettings({
         />
       </div>
 
+      {isVision && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Vision Projector</span>
+            <InfoHint>
+              Disable the projector for text-only use to save memory and avoid
+              downloading the companion mmproj file.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.visionProjectorEnabled ?? true}
+            onCheckedChange={(checked) =>
+              update({ visionProjectorEnabled: checked })
+            }
+          />
+        </div>
+      )}
+
       <GpuMemorySettings
         config={config}
         update={update}
@@ -631,6 +653,7 @@ export function ModelConfigPage({
     contextLength: number | null;
     layerCount: number | null;
     moeLayerCount: number | null;
+    isVision: boolean;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
@@ -655,6 +678,7 @@ export function ModelConfigPage({
             contextLength: null,
             layerCount: null,
             moeLayerCount: null,
+            isVision: false,
           });
         }
       });
@@ -885,6 +909,7 @@ export function ModelConfigPage({
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
+                isVision={stagedDims?.isVision ?? false}
               />
             )}
 

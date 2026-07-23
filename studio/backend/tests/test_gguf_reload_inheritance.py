@@ -231,6 +231,51 @@ def test_already_in_target_state_explicit_extras_match():
     )
 
 
+def test_already_in_target_state_compares_effective_mmproj_state():
+    backend = _loaded_backend(
+        _extra_args = ["--no-mmproj"],
+        _load_mmproj = False,
+    )
+    common = dict(
+        gguf_path = None,
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = ["--no-mmproj"],
+        is_vision = True,
+    )
+    # Raw toggle-on plus an inherited/explicit disable is the same effective
+    # state as the running text-only server.
+    assert backend._already_in_target_state(**common, load_mmproj = True) is True
+    # Dropping the disabling arg changes the effective state and must reload.
+    assert (
+        backend._already_in_target_state(
+            **{**common, "extra_args": []},
+            load_mmproj = True,
+        )
+        is False
+    )
+
+
 def test_extra_args_source_default_is_none():
     backend = LlamaCppBackend()
     assert backend.extra_args_source is None
+
+
+def test_idle_identity_preserves_effective_mmproj_state():
+    from core.inference.llama_keepwarm import _loaded_identity
+
+    backend = _loaded_backend(
+        _model_identifier = "owner/vision-repo",
+        _hf_variant = "Q4_K_M",
+        _load_mmproj = False,
+    )
+    assert _loaded_identity(backend) == (
+        "owner/vision-repo",
+        "Q4_K_M",
+        "owner/vision-repo",
+        False,
+    )

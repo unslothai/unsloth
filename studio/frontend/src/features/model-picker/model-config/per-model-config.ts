@@ -16,6 +16,8 @@ export interface PerModelConfig {
   speculativeType: string | null;
   specDraftNMax: number | null;
   tensorParallel: boolean;
+  /** Whether a vision-capable GGUF should load its projector. Default on. */
+  visionProjectorEnabled: boolean;
   chatTemplateOverride: string | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
   // parse. null selectedGpuIds (all GPUs) is distinct from absent. The --tensor-split
@@ -34,6 +36,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   speculativeType: null,
   specDraftNMax: null,
   tensorParallel: false,
+  visionProjectorEnabled: true,
   chatTemplateOverride: null,
 };
 
@@ -83,6 +86,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "speculativeType",
   "specDraftNMax",
   "tensorParallel",
+  "visionProjectorEnabled",
   "chatTemplateOverride",
   "gpuMemoryMode",
   "gpuLayers",
@@ -453,6 +457,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
         : DEFAULT_PER_MODEL_CONFIG.tensorParallel,
+    visionProjectorEnabled:
+      typeof partial.visionProjectorEnabled === "boolean"
+        ? partial.visionProjectorEnabled
+        : DEFAULT_PER_MODEL_CONFIG.visionProjectorEnabled,
     chatTemplateOverride:
       typeof partial.chatTemplateOverride === "string" &&
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
@@ -589,6 +597,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.specDraftNMax == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
+    config.visionProjectorEnabled ===
+      DEFAULT_PER_MODEL_CONFIG.visionProjectorEnabled &&
     (config.chatTemplateOverride ?? null) === null &&
     gpuFieldsAtDefault(config)
   );

@@ -1000,6 +1000,7 @@ export function SharedComposer({
         // /load would reject (the device cache is populated by send time).
         selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
         customContextLength: store.customContextLength,
+        visionProjectorEnabled: store.visionProjectorEnabled,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1046,6 +1047,9 @@ export function SharedComposer({
         const effectiveTensorParallel = ownRemembered
           ? ownConfig.tensorParallel
           : fallbackTensorParallel;
+        const effectiveVisionProjector = ownRemembered
+          ? (ownConfig.visionProjectorEnabled ?? true)
+          : compareLoadKnobs.visionProjectorEnabled;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
@@ -1097,6 +1101,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          load_mmproj: effectiveVisionProjector,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
@@ -1164,6 +1169,7 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          load_mmproj: effectiveVisionProjector,
           ...(targetIsGguf
             ? {
                 gpu_memory_mode: effectiveGpuMemoryMode,
@@ -1212,6 +1218,10 @@ export function SharedComposer({
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          visionProjectorEnabled:
+            resp.load_mmproj ?? effectiveVisionProjector,
+          loadedVisionProjectorEnabled:
+            resp.load_mmproj ?? effectiveVisionProjector,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,

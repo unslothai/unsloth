@@ -261,6 +261,12 @@ export function applyActiveModelStatusToStore(
     ...(preserveSameModelEdits &&
       gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
   };
+  const incomingVisionProjector = status.load_mmproj ?? true;
+  const visionProjectorStatusChanged =
+    prevState.loadedVisionProjectorEnabled !== incomingVisionProjector;
+  const visionProjectorEditPending =
+    prevState.loadedVisionProjectorEnabled !== null &&
+    prevState.visionProjectorEnabled !== prevState.loadedVisionProjectorEnabled;
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -319,6 +325,17 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
+      }),
+    ...(seedLoadParams &&
+      status.load_mmproj !== undefined &&
+      (prevState.loadedVisionProjectorEnabled === null ||
+        hydratingExistingModel ||
+        visionProjectorStatusChanged) && {
+        visionProjectorEnabled:
+          !hydratingExistingModel && visionProjectorEditPending
+            ? prevState.visionProjectorEnabled
+            : incomingVisionProjector,
+        loadedVisionProjectorEnabled: incomingVisionProjector,
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last

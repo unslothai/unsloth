@@ -21,6 +21,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const visionProjectorEnabled = useChatRuntimeStore(
+    (s) => s.visionProjectorEnabled,
+  );
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -45,6 +48,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       tensorParallel: tensorParallel ?? false,
+      visionProjectorEnabled,
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
@@ -66,6 +70,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     speculativeType,
     specDraftNMax,
     tensorParallel,
+    visionProjectorEnabled,
     chatTemplateOverride,
     gpuMemoryMode,
     gpuLayers,

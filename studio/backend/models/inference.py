@@ -110,6 +110,13 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    load_mmproj: bool = Field(
+        True,
+        description = (
+            "For GGUF vision models, load the mmproj vision projector. "
+            "Disable to run the model as text-only and avoid the extra VRAM cost."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -229,6 +236,13 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    load_mmproj: bool = Field(
+        True,
+        description = (
+            "For GGUF vision models, include the mmproj vision projector in "
+            "validation-time VRAM sizing. Mirrors LoadRequest.load_mmproj."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -459,6 +473,10 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
+    load_mmproj: bool = Field(
+        True,
+        description = "Whether the current GGUF load effectively uses the vision projector.",
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = "Active GPU memory strategy ('auto' or 'manual').",
@@ -614,6 +632,10 @@ class InferenceStatusResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    load_mmproj: bool = Field(
+        True,
+        description = "Whether the current GGUF load effectively uses the vision projector.",
     )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
