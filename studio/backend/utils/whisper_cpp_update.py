@@ -395,9 +395,7 @@ def _install_latest_while_blocked(
 
 
 def chained_phase_plan(
-    *,
-    force_refresh: bool = False,
-    paired_llama_will_update: bool = False,
+    *, force_refresh: bool = False, paired_llama_will_update: bool = False
 ) -> dict:
     """Whisper's side of the combined llama+whisper update item.
 

@@ -260,9 +260,7 @@ def _local_link_status() -> dict:
 
 
 def _whisper_chain_status(
-    *,
-    force_refresh: bool = False,
-    paired_llama_will_update: bool = False,
+    *, force_refresh: bool = False, paired_llama_will_update: bool = False
 ) -> Optional[dict]:
     """Whisper's piggyback plan for the combined update item (see
     whisper_cpp_update.chained_phase_plan). None disables the piggyback --

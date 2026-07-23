@@ -1027,11 +1027,7 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
     (server.parent / "libggml.so.0").write_text("lib")
     assert M.existing_install_matches(tmp_path, host, object()) is True
     marker.update(backend = "rocm", linked_runtime_directories = [])
-    assert M.existing_install_matches(
-        tmp_path,
-        _host("windows", "x64"),
-        object(),
-    ) is True
+    assert M.existing_install_matches(tmp_path, _host("windows", "x64"), object()) is True
 
 
 def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):
