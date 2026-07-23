@@ -159,6 +159,17 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
     assert "runtime.setThreadRunning(threadKey, true);" in CHAT_ADAPTER
     assert "sendReservedComposer()" in submit
     assert "notifyPreStreamRunFailed(referenceThreadId);" in THREAD
+    assert "class PreStreamAwareAttachmentAdapter" in RUNTIME_PROVIDER
+    attachment_adapter = _between(
+        RUNTIME_PROVIDER,
+        "class PreStreamAwareAttachmentAdapter",
+        "function useStudioRuntimeAdapters(",
+    )
+    assert "return await this.delegate.send(attachment);" in attachment_adapter
+    assert "getPreStreamRunReservationCount() > 0" in attachment_adapter
+    assert "notifyPreStreamRunFailed();" in attachment_adapter
+    assert "new PreStreamAwareAttachmentAdapter(" in RUNTIME_PROVIDER
+    assert "Promise.resolve(aui.composer().send())" not in THREAD
 
 
 def test_retry_edit_and_compare_preflights_reserve_global_capacity():
