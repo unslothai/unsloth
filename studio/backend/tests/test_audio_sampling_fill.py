@@ -45,7 +45,12 @@ def _isolate(monkeypatch):
     ic._recommended_sampling.cache_clear()
 
 
-def _run_generate_audio(monkeypatch, *, recommended = None, temperature = None):
+def _run_generate_audio(
+    monkeypatch,
+    *,
+    recommended = None,
+    temperature = None,
+):
     backend = _FakeTransformersBackend()
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
@@ -76,14 +81,10 @@ def test_audio_uses_recommended_sampling_when_omitted(monkeypatch):
 
 def test_audio_operator_pin_overrides_client(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.9")
-    captured = _run_generate_audio(
-        monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2
-    )
+    captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
     assert captured["temperature"] == 0.9  # operator pin wins even over an explicit client value
 
 
 def test_audio_client_explicit_preserved(monkeypatch):
-    captured = _run_generate_audio(
-        monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2
-    )
+    captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
     assert captured["temperature"] == 0.2  # explicit client value preserved over recommendation
