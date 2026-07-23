@@ -265,6 +265,36 @@ function getTransformersUpgradeRequiredMessage(modelName: string): string {
   return `${modelName} was not loaded because it needs a newer transformers release that was not installed. Load it again to install it.`;
 }
 
+let fullInventoryRefreshesInFlight = 0;
+let fullInventoryHydrationBaseline = false;
+let fullInventoryRefreshSucceeded = false;
+
+function beginFullInventoryRefresh(): void {
+  const store = useChatRuntimeStore.getState();
+  if (fullInventoryRefreshesInFlight === 0) {
+    fullInventoryHydrationBaseline = store.modelRuntimeHydrated;
+    fullInventoryRefreshSucceeded = false;
+  }
+  fullInventoryRefreshesInFlight += 1;
+  store.setModelRuntimeHydrated(false);
+}
+
+function finishFullInventoryRefresh(succeeded: boolean): void {
+  fullInventoryRefreshSucceeded =
+    fullInventoryRefreshSucceeded || succeeded;
+  fullInventoryRefreshesInFlight = Math.max(
+    0,
+    fullInventoryRefreshesInFlight - 1,
+  );
+  if (fullInventoryRefreshesInFlight === 0) {
+    useChatRuntimeStore
+      .getState()
+      .setModelRuntimeHydrated(
+        fullInventoryRefreshSucceeded || fullInventoryHydrationBaseline,
+      );
+  }
+}
+
 /**
  * Reconcile the chat runtime store against `/api/inference/status`: refresh the
  * models/loras catalogs and either re-pin the active checkpoint or clear the
@@ -281,14 +311,12 @@ async function syncInferenceStatusToStore(options?: {
   const includeLoras = options?.includeLoras ?? true;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
-  const previousModelRuntimeHydrated =
-    useChatRuntimeStore.getState().modelRuntimeHydrated;
   setModelsError(null);
   if (includeLoras) {
     // A prior successful refresh is not proof that the catalog behind a later
     // compare mount is current. Keep new compare layouts unfrozen until this
     // inventory request has published its LoRAs.
-    useChatRuntimeStore.getState().setModelRuntimeHydrated(false);
+    beginFullInventoryRefresh();
   }
   try {
     const [listRes, statusRes, lorasRes] = await Promise.all([
@@ -301,9 +329,7 @@ async function syncInferenceStatusToStore(options?: {
     // before writing backend state back -- cancelLoading already cleared it.
     if (signal?.aborted) {
       if (includeLoras) {
-        useChatRuntimeStore
-          .getState()
-          .setModelRuntimeHydrated(previousModelRuntimeHydrated);
+        finishFullInventoryRefresh(false);
       }
       return;
     }
@@ -341,13 +367,11 @@ async function syncInferenceStatusToStore(options?: {
     // status-only refresh, failures, and cancellation so the deferred full
     // inventory refresh can still recover a direct LoRA deep link.
     if (includeLoras) {
-      useChatRuntimeStore.getState().setModelRuntimeHydrated(true);
+      finishFullInventoryRefresh(true);
     }
   } catch (error) {
     if (includeLoras) {
-      useChatRuntimeStore
-        .getState()
-        .setModelRuntimeHydrated(previousModelRuntimeHydrated);
+      finishFullInventoryRefresh(false);
     }
     if (signal?.aborted) return;
     const message =
