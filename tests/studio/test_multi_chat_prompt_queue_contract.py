@@ -24,9 +24,7 @@ CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encodi
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
-CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(
-    encoding = "utf-8"
-)
+CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(encoding = "utf-8")
 SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
     encoding = "utf-8"
 )
