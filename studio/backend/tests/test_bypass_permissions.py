@@ -159,6 +159,166 @@ def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
     assert "cmd" not in captured_popen  # never reached Popen
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -S -c "import boto3"',
+        'python -E -c "import boto3"',
+        'python -I -c "import boto3"',
+        'python --no-site -c "import boto3"',
+        'python --ignore-environment -c "import boto3"',
+        'python --isolated -c "import boto3"',
+        'env -u PYTHONPATH python -c "import boto3"',
+        'env --unset=UNSLOTH_STUDIO_SANDBOXED python3 -c "import boto3"',
+        'env -i python -c "import boto3"',
+        'PYTHONPATH= python -c "import boto3"',
+        'unset PYTHONPATH; python -c "import boto3"',
+        'export UNSLOTH_STUDIO_SANDBOXED=0; python -c "import boto3"',
+        'uv run python -S -c "import boto3"',
+        'bash -lc "python -I -c import\\ boto3"',
+        'env -S "python -S -c import\\ boto3"',
+        'env --split-string="python -I -c import\\ boto3"',
+        'env -u PYTHONPATH sh -c "python -c import\\ boto3"',
+        'command sh -c "python -I -c import\\ boto3"',
+        'find . -exec python -S -c "import boto3" ;',
+        # A find/fd -exec that hides the interpreter behind a nested shell must
+        # still be recursed into, not left as an opaque exec target.
+        'find . -exec sh -c "python -S -c import\\ boto3" ;',
+        'find . -type f -execdir bash -c "python -I -c import\\ boto3" ;',
+        'python$IFS-S -c "import boto3"',
+        "python -c \"import subprocess; subprocess.run(['python','-S','-c','import boto3'])\"",
+        'python -c "import os; os.system(\\"python -S -c \'import boto3\'\\")"',
+        'echo ok\npython -S -c "import boto3"',
+        'timeout 1 env -i python -c "import boto3"',
+        'find . -exec env -i python -c "import boto3" ;',
+        "bash <<'EOF'\npython -S -c \"import boto3\"\nEOF",
+        "bash <<< 'python -S -c \"import boto3\"'",
+        'if true; then python -S -c "import boto3"; fi',
+        'for x in 1; do python -S -c "import boto3"; done',
+        "python <<'PY'\nimport subprocess\nsubprocess.run(['python','-S','-c','import boto3'])\nPY",
+        'python \\\n-S -c "import boto3"',
+        'env -uPYTHONPATH python -c "import boto3"',
+        (
+            "python -c \"import os,subprocess; os.environ.pop('PYTHONPATH',None); "
+            "os.environ['UNSLOTH_STUDIO_SANDBOXED']='0'; "
+            "subprocess.run(['python','-c','import boto3'])\""
+        ),
+        # shell=True passes a sequence's first element to /bin/sh -c, so the
+        # embedded ``python -S`` is shell input, not a shlex-joined argv word.
+        'python -c "import subprocess; subprocess.run([\'python -S -c \\"import boto3\\"\'], shell=True)"',
+        # A launcher rebound by assignment (``r = subprocess.run``) still spawns
+        # an unguarded child.
+        "python -c \"import subprocess; r = subprocess.run; r(['python','-S','-c','import boto3'])\"",
+        # A command word supplied entirely by a defaulted parameter expansion
+        # (``${PYTHON:-python}`` with PYTHON unset) still runs ``python -S``.
+        '${PYTHON:-python} -S -c "import boto3"',
+        # A quoted here-doc delimiter containing a hyphen is still a here-doc; its
+        # Python body must be parsed as stdin code.
+        "python <<'PY-EOF'\nimport subprocess\nsubprocess.run(['python','-S','-c','import boto3'])\nPY-EOF",
+        # argv elements assembled from concatenated literals fold to ``python``.
+        "python -c \"import subprocess; subprocess.run(['py'+'thon','-S','-c','import boto3'])\"",
+        # ``os.environ |= {...}`` (PEP 584) can clear PYTHONPATH for the child.
+        (
+            "python -c \"import os,subprocess; os.environ |= {'PYTHONPATH': ''}; "
+            "subprocess.run(['python','-c','import boto3'])\""
+        ),
+        # GNU env's lone ``-`` implies ``-i`` (clear environment).
+        'env - /usr/bin/python -c "import boto3"',
+        # A child launch hidden inside a static ``exec`` string payload.
+        (
+            "python -c \"exec('import subprocess; "
+            'subprocess.run([\\"python\\",\\"-S\\",\\"-c\\",\\"import boto3\\"])\')"'
+        ),
+        # Non-subprocess child launchers (pty.spawn / asyncio) skip sitecustomize
+        # in the child too.
+        "python -c \"import pty; pty.spawn(['python','-S','-c','import boto3'])\"",
+        (
+            'python -c "import asyncio; '
+            "asyncio.create_subprocess_exec('python','-S','-c','import boto3')\""
+        ),
+        # env -S (split-string) launches Python even behind a wrapper chain, not
+        # only when env is the first token.
+        'timeout 1 env -S "/usr/bin/python3 -S -c import\\ boto3"',
+        'find . -exec env -S "python -S -c import\\ boto3" ;',
+        # Grouped env short options: -i in a bundle clears the whole environment.
+        'env -iuPYTHONPATH /usr/bin/python3 -c "import boto3"',
+        # A bash alias that folds -S into the python command word.
+        "shopt -s expand_aliases\nalias python='python -S'\npython -c 'import boto3'",
+        # declare -x / typeset -x export an emptied PYTHONPATH to the child.
+        "declare -x PYTHONPATH=; python -c 'import boto3'",
+        "typeset -x PYTHONPATH=; python -c 'import boto3'",
+        # A here-doc piped into python feeds the body to that python as stdin.
+        "cat <<'PY' | python\nimport subprocess\nsubprocess.run(['python','-S','-c','import boto3'])\nPY",
+        # Process substitution: the inner command is a python bypass, and a
+        # generated-script form feeds python an unscannable program.
+        "diff <(python -S -c 'import boto3') /dev/null",
+        "python <(printf %s \"import subprocess; subprocess.run(['python','-S','-c','import boto3'])\")",
+    ],
+)
+def test_bash_blocks_python_startup_guard_bypasses(captured_popen, command):
+    out = _bash_exec(command, None, 5, "t", disable_sandbox = False)
+    assert "cannot disable the Studio runtime guard" in out
+    assert "cmd" not in captured_popen
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python -c "print(1)"',
+        "python script.py -S",
+        "echo python -S",
+        "python -c \"print('-S')\"",
+        "python -c \"import subprocess; subprocess.run(['python','-c','print(1)'])\"",
+        "python <<'PY'\nprint(1)\nPY",
+        'bash <<< "echo safe"',
+        "cat <<< 'python -S -c \"import boto3\"'",
+        "echo then python -S",
+        'python \\\n-c "print(1)"',
+        # A guard-neutral env merge (non-guard key) must still auto-run.
+        "python -c \"import os; os.environ |= {'MYVAR': '1'}\"",
+        # A dynamic argv element (sys.executable) is not a foldable literal, so a
+        # legitimate self-relaunch is not misclassified as a bypass.
+        "python -c \"import sys, subprocess; subprocess.run([sys.executable, '-c', 'print(1)'])\"",
+        # shell=True with an entirely benign script.
+        "python -c \"import subprocess; subprocess.run(['echo hi'], shell=True)\"",
+        # A rebound launcher that spawns a guarded (no -S) child.
+        "python -c \"import subprocess; r = subprocess.run; r(['python','-c','print(1)'])\"",
+        # A non-exported declare stays a shell local (child keeps the guard env).
+        'declare PYTHONPATH=x; python -c "print(1)"',
+        # A benign, guard-neutral env export.
+        'declare -x MYVAR=1; python -c "print(1)"',
+        # A benign alias with no Python skip flags.
+        'alias py="python"; py script.py',
+        # env -S with a plain launch (no skip flag / env mutation).
+        'env -S "python -c print(1)"',
+        # Process substitution feeding a non-Python consumer stays static.
+        "diff <(sort a.txt) <(sort b.txt)",
+        # A here-doc piped to python whose body is a benign program.
+        "cat <<'PY' | python\nprint(1)\nPY",
+    ],
+)
+def test_bash_allows_python_without_startup_guard_bypass(captured_popen, command):
+    out = _bash_exec(command, None, 5, "t", disable_sandbox = False)
+    assert out == "FAKEOUT"
+    assert "cmd" in captured_popen
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        ('py -3.12 -I -c "import boto3"', True),
+        ('C:\\Python312\\python.exe -S -c "import boto3"', True),
+        ('set PYTHONPATH= & python -c "import boto3"', True),
+        ('cmd /c "python -E -c import boto3"', True),
+        ('python.exe -c "print(1)"', False),
+        ("echo python -S", False),
+    ],
+)
+def test_python_startup_guard_windows_command_parsing(monkeypatch, command, blocked):
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    assert tools._sandbox_python_startup_bypasses_guard(command) is blocked
+
+
 def test_bash_blocklist_skipped_when_bypassed(captured_popen):
     out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = True)
     assert out == "FAKEOUT"  # blocklist skipped -> reached (faked) execution

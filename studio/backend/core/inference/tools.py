@@ -5,11 +5,15 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import base64
+import binascii
 import codecs
 import fnmatch
+import html
 import http.client
 import os
 import signal
+from html.parser import HTMLParser
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -206,6 +210,1193 @@ def _env_assignment_is_unsafe(name: str) -> bool:
 
 
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_SANDBOX_PYTHON_ENV_VARS = frozenset(
+    {"PATH", "PYTHONHOME", "PYTHONPATH", "UNSLOTH_STUDIO_SANDBOXED"}
+)
+_PYTHON_LAUNCH_WRAPPERS = _COMMAND_PREFIXES | frozenset({"conda", "hatch", "pipx", "poetry", "uv"})
+_SHELL_SCRIPT_INTERPRETERS = frozenset(
+    {"bash", "cmd", "cmd.exe", "dash", "fish", "ksh", "sh", "zsh"}
+)
+
+
+def _python_executable_token(token: str) -> bool:
+    base = os.path.basename(token.replace("\\", "/")).lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return bool(re.fullmatch(r"(?:python(?:w)?(?:\d+(?:\.\d+)*)?|py)", base))
+
+
+def _shell_command_segments(command: str) -> list[list[str]]:
+    try:
+        lexer = shlex.shlex(command, posix = sys.platform != "win32", punctuation_chars = ";&|()`")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+    segments: list[list[str]] = [[]]
+    expect_command = True
+    for token in tokens:
+        stripped = token.strip("\"'")
+        if token in _SHELL_SEPARATORS or (
+            expect_command and stripped.lower() in _SHELL_KEYWORDS_AS_SEP
+        ):
+            if segments[-1]:
+                segments.append([])
+            expect_command = True
+            continue
+        segments[-1].append(stripped)
+        expect_command = False
+    return [segment for segment in segments if segment]
+
+
+def _shell_command_with_unquoted_newlines_as_separators(command: str) -> str:
+    if "\n" not in command and "\r" not in command:
+        return command
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            out.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            out.append(char)
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and quote is None:
+            quote = "'"
+        elif char == "'" and quote == "'":
+            quote = None
+        elif char == '"' and quote is None:
+            quote = '"'
+        elif char == '"' and quote == '"':
+            quote = None
+        if char in "\r\n" and quote is None:
+            out.append(" ; ")
+            if char == "\r" and index + 1 < len(command) and command[index + 1] == "\n":
+                index += 1
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _shell_command_without_line_continuations(command: str) -> str:
+    if "\\\n" not in command and "\\\r" not in command:
+        return command
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            if char in "\r\n" and quote != "'":
+                escaped = False
+                if char == "\r" and index + 1 < len(command) and command[index + 1] == "\n":
+                    index += 1
+                index += 1
+                continue
+            out.append("\\")
+            out.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and quote is None:
+            quote = "'"
+        elif char == "'" and quote == "'":
+            quote = None
+        elif char == '"' and quote is None:
+            quote = '"'
+        elif char == '"' and quote == '"':
+            quote = None
+        out.append(char)
+        index += 1
+    if escaped:
+        out.append("\\")
+    return "".join(out)
+
+
+def _segment_python_index(segment: list[str]) -> int | None:
+    command_index = 0
+    while command_index < len(segment) and _ASSIGNMENT_RE.match(segment[command_index]):
+        command_index += 1
+    if command_index >= len(segment):
+        return None
+    command = os.path.basename(segment[command_index].replace("\\", "/")).lower()
+    if _python_executable_token(segment[command_index]):
+        return command_index
+    if command not in _PYTHON_LAUNCH_WRAPPERS:
+        if command not in {"find", "fd"}:
+            return None
+        for index in range(command_index + 1, len(segment)):
+            if _python_executable_token(segment[index]) and any(
+                token in _FIND_EXEC_FLAGS for token in segment[command_index:index]
+            ):
+                return index
+        return None
+    for index in range(command_index + 1, len(segment)):
+        if _python_executable_token(segment[index]):
+            return index
+    return None
+
+
+def _segment_shell_index(segment: list[str]) -> int | None:
+    if not segment:
+        return None
+    first = os.path.basename(segment[0].replace("\\", "/")).lower()
+    wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
+    find_exec = first in {"find", "fd"}
+    for index, token in enumerate(segment):
+        shell = os.path.basename(token.replace("\\", "/")).lower()
+        find_exec_context = find_exec and any(
+            token in _FIND_EXEC_FLAGS for token in segment[:index]
+        )
+        if shell in _SHELL_SCRIPT_INTERPRETERS and (
+            index == 0 or wrapper_context or find_exec_context
+        ):
+            return index
+    return None
+
+
+def _segment_shell_reads_stdin(segment: list[str], shell_index: int) -> bool:
+    saw_stdin_flag = False
+    for token in segment[shell_index + 1 :]:
+        lowered = token.lower()
+        if lowered == "/c" or (lowered.startswith("-") and lowered.endswith("c")):
+            return False
+        if lowered in {"-s", "--stdin"} or (
+            lowered.startswith("-") and not lowered.startswith("--") and "s" in lowered[1:]
+        ):
+            saw_stdin_flag = True
+            continue
+        if lowered.startswith("-"):
+            continue
+        if saw_stdin_flag:
+            continue
+        return False
+    return True
+
+
+def _python_flags_skip_sitecustomize(arguments: list[str]) -> bool:
+    skip_next = False
+    for argument in arguments:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument in {"-c", "-m"} or not argument.startswith("-"):
+            break
+        if argument == "--":
+            break
+        if argument in {"--ignore-environment", "--isolated", "--no-site"}:
+            return True
+        if re.fullmatch(r"-[^-]*[SEI][^-]*", argument):
+            return True
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
+            skip_next = True
+    return False
+
+
+def _segment_mutates_sandbox_python_env(segment: list[str], python_index: int) -> bool:
+    before_python = segment[:python_index]
+    for index, token in enumerate(before_python):
+        assignment = _ASSIGNMENT_RE.match(token)
+        if assignment and token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS:
+            return True
+        lowered = token.lower()
+        # GNU env treats a lone ``-`` as ``-i`` (clear the environment), so
+        # ``env - python`` starts the child without PYTHONPATH / the sandbox flag.
+        if lowered in {"-i", "--ignore-environment", "-"} and before_python:
+            if any(
+                os.path.basename(candidate.replace("\\", "/")).lower() == "env"
+                for candidate in before_python[:index]
+            ):
+                return True
+        if lowered.startswith("--unset="):
+            if token.split("=", 1)[1].upper() in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        if lowered.startswith("-u") and lowered != "-u" and not lowered.startswith("--"):
+            if token[2:].upper() in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        if lowered in {"-u", "--unset"} and index + 1 < len(before_python):
+            if before_python[index + 1].upper() in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        # GNU env also accepts grouped short options: ``-i`` clears the whole
+        # environment and ``-uNAME`` unsets a variable, so a bundle like
+        # ``-iuPYTHONPATH`` both resets the environment and would drop PYTHONPATH.
+        # ``-u`` consumes the remainder of the cluster as the NAME.
+        if (
+            token.startswith("-")
+            and not token.startswith("--")
+            and len(token) > 1
+            and any(
+                os.path.basename(candidate.replace("\\", "/")).lower() == "env"
+                for candidate in before_python[:index]
+            )
+        ):
+            cluster = token[1:]
+            flags = cluster.split("u", 1)[0] if "u" in cluster else cluster
+            if "i" in flags:
+                return True
+            if "u" in cluster:
+                name = cluster.split("u", 1)[1]
+                if name and name.upper() in _SANDBOX_PYTHON_ENV_VARS:
+                    return True
+    return False
+
+
+def _segment_persistently_mutates_sandbox_python_env(segment: list[str]) -> bool:
+    if not segment:
+        return False
+    first = os.path.basename(segment[0].replace("\\", "/")).lower()
+    if all(_ASSIGNMENT_RE.match(token) for token in segment):
+        return any(token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment)
+    if first in {"unset", "unsetenv"}:
+        return any(token.upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment[1:])
+    if first in {"export", "set", "setenv"}:
+        return any(
+            token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS for token in segment[1:]
+        )
+    # ``declare -x``/``typeset -x`` export to the child environment, so an empty
+    # ``declare -x PYTHONPATH=`` drops the guard var. Only the exporting form
+    # (``-x`` present) reaches the child; a bare ``declare NAME=`` stays a shell
+    # local and is inherited-safe.
+    if first in {"declare", "typeset"}:
+        exported = any(
+            token.startswith("-") and not token.startswith("--") and "x" in token[1:]
+            for token in segment[1:]
+        )
+        if exported:
+            return any(
+                token.split("=", 1)[0].upper() in _SANDBOX_PYTHON_ENV_VARS
+                for token in segment[1:]
+                if not token.startswith("-")
+            )
+    return False
+
+
+def _shell_alias_definitions(command: str) -> dict[str, str]:
+    """Collect ``alias NAME=VALUE`` definitions so a later use of NAME can be
+    expanded (``alias python='python -S'`` makes a subsequent ``python -c`` run
+    ``python -S -c``, skipping sitecustomize). Fail-open: only adds detections."""
+    aliases: dict[str, str] = {}
+    for segment in _shell_command_segments(command):
+        if not segment or os.path.basename(segment[0].replace("\\", "/")).lower() != "alias":
+            continue
+        for token in segment[1:]:
+            if token.startswith("-") or "=" not in token:
+                continue
+            name, value = token.split("=", 1)
+            if name:
+                aliases[name] = value
+    return aliases
+
+
+def _segment_with_alias_expansion(segment: list[str], aliases: dict[str, str]) -> list[str] | None:
+    if not aliases:
+        return None
+    cmd_index = 0
+    while cmd_index < len(segment) and _ASSIGNMENT_RE.match(segment[cmd_index]):
+        cmd_index += 1
+    if cmd_index >= len(segment) or segment[cmd_index] not in aliases:
+        return None
+    try:
+        value_tokens = shlex.split(aliases[segment[cmd_index]])
+    except ValueError:
+        return None
+    if not value_tokens:
+        return None
+    return segment[:cmd_index] + value_tokens + segment[cmd_index + 1 :]
+
+
+def _shell_command_substitutions(command: str) -> list[str]:
+    """Extract executable command substitutions, including quoted forms."""
+    substitutions: list[str] = []
+    index = 0
+    quote: str | None = None
+    while index < len(command):
+        char = command[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "'" and quote is None:
+            quote = "'"
+            index += 1
+            continue
+        if char == '"':
+            quote = None if quote == '"' else '"'
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\x60":
+            end = index + 1
+            while end < len(command):
+                if command[end] == "\\":
+                    end += 2
+                    continue
+                if command[end] == "\x60":
+                    substitutions.append(command[index + 1 : end])
+                    index = end + 1
+                    break
+                end += 1
+            else:
+                return substitutions
+            continue
+        if command.startswith("$((", index):
+            index += 3
+            continue
+        # $(...) command substitution and <(...)/>(...) process substitution all
+        # run their inner command; recurse into each.
+        if not (
+            command.startswith("$(", index)
+            or command.startswith("<(", index)
+            or command.startswith(">(", index)
+        ):
+            index += 1
+            continue
+        start = index + 2
+        end = start
+        depth = 1
+        nested_quote: str | None = None
+        while end < len(command):
+            nested = command[end]
+            if nested_quote == "'":
+                if nested == "'":
+                    nested_quote = None
+                end += 1
+                continue
+            if nested == "'" and nested_quote is None:
+                nested_quote = "'"
+                end += 1
+                continue
+            if nested == '"':
+                nested_quote = None if nested_quote == '"' else '"'
+                end += 1
+                continue
+            if nested == "\\":
+                end += 2
+                continue
+            if command.startswith("$(", end) and not command.startswith("$((", end):
+                depth += 1
+                end += 2
+                continue
+            if nested == "(":
+                depth += 1
+            elif nested == ")":
+                depth -= 1
+                if depth == 0:
+                    substitutions.append(command[start:end])
+                    index = end + 1
+                    break
+            end += 1
+        else:
+            return substitutions
+    return substitutions
+
+
+_HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)")
+# A Python interpreter reading its program from a process substitution
+# (python <(printf ...)) runs a generated script this static scan cannot see;
+# the inner generator's output is the program, so fail closed on this shape.
+_PYTHON_PROCESS_SUB_SCRIPT_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:[\w./\\-]*/)?python(?:w)?[0-9.]*(?:\.exe)?(?:\s+-[^\s]*)*\s+<\(",
+    re.IGNORECASE,
+)
+
+
+def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
+    if "<<" not in command:
+        return [], False
+    lines = command.splitlines()
+    entries: list[tuple[str, str]] = []
+    malformed = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        matches = list(_HEREDOC_START_RE.finditer(line))
+        if not matches:
+            index += 1
+            continue
+        for match in matches:
+            quote = match.group("quote")
+            delimiter = match.group("name")
+            end = match.end()
+            if quote and (end >= len(line) or line[end] != quote):
+                continue
+            body_start = index + 1
+            body_end = body_start
+            while body_end < len(lines):
+                candidate = lines[body_end]
+                if candidate == delimiter or candidate.lstrip("\t") == delimiter:
+                    break
+                body_end += 1
+            if body_end >= len(lines):
+                malformed = True
+                continue
+            # Keep the command text after the delimiter so a here-doc piped into
+            # another process (cat <<'PY' | python) still exposes that consumer:
+            # the body is the consumer's stdin program. Only reconstruct the tail
+            # for a single here-doc on the line to avoid mis-pairing multi-doc
+            # openers (cmd <<A <<B).
+            opener = line[: match.start()]
+            if len(matches) == 1:
+                tail_start = end + 1 if quote else end
+                opener = f"{opener} {line[tail_start:]}"
+            entries.append((opener, "\n".join(lines[body_start:body_end])))
+            index = max(index, body_end)
+        index += 1
+    return entries, malformed
+
+
+def _shell_here_string_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
+    if "<<<" not in command:
+        return [], False
+    try:
+        lexer = shlex.shlex(command, posix = sys.platform != "win32", punctuation_chars = ";&|()`{}<")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return [], True
+    segments: list[list[str]] = [[]]
+    expect_command = True
+    for token in tokens:
+        if token in _SHELL_SEPARATORS or (
+            expect_command and token.lower() in _SHELL_KEYWORDS_AS_SEP
+        ):
+            if segments[-1]:
+                segments.append([])
+            expect_command = True
+            continue
+        segments[-1].append(token)
+        expect_command = False
+
+    entries: list[tuple[str, str]] = []
+    malformed = False
+    for segment in segments:
+        index = 0
+        while index < len(segment):
+            if segment[index] != "<<<":
+                index += 1
+                continue
+            if index + 1 >= len(segment):
+                malformed = True
+                break
+            opener = segment[:index] + segment[index + 2 :]
+            if not opener:
+                malformed = True
+            else:
+                entries.append((shlex.join(opener), segment[index + 1]))
+            index += 2
+    return entries, malformed
+
+
+_SHELL_EXPANSION_TOKEN_RE = re.compile(
+    r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\}|[0-9#?*$!@_-])|%[A-Za-z_][A-Za-z0-9_]*%"
+)
+_PYTHON_CHILD_LAUNCHERS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+_PYTHON_OS_EXEC_LAUNCHERS = frozenset(
+    {
+        "execl",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execv",
+        "execve",
+        "execvp",
+        "execvpe",
+        "posix_spawn",
+        "posix_spawnp",
+    }
+)
+# argv-list launchers whose first positional is the full ``[program, *args]``
+# vector (``pty.spawn(argv)``). Modelled like a subprocess sequence.
+_PYTHON_ARGV_LIST_LAUNCHERS = frozenset({"spawn"})
+# ``asyncio.create_subprocess_exec(program, *args)`` passes the program and its
+# arguments as separate positionals; ``create_subprocess_shell(cmd)`` passes a
+# single shell-script string.
+_PYTHON_ASYNCIO_EXEC_LAUNCHERS = frozenset({"create_subprocess_exec"})
+_PYTHON_ASYNCIO_SHELL_LAUNCHERS = frozenset({"create_subprocess_shell"})
+
+
+def _segment_with_shell_expansions_split(segment: list[str]) -> list[str] | None:
+    expanded: list[str] = []
+    changed = False
+    for token in segment:
+        if not _SHELL_EXPANSION_TOKEN_RE.search(token):
+            expanded.append(token)
+            continue
+        changed = True
+        # Resolve default/alternate parameter expansions to their operand first
+        # (``${PYTHON:-python} -S`` runs ``python -S`` when PYTHON is unset), so
+        # a command word supplied entirely by a defaulted expansion is still
+        # modelled instead of dropped.
+        resolved = _expand_param_defaults(token)
+        replacement = _SHELL_EXPANSION_TOKEN_RE.sub(" ", resolved).split()
+        expanded.extend(replacement)
+    return expanded if changed else None
+
+
+def _python_inline_payload(arguments: list[str]) -> str | None:
+    skip_next = False
+    for index, argument in enumerate(arguments):
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "-c":
+            return arguments[index + 1] if index + 1 < len(arguments) else ""
+        if argument.startswith("-c") and argument != "-c":
+            return argument[2:]
+        if argument == "-m" or not argument.startswith("-"):
+            return None
+        if argument == "--":
+            return None
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
+            skip_next = True
+    return None
+
+
+def _python_reads_program_from_stdin(arguments: list[str]) -> bool:
+    skip_next = False
+    for argument in arguments:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument == "-c" or argument.startswith("-c"):
+            return False
+        if argument == "-m":
+            return False
+        if argument == "--":
+            return False
+        if argument == "-":
+            return True
+        if not argument.startswith("-"):
+            return False
+        if argument in {"-W", "-X", "--check-hash-based-pycs"}:
+            skip_next = True
+    return True
+
+
+def _static_python_command_argument(node: ast.AST) -> str | None:
+    value = _static_python_string(node)
+    if value is not None:
+        return value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        parts: list[str] = []
+        for element in node.elts:
+            piece = _static_python_string(element)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return shlex.join(parts)
+    return None
+
+
+def _static_python_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    # Fold statically concatenated string literals (``'py' + 'thon'``) and
+    # constant-only f-strings so an argv element assembled from pieces is still
+    # recognised as ``python`` rather than treated as dynamic.
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_python_string(node.left)
+        right = _static_python_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+        return None
+    if isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for value in node.values:
+            piece = _static_python_string(value)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return "".join(parts)
+    return None
+
+
+def _static_python_string_list(node: ast.AST | None) -> list[str] | None:
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return None
+    parts: list[str] = []
+    for element in node.elts:
+        value = _static_python_string(element)
+        if value is None:
+            return None
+        parts.append(value)
+    return parts
+
+
+def _python_call_keyword(node: ast.Call, name: str) -> ast.AST | None:
+    for keyword in node.keywords or []:
+        if keyword.arg == name:
+            return keyword.value
+    return None
+
+
+def _python_call_is_shell_true(node: ast.Call) -> bool:
+    keyword = _python_call_keyword(node, "shell")
+    return isinstance(keyword, ast.Constant) and keyword.value is True
+
+
+def _python_env_key(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value.upper()
+    return None
+
+
+def _python_env_mapping_taints_guard(value: ast.AST) -> bool:
+    """True if merging ``value`` into ``os.environ`` could clear/redirect a
+    guard variable. A literal dict is safe only when every key is a known,
+    non-guard name; any unknown mapping fails closed."""
+    if isinstance(value, ast.Dict):
+        for key in value.keys:
+            name = _python_env_key(key) if key is not None else None
+            if name is None or name in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        return False
+    return True
+
+
+def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> bool:
+    def is_os_environ(candidate: ast.AST) -> bool:
+        return (
+            isinstance(candidate, ast.Attribute)
+            and candidate.attr == "environ"
+            and isinstance(candidate.value, ast.Name)
+            and candidate.value.id in os_aliases
+        )
+
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Subscript) and is_os_environ(target.value):
+                key = _python_env_key(target.slice)
+                if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                    return True
+    # ``os.environ |= {...}`` (PEP 584) merges a mapping in place; its target is
+    # an Attribute, not a Subscript, so it is checked separately here.
+    if (
+        isinstance(node, ast.AugAssign)
+        and isinstance(node.op, ast.BitOr)
+        and is_os_environ(node.target)
+    ):
+        if _python_env_mapping_taints_guard(node.value):
+            return True
+    if isinstance(node, ast.Delete):
+        for target in node.targets:
+            if isinstance(target, ast.Subscript) and is_os_environ(target.value):
+                key = _python_env_key(target.slice)
+                if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                    return True
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Attribute):
+        if is_os_environ(node.func.value):
+            if node.func.attr in {"clear", "popitem"}:
+                return True
+            if node.func.attr in {"pop", "setdefault", "update", "__delitem__", "__setitem__"}:
+                key = _python_env_key(node.args[0]) if node.args else None
+                return key is None or key in _SANDBOX_PYTHON_ENV_VARS
+        if (
+            isinstance(node.func.value, ast.Name)
+            and node.func.value.id in os_aliases
+            and node.func.attr in {"putenv", "unsetenv"}
+        ):
+            key = _python_env_key(node.args[0]) if node.args else None
+            return key is None or key in _SANDBOX_PYTHON_ENV_VARS
+    return False
+
+
+def _python_payload_child_env_taints_guard(node: ast.Call, os_aliases: set[str]) -> bool:
+    env_node = _python_call_keyword(node, "env")
+    if env_node is None:
+        return False
+    return _python_env_node_taints_guard(env_node, os_aliases)
+
+
+def _python_env_node_taints_guard(env_node: ast.AST, os_aliases: set[str]) -> bool:
+    if isinstance(env_node, ast.Constant) and env_node.value is None:
+        return False
+    if (
+        isinstance(env_node, ast.Attribute)
+        and env_node.attr == "environ"
+        and isinstance(env_node.value, ast.Name)
+        and env_node.value.id in os_aliases
+    ):
+        return False
+    if (
+        isinstance(env_node, ast.Call)
+        and isinstance(env_node.func, ast.Attribute)
+        and env_node.func.attr == "copy"
+        and isinstance(env_node.func.value, ast.Attribute)
+        and env_node.func.value.attr == "environ"
+        and isinstance(env_node.func.value.value, ast.Name)
+        and env_node.func.value.value.id in os_aliases
+    ):
+        return False
+    return True
+
+
+def _python_subprocess_command_argument(node: ast.Call, command_node: ast.AST) -> str | None:
+    if _python_call_is_shell_true(node):
+        # ``shell=True`` runs the command through ``/bin/sh -c``. A string is the
+        # script verbatim; for a sequence POSIX passes element 0 as the script
+        # (later elements become ``$0``, ``$1`` ...). Either way the value is
+        # shell input, so return it raw for the shell-aware recursion rather than
+        # ``shlex.join``-ing the whole vector into one quoted word.
+        script = _static_python_string(command_node)
+        if script is not None:
+            return script
+        if isinstance(command_node, (ast.List, ast.Tuple)) and command_node.elts:
+            return _static_python_string(command_node.elts[0])
+        return None
+    executable = _static_python_string(_python_call_keyword(node, "executable"))
+    parts = _static_python_string_list(command_node)
+    if executable and _python_executable_token(executable):
+        if parts is not None:
+            return shlex.join([executable, *parts[1:]])
+        nested = _static_python_command_argument(command_node)
+        if nested is not None:
+            return f"{shlex.quote(executable)} {nested}"
+        return None
+    return _static_python_command_argument(command_node)
+
+
+def _python_os_exec_command_argument(node: ast.Call, launcher: str) -> str | None:
+    args = list(node.args)
+    if not args:
+        return None
+    executable = _static_python_string(args[0])
+    if executable is None:
+        return None
+    if launcher in {"execl", "execlp"}:
+        parts = [_static_python_string(arg) for arg in args[2:]]
+    elif launcher in {"execle", "execlpe"}:
+        parts = [_static_python_string(arg) for arg in args[2:-1]]
+    elif launcher in {"execv", "execvp"}:
+        argv = _static_python_string_list(args[1] if len(args) > 1 else None)
+        parts = None if argv is None else argv[1:]
+    elif launcher in {"execve", "execvpe", "posix_spawn", "posix_spawnp"}:
+        argv = _static_python_string_list(args[1] if len(args) > 1 else None)
+        parts = None if argv is None else argv[1:]
+    else:
+        return None
+    if parts is None or any(part is None for part in parts):
+        return None
+    return shlex.join([executable, *parts])
+
+
+def _python_os_exec_env_taints_guard(node: ast.Call, launcher: str, os_aliases: set[str]) -> bool:
+    if launcher in {"execle", "execlpe"}:
+        env_node = node.args[-1] if len(node.args) >= 2 else None
+    elif launcher in {"execve", "execvpe", "posix_spawn", "posix_spawnp"}:
+        env_node = node.args[2] if len(node.args) > 2 else None
+    else:
+        env_node = None
+    return env_node is not None and _python_env_node_taints_guard(env_node, os_aliases)
+
+
+def _python_payload_launches_startup_bypass(
+    code: str,
+    depth: int,
+    environment_tainted: bool = False,
+) -> bool:
+    if depth > 4:
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+    subprocess_aliases = {"subprocess"}
+    os_aliases = {"os"}
+    pty_aliases = {"pty"}
+    asyncio_aliases = {"asyncio"}
+    launcher_aliases: set[str] = set()
+    os_exec_aliases: dict[str, str] = {}
+    argv_list_launcher_aliases: set[str] = set()
+    asyncio_exec_aliases: set[str] = set()
+    asyncio_shell_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "os":
+                    os_aliases.add(alias.asname or "os")
+                elif alias.name == "pty":
+                    pty_aliases.add(alias.asname or "pty")
+                elif alias.name == "asyncio":
+                    asyncio_aliases.add(alias.asname or "asyncio")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "subprocess":
+                for alias in node.names:
+                    if alias.name == "*":
+                        launcher_aliases.update(_PYTHON_CHILD_LAUNCHERS)
+                    elif alias.name in _PYTHON_CHILD_LAUNCHERS:
+                        launcher_aliases.add(alias.asname or alias.name)
+            elif node.module == "os":
+                for alias in node.names:
+                    if alias.name == "*":
+                        os_exec_aliases.update(
+                            (launcher, launcher) for launcher in _PYTHON_OS_EXEC_LAUNCHERS
+                        )
+                    elif alias.name in _PYTHON_OS_EXEC_LAUNCHERS:
+                        os_exec_aliases[alias.asname or alias.name] = alias.name
+            elif node.module == "pty":
+                for alias in node.names:
+                    if alias.name == "*":
+                        argv_list_launcher_aliases.update(_PYTHON_ARGV_LIST_LAUNCHERS)
+                    elif alias.name in _PYTHON_ARGV_LIST_LAUNCHERS:
+                        argv_list_launcher_aliases.add(alias.asname or alias.name)
+            elif node.module == "asyncio":
+                for alias in node.names:
+                    if alias.name == "*" or alias.name in _PYTHON_ASYNCIO_EXEC_LAUNCHERS:
+                        if alias.name == "*":
+                            asyncio_exec_aliases.update(_PYTHON_ASYNCIO_EXEC_LAUNCHERS)
+                            asyncio_shell_aliases.update(_PYTHON_ASYNCIO_SHELL_LAUNCHERS)
+                        else:
+                            asyncio_exec_aliases.add(alias.asname or alias.name)
+                    elif alias.name in _PYTHON_ASYNCIO_SHELL_LAUNCHERS:
+                        asyncio_shell_aliases.add(alias.asname or alias.name)
+        if _python_payload_mutates_sandbox_env(node, os_aliases):
+            environment_tainted = True
+    # Propagate simple launcher aliases assigned by name
+    # (``r = subprocess.run``; ``r([...])``) to a fixpoint so chained rebinds
+    # (``a = subprocess.run; b = a``) resolve too.
+    assigns = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for assign in assigns:
+            name = assign.targets[0].id
+            value = assign.value
+            if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                base, attr = value.value.id, value.attr
+                if (
+                    base in subprocess_aliases
+                    and attr in _PYTHON_CHILD_LAUNCHERS
+                    and name not in launcher_aliases
+                ):
+                    launcher_aliases.add(name)
+                    changed = True
+                elif (
+                    base in os_aliases
+                    and attr in _PYTHON_OS_EXEC_LAUNCHERS
+                    and os_exec_aliases.get(name) != attr
+                ):
+                    os_exec_aliases[name] = attr
+                    changed = True
+                elif (
+                    base in pty_aliases
+                    and attr in _PYTHON_ARGV_LIST_LAUNCHERS
+                    and name not in argv_list_launcher_aliases
+                ):
+                    argv_list_launcher_aliases.add(name)
+                    changed = True
+                elif (
+                    base in asyncio_aliases
+                    and attr in _PYTHON_ASYNCIO_EXEC_LAUNCHERS
+                    and name not in asyncio_exec_aliases
+                ):
+                    asyncio_exec_aliases.add(name)
+                    changed = True
+                elif (
+                    base in asyncio_aliases
+                    and attr in _PYTHON_ASYNCIO_SHELL_LAUNCHERS
+                    and name not in asyncio_shell_aliases
+                ):
+                    asyncio_shell_aliases.add(name)
+                    changed = True
+            elif isinstance(value, ast.Name):
+                if value.id in launcher_aliases and name not in launcher_aliases:
+                    launcher_aliases.add(name)
+                    changed = True
+                elif (
+                    value.id in os_exec_aliases
+                    and os_exec_aliases.get(name) != os_exec_aliases[value.id]
+                ):
+                    os_exec_aliases[name] = os_exec_aliases[value.id]
+                    changed = True
+                elif (
+                    value.id in argv_list_launcher_aliases
+                    and name not in argv_list_launcher_aliases
+                ):
+                    argv_list_launcher_aliases.add(name)
+                    changed = True
+                elif value.id in asyncio_exec_aliases and name not in asyncio_exec_aliases:
+                    asyncio_exec_aliases.add(name)
+                    changed = True
+                elif value.id in asyncio_shell_aliases and name not in asyncio_shell_aliases:
+                    asyncio_shell_aliases.add(name)
+                    changed = True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        nested = None
+        env_tainted = _python_payload_child_env_taints_guard(node, os_aliases)
+        # Recurse into a statically-known ``exec``/``eval`` string payload so a
+        # child launch hidden inside ``exec("... subprocess.run([...]) ...")`` is
+        # scanned rather than treated as an opaque call.
+        if isinstance(node.func, ast.Name) and node.func.id in {"exec", "eval"} and node.args:
+            inner = _static_python_string(node.args[0])
+            if inner is not None and _python_payload_launches_startup_bypass(
+                inner, depth + 1, environment_tainted
+            ):
+                return True
+        if isinstance(node.func, ast.Name) and node.func.id in launcher_aliases:
+            command_node = node.args[0] if node.args else _python_call_keyword(node, "args")
+            if command_node is not None:
+                nested = _python_subprocess_command_argument(node, command_node)
+        elif isinstance(node.func, ast.Name) and node.func.id in argv_list_launcher_aliases:
+            command_node = node.args[0] if node.args else None
+            if command_node is not None:
+                nested = _static_python_command_argument(command_node)
+        elif isinstance(node.func, ast.Name) and node.func.id in asyncio_exec_aliases:
+            parts = [_static_python_string(arg) for arg in node.args]
+            if parts and all(part is not None for part in parts):
+                nested = shlex.join(parts)
+        elif isinstance(node.func, ast.Name) and node.func.id in asyncio_shell_aliases:
+            nested = _static_python_string(node.args[0]) if node.args else None
+        elif isinstance(node.func, ast.Name) and node.func.id in os_exec_aliases:
+            launcher = os_exec_aliases[node.func.id]
+            nested = _python_os_exec_command_argument(node, launcher)
+            env_tainted = _python_os_exec_env_taints_guard(node, launcher, os_aliases)
+        elif isinstance(node.func, ast.Attribute):
+            if (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in subprocess_aliases
+                and node.func.attr in _PYTHON_CHILD_LAUNCHERS
+            ):
+                command_node = node.args[0] if node.args else _python_call_keyword(node, "args")
+                if command_node is not None:
+                    nested = _python_subprocess_command_argument(node, command_node)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in os_aliases
+                and node.func.attr in {"system", "popen"}
+            ):
+                command_node = node.args[0] if node.args else None
+                if command_node is not None:
+                    nested = _static_python_command_argument(command_node)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in os_aliases
+                and node.func.attr in _PYTHON_OS_EXEC_LAUNCHERS
+            ):
+                nested = _python_os_exec_command_argument(node, node.func.attr)
+                env_tainted = _python_os_exec_env_taints_guard(node, node.func.attr, os_aliases)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in pty_aliases
+                and node.func.attr in _PYTHON_ARGV_LIST_LAUNCHERS
+            ):
+                command_node = node.args[0] if node.args else None
+                if command_node is not None:
+                    nested = _static_python_command_argument(command_node)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in asyncio_aliases
+                and node.func.attr in _PYTHON_ASYNCIO_EXEC_LAUNCHERS
+            ):
+                parts = [_static_python_string(arg) for arg in node.args]
+                if parts and all(part is not None for part in parts):
+                    nested = shlex.join(parts)
+            elif (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id in asyncio_aliases
+                and node.func.attr in _PYTHON_ASYNCIO_SHELL_LAUNCHERS
+            ):
+                nested = _static_python_string(node.args[0]) if node.args else None
+        if nested is None:
+            continue
+        if _sandbox_python_startup_bypasses_guard(
+            nested,
+            depth + 1,
+            environment_tainted or env_tainted,
+        ):
+            return True
+    return False
+
+
+def _segment_python_launch_bypasses_guard(
+    segment: list[str], python_index: int, environment_tainted: bool, depth: int
+) -> bool:
+    if environment_tainted or _segment_mutates_sandbox_python_env(segment, python_index):
+        return True
+    arguments = segment[python_index + 1 :]
+    if _python_flags_skip_sitecustomize(arguments):
+        return True
+    payload = _python_inline_payload(arguments)
+    return payload is not None and _python_payload_launches_startup_bypass(payload, depth + 1)
+
+
+def _sandbox_python_startup_bypasses_guard(
+    command: str,
+    depth: int = 0,
+    environment_tainted: bool = False,
+) -> bool:
+    """Detect terminal-launched Python that suppresses the sandbox sitecustomize guard."""
+    if depth > 4:
+        return True
+    if _PYTHON_PROCESS_SUB_SCRIPT_RE.search(command):
+        return True
+    here_doc_entries, malformed_here_doc = _shell_here_doc_entries(command)
+    if malformed_here_doc:
+        return True
+    for opener, payload in here_doc_entries:
+        opener_command = _shell_command_with_unquoted_newlines_as_separators(
+            _shell_command_without_line_continuations(opener)
+        )
+        for segment in _shell_command_segments(opener_command):
+            python_index = _segment_python_index(segment)
+            if python_index is None:
+                continue
+            if _segment_python_launch_bypasses_guard(
+                segment, python_index, environment_tainted, depth
+            ):
+                return True
+            arguments = segment[python_index + 1 :]
+            if _python_inline_payload(arguments) is None and _python_reads_program_from_stdin(
+                arguments
+            ):
+                if _python_payload_launches_startup_bypass(payload, depth + 1, environment_tainted):
+                    return True
+        # Preserve the previous fail-safe for nested shell bodies.
+        if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):
+            return True
+    here_string_entries, malformed_here_string = _shell_here_string_entries(command)
+    if malformed_here_string:
+        return True
+    for opener, payload in here_string_entries:
+        dynamic_payload = _SHELL_EXPANSION_TOKEN_RE.search(payload) is not None
+        opener_command = _shell_command_with_unquoted_newlines_as_separators(
+            _shell_command_without_line_continuations(opener)
+        )
+        for segment in _shell_command_segments(opener_command):
+            python_index = _segment_python_index(segment)
+            if python_index is not None:
+                if _segment_python_launch_bypasses_guard(
+                    segment, python_index, environment_tainted, depth
+                ):
+                    return True
+                arguments = segment[python_index + 1 :]
+                if _python_inline_payload(arguments) is None and _python_reads_program_from_stdin(
+                    arguments
+                ):
+                    if dynamic_payload:
+                        return True
+                    if _python_payload_launches_startup_bypass(
+                        payload, depth + 1, environment_tainted
+                    ):
+                        return True
+            shell_index = _segment_shell_index(segment)
+            if shell_index is not None and _segment_shell_reads_stdin(segment, shell_index):
+                if dynamic_payload:
+                    return True
+                if _sandbox_python_startup_bypasses_guard(payload, depth + 1, environment_tainted):
+                    return True
+    command = _shell_command_with_unquoted_newlines_as_separators(
+        _shell_command_without_line_continuations(command)
+    )
+    for nested in _shell_command_substitutions(command):
+        if _sandbox_python_startup_bypasses_guard(nested, depth + 1, environment_tainted):
+            return True
+    aliases = _shell_alias_definitions(command)
+    for segment in _shell_command_segments(command):
+        first = os.path.basename(segment[0].replace("\\", "/")).lower()
+        wrapper_context = first in _PYTHON_LAUNCH_WRAPPERS
+        find_exec = first in {"find", "fd"}
+        for shell_index, shell_token in enumerate(segment):
+            shell = os.path.basename(shell_token.replace("\\", "/")).lower()
+            # A shell after the first token is only a real launch when it follows
+            # a launch wrapper (env/xargs/...) or a find/fd -exec flag; otherwise
+            # it is an argument (e.g. a path) and is ignored.
+            find_exec_context = find_exec and any(
+                token in _FIND_EXEC_FLAGS for token in segment[:shell_index]
+            )
+            if shell not in _SHELL_SCRIPT_INTERPRETERS or (
+                shell_index and not wrapper_context and not find_exec_context
+            ):
+                continue
+            for index in range(shell_index + 1, len(segment) - 1):
+                token = segment[index]
+                if token.lower() == "/c" or (token.startswith("-") and token.lower().endswith("c")):
+                    nested = segment[index + 1]
+                    if _segment_mutates_sandbox_python_env(segment, shell_index):
+                        nested = f"PYTHONPATH=; {nested}"
+                    if _sandbox_python_startup_bypasses_guard(
+                        nested, depth + 1, environment_tainted
+                    ):
+                        return True
+                    break
+            break
+        # ``env -S "python -S ..."`` splits its argument into a command; this
+        # applies wherever env sits in the launcher chain (env first, or behind a
+        # wrapper such as ``timeout 1 env -S ...`` / ``find . -exec env -S ...``),
+        # not only when env is the first token.
+        for env_index, env_token in enumerate(segment):
+            if os.path.basename(env_token.replace("\\", "/")).lower() != "env":
+                continue
+            env_launch = (
+                env_index == 0
+                or wrapper_context
+                or (find_exec and any(t in _FIND_EXEC_FLAGS for t in segment[:env_index]))
+            )
+            if not env_launch:
+                continue
+            for index in range(env_index + 1, len(segment)):
+                token = segment[index]
+                if token in {"-S", "--split-string"} and index + 1 < len(segment):
+                    if _sandbox_python_startup_bypasses_guard(
+                        segment[index + 1], depth + 1, environment_tainted
+                    ):
+                        return True
+                elif token.startswith("--split-string="):
+                    if _sandbox_python_startup_bypasses_guard(
+                        token.split("=", 1)[1], depth + 1, environment_tainted
+                    ):
+                        return True
+        expanded_segment = _segment_with_shell_expansions_split(segment)
+        if expanded_segment:
+            expanded_python_index = _segment_python_index(expanded_segment)
+            if expanded_python_index is not None and _segment_python_launch_bypasses_guard(
+                expanded_segment, expanded_python_index, environment_tainted, depth
+            ):
+                return True
+        aliased_segment = _segment_with_alias_expansion(segment, aliases)
+        if aliased_segment is not None:
+            aliased_python_index = _segment_python_index(aliased_segment)
+            if aliased_python_index is not None and _segment_python_launch_bypasses_guard(
+                aliased_segment, aliased_python_index, environment_tainted, depth
+            ):
+                return True
+        python_index = _segment_python_index(segment)
+        if python_index is not None:
+            if _segment_python_launch_bypasses_guard(
+                segment, python_index, environment_tainted, depth
+            ):
+                return True
+        environment_tainted = (
+            environment_tainted or _segment_persistently_mutates_sandbox_python_env(segment)
+        )
+    return False
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -328,6 +1519,7 @@ def _find_blocked_commands(command: str) -> set[str]:
 # Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
 # path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+_BYPASS_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bypass_site")
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
 # and hard blocks (blocklist, rlimits) still apply at run time; this gate only
@@ -552,6 +1744,10 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Low-level clients bypass the sandbox host scanner, so sandboxed Python blocks
+# them and auto mode asks before they can run.
+_SANDBOX_BLOCKED_NETWORK_MODULES = frozenset({"httpcore", "boto3", "botocore"})
+
 # Python: modules whose import alone signals side effects auto mode should ask
 # about (process spawning, network, bulk file ops, low-level memory).
 _AUTO_UNSAFE_PY_MODULES = frozenset(
@@ -605,6 +1801,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "venv",
     }
 )
+_AUTO_UNSAFE_PY_MODULES |= _SANDBOX_BLOCKED_NETWORK_MODULES
 # Attribute calls that mutate the filesystem / spawn processes (os.remove,
 # Path.write_text, sock.connect, ...) regardless of how the module was bound.
 _AUTO_UNSAFE_PY_ATTRS = frozenset(
@@ -666,6 +1863,7 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         # extractall/extract write arbitrary files (zip-slip): extract takes a
         # single member but an attacker-controlled member path still escapes.
         "exec_module",
+        "load_module",
         "extractall",
         "extract",
         "FileIO",
@@ -2402,22 +3600,21 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"\bnew\s+(?:Shared)?Worker\s*\(|"
     r"@import|"
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
+    # ES module loads of a remote/root URL: dynamic import('https://...') and
+    # static `import ... from 'https://...'` / side-effect `import 'https://...'`
+    # (a relative './mod.js' specifier has no https:/root prefix and stays static).
+    r"\bimport\s*\(\s*[\"'`]?\s*(?:https?:|/)|"
+    r"\bimport\b[^;\n]*?[\"'`]\s*(?:https?:|/)|"
+    # Module re-exports (export * from '...' / export {a} from '/...') fetch the
+    # referenced module just like a static import.
+    r"\bexport\b[^;\n]*?\bfrom\s*[\"'`]\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
-    r"\b(?:src|href|srcset)\s*=\s*[\"']?\s*(?:https?:|/)|"
     # Self-navigation sinks: location.assign/replace(...), window.open(...), and
     # assigning a URL to (window.)location(.href). location.reload()/history.back
     # do not navigate to a new URL, so they stay static.
     r"\blocation\s*\.\s*(?:assign|replace)\s*\(|"
     r"\bwindow\s*\.\s*open\s*\(|"
     r"\b(?:window\s*\.\s*)?location(?:\s*\.\s*href)?\s*=\s*[\"'`]?\s*(?:https?:|/)|"
-    # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
-    r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
-    r"sendBeacon|serviceWorker)[\"']\s*\]|"
-    # Computed bracket key spliced at runtime on a global host object
-    # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
-    # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.
-    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
-    r"(?:[\"']\s*\+|\+\s*[\"'])[^\]]*\]|"
     # Declarative meta-refresh navigation to a URL (order-tolerant); a bare
     # content="30" self-reload has no url= and stays static.
     r"<meta\b(?=[^>]*http-equiv\s*=\s*[\"']?\s*refresh)(?=[^>]*\burl\s*=)|"
@@ -2428,13 +3625,744 @@ _RENDER_HTML_NETWORK_RE = re.compile(
 # matching. Line // comments are left alone -- stripping them would eat the // in
 # an https:// URL and hide a real load.
 _JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_RENDER_HTML_GLOBAL_BRACKET_RE = re.compile(
+    r"\b(?:window|self|globalThis|top|parent|frames|this|navigator|"
+    r"document\s*\.\s*defaultView)\s*(?:\?\.\s*)?"
+    r"(?:\[\s*\d+\s*\]\s*(?:\?\.\s*)?)*\[([^\]]*)\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_SET_ATTRIBUTE_START_RE = re.compile(
+    r"\.\s*(?P<method>setAttribute(?:NS)?)\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_SET_ATTRIBUTE_INDIRECT_CALL_START_RE = re.compile(
+    r"\.\s*(?P<method>setAttribute(?:NS)?)\s*(?:\?\.\s*|\.\s*)"
+    r"(?P<wrapper>call|apply)\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE = re.compile(
+    r"\.\s*(?P<attr>src|href|srcset|action|formaction|poster|data|ping|srcdoc)\s*"
+    r"(?P<operator>\+=|&&=|\|\|=|\?\?=|=(?!=))",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_ASSIGNMENT_START_RE = re.compile(
+    r"\.\s*(?:innerHTML|outerHTML)\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_CALL_START_RE = re.compile(
+    r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\.\s*(?P<contextual>createContextualFragment)|"
+    # document.write / writeln, optionally reached through a document-valued
+    # receiver such as document.open(): document.open().write('<img src=...>')
+    # returns the same document and inserts the remote-loading markup.
+    r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_INDIRECT_CALL_START_RE = re.compile(
+    r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\.\s*(?P<contextual>createContextualFragment)|"
+    r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<wrapper>call|apply)\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_TAGGED_TEMPLATE_START_RE = re.compile(
+    r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\.\s*(?P<contextual>createContextualFragment)|"
+    r"\bdocument\s*(?:(?:\?\.\s*|\.\s*)open\s*\([^()]*\)\s*)?"
+    r"\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?P<template>`)",
+    re.IGNORECASE,
+)
+_RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE = re.compile(
+    r"\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_COMPUTED_CALL_START_RE = re.compile(
+    r"(?:(?P<document>\bdocument)\s*(?:\?\.\s*)?)?"
+    r"\[\s*(?P<member>[^\]]+)\s*\]\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_REFLECT_SET_START_RE = re.compile(
+    r"\bReflect\s*\.\s*set\s*(?:\?\.\s*)?\(", re.IGNORECASE
+)
+_RENDER_HTML_OBJECT_ASSIGN_START_RE = re.compile(
+    r"\bObject\s*\.\s*assign\s*(?:\?\.\s*)?\(", re.IGNORECASE
+)
+_RENDER_HTML_JS_STATIC_NAME_START_RE = re.compile(
+    r"\b(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*",
+    re.IGNORECASE,
+)
+_RENDER_HTML_WITH_BLOCK_RE = re.compile(
+    r"\bwith\s*\((?:[^()]|\([^()]*\))*\)\s*\{(?P<body>[^{}]*)\}",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_WITH_STATEMENT_RE = re.compile(
+    r"\bwith\s*\((?:[^()]|\([^()]*\))*\)\s*(?!\{)(?P<body>[^;\n\r<{}]*)",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE = re.compile(
+    r"(?<![.$A-Za-z0-9_])"
+    r"(?P<attr>src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
+    r"\s*(?:\+=|&&=|\|\|=|\?\?=|=(?!=))",
+    re.IGNORECASE,
+)
+_RENDER_HTML_OBJECT_COMPUTED_PROPERTY_START_RE = re.compile(
+    r"\[\s*(?P<member>[^\]]+)\s*\]\s*:\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_OBJECT_PROPERTY_START_RE = re.compile(
+    r"(?P<quote>['\"]?)(?P<member>src|href|srcset|action|formaction|poster|data|ping|"
+    r"srcdoc|innerHTML|outerHTML)(?P=quote)\s*:\s*",
+    re.IGNORECASE,
+)
+_RENDER_HTML_DESTRUCTURING_ASSIGNMENT_START_RE = re.compile(
+    r"(?:\[[^\]]*(?:\.\s*|\[\s*['\"`])"
+    r"(?:src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
+    r"[^\]]*\]|"
+    r"\{[^{}]*(?:src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|"
+    r"outerHTML)\s*:\s*[^{}]*(?:\.\s*|\[\s*['\"`])"
+    r"(?:src|href|srcset|action|formaction|poster|data|ping|srcdoc|innerHTML|outerHTML)"
+    r"[^{}]*\})\s*=",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_NETWORK_MEMBERS = frozenset(
+    {
+        "fetch",
+        "open",
+        "xmlhttprequest",
+        "websocket",
+        "eventsource",
+        "importscripts",
+        "sendbeacon",
+        "serviceworker",
+    }
+)
+_RENDER_HTML_NETWORK_ATTRIBUTES = frozenset(
+    {"src", "href", "srcset", "action", "formaction", "poster", "data", "ping"}
+)
+_RENDER_HTML_URL_LIST_ATTRIBUTES = frozenset({"srcset", "ping"})
+_RENDER_HTML_URL_LIST_NETWORK_RE = re.compile(r"(?:^|[\s,])(?:https?:|/)", re.IGNORECASE)
+_RENDER_HTML_JS_NETWORK_URL_RE = re.compile(r"(?:^|[\s,:'\"`\[(])(?:https?:|/)", re.IGNORECASE)
+_RENDER_HTML_ACTIVE_DATA_MIME_TYPES = frozenset(
+    {"text/html", "application/xhtml+xml", "image/svg+xml"}
+)
+
+
+def _leading_js_string(expression: str) -> tuple[str, int] | None:
+    """Return a leading JS string literal and its end offset."""
+    i = 0
+    while i < len(expression) and expression[i].isspace():
+        i += 1
+    if i >= len(expression) or expression[i] not in "\"'`":
+        return None
+    quote = expression[i]
+    i += 1
+    value: list[str] = []
+    while i < len(expression):
+        char = expression[i]
+        if char == "\\":
+            i += 1
+            if i >= len(expression):
+                return None
+            escape = expression[i]
+            if escape in ("\\", "/", '"', "'", "`"):
+                value.append(escape)
+                i += 1
+                continue
+            escapes = {
+                "b": "\b",
+                "f": "\f",
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
+                "v": "\v",
+            }
+            if escape in escapes:
+                value.append(escapes[escape])
+                i += 1
+                continue
+            if escape == "0":
+                if i + 1 < len(expression) and expression[i + 1].isdigit():
+                    return None
+                value.append("\0")
+                i += 1
+                continue
+            if escape == "x":
+                digits = expression[i + 1 : i + 3]
+                if len(digits) != 2 or not re.fullmatch(r"[0-9a-fA-F]{2}", digits):
+                    return None
+                value.append(chr(int(digits, 16)))
+                i += 3
+                continue
+            if escape == "u":
+                if i + 1 < len(expression) and expression[i + 1] == "{":
+                    end = expression.find("}", i + 2)
+                    digits = expression[i + 2 : end] if end != -1 else ""
+                    if not digits or not re.fullmatch(r"[0-9a-fA-F]{1,6}", digits):
+                        return None
+                    codepoint = int(digits, 16)
+                    if codepoint > 0x10FFFF:
+                        return None
+                    value.append(chr(codepoint))
+                    i = end + 1
+                    continue
+                digits = expression[i + 1 : i + 5]
+                if len(digits) != 4 or not re.fullmatch(r"[0-9a-fA-F]{4}", digits):
+                    return None
+                value.append(chr(int(digits, 16)))
+                i += 5
+                continue
+            if escape in ("\n", "\r"):
+                if escape == "\r" and i + 1 < len(expression) and expression[i + 1] == "\n":
+                    i += 1
+                i += 1
+                continue
+            value.append(escape)
+            i += 1
+            continue
+        if char == quote:
+            return "".join(value), i + 1
+        if quote == "`" and char == "$" and i + 1 < len(expression) and expression[i + 1] == "{":
+            return None
+        value.append(char)
+        i += 1
+    return None
+
+
+def _static_js_string_prefix(expression: str) -> tuple[str, int] | None:
+    """Fold a leading sequence of JS string literals joined with +."""
+    parts: list[str] = []
+    offset = 0
+    while True:
+        parsed = _leading_js_string(expression[offset:])
+        if parsed is None:
+            return None
+        value, end = parsed
+        parts.append(value)
+        offset += end
+        while offset < len(expression) and expression[offset].isspace():
+            offset += 1
+        if offset == len(expression):
+            return "".join(parts), offset
+        if expression[offset] != "+":
+            return "".join(parts), offset
+        offset += 1
+
+
+def _static_js_string(expression: str) -> str | None:
+    """Fold a complete sequence of JS string literals joined with +."""
+    parsed = _static_js_string_prefix(expression)
+    if parsed is None:
+        return None
+    value, end = parsed
+    if expression[end:].strip():
+        return None
+    return value
+
+
+def _static_js_assignment_string(expression: str) -> str | None:
+    """Fold a static assignment value and reject trailing transformations."""
+    parsed = _static_js_string_prefix(expression)
+    if parsed is None:
+        return None
+    value, end = parsed
+    rest = expression[end:].lstrip()
+    if not rest or rest.startswith("//") or rest[0] in ";,)]}\n\r<":
+        return value
+    return None
+
+
+def _render_html_static_js_name_aliases(code: str) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for match in _RENDER_HTML_JS_STATIC_NAME_START_RE.finditer(code):
+        value = _static_js_assignment_string(code[match.end() :])
+        if value is None:
+            continue
+        name = match.group("name")
+        if name in ambiguous:
+            continue
+        # A name reassigned to a different literal is position-dependent; this
+        # flat map cannot say which value is live at a given use, so drop it and
+        # let the caller fail closed on a network-looking assigned value rather
+        # than trusting only the final definition.
+        if name in aliases and aliases[name] != value:
+            del aliases[name]
+            ambiguous.add(name)
+            continue
+        aliases[name] = value
+    return aliases
+
+
+def _render_html_resolve_member(expression: str, aliases: dict[str, str]) -> str | None:
+    member = _static_js_string(expression)
+    if member is not None:
+        return member
+    name = expression.strip()
+    if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", name):
+        return aliases.get(name)
+    return None
+
+
+def _render_html_data_document_reaches_network(value: str, depth: int) -> bool:
+    """Inspect executable document payloads embedded in data: URLs."""
+    if not value.lower().startswith("data:"):
+        return False
+    header, separator, payload = value[5:].partition(",")
+    if not separator:
+        return True
+    parts = [part.strip() for part in header.split(";")]
+    media_type = (parts[0] or "text/plain").lower()
+    if media_type not in _RENDER_HTML_ACTIVE_DATA_MIME_TYPES:
+        return False
+    # Decode declared charset so data documents match browser behavior.
+    charset = "utf-8"
+    for parameter in parts[1:]:
+        name, equals, parameter_value = parameter.partition("=")
+        if equals and name.strip().lower() == "charset":
+            charset = urllib.parse.unquote(parameter_value.strip().strip("\"'"))
+            if not charset:
+                return True
+            break
+    try:
+        encoding = codecs.lookup(charset).name
+        payload_bytes = urllib.parse.unquote_to_bytes(payload)
+        if any(part.lower() == "base64" for part in parts[1:]):
+            payload_bytes = base64.b64decode(b"".join(payload_bytes.split()), validate = True)
+        markup = payload_bytes.decode(encoding)
+    except (LookupError, UnicodeError, ValueError, binascii.Error):
+        return True
+    return _render_html_code_reaches_network(markup, depth + 1)
+
+
+def _render_html_attribute_reaches_network(
+    name: str,
+    value: str | None,
+    depth: int = 0,
+) -> bool:
+    if value is None:
+        return False
+    value = value.lstrip()
+    if value.lower().startswith("data:"):
+        return _render_html_data_document_reaches_network(value, depth)
+    if name in _RENDER_HTML_URL_LIST_ATTRIBUTES:
+        return bool(_RENDER_HTML_URL_LIST_NETWORK_RE.search(value))
+    return value.lower().startswith(("http:", "https:", "/"))
+
+
+class _RenderHtmlAttributeParser(HTMLParser):
+    def __init__(self, depth: int):
+        super().__init__(convert_charrefs = True)
+        self.depth = depth
+        self.reaches_network = False
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            name = name.lower()
+            if name == "srcdoc" and value:
+                if self.depth >= 8 or _render_html_code_reaches_network(value, self.depth + 1):
+                    self.reaches_network = True
+                    return
+            if name == "xlink:href":
+                name = "href"
+            if name in _RENDER_HTML_NETWORK_ATTRIBUTES and _render_html_attribute_reaches_network(
+                name, value, self.depth
+            ):
+                self.reaches_network = True
+                return
+
+
+def _render_html_attributes_reach_network(code: str, depth: int = 0) -> bool:
+    parser = _RenderHtmlAttributeParser(depth)
+    try:
+        parser.feed(code)
+        parser.close()
+    except Exception:
+        return True
+    return parser.reaches_network
+
+
+def _js_call_arguments(code: str, offset: int) -> list[str] | None:
+    arguments: list[str] = []
+    start = offset
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for i in range(offset, len(code)):
+        char = code[i]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "\"'`":
+            quote = char
+        elif char in "([{":
+            stack.append(char)
+        elif char in ")]}":
+            if char == ")" and not stack:
+                arguments.append(code[start:i])
+                return arguments
+            if not stack or stack[-1] != pairs[char]:
+                return None
+            stack.pop()
+        elif char == "," and not stack:
+            arguments.append(code[start:i])
+            start = i + 1
+    return None
+
+
+def _js_assignment_expression(code: str) -> str | None:
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for index, char in enumerate(code):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "\"'`":
+            quote = char
+        elif char in "([{":
+            stack.append(char)
+        elif char in ")]}":
+            if not stack or stack[-1] != pairs[char]:
+                return code[:index]
+            stack.pop()
+        elif char in ";\n\r<" and not stack:
+            return code[:index]
+    return code if quote is None and not stack else None
+
+
+def _render_html_assigned_member_reaches_network(
+    member: str, value: str | None, depth: int
+) -> bool:
+    member = member.lower()
+    if member in {"innerhtml", "outerhtml", "srcdoc"}:
+        return value is None or _render_html_code_reaches_network(value, depth + 1)
+    if member in _RENDER_HTML_NETWORK_ATTRIBUTES:
+        return value is None or _render_html_attribute_reaches_network(member, value, depth)
+    return False
+
+
+def _render_html_value_reaches_network_without_member(value: str | None, depth: int) -> bool:
+    if value is None:
+        return True
+    value = value.lstrip()
+    return bool(
+        _RENDER_HTML_URL_LIST_NETWORK_RE.search(value)
+        or _render_html_data_document_reaches_network(value, depth)
+        or _render_html_code_reaches_network(value, depth + 1)
+    )
+
+
+def _render_html_set_attribute_arguments(
+    arguments: list[str], method: str, depth: int, aliases: dict[str, str]
+) -> bool:
+    if method == "setattributens":
+        name_index, value_index = 1, 2
+    else:
+        name_index, value_index = 0, 1
+    if len(arguments) <= value_index:
+        return False
+    name = _render_html_resolve_member(arguments[name_index], aliases)
+    value = _static_js_string(arguments[value_index])
+    if name is None:
+        return _render_html_value_reaches_network_without_member(value, depth)
+    name = name.lower().rsplit(":", 1)[-1]
+    return _render_html_assigned_member_reaches_network(name, value, depth)
+
+
+def _render_html_markup_call_reaches_network(arguments: list[str], method: str, depth: int) -> bool:
+    if method == "insertadjacenthtml":
+        if len(arguments) < 2:
+            return False
+        markup = _static_js_string(arguments[1])
+    else:
+        if not arguments:
+            return False
+        parts = [_static_js_string(argument) for argument in arguments]
+        markup = "".join(part for part in parts if part is not None)
+        if any(part is None for part in parts):
+            markup = None
+    return markup is None or _render_html_code_reaches_network(markup, depth + 1)
+
+
+def _js_array_literal_items(expression: str) -> list[str] | None:
+    expression = expression.strip()
+    if len(expression) < 2 or not expression.startswith("[") or not expression.endswith("]"):
+        return None
+    inner = expression[1:-1]
+    if not inner.strip():
+        return []
+    return _js_call_arguments(f"({inner})", 1)
+
+
+def _render_html_indirect_markup_call_reaches_network(
+    arguments: list[str], method: str, wrapper: str, depth: int
+) -> bool:
+    if wrapper == "call":
+        if not arguments:
+            return False
+        return _render_html_markup_call_reaches_network(arguments[1:], method, depth)
+    if wrapper == "apply":
+        if len(arguments) < 2:
+            return False
+        applied = _js_array_literal_items(arguments[1])
+        if applied is None:
+            return True
+        return _render_html_markup_call_reaches_network(applied, method, depth)
+    return False
+
+
+def _render_html_indirect_set_attribute_reaches_network(
+    arguments: list[str], method: str, wrapper: str, depth: int, aliases: dict[str, str]
+) -> bool:
+    if wrapper == "call":
+        if not arguments:
+            return False
+        return _render_html_set_attribute_arguments(arguments[1:], method, depth, aliases)
+    if wrapper == "apply":
+        if len(arguments) < 2:
+            return False
+        applied = _js_array_literal_items(arguments[1])
+        if applied is None:
+            return True
+        return _render_html_set_attribute_arguments(applied, method, depth, aliases)
+    return False
+
+
+def _render_html_tagged_template_markup_reaches_network(code: str, offset: int, depth: int) -> bool:
+    parsed = _leading_js_string(code[offset:])
+    if parsed is None:
+        return True
+    markup, _ = parsed
+    return _render_html_code_reaches_network(markup, depth + 1)
+
+
+def _render_html_with_body_reaches_network(body: str, depth: int) -> bool:
+    for assignment in _RENDER_HTML_BARE_PROPERTY_ASSIGNMENT_START_RE.finditer(body):
+        prefix = body[max(0, assignment.start() - 12) : assignment.start()]
+        if re.search(r"\b(?:const|let|var)\s+$", prefix, re.IGNORECASE):
+            continue
+        value = _static_js_assignment_string(body[assignment.end() :])
+        if _render_html_assigned_member_reaches_network(assignment.group("attr"), value, depth):
+            return True
+    return False
+
+
+def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
+    aliases = _render_html_static_js_name_aliases(code)
+    for match in _RENDER_HTML_GLOBAL_BRACKET_RE.finditer(code):
+        expression = match.group(1)
+        member = _render_html_resolve_member(expression, aliases)
+        if member is not None:
+            if member.lower() in _RENDER_HTML_NETWORK_MEMBERS:
+                return True
+            continue
+        leading = _leading_js_string(expression)
+        if leading is not None:
+            member, end = leading
+            if member.lower() in _RENDER_HTML_NETWORK_MEMBERS and expression[
+                end:
+            ].lstrip().startswith("."):
+                return True
+        if not re.fullmatch(r"\s*\d+\s*", expression):
+            return True
+
+    for match in _RENDER_HTML_SET_ATTRIBUTE_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if _render_html_set_attribute_arguments(
+            arguments, match.group("method").lower(), depth, aliases
+        ):
+            return True
+
+    for match in _RENDER_HTML_SET_ATTRIBUTE_INDIRECT_CALL_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if _render_html_indirect_set_attribute_reaches_network(
+            arguments,
+            match.group("method").lower(),
+            match.group("wrapper").lower(),
+            depth,
+            aliases,
+        ):
+            return True
+
+    for match in _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE.finditer(code):
+        value = _static_js_assignment_string(code[match.end() :])
+        if value is None:
+            return True
+        name = match.group("attr").lower()
+        if _render_html_assigned_member_reaches_network(name, value, depth):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_ASSIGNMENT_START_RE.finditer(code):
+        markup = _static_js_assignment_string(code[match.end() :])
+        if markup is None:
+            return True
+        if _render_html_code_reaches_network(markup, depth + 1):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_CALL_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        method = (
+            match.group("insert") or match.group("contextual") or match.group("write")
+        ).lower()
+        if _render_html_markup_call_reaches_network(arguments, method, depth):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_INDIRECT_CALL_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        method = (
+            match.group("insert") or match.group("contextual") or match.group("write")
+        ).lower()
+        if _render_html_indirect_markup_call_reaches_network(
+            arguments, method, match.group("wrapper").lower(), depth
+        ):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_TAGGED_TEMPLATE_START_RE.finditer(code):
+        if _render_html_tagged_template_markup_reaches_network(
+            code, match.start("template"), depth
+        ):
+            return True
+
+    for match in _RENDER_HTML_DESTRUCTURING_ASSIGNMENT_START_RE.finditer(code):
+        value = _js_assignment_expression(code[match.end() :])
+        if value is None:
+            return True
+        if _RENDER_HTML_JS_NETWORK_URL_RE.search(value) or _render_html_code_reaches_network(
+            value, depth + 1
+        ):
+            return True
+
+    for match in _RENDER_HTML_COMPUTED_ASSIGNMENT_START_RE.finditer(code):
+        value = _static_js_assignment_string(code[match.end() :])
+        member_expression = match.group("member")
+        member = _render_html_resolve_member(member_expression, aliases)
+        if member is None:
+            if "." in member_expression:
+                # A dotted computed key (img[o.k]=...) can resolve to a
+                # URL-loading attribute at runtime; fail closed when the assigned
+                # value is a static network URL. A dynamic value stays on the auto
+                # path, preserving prior behaviour for non-URL computed writes.
+                if value is not None and _render_html_value_reaches_network_without_member(
+                    value, depth
+                ):
+                    return True
+                continue
+            if _render_html_value_reaches_network_without_member(value, depth):
+                return True
+            continue
+        if _render_html_assigned_member_reaches_network(member, value, depth):
+            return True
+
+    for match in _RENDER_HTML_COMPUTED_CALL_START_RE.finditer(code):
+        method = _render_html_resolve_member(match.group("member"), aliases)
+        if method is None:
+            continue
+        method = method.lower()
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if method in {"setattribute", "setattributens"}:
+            if _render_html_set_attribute_arguments(arguments, method, depth, aliases):
+                return True
+        elif method == "insertadjacenthtml" or (
+            method in {"write", "writeln"} and match.group("document")
+        ):
+            if _render_html_markup_call_reaches_network(arguments, method, depth):
+                return True
+
+    for match in _RENDER_HTML_REFLECT_SET_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        if len(arguments) < 3:
+            continue
+        member = _render_html_resolve_member(arguments[1], aliases)
+        if member is None:
+            value = _static_js_string(arguments[2])
+            if _render_html_value_reaches_network_without_member(value, depth):
+                return True
+            continue
+        value = _static_js_string(arguments[2])
+        if _render_html_assigned_member_reaches_network(member, value, depth):
+            return True
+
+    for match in _RENDER_HTML_OBJECT_ASSIGN_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        for source in arguments[1:]:
+            for property_match in _RENDER_HTML_OBJECT_PROPERTY_START_RE.finditer(source):
+                value = _static_js_assignment_string(source[property_match.end() :])
+                if _render_html_assigned_member_reaches_network(
+                    property_match.group("member"), value, depth
+                ):
+                    return True
+            for property_match in _RENDER_HTML_OBJECT_COMPUTED_PROPERTY_START_RE.finditer(source):
+                member = _render_html_resolve_member(property_match.group("member"), aliases)
+                value = _static_js_assignment_string(source[property_match.end() :])
+                if member is None:
+                    if _render_html_value_reaches_network_without_member(value, depth):
+                        return True
+                    continue
+                if _render_html_assigned_member_reaches_network(member, value, depth):
+                    return True
+    for match in _RENDER_HTML_WITH_BLOCK_RE.finditer(code):
+        if _render_html_with_body_reaches_network(match.group("body"), depth):
+            return True
+    for match in _RENDER_HTML_WITH_STATEMENT_RE.finditer(code):
+        if _render_html_with_body_reaches_network(match.group("body"), depth):
+            return True
+    return False
+
+
+def _render_html_code_reaches_network(code: str, depth: int = 0) -> bool:
+    if depth > 8:
+        return True
+    code = _JS_BLOCK_COMMENT_RE.sub("", code)
+    if (
+        _RENDER_HTML_NETWORK_RE.search(code)
+        or _render_html_attributes_reach_network(code, depth)
+        or _render_html_computed_network_access(code, depth)
+    ):
+        return True
+    # The browser decodes HTML character references in attribute values before
+    # CSS/URL parsing, so an entity-obfuscated URL such as
+    # style="background:url(&#104;ttps://evil/x)" is only a network load after
+    # unescaping. Re-scan the decoded markup for URL sinks.
+    if "&" in code:
+        decoded = html.unescape(code)
+        if decoded != code and _RENDER_HTML_NETWORK_RE.search(decoded):
+            return True
+    return False
 
 
 def _render_html_reaches_network(arguments: dict) -> bool:
     code = arguments.get("code")
-    if not isinstance(code, str):
-        return False
-    return bool(_RENDER_HTML_NETWORK_RE.search(_JS_BLOCK_COMMENT_RE.sub("", code)))
+    return isinstance(code, str) and _render_html_code_reaches_network(code)
 
 
 # Tools that are read-only regardless of their arguments, so auto mode never has
@@ -2529,7 +4457,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
-        # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
+        "UNSLOTH_STUDIO_SANDBOXED": "1",
+        # sitecustomize shim: remaps code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
     }
@@ -2713,11 +4642,12 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    env.pop("UNSLOTH_STUDIO_SANDBOXED", None)
     # sitecustomize path shim (see _build_safe_env). Bypass inherits the
     # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (_SANDBOX_SITE_DIR, inherited_pythonpath) if part
+        part for part in (_BYPASS_SITE_DIR, inherited_pythonpath) if part
     )
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
@@ -2944,7 +4874,7 @@ WEB_SEARCH_TOOL = {
 }
 
 # Appended to the python/terminal descriptions: models habitually write to
-# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
+# /mnt/data (a code-interpreter path), which does not exist here.
 _SANDBOX_PATHS_NOTE = (
     " Read and write files using relative paths in the current working "
     "directory, which persists for this conversation; absolute paths like "
@@ -5209,7 +7139,198 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.importlib_aliases = {"importlib"}
+            self.builtins_aliases = {"builtins", "__builtins__"}
+            self.import_loader_aliases = {"__import__"}
+            self.source_loader_aliases = {"SourceFileLoader"}
+            self.source_loader_names: dict[str, str] = {}
+            self.literal_strings: dict[str, str] = {}
+
+        def _block_low_level_network_module(self, module_name: str, node) -> None:
+            root = module_name.split(".", 1)[0]
+            if root not in _SANDBOX_BLOCKED_NETWORK_MODULES:
+                return
+            network_calls.append(
+                {
+                    "type": "low_level_network_module_blocked",
+                    "line": getattr(node, "lineno", -1),
+                    "description": (
+                        f"Blocked: low-level network module {root!r} is unavailable "
+                        "in sandboxed code"
+                    ),
+                }
+            )
+
+        def _static_string(self, node) -> str | None:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.Name):
+                return self.literal_strings.get(node.id)
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                left = self._static_string(node.left)
+                right = self._static_string(node.right)
+                if left is not None and right is not None:
+                    return left + right
+            return None
+
+        def _import_namespace(self, node) -> str | None:
+            if isinstance(node, ast.Name):
+                if node.id in self.importlib_aliases:
+                    return "importlib"
+                if node.id in self.builtins_aliases:
+                    return "builtins"
+                return None
+            if isinstance(node, ast.Attribute) and node.attr == "__dict__":
+                return self._import_namespace(node.value)
+            if isinstance(node, ast.Call):
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "vars"
+                    and len(node.args) == 1
+                ):
+                    return self._import_namespace(node.args[0])
+                if self._is_getattr(node):
+                    name = self._static_string(node.args[1])
+                    if name == "__dict__":
+                        return self._import_namespace(node.args[0])
+            return None
+
+        def _is_getattr(self, node) -> bool:
+            if not isinstance(node, ast.Call) or len(node.args) < 2:
+                return False
+            if isinstance(node.func, ast.Name):
+                return node.func.id == "getattr"
+            return (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "getattr"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.builtins_aliases
+            )
+
+        def _is_import_loader(self, node) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in self.import_loader_aliases
+            if isinstance(node, ast.Attribute):
+                namespace = self._import_namespace(node.value)
+                return (namespace, node.attr) in {
+                    ("importlib", "import_module"),
+                    ("builtins", "__import__"),
+                }
+            if self._is_getattr(node):
+                namespace = self._import_namespace(node.args[0])
+                name = self._static_string(node.args[1])
+                return (namespace, name) in {
+                    ("importlib", "import_module"),
+                    ("builtins", "__import__"),
+                }
+            if isinstance(node, ast.Subscript):
+                namespace = self._import_namespace(node.value)
+                name = self._static_string(node.slice)
+                return (namespace, name) in {
+                    ("importlib", "import_module"),
+                    ("builtins", "__import__"),
+                }
+            return False
+
+        def _is_source_file_loader(self, node) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in self.source_loader_aliases
+            return isinstance(node, ast.Attribute) and node.attr == "SourceFileLoader"
+
+        def _source_loader_module_name(self, node) -> str | None:
+            if isinstance(node, ast.Name):
+                return self.source_loader_names.get(node.id)
+            if isinstance(node, ast.Call) and self._is_source_file_loader(node.func) and node.args:
+                return self._static_string(node.args[0])
+            return None
+
+        @staticmethod
+        def _target_names(node) -> list[str]:
+            if isinstance(node, ast.Name):
+                return [node.id]
+            if isinstance(node, (ast.Tuple, ast.List)):
+                names: list[str] = []
+                for item in node.elts:
+                    names.extend(NetworkAndIoVisitor._target_names(item))
+                return names
+            return []
+
+        def _bind_assignment(self, targets, value) -> None:
+            names: list[str] = []
+            for target in targets:
+                names.extend(self._target_names(target))
+            static_string = self._static_string(value)
+            for name in names:
+                if static_string is None:
+                    self.literal_strings.pop(name, None)
+                else:
+                    self.literal_strings[name] = static_string
+
+            if self._is_import_loader(value):
+                self.import_loader_aliases.update(names)
+            else:
+                self.import_loader_aliases.difference_update(names)
+            if isinstance(value, ast.Name) and value.id in self.importlib_aliases:
+                self.importlib_aliases.update(names)
+            if isinstance(value, ast.Name) and value.id in self.builtins_aliases:
+                self.builtins_aliases.update(names)
+            loader_name = self._source_loader_module_name(value)
+            for name in names:
+                if loader_name is None:
+                    self.source_loader_names.pop(name, None)
+                else:
+                    self.source_loader_names[name] = loader_name
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                self._block_low_level_network_module(alias.name, node)
+                if alias.name == "importlib":
+                    self.importlib_aliases.add(alias.asname or "importlib")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
+
+        def visit_ImportFrom(self, node):
+            if node.module:
+                self._block_low_level_network_module(node.module, node)
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if node.module == "importlib" and alias.name == "import_module":
+                    self.import_loader_aliases.add(bound)
+                elif node.module == "builtins" and alias.name == "__import__":
+                    self.import_loader_aliases.add(bound)
+                elif node.module == "importlib.machinery" and alias.name == "SourceFileLoader":
+                    self.source_loader_aliases.add(bound)
+
+        def visit_Assign(self, node):
+            self._bind_assignment(node.targets, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None:
+                self._bind_assignment([node.target], node.value)
+            self.generic_visit(node)
+
         def visit_Call(self, node):
+            if self._is_import_loader(node.func):
+                module_node = node.args[0] if node.args else None
+                if module_node is None:
+                    for keyword in node.keywords:
+                        if keyword.arg == "name":
+                            module_node = keyword.value
+                            break
+                module_name = self._static_string(module_node)
+                if module_name is not None:
+                    self._block_low_level_network_module(module_name, node)
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "load_module":
+                module_name = None
+                if node.args:
+                    module_name = self._static_string(node.args[0])
+                if module_name is None:
+                    module_name = self._source_loader_module_name(node.func.value)
+                if module_name is not None:
+                    self._block_low_level_network_module(module_name, node)
+
             parts: list[str] = []
             cur = node.func
             while isinstance(cur, ast.Attribute):
@@ -5363,6 +7484,11 @@ def _check_code_safety(code: str) -> str | None:
 
     Returns an error message string if the code is unsafe, or None if OK.
     """
+    if _python_payload_launches_startup_bypass(code, 0):
+        return (
+            "Error: unsafe code detected (Python child process cannot disable "
+            "the Studio runtime guard). Please remove unsafe patterns from your code."
+        )
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError from ast.parse through so the subprocess produces a
@@ -5481,7 +7607,7 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-# ChatGPT code-interpreter path conventions models write out of habit; none
+# Code-interpreter path conventions models write out of habit; none
 # exist in the Unsloth sandbox, so a failure on one earns the retry hint.
 _MISSING_PATH_PREFIXES = (
     "/mnt/data",
@@ -5826,6 +7952,8 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
+        if _sandbox_python_startup_bypasses_guard(command):
+            return "Blocked: sandboxed Python cannot disable the Studio runtime guard."
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
