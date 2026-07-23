@@ -667,6 +667,19 @@ def test_extra_args_disable_mmproj_last_wins():
     assert extra_args_disable_mmproj(["--mmproj-auto", "--no-mmproj-auto"]) is True
 
 
+def test_strip_shadowing_flags_drops_inherited_mmproj_flags_when_requested():
+    out = strip_shadowing_flags(
+        ["--no-mmproj", "--threads", "12", "--mmproj-auto"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_mmproj = True,
+    )
+    assert out == ["--threads", "12"]
+
+
 def test_strip_shadowing_flags_drops_model_draft_with_spec():
     # --model-draft (and aliases) are Unsloth-managed since the separate
     # MTP drafter support: an inherited copy must not last-wins-override

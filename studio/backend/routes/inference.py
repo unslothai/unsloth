@@ -3225,6 +3225,7 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
+            strip_mmproj = "load_mmproj" in getattr(request, "model_fields_set", set()),
         )
     )
     requested_load_mmproj = _effective_load_mmproj(
@@ -4144,6 +4145,10 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            # Explicit pass-through extras may override the toggle, but inherited
+            # projector flags belong to the previous Apply. When this request
+            # supplies load_mmproj, discard those stale flags first.
+            strip_mmproj = "load_mmproj" in fields_set,
         )
         try:
             extra_llama_args = validate_extra_args(stripped)
