@@ -2493,30 +2493,66 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     return True
 
 
-def _is_trusted_windows_program_dir(path: str) -> bool:
-    """True when ``path`` sits under a system-managed install root.
+def _canon_win_path(p: str) -> str:
+    """Canonical form for trust comparison: realpath (expands 8.3 aliases and
+    resolves junctions/symlinks) + normcase/normpath."""
+    return os.path.normcase(os.path.normpath(os.path.realpath(p)))
 
-    Only the Program Files roots are trusted (admin-writable only), never
-    ``%SystemRoot%``: Git does not install there and it holds world-writable
-    subdirs like ``Windows\\Temp``. Per-user managers (Scoop/Choco shims
-    under the profile) are refused. Paths are canonicalized so an 8.3 short
-    alias (``C:\\PROGRA~1``) still matches its long root (#7317).
+
+def _windows_program_roots() -> list[str]:
+    """Program Files install roots, resolved from the Windows known-folder API
+    (SHGetKnownFolderPath) so an overridden ``%ProgramFiles%`` env value cannot
+    move the trust boundary. Falls back to the env vars, then to fixed
+    ``%SystemDrive%`` paths, only if the API is unavailable (#7317).
     """
+    roots: list[str] = []
+    try:
+        import ctypes
+        from ctypes import wintypes
 
-    def _canon(p: str) -> str:
-        # realpath expands 8.3 short names on Windows; harmless elsewhere.
-        return os.path.normcase(os.path.normpath(os.path.realpath(p)))
-
-    roots = []
-    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
-        val = os.environ.get(var)
-        if val:
-            roots.append(val)
+        # FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86.
+        folder_ids = (
+            "{905e63b6-c1bf-494e-b29c-65b732d3d21a}",
+            "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}",
+        )
+        _SHGet = ctypes.windll.shell32.SHGetKnownFolderPath
+        _CoTaskMemFree = ctypes.windll.ole32.CoTaskMemFree
+        for fid in folder_ids:
+            guid = ctypes.create_string_buffer(16)
+            ctypes.windll.ole32.CLSIDFromString(
+                wintypes.LPCWSTR(fid), ctypes.byref(guid)
+            )
+            ptr = ctypes.c_wchar_p()
+            if _SHGet(ctypes.byref(guid), 0, None, ctypes.byref(ptr)) == 0:
+                if ptr.value:
+                    roots.append(ptr.value)
+                _CoTaskMemFree(ptr)
+    except Exception:
+        roots = []
     if not roots:
-        roots = [r"C:\Program Files", r"C:\Program Files (x86)"]
-    norm = _canon(path)
-    for root in roots:
-        root_norm = _canon(root)
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+            val = os.environ.get(var)
+            if val:
+                roots.append(val)
+    if not roots:
+        drive = os.environ.get("SystemDrive", "C:")
+        roots = [drive + r"\Program Files", drive + r"\Program Files (x86)"]
+    return roots
+
+
+def _is_trusted_windows_program_dir(path: str) -> bool:
+    """True when ``path`` sits under a system-managed Program Files root.
+
+    Only the Program Files roots are trusted (admin-writable only), resolved
+    via the known-folder API so an overridden env var cannot relocate them,
+    never ``%SystemRoot%`` (Git does not install there and it holds
+    world-writable subdirs like ``Windows\\Temp``). Per-user managers
+    (Scoop/Choco shims under the profile) are refused. Paths are canonicalized
+    so 8.3 aliases and junctions still resolve to their real root (#7317).
+    """
+    norm = _canon_win_path(path)
+    for root in _windows_program_roots():
+        root_norm = _canon_win_path(root)
         if norm == root_norm or norm.startswith(root_norm + os.sep):
             return True
     return False
@@ -2567,7 +2603,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         if git_exe:
             git_dir = os.path.dirname(git_exe)
             if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
-                path_entries.append(git_dir)
+                # Append the CANONICAL (realpath) dir used for the trust
+                # decision, not the raw entry: a junction that passed the check
+                # cannot then be retargeted to a writable dir before use.
+                path_entries.append(os.path.realpath(git_dir))
                 # A .cmd/.bat git shim needs its extension in PATHEXT below.
                 git_ext = os.path.splitext(git_exe)[1].upper()
 

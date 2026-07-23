@@ -380,6 +380,55 @@ class TestSandboxEnvIsolation:
         # No trusted git launcher -> PATHEXT stays minimal.
         assert env["PATHEXT"] == ".EXE;.COM"
 
+    def test_trust_uses_known_folder_not_env_override(self, monkeypatch, tmp_path):
+        """Trust is driven by the resolved Program Files roots, so a git under
+        an attacker-overridden %ProgramFiles% env value is still refused."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        real_prog = tmp_path / "RealProgramFiles"
+        (real_prog).mkdir()
+        evil = tmp_path / "attacker"
+        (evil / "Git" / "cmd").mkdir(parents = True)
+        # Resolver returns the genuine root; env is overridden to the evil dir.
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(real_prog)]
+        )
+        monkeypatch.setenv("ProgramFiles", str(evil))
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(evil / "Git" / "cmd" / "git.exe")
+        )
+        env = _build_safe_env(str(tmp_path))
+        assert str(evil / "Git" / "cmd") not in env["PATH"].split(os.pathsep)
+
+    def test_canonical_git_dir_appended(self, monkeypatch, tmp_path):
+        """The PATH entry is the realpath of the trusted dir, not a junction
+        alias, so it cannot be retargeted after the trust check."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        real_prog = tmp_path / "Program Files"
+        real_git = real_prog / "Git" / "cmd"
+        real_git.mkdir(parents = True)
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(real_prog, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink unsupported in this environment")
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(real_prog)]
+        )
+        monkeypatch.setattr(
+            tools_mod.shutil,
+            "which",
+            lambda name: str(link / "Git" / "cmd" / "git.exe"),
+        )
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(real_git) in parts  # canonical, not the `link/...` alias
+
     def test_windows_temp_git_dir_refused(self, monkeypatch, tmp_path):
         """A git under a world-writable %SystemRoot% subdir (Windows\\Temp) is
         NOT trusted, even though it sits under the Windows root."""
