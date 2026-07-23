@@ -538,9 +538,7 @@ def _slug_extends_base(derived: str, base: str) -> bool:
     return not derived[len(base)].isalnum()
 
 
-def _weight_url_looks_like_derivative_of_projector(
-    weight_url: str, projector_url: str
-) -> bool:
+def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_url: str) -> bool:
     weight_slug = _hf_repo_slug_from_url(weight_url)
     projector_slug = _hf_repo_slug_from_url(projector_url)
     if not weight_slug or not projector_slug:

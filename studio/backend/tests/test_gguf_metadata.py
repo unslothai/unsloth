@@ -374,9 +374,7 @@ def test_pairing_score_derivative_url_handles_non_hf_hosts():
 def test_pairing_score_derivative_url_handles_nested_namespaces():
     weight = {
         "general.basename": "Model-VL",
-        "general.base_model.0.repo_url": (
-            "https://gitlab.example.com/acme/models/Model-VL-GGUF"
-        ),
+        "general.base_model.0.repo_url": ("https://gitlab.example.com/acme/models/Model-VL-GGUF"),
     }
     mmproj = {
         "general.basename": "Model-VL",
