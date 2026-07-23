@@ -1376,9 +1376,7 @@ class TestGfx906LegacyReroute:
         # torch is (re)installed from the pinned rocm6.3 index...
         assert any("rocm6.3" in str(c) for c in mock_pip.call_args_list)
         # ...but the prebuilt bnb wheel is never installed.
-        assert not any(
-            "bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list
-        )
+        assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
@@ -1405,9 +1403,7 @@ class TestGfx906LegacyReroute:
         assert "rocm6.3" in torch_call
         assert "gfx1151" not in torch_call
         # gfx906 target -> generic bnb wheel skipped.
-        assert not any(
-            "bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list
-        )
+        assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
     def test_install_sh_gfx906_env_suppresses_strix(self):
         """install.sh must skip the Strix reroute when UNSLOTH_ROCM_GFX_ARCH=gfx906."""
