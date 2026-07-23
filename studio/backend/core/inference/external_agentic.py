@@ -43,8 +43,7 @@ from state.tool_approvals import (
 
 logger = logging.getLogger(__name__)
 
-# Connections that can drive Unsloth's local tool runtime against a remote
-# OpenAI-compatible chat-completions endpoint.
+# OAI-compat Connections that can drive Unsloth's local tool runtime.
 LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = frozenset({"ollama", "llama_cpp", "vllm", "custom"})
 
 
@@ -399,7 +398,6 @@ async def stream_external_local_tool_loop(
                 }
             )
 
-        # Continue the loop so the model can answer with tool results.
         continue
 
     # Budget exhausted after tool rounds — one final synthesis pass without tools.
