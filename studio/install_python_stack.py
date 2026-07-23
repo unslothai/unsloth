@@ -1920,13 +1920,25 @@ def _ensure_rocm_torch() -> None:
             )
             rocm_torch_ready = True
 
+    # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
+    # MI50 / Radeon VII path; it must win over the Strix probe-order detection
+    # below (a mixed Strix + MI50 host could otherwise route to gfx1151), so the
+    # Strix override is skipped when it is set.
+    _gfx906_arch_override = (
+        os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or ""
+    ).strip().lower() == "gfx906"
+
     # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
     # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
     # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin is authoritative: never auto-reroute it.
-    if _strix_needs_amd_arch_index(ver) and _explicit_rocm_torch_index_url() is None:
+    if (
+        _strix_needs_amd_arch_index(ver)
+        and _explicit_rocm_torch_index_url() is None
+        and not _gfx906_arch_override
+    ):
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -1963,17 +1975,24 @@ def _ensure_rocm_torch() -> None:
                     f"   skipping AMD per-gfx index override.\n"
                 )
 
-    # gfx906 (MI50 / Radeon VII): reroute to the last gfx906-capable wheel family
-    # (rocm6.3) when the host ROCm version would pick a newer, kernel-less index.
-    # An explicit ROCm pin, or an active Strix override, takes precedence. The
-    # target flag is reused below to skip the generic bitsandbytes wheel (which
-    # has no gfx906 kernels) regardless of the host ROCm version.
-    _runtime_is_gfx906 = (
-        _explicit_rocm_torch_index_url() is None
-        and _strix_override_url is None
-        and _runtime_target_is_gfx906()
+    # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
+    # the generic bitsandbytes wheel (no gfx906 kernels) even when the index is
+    # pinned. An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 is authoritative and needs no
+    # probe; otherwise only probe when no explicit torch-index pin is set -- a pin
+    # means "don't second-guess me" (and gfx probing is asserted-off there).
+    _runtime_is_gfx906 = _gfx906_arch_override or (
+        _explicit_rocm_torch_index_url() is None and _runtime_target_is_gfx906()
     )
-    _gfx906_override = _runtime_is_gfx906 and _gfx906_needs_legacy_index(ver)
+    # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
+    # host ROCm version would otherwise pick a newer, kernel-less index -- and never
+    # over an explicit pin or an active Strix reroute (the pin/Strix path installs
+    # its own index; only the bnb skip must still apply on those paths).
+    _gfx906_override = (
+        _runtime_is_gfx906
+        and _gfx906_needs_legacy_index(ver)
+        and _explicit_rocm_torch_index_url() is None
+        and _strix_override_url is None
+    )
     if _gfx906_override:
         print(
             f"\n   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "

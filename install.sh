@@ -3046,10 +3046,16 @@ case "$_torch_index_leaf" in
                     if (n > 0) print vals[idx]
                 }')
         fi
+        # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
+        # MI50 / Radeon VII path and must win over Strix probe-order detection on a
+        # mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set.
+        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
         _strix_gfx=""
-        case "$_runtime_gfx" in
-            gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
-        esac
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
+            esac
+        fi
         # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
         # arch build (rocm7.13) would be a downgrade rather than a rescue.
         if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
@@ -3086,13 +3092,13 @@ case "$_torch_index_leaf" in
         # use). Reroute any newer picked index; leave rocm6.0-6.3 alone.
         #
         # Target resolution: an explicit UNSLOTH_ROCM_GFX_ARCH wins (lets a host
-        # whose rocminfo/amd-smi emit no gfx token still opt in). Otherwise only
+        # whose rocminfo/amd-smi emit no gfx token still opt in; _gfx906_env was
+        # lowercased above, before the Strix block it suppresses). Otherwise only
         # treat gfx906 as the target when it is the SOLE distinct arch present:
         # _gfx_all is de-duplicated by visible index, which loses per-device
         # ordinals on a mixed host, so a non-gfx906 selection must never be
         # downgraded to rocm6.3 -- such hosts set UNSLOTH_ROCM_GFX_ARCH to opt in.
         _gfx906_target=false
-        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
         if [ -n "$_gfx906_env" ]; then
             [ "$_gfx906_env" = "gfx906" ] && _gfx906_target=true
         elif [ -n "$_gfx_all" ]; then

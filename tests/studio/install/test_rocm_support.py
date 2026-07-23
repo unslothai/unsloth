@@ -1350,6 +1350,72 @@ class TestGfx906LegacyReroute:
         assert "rocm6.3" in torch_call
         assert "rocm7.2" not in torch_call
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
+    def test_gfx906_bnb_skipped_even_when_index_pinned(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """A gfx906 user who pins the ROCm index AND sets the arch override still
+        skips the generic bnb wheel: the pin suppresses the torch reroute, not the
+        gfx906 runtime flag used for the bnb skip."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
+        monkeypatch.setenv(
+            "UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3"
+        )
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"\n"  # cpu torch -> reinstall from the pinned index
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        # torch is (re)installed from the pinned rocm6.3 index...
+        assert any("rocm6.3" in str(c) for c in mock_pip.call_args_list)
+        # ...but the prebuilt bnb wheel is never installed.
+        assert not any(
+            "bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list
+        )
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151", "gfx906"])
+    def test_gfx906_override_wins_over_strix_probe(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """Mixed Strix + MI50 host: UNSLOTH_ROCM_GFX_ARCH=gfx906 suppresses the Strix
+        override (which probe order would otherwise pick) and routes to rocm6.3."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"\n"  # cpu torch -> reinstall
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "rocm6.3" in torch_call
+        assert "gfx1151" not in torch_call
+        # gfx906 target -> generic bnb wheel skipped.
+        assert not any(
+            "bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list
+        )
+
+    def test_install_sh_gfx906_env_suppresses_strix(self):
+        """install.sh must skip the Strix reroute when UNSLOTH_ROCM_GFX_ARCH=gfx906."""
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        assert 'if [ "$_gfx906_env" != "gfx906" ]; then' in source
+
     def test_install_sh_has_gfx906_reroute(self):
         """install.sh must mirror the Python reroute: honor UNSLOTH_ROCM_GFX_ARCH,
         gate on a gfx906 target, route to rocm6.3, with the same _default (<2.11)

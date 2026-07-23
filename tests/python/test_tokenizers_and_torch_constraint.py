@@ -88,11 +88,21 @@ class TestStructuralTorchConstraint:
         """$TORCH_CONSTRAINT must appear in a uv pip install line."""
         assert '"$TORCH_CONSTRAINT"' in self._sh
 
-    def test_hardcoded_torch_constraint_only_once(self):
-        """The hard-coded torch>=2.4,<2.11.0 string should appear exactly once
-        in install.sh (the default assignment), not in pip install lines."""
-        count = self._sh.count('"torch>=2.4,<2.11.0"')
-        assert count == 1, f"Expected 1, found {count}"
+    def test_hardcoded_torch_constraint_only_on_assignments(self):
+        """The hard-coded torch>=2.4,<2.11.0 string must only appear on
+        TORCH_CONSTRAINT= assignment lines, never on a pip/uv install line
+        (those must reference $TORCH_CONSTRAINT). Two assignments are expected:
+        the default, and the gfx906 (MI50) reroute that restores the default
+        <2.11 window after the rocm7.2 floor bump raised it to 2.11."""
+        hits = [ln for ln in self._sh.splitlines() if '"torch>=2.4,<2.11.0"' in ln]
+        assert hits, "default constraint literal missing from install.sh"
+        for ln in hits:
+            assert "TORCH_CONSTRAINT=" in ln, (
+                f"torch>=2.4,<2.11.0 hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
+            )
+            assert "pip install" not in ln, (
+                f"torch>=2.4,<2.11.0 hardcoded on a pip install line: {ln.strip()!r}"
+            )
 
     def test_tightening_guarded_by_skip_torch(self):
         """The block must check SKIP_TORCH=false."""
