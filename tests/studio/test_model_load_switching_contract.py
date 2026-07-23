@@ -88,3 +88,34 @@ def test_replacement_carries_forward_an_already_unloaded_rollback_target():
         "replacementNeedsRollback ||\n          activeRun.previousCheckpointWasUnloaded"
     ) in runtime
     assert "let previousWasUnloaded = run.previousCheckpointWasUnloaded;" in runtime
+
+
+def test_cancelled_preflight_does_not_open_late_owned_dialogs():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
+    hf_token = _read("features/hf-auth/confirm-token.ts")
+    assert runtime.count("signal: abortCtrl.signal") >= 3
+    assert "if (signal?.aborted) return false;" in remote_code
+    assert "if (options.signal?.aborted)" in hf_token
+    assert hf_token.index("await validateHfToken(normalized)") < hf_token.index(
+        "if (options.signal?.aborted)"
+    )
+    assert remote_code.index("await getRemoteCodeScan") < remote_code.index(
+        "if (signal?.aborted)"
+    )
+
+
+def test_other_runtime_surface_can_cancel_the_shared_load():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "let sharedModelLoadHandle: SharedModelLoadHandle | null = null;" in runtime
+    assert "sharedModelLoadHandle = {" in runtime
+    assert "return shared ? shared.cancel() : Promise.resolve(false);" in runtime
+    assert "if (sharedModelLoadHandle?.run === run)" in runtime
+
+
+def test_active_model_reload_cancellation_marks_rollback_unloaded():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
+    cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
+    assert "run.rollbackCheckpoint.toLowerCase() === model.id.toLowerCase()" in cancel
+    assert "run.previousCheckpointWasUnloaded = true;" in cancel

@@ -115,7 +115,7 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
 
 export async function loadModel(
   payload: LoadModelRequest,
-  options?: { dialogOwner?: unknown },
+  options?: { dialogOwner?: unknown; signal?: AbortSignal },
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
@@ -134,7 +134,7 @@ export async function loadModel(
 
 export async function validateModel(
   payload: LoadModelRequest,
-  options?: { dialogOwner?: unknown },
+  options?: { dialogOwner?: unknown; signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");

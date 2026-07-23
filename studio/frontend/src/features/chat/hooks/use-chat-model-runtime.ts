@@ -125,6 +125,17 @@ type ActiveModelLoadRun = {
   previousCheckpointWasUnloaded: boolean;
 };
 
+type SharedModelLoadHandle = {
+  run: ActiveModelLoadRun;
+  cancel: (preserveCheckpoint?: boolean) => Promise<boolean>;
+};
+
+// Multiple surfaces can mount this hook (for example Hub and Chat) while a
+// single backend load is shared application-wide. Keep the owning hook's
+// cancellation entry point available so another surface can stop that run
+// without trying to mutate refs it does not own.
+let sharedModelLoadHandle: SharedModelLoadHandle | null = null;
+
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
 // the pinned approval the worker requires instead of being blocked.
 const approvedRemoteCodeFingerprints = new Map<string, string>();
@@ -435,6 +446,9 @@ export function useChatModelRuntime() {
       activeLoadRunRef.current,
       run,
     );
+    if (sharedModelLoadHandle?.run === run) {
+      sharedModelLoadHandle = null;
+    }
     setLoadingModel(null);
     setLoadProgress(null);
     loadingModelRef.current = null;
@@ -509,7 +523,11 @@ export function useChatModelRuntime() {
           // task to observe the abort. The unload route waits for cancellation
           // to settle before it returns, preventing a late /load activation.
           await unloadModel({ model_path: model.id });
-          if (run.rollbackCheckpoint && run.backendLoadStarted) {
+          if (
+            run.rollbackCheckpoint &&
+            (run.backendLoadStarted ||
+              run.rollbackCheckpoint.toLowerCase() === model.id.toLowerCase())
+          ) {
             run.previousCheckpointWasUnloaded = true;
           }
           // Every owned confirmation above is now declined. If a transformers
@@ -551,6 +569,9 @@ export function useChatModelRuntime() {
             );
             useChatRuntimeStore.getState().setModelLoading(false);
           }
+          if (sharedModelLoadHandle?.run === run) {
+            sharedModelLoadHandle = null;
+          }
         }
       })();
       run.cancelPromise = cancelPromise;
@@ -565,7 +586,12 @@ export function useChatModelRuntime() {
   );
 
   const cancelLoading = useCallback(
-    (): Promise<boolean> => cancelLoadRun(),
+    (): Promise<boolean> => {
+      const localRun = activeLoadRunRef.current;
+      if (localRun) return cancelLoadRun(localRun);
+      const shared = sharedModelLoadHandle;
+      return shared ? shared.cancel() : Promise.resolve(false);
+    },
     [cancelLoadRun],
   );
 
@@ -772,6 +798,11 @@ export function useChatModelRuntime() {
         previousCheckpointWasUnloaded: replacementNeedsRollback,
       };
       activeLoadRunRef.current = run;
+      sharedModelLoadHandle = {
+        run,
+        cancel: (preserveCheckpoint = false) =>
+          cancelLoadRun(run, preserveCheckpoint),
+      };
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -905,6 +936,7 @@ export function useChatModelRuntime() {
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
             }, {
               dialogOwner: run,
+              signal: abortCtrl.signal,
             });
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
@@ -949,6 +981,7 @@ export function useChatModelRuntime() {
                   approvedRemoteCodeFingerprint = fp;
                 },
                 dialogOwner: run,
+                signal: abortCtrl.signal,
               });
               if (!approved) {
                 throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
@@ -1064,6 +1097,7 @@ export function useChatModelRuntime() {
               gpu_ids: loadSelectedGpuIds ?? undefined,
             }, {
               dialogOwner: run,
+              signal: abortCtrl.signal,
             });
 
             // If cancelled while loading, don't update UI to show
