@@ -169,3 +169,30 @@ def test_passthrough_system_prompt_is_neutralized():
     assert body["messages"][0]["role"] == "system"
     assert "</think>" not in body["messages"][0]["content"]
     assert "literally" in body["messages"][0]["content"]
+
+
+def test_gguf_chat_messages_neutralize_user_think_close():
+    from routes.inference import _openai_messages_for_gguf_chat
+
+    req = ChatCompletionRequest(
+        model = "default",
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = "No i said </think> in the prompt",
+            )
+        ],
+    )
+    out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+    assert len(out) == 1
+    assert "</think>" not in out[0]["content"]
+
+
+def test_streaming_finalize_flushes_holdback_before_content():
+    """Held marker prefix must flush when the stream switches to content."""
+    emit1, buf1 = neutralize_think_markup_streaming("plan </thi")
+    assert emit1 == "plan "
+    assert buf1 == "</thi"
+    flushed, buf2 = neutralize_think_markup_streaming(buf1, finalize = True)
+    assert "</think>" not in flushed
+    assert buf2 == ""

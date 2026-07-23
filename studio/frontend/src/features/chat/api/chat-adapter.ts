@@ -2725,7 +2725,14 @@ export function createOpenAIStreamAdapter(
             finalize: true,
           });
           reasoningMarkupBuffer = "";
-          if (emit) cumulativeText += emit;
+          if (emit) {
+            if (!reasoningContentOpen) {
+              cumulativeText += `<think>${emit}`;
+              reasoningContentOpen = true;
+            } else {
+              cumulativeText += emit;
+            }
+          }
         }
         if (!reasoningContentOpen) return;
         cumulativeText += "</think>";
@@ -3927,14 +3934,13 @@ export function createOpenAIStreamAdapter(
                 const drained = drainThinkMarkupBuffer(reasoningMarkupBuffer);
                 reasoningMarkupBuffer = drained.buffer;
                 const safeReasoning = drained.emit;
-                if (!safeReasoning) {
-                  continue;
-                }
-                if (!reasoningContentOpen) {
-                  cumulativeText += `<think>${safeReasoning}`;
-                  reasoningContentOpen = true;
-                } else {
-                  cumulativeText += safeReasoning;
+                if (safeReasoning) {
+                  if (!reasoningContentOpen) {
+                    cumulativeText += `<think>${safeReasoning}`;
+                    reasoningContentOpen = true;
+                  } else {
+                    cumulativeText += safeReasoning;
+                  }
                 }
               }
               if (delta) {

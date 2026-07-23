@@ -10293,18 +10293,31 @@ class LlamaCppBackend:
                                             reasoning_markup_buffer,
                                         )
                                     )
-                                    if not reasoning:
-                                        continue
-                                    reasoning_text += reasoning
-                                    if not in_thinking:
-                                        cumulative += "<think>"
-                                        in_thinking = True
-                                    cumulative += reasoning
-                                    yield cumulative
+                                    if reasoning:
+                                        reasoning_text += reasoning
+                                        if not in_thinking:
+                                            cumulative += "<think>"
+                                            in_thinking = True
+                                        cumulative += reasoning
+                                        yield cumulative
 
                                 token = delta.get("content", "")
                                 if token:
                                     has_content_tokens = True
+                                    if reasoning_markup_buffer:
+                                        flushed, reasoning_markup_buffer = (
+                                            neutralize_think_markup_streaming(
+                                                reasoning_markup_buffer,
+                                                finalize = True,
+                                            )
+                                        )
+                                        if flushed:
+                                            reasoning_text += flushed
+                                            if not in_thinking:
+                                                cumulative += "<think>"
+                                                in_thinking = True
+                                            cumulative += flushed
+                                            yield cumulative
                                     if in_thinking:
                                         cumulative += "</think>"
                                         in_thinking = False

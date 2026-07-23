@@ -23,3 +23,6 @@ def test_chat_adapter_neutralizes_reasoning_before_think_wrap():
     assert "drainThinkMarkupBuffer" in src
     assert "reasoningMarkupBuffer" in src
     assert "safeReasoning" in src
+    # Mixed reasoning/content chunks must not drop delta when reasoning is held.
+    assert "if (!safeReasoning) {\n                  continue;" not in src
+    assert "`<think>${emit}`" in src

@@ -7669,6 +7669,10 @@ async def openai_chat_completions(
             payload,
             llama_backend.is_vision,
         )
+        if system_prompt:
+            from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
+
+            system_prompt = neutralize_non_assistant_control_markup(system_prompt)
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
         if audio_b64:
@@ -14169,6 +14173,9 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
         }
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    messages = neutralize_control_markup_in_messages(messages)
     return messages, has_image
 
 
