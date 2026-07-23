@@ -95,7 +95,7 @@ def test_cancelled_preflight_does_not_open_late_owned_dialogs():
     remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
     hf_token = _read("features/hf-auth/confirm-token.ts")
     assert runtime.count("signal: abortCtrl.signal") >= 3
-    assert "if (signal?.aborted) return false;" in remote_code
+    assert "if (signal?.aborted)" in remote_code
     assert "if (options.signal?.aborted)" in hf_token
     assert hf_token.index("await validateHfToken(normalized)") < hf_token.index(
         "if (options.signal?.aborted)"
@@ -109,6 +109,8 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert "sharedModelLoadHandle = {" in runtime
     assert "return shared ? shared.cancel() : Promise.resolve(false);" in runtime
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
+    assert "const stopped = await shared.cancel(true);" in runtime
+    assert "shared.run.previousCheckpointWasUnloaded" in runtime
 
 
 def test_active_model_reload_cancellation_marks_rollback_unloaded():
@@ -117,3 +119,14 @@ def test_active_model_reload_cancellation_marks_rollback_unloaded():
     cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
     assert "run.rollbackCheckpoint.toLowerCase() === model.id.toLowerCase()" in cancel
     assert "run.previousCheckpointWasUnloaded = true;" in cancel
+
+
+def test_abort_signal_reaches_validation_and_scan_cleanup():
+    api = _read("features/chat/api/chat-api.ts")
+    remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
+    assert api.count("signal: options?.signal") >= 2
+    assert "const discardScanDownloads = () =>" in remote_code
+    aborted = remote_code.split("if (signal?.aborted)", 1)[1].split(
+        "// No custom code", 1
+    )[0]
+    assert "discardScanDownloads();" in aborted
