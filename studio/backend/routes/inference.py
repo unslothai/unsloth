@@ -10828,7 +10828,6 @@ class _ResponsesReasoningExtractor:
             from core.inference.chat_template_helpers import (
                 neutralize_think_markup_streaming,
             )
-
             _tail, self._structured_buffer = neutralize_think_markup_streaming(
                 self._structured_buffer, finalize = True
             )
