@@ -5814,7 +5814,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             _supports_mtp = bool(_caps.get("supports_mtp", False))
         except Exception:
             _bin = None
-            _supports_mtp = True  # fail open
+            _supports_mtp = False  # inconclusive: do not claim MTP in /status
         try:
             from utils.llama_cpp_freshness import check_prebuilt_freshness
             _freshness = check_prebuilt_freshness(_bin)

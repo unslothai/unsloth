@@ -710,8 +710,23 @@ def test_probe_server_capabilities_empty_help_fails_open(tmp_path):
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert caps["found"] is True
     assert caps["mtp_token"] is None
-    assert caps["supports_mtp"] is True
+    assert caps["supports_mtp"] is False
     assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_no_spec_type_is_definitive(tmp_path):
+    # Nonempty --help without --spec-type: pre-spec binary, not inconclusive.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n  GPU layers to offload\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
 
 
 @_NEEDS_BASH
@@ -723,7 +738,7 @@ def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert caps["found"] is True
     assert caps["mtp_token"] is None
-    assert caps["supports_mtp"] is True
+    assert caps["supports_mtp"] is False
     assert caps["mtp_probe_inconclusive"] is True
 
 
@@ -1235,12 +1250,14 @@ def _resolver_backend(
     *,
     ngram_supported = True,
     mtp_token = "draft-mtp",
+    mtp_probe_inconclusive = False,
 ):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -1936,6 +1953,24 @@ def test_spec_fallback_reason_set_when_binary_lacks_mtp(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+def test_spec_fallback_reason_none_when_mtp_probe_inconclusive(monkeypatch):
+    backend = _resolver_backend(
+        monkeypatch,
+        mtp_token = None,
+        mtp_probe_inconclusive = True,
+    )
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason is None
 
 
 def test_spec_fallback_reason_none_when_mtp_engages(monkeypatch):

@@ -2849,20 +2849,27 @@ class LlamaCppBackend:
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
+            help_text = ""
 
-        # Confirmed lack of MTP only when --help clearly listed --spec-type
-        # options without mtp/draft-mtp. An inconclusive probe (crash, empty
-        # output, missing flag) must not claim the prebuilt "lacks MTP" (#7302).
+        help_nonempty = bool(help_text.strip())
+        # Confirmed MTP only when --help listed a --spec-type block with mtp/draft-mtp.
+        # Nonempty --help without --spec-type is a definitive pre-spec binary.
+        # Empty/crash probes stay inconclusive so startup does not falsely warn (#7302).
         if saw_spec_type:
             supports_mtp = mtp_token is not None
+            mtp_probe_inconclusive = False
+        elif help_nonempty:
+            supports_mtp = False
+            mtp_probe_inconclusive = False
         else:
-            supports_mtp = True  # fail open for UI/warning; mtp_token stays None
+            supports_mtp = False
+            mtp_probe_inconclusive = True
 
         info = {
             "found": True,
             "mtp_token": mtp_token,
             "supports_mtp": supports_mtp,
-            "mtp_probe_inconclusive": not saw_spec_type,
+            "mtp_probe_inconclusive": mtp_probe_inconclusive,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
@@ -8402,18 +8409,29 @@ class LlamaCppBackend:
             caps = self.probe_server_capabilities(binary)
             mtp_token = caps.get("mtp_token") if caps else None
             if not mtp_token:
-                logger.warning(
-                    "Requested MTP speculative decoding but "
-                    "llama-server lacks --spec-type mtp/draft-mtp; "
-                    "run `unsloth studio update`. Loading without "
-                    "speculative decoding."
-                )
+                inconclusive = bool(caps.get("mtp_probe_inconclusive")) if caps else True
+                if inconclusive:
+                    logger.info(
+                        "Requested MTP speculative decoding but llama-server MTP "
+                        "capability probe was inconclusive; loading without "
+                        "speculative decoding."
+                    )
+                else:
+                    logger.warning(
+                        "Requested MTP speculative decoding but "
+                        "llama-server lacks --spec-type mtp/draft-mtp; "
+                        "run `unsloth studio update`. Loading without "
+                        "speculative decoding."
+                    )
                 # Override an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp (CLI wins
                 # over env) so the child matches the binary-capability gate and
                 # the no-MTP budget, like the sibling no-head/non-MTP fallbacks.
                 flags.append("--spec-default")
                 self._speculative_type = "default"
-                self._spec_fallback_reason = "binary_no_mtp"
+                if inconclusive:
+                    self._spec_fallback_reason = None
+                else:
+                    self._spec_fallback_reason = "binary_no_mtp"
                 return False
             draft_n_max = _resolved_draft_n_max()
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
