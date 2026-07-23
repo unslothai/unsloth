@@ -6075,7 +6075,9 @@ def _host_rocm_gfx_targets(host: HostInfo) -> list[str]:
 
 
 def _host_has_windows_hip_prebuilt_gfx(host: HostInfo) -> bool:
-    return any(target in WINDOWS_HIP_PREBUILT_GFX_TARGETS for target in _host_rocm_gfx_targets(host))
+    return any(
+        target in WINDOWS_HIP_PREBUILT_GFX_TARGETS for target in _host_rocm_gfx_targets(host)
+    )
 
 
 def _should_auto_vulkan_for_amd_windows(host: HostInfo) -> bool:
