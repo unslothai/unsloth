@@ -46,6 +46,8 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
         base.ggml_backend_dev_name.restype = ctypes.c_char_p
         base.ggml_backend_dev_name.argtypes = [ctypes.c_void_p]
+        base.ggml_backend_dev_description.restype = ctypes.c_char_p
+        base.ggml_backend_dev_description.argtypes = [ctypes.c_void_p]
 
         reg = lib.ggml_backend_vk_reg()
         if not reg:
@@ -55,7 +57,12 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
             dev = base.ggml_backend_reg_dev_get(reg, i)
             if dev:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
-                raw_name = base.ggml_backend_dev_name(dev)
+                # name is the selector token (usually VulkanN); description is
+                # the hardware label users need in the picker.
+                raw_name = (
+                    base.ggml_backend_dev_description(dev)
+                    or base.ggml_backend_dev_name(dev)
+                )
                 if raw_name:
                     name = raw_name.decode("utf-8", errors = "replace")
                     names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
