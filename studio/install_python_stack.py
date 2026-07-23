@@ -1926,9 +1926,9 @@ def _ensure_rocm_torch() -> None:
     # MI50 / Radeon VII path; it must win over the Strix probe-order detection
     # below (a mixed Strix + MI50 host could otherwise route to gfx1151), so the
     # Strix override is skipped when it is set.
-    _gfx906_arch_override = (
-        os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or ""
-    ).strip().lower().split(":")[0] == "gfx906"
+    _gfx906_arch_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(
+        ":"
+    )[0] == "gfx906"
 
     # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
     # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1

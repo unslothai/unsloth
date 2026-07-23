@@ -838,9 +838,7 @@ class TestEnsureRocmTorch:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
-                    with patch.object(
-                        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]
-                    ):
+                    with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]):
                         _ensure_rocm_torch()
         assert mock_pip.call_count == 1
         torch_call = str(mock_pip.call_args_list[0])
@@ -942,9 +940,7 @@ class TestEnsureRocmTorch:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
-                    with patch.object(
-                        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]
-                    ):
+                    with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]):
                         _ensure_rocm_torch()
         torch_call = str(mock_pip.call_args_list[0])
         assert "gfx1151" in torch_call
@@ -1031,9 +1027,7 @@ class TestEnsureRocmTorch:
                 with patch("subprocess.run", return_value = mock_probe):
                     # The gfx probe may run for the bnb-skip flag; returning a Strix
                     # arch must not reroute the pinned torch index.
-                    with patch.object(
-                        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]
-                    ):
+                    with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]):
                         _ensure_rocm_torch()
         torch_call = str(mock_pip.call_args_list[0])
         assert "gfx1151" in torch_call
