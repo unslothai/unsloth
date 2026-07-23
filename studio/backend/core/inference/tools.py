@@ -5253,15 +5253,11 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_FunctionDef(self, node):
             self._visit_function_scope(node)
-            self._update_pyyaml_bindings(
-                [ast.Name(id = node.name, ctx = ast.Store())], None
-            )
+            self._update_pyyaml_bindings([ast.Name(id = node.name, ctx = ast.Store())], None)
 
         def visit_AsyncFunctionDef(self, node):
             self._visit_function_scope(node)
-            self._update_pyyaml_bindings(
-                [ast.Name(id = node.name, ctx = ast.Store())], None
-            )
+            self._update_pyyaml_bindings([ast.Name(id = node.name, ctx = ast.Store())], None)
 
         def visit_Lambda(self, node):
             self._visit_function_scope(node)
@@ -5281,9 +5277,7 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(statement)
             finally:
                 self._restore_pyyaml_scope_state(state)
-            self._update_pyyaml_bindings(
-                [ast.Name(id = node.name, ctx = ast.Store())], None
-            )
+            self._update_pyyaml_bindings([ast.Name(id = node.name, ctx = ast.Store())], None)
 
         def _visit_comprehension_scope(self, node, result_nodes):
             state = self._pyyaml_scope_state()
