@@ -771,9 +771,7 @@ class TestLoadHubDownloadExclusion:
             hf_token = None,
         )
 
-    def test_other_variant_job_allows_compatible_cross_snapshot_projector(
-        self, tmp_path
-    ):
+    def test_other_variant_job_allows_compatible_cross_snapshot_projector(self, tmp_path):
         from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
 
         main = tmp_path / "gemma-main.gguf"
@@ -789,7 +787,11 @@ class TestLoadHubDownloadExclusion:
             variant = "Q8_0",
         )
 
-        def cached_probe(*_args, require_mmproj = False, **_kwargs):
+        def cached_probe(
+            *_args,
+            require_mmproj = False,
+            **_kwargs,
+        ):
             return None if require_mmproj else str(main)
 
         with (

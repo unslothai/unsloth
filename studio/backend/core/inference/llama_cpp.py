@@ -1348,17 +1348,13 @@ def _hub_download_blocks_gguf_load(
         return True
     try:
         from utils.models.model_config import mmproj_matches_model_family
-
         return not mmproj_matches_model_family(cached_main, mmproj_path)
     except Exception:
         return True
 
 
 def _supplied_mmproj_for_loaded_model(
-    *,
-    cached_model_path: Optional[str],
-    loaded_model_path: str,
-    mmproj_path: Optional[str],
+    *, cached_model_path: Optional[str], loaded_model_path: str, mmproj_path: Optional[str]
 ) -> Optional[str]:
     """Keep a pre-resolved projector only when its cached main was reused."""
     if not cached_model_path or not mmproj_path:
@@ -6335,8 +6331,7 @@ class LlamaCppBackend:
                     )
                     hf_repo = _resolved_repo
                 needs_mmproj = bool(
-                    (is_vision or has_audio_input)
-                    and not extra_args_disable_mmproj(extra_args)
+                    (is_vision or has_audio_input) and not extra_args_disable_mmproj(extra_args)
                 )
                 cached_main_for_supplied_mmproj = None
                 if needs_mmproj and mmproj_path:
