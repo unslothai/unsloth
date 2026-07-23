@@ -5135,9 +5135,7 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_unsafe_load_aliases.update(_PYYAML_UNSAFE_LOAD_NAMES)
                         self.yaml_unsafe_loader_aliases.update(_PYYAML_UNSAFE_LOADERS)
                         self.yaml_safe_loader_aliases.update(_PYYAML_SAFE_LOADERS)
-                        self.yaml_module_mutator_aliases.update(
-                            _PYYAML_SAFE_LOADER_MUTATORS
-                        )
+                        self.yaml_module_mutator_aliases.update(_PYYAML_SAFE_LOADER_MUTATORS)
                     elif alias.name in _PYYAML_SUBMODULE_NAMES:
                         self.yaml_aliases.add(bound)
                     elif alias.name in _PYYAML_LOAD_NAMES:
@@ -5406,9 +5404,7 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_unsafe_load_aliases = set().union(*(state[2] for state in states))
             self.yaml_unsafe_loader_aliases = set().union(*(state[3] for state in states))
             self.yaml_safe_loader_aliases = set.intersection(*(state[4] for state in states))
-            self.yaml_safe_loader_registry_aliases = set().union(
-                *(state[5] for state in states)
-            )
+            self.yaml_safe_loader_registry_aliases = set().union(*(state[5] for state in states))
             self.yaml_module_mutator_aliases = set().union(*(state[6] for state in states))
             self.dynamic_import_aliases = set().union(*(state[7] for state in states))
             self.dynamic_import_module_aliases = set().union(*(state[8] for state in states))
@@ -5875,10 +5871,7 @@ def _check_signal_escape_patterns(code: str):
                     node,
                     "Unsafe PyYAML deserialization via SafeLoader registry mutation",
                 )
-            if (
-                isinstance(func, ast.Name)
-                and func.id in self.yaml_module_mutator_aliases
-            ):
+            if isinstance(func, ast.Name) and func.id in self.yaml_module_mutator_aliases:
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization via module-level loader registry mutation",
