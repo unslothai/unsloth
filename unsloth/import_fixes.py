@@ -420,7 +420,8 @@ def fix_vllm_aimv2_issue():
     # must not crash unsloth import; every other vllm probe here guards this too.
     try:
         vllm_version = importlib_version("vllm")
-    except Exception:
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping vLLM aimv2 fix -- vLLM version unreadable ({e})")
         return
     if Version(vllm_version) < Version("0.10.1"):
         vllm_location = spec.origin

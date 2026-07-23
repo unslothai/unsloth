@@ -1164,6 +1164,16 @@ class TestGfx906LegacyReroute:
     """gfx906 hosts on ROCm >= 6.4 must be rerouted to the rocm6.3 torch index;
     hosts already on gfx906-capable wheels are left alone."""
 
+    @staticmethod
+    def _gfx906_reroute_block(source: str) -> str:
+        """The MI50/gfx906 reroute block, bounded on the ';;' that closes its
+        rocm[0-9]* case arm -- robust to comment growth (no magic char offset)."""
+        start = source.find("MI50 / Radeon VII (gfx906")
+        assert start >= 0, "gfx906 reroute block not found in install.sh"
+        end = source.find("\n        ;;", start)
+        assert end >= 0, "end of gfx906 case arm not found"
+        return source[start:end]
+
     def test_gfx906_needs_legacy_index_floor(self):
         f = stack_mod._gfx906_needs_legacy_index
         # rocm6.0-6.3 tags still ship gfx906 kernels: no reroute.
@@ -1430,9 +1440,7 @@ class TestGfx906LegacyReroute:
         assert "_gfx906_env=${_gfx906_env%%:*}" in source
         assert "_bnb_gfx_env=${_bnb_gfx_env%%:*}" in source
         # Radeon flag cleared as soon as gfx906 is the target, before the leaf gate.
-        block_start = source.find("MI50 / Radeon VII (gfx906")
-        assert block_start >= 0
-        block = source[block_start : block_start + 3200]
+        block = self._gfx906_reroute_block(source)
         clear_pos = block.find("_amd_gpu_radeon=false")
         leaf_gate_pos = block.find("_rocm_leaf_below")
         assert clear_pos >= 0 and leaf_gate_pos >= 0
@@ -1455,9 +1463,7 @@ class TestGfx906LegacyReroute:
         gate on a gfx906 target, route to rocm6.3, with the same _default (<2.11)
         trio, and skip the prebuilt bnb wheel."""
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
-        block_start = source.find("MI50 / Radeon VII (gfx906")
-        assert block_start >= 0
-        block = source[block_start : block_start + 3800]
+        block = self._gfx906_reroute_block(source)
         assert "_gfx906_target=" in block
         assert "UNSLOTH_ROCM_GFX_ARCH" in block
         assert "/rocm6.3" in block
