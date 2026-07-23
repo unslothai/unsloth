@@ -251,7 +251,7 @@ export function ChartSettingsSheet(): ReactElement {
                   max={0.9}
                   step={0.01}
                 />
-                <p className="text-[0.6875rem] text-muted-foreground">
+                <p className="text-ui-11 text-muted-foreground">
                   {t("studio.charts.smoothingDescription")}
                 </p>
               </div>

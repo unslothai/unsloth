@@ -60,6 +60,19 @@ def test_compare_load_clears_stale_native_lease():
     assert "activeNativePathExpiresAtMs: null" in src
 
 
+def test_autoload_records_backend_loaded_model_identity():
+    """An inactive-cache inventory row loads by local path, so startup autoload
+    must key both the active checkpoint and its summary by the backend's loaded
+    model identity instead of the catalog repo id."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    autoload = src.split("async function loadAutoLoadCandidate", 1)[1]
+    autoload = autoload.split("\n  try {", 1)[0]
+    assert "const loadedModelId = loadResp.model || modelPath" in autoload
+    assert "setCheckpoint(loadedModelId," in autoload
+    assert "id: loadedModelId" in autoload
+    assert "m.id === loadedModelId" in autoload
+
+
 def test_rollback_restores_native_lease_expiry_with_token():
     """A failed model switch that rolls back to a previously loaded picked GGUF
     must restore the lease expiry paired with the token, never the token alone
@@ -246,6 +259,30 @@ def test_pinned_validation_uses_cached_local_variant_listing():
     delete_fn = delete_fn.split("export ", 1)[0]
     assert "invalidateGgufVariantsCache(" in delete_fn
     assert "bumpInventoryVersion(" in delete_fn
+
+
+def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
+    """Autoload must probe the exact cache row it will load, including rows
+    retained from a previously selected Hugging Face cache."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    assert auto_load.count("preferLocalCache: true") >= 2
+    assert auto_load.count("localPath: repo.cache_path") >= 2
+
+    chat_api = _read("features/chat/api/chat-api.ts")
+    variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
+    variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
+    assert 'params.set("prefer_local_cache", "true")' in variants_fn
+    assert 'params.set("local_path", localPath)' in variants_fn
+
+
+def test_cache_location_update_invalidates_frontend_inventory():
+    """A successful cache switch must refresh both inventory rows and cached
+    GGUF variant results before any stale active-cache identity can be reused."""
+    src = _read("features/settings/api/hugging-face-cache.ts")
+    update_fn = src.split("export async function updateHuggingFaceCacheSettings", 1)[1]
+    assert "bumpInventoryVersion();" in update_fn
+    assert "invalidateGgufVariantsCache();" in update_fn
 
 
 def test_downloaded_list_offsets_virtual_rows():

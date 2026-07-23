@@ -186,9 +186,7 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	/* Radius and spacing are px on purpose: only text follows the UI font
-	   size rem base, layout stays fixed. */
-	--radius: 17.6px;
+	--radius: 1.1rem;
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar: #ffffff;
@@ -211,7 +209,7 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 4px;
+	--spacing: 0.25rem;
 	/*--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);*/
 	/*--shadow-sm:*/
@@ -290,7 +288,7 @@
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
 	   with the message text edge. Auto-tracks --icon-size. */
-	--icon-btn-inset: calc((32px - var(--icon-size)) / 2);
+	--icon-btn-inset: calc((2rem - var(--icon-size)) / 2);
 }
 
 .dark {
@@ -338,7 +336,7 @@
 	--sidebar-ring: #ececec;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
-	--radius: 17.6px;
+	--radius: 1.1rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -349,7 +347,7 @@
 	--shadow-offset-x: 0px;
 	--shadow-offset-y: 0px;
 	--letter-spacing: 0em;
-	--spacing: 4px;
+	--spacing: 0.25rem;
 	--shadow-2xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-xs: 0px 0px 0px 0px hsl(0 0% 0% / 0);
 	--shadow-sm: 0px 0px 0px 0px hsl(0 0% 0% / 0), 0px 1px 2px 0px hsl(0 0% 0% / 0);
@@ -687,30 +685,59 @@ html[data-chat-font] .aui-root {
 }
 
 @theme inline {
-	/* Pin container widths to px so they ignore the UI font size rem base. */
-	/* Numeric leading is typographic: keep it on the rem base (leading-N
-	   would otherwise pin to px through --spacing). Same values at 16px. */
-	--leading-3: 0.75rem;
-	--leading-4: 1rem;
-	--leading-5: 1.25rem;
-	--leading-6: 1.5rem;
-	--leading-7: 1.75rem;
-	--leading-8: 2rem;
-	--leading-9: 2.25rem;
-	--leading-10: 2.5rem;
-	--container-3xs: 256px;
-	--container-2xs: 288px;
-	--container-xs: 320px;
-	--container-sm: 384px;
-	--container-md: 448px;
-	--container-lg: 512px;
-	--container-xl: 576px;
-	--container-2xl: 672px;
-	--container-3xl: 768px;
-	--container-4xl: 896px;
-	--container-5xl: 1024px;
-	--container-6xl: 1152px;
-	--container-7xl: 1280px;
+	/* UI typography scale (Settings > Appearance). Every token multiplies
+	   its default size by --ui-font-scale, so text follows the preference
+	   while rem-based layout stays put. Identity at the 16px default. */
+	--text-xs: calc(0.75rem * var(--ui-font-scale, 1));
+	--text-sm: calc(0.875rem * var(--ui-font-scale, 1));
+	--text-base: calc(1rem * var(--ui-font-scale, 1));
+	--text-lg: calc(1.125rem * var(--ui-font-scale, 1));
+	--text-xl: calc(1.25rem * var(--ui-font-scale, 1));
+	--text-2xl: calc(1.5rem * var(--ui-font-scale, 1));
+	--text-3xl: calc(1.875rem * var(--ui-font-scale, 1));
+	--text-4xl: calc(2.25rem * var(--ui-font-scale, 1));
+	/* Arbitrary px sizes from the design, one token per size. */
+	--text-ui-8: calc(0.5rem * var(--ui-font-scale, 1));
+	--text-ui-9: calc(0.5625rem * var(--ui-font-scale, 1));
+	--text-ui-10: calc(0.625rem * var(--ui-font-scale, 1));
+	--text-ui-10p5: calc(0.65625rem * var(--ui-font-scale, 1));
+	--text-ui-11: calc(0.6875rem * var(--ui-font-scale, 1));
+	--text-ui-11p5: calc(0.71875rem * var(--ui-font-scale, 1));
+	--text-ui-12: calc(0.75rem * var(--ui-font-scale, 1));
+	--text-ui-12p5: calc(0.78125rem * var(--ui-font-scale, 1));
+	--text-ui-13: calc(0.8125rem * var(--ui-font-scale, 1));
+	--text-ui-13p5: calc(0.84375rem * var(--ui-font-scale, 1));
+	--text-ui-14: calc(0.875rem * var(--ui-font-scale, 1));
+	--text-ui-14p5: calc(0.90625rem * var(--ui-font-scale, 1));
+	--text-ui-15: calc(0.9375rem * var(--ui-font-scale, 1));
+	--text-ui-15p5: calc(0.96875rem * var(--ui-font-scale, 1));
+	--text-ui-16: calc(1rem * var(--ui-font-scale, 1));
+	--text-ui-17: calc(1.0625rem * var(--ui-font-scale, 1));
+	--text-ui-18: calc(1.125rem * var(--ui-font-scale, 1));
+	--text-ui-19: calc(1.1875rem * var(--ui-font-scale, 1));
+	--text-ui-21: calc(1.3125rem * var(--ui-font-scale, 1));
+	--text-ui-25: calc(1.5625rem * var(--ui-font-scale, 1));
+	--text-ui-30: calc(1.875rem * var(--ui-font-scale, 1));
+	--text-ui-34: calc(2.125rem * var(--ui-font-scale, 1));
+	/* Exact line-heights paired with the sizes above. */
+	--leading-ui-14: calc(0.875rem * var(--ui-font-scale, 1));
+	--leading-ui-15: calc(0.9375rem * var(--ui-font-scale, 1));
+	--leading-ui-16: calc(1rem * var(--ui-font-scale, 1));
+	--leading-ui-17: calc(1.0625rem * var(--ui-font-scale, 1));
+	--leading-ui-18: calc(1.125rem * var(--ui-font-scale, 1));
+	--leading-ui-19: calc(1.1875rem * var(--ui-font-scale, 1));
+	--leading-ui-24: calc(1.5rem * var(--ui-font-scale, 1));
+	--leading-ui-31: calc(1.9375rem * var(--ui-font-scale, 1));
+	/* Numeric leading is typographic: scale it too (it would
+	   otherwise pin through --spacing). Same values at 16px. */
+	--leading-3: calc(0.75rem * var(--ui-font-scale, 1));
+	--leading-4: calc(1rem * var(--ui-font-scale, 1));
+	--leading-5: calc(1.25rem * var(--ui-font-scale, 1));
+	--leading-6: calc(1.5rem * var(--ui-font-scale, 1));
+	--leading-7: calc(1.75rem * var(--ui-font-scale, 1));
+	--leading-8: calc(2rem * var(--ui-font-scale, 1));
+	--leading-9: calc(2.25rem * var(--ui-font-scale, 1));
+	--leading-10: calc(2.5rem * var(--ui-font-scale, 1));
 	/* Reference the :root tokens instead of literal stacks so the runtime
 	   font overrides (Settings > Appearance) reach every font-* utility. */
 	--font-sans: var(--font-sans);
@@ -764,7 +791,7 @@ html[data-chat-font] .aui-root {
 	--radius-4xl: calc(var(--radius) + 16px);
 	--font-mono: var(--font-mono);
 	--font-serif: var(--font-serif);
-	--radius: 17.6px;
+	--radius: 1.1rem;
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
@@ -1000,7 +1027,7 @@ html[data-chat-font] .aui-root {
 	/* Secondary row action (the pinned-chat unpin button) sits just left of
 	   the primary "…" options button. */
 	.sidebar-row-action.is-unpin-action {
-		right: 30px;
+		right: 1.875rem;
 	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
@@ -1022,7 +1049,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-[0.875rem]! leading-[1.0625rem] font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[8px] pl-[16px] pr-4 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. */
@@ -1092,7 +1119,7 @@ html[data-chat-font] .aui-root {
 	   the track just suggests the slider's extent. Same alpha both
 	   themes; the black/white base flips automatically per theme. */
 	.panel-slider [data-slot="slider-track"] {
-		height: 4px !important;
+		height: 0.25rem !important;
 		background-color: rgb(0 0 0 / 0.025) !important;
 	}
 	.dark .panel-slider [data-slot="slider-track"] {
@@ -1131,8 +1158,8 @@ html[data-chat-font] .aui-root {
 		background-color: var(--panel-slider-fg) !important;
 	}
 	.panel-slider [data-slot="slider-thumb"] {
-		width: 14px !important;
-		height: 14px !important;
+		width: 0.875rem !important;
+		height: 0.875rem !important;
 		background-color: var(--panel-slider-fg) !important;
 		border-color: var(--panel-slider-fg) !important;
 		transform: none !important;
@@ -1161,7 +1188,7 @@ html[data-chat-font] .aui-root {
 	   fade-in, just enough to read as interactive without competing
 	   with the slider row's quiet aesthetic. */
 	.panel-number-input {
-		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-[0.8125rem]! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-[0.8125rem]!;
+		@apply h-7 min-w-8 shrink-0 rounded-full border-0 bg-transparent px-2 text-right text-ui-13! font-medium tabular-nums text-nav-fg shadow-none transition-colors hover:bg-black/[0.04] focus:bg-black/[0.05] focus-visible:ring-0! focus-visible:outline-none md:text-ui-13!;
 	}
 	.dark .panel-number-input {
 		@apply hover:bg-white/[0.04] focus:bg-white/[0.06];
@@ -1184,7 +1211,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.tooltip-compact {
-		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-[0.6875rem] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
@@ -1217,12 +1244,12 @@ html[data-chat-font] .aui-root {
 	.app-user-menu [data-slot="dropdown-menu-item"],
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] {
 		height: 36px;
-		padding: 0 12px !important;
+		padding: 0 0.75rem !important;
 		gap: 9.5px !important;
 		border-radius: 12px;
 		font-weight: 500;
-		font-size: 0.9375rem;
-		line-height: 1.25rem;
+		font-size: calc(0.9375rem * var(--ui-font-scale, 1));
+		line-height: calc(1.25rem * var(--ui-font-scale, 1));
 		letter-spacing: 0;
 		color: var(--nav-fg);
 	}
@@ -1340,7 +1367,7 @@ html[data-chat-font] .aui-root {
 	.chat-search-surface {
 		border: none;
 		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
-		--radius: 10px;
+		--radius: 0.625rem;
 		/* Prominent, wide ChatGPT-style elevation. */
 		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
 			0 8px 24px -12px rgba(0, 0, 0, 0.18);
@@ -1382,7 +1409,7 @@ html[data-chat-font] .aui-root {
 	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
 	   Pin --radius to the light value so the corners match in both themes. */
 	.unsloth-model-selector-menu.menu-soft-surface {
-		--radius: 20px;
+		--radius: 1.25rem;
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 			var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
@@ -1466,7 +1493,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-[0.875rem] font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -1554,7 +1581,7 @@ html[data-chat-font] .aui-root {
 		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
 		content: attr(data-pill-label);
 		/* Always one nowrap line, so always a full pill. */
-		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[0.6875rem] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-white shadow-md;
 	}
 
 	/* Compact caret pills (RAG, MCP) open their menu on click instead of
@@ -1599,7 +1626,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-input {
-		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-24px)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply mt-2 mb-1 mx-3 min-h-12 w-[calc(100%-1.5rem)] resize-none overflow-y-auto bg-transparent pl-2 pr-4 pt-2 pb-3 text-sm font-[450] outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.composer-action-wrapper {
@@ -1607,7 +1634,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-footer-note {
-		@apply mt-1.5 text-center text-[0.6875rem] tracking-[0em] text-muted-foreground;
+		@apply mt-1.5 text-center text-ui-11 tracking-[0em] text-muted-foreground;
 		font-family: var(--font-sans);
 	}
 
@@ -1647,11 +1674,17 @@ html[data-chat-font] .aui-root {
 		@apply flex w-full flex-wrap items-center gap-0.5 px-1;
 	}
 
+	/* Recording is a dedicated one-line mode. Active tool pills must not force
+	   the composer back into the normal two-row layout. */
+	.unsloth-composer-line[data-dictating="true"] {
+		@apply flex-nowrap;
+	}
+
 	.unsloth-composer-left {
 		@apply flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
 		/* Pull the plus button closer to the composer edge. */
-		margin-left: -4px;
+		margin-left: -0.25rem;
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -1662,7 +1695,7 @@ html[data-chat-font] .aui-root {
 		order: 3;
 		margin-left: auto;
 		/* Inset the send circle from the edge, Gemini-style. */
-		margin-right: -2px;
+		margin-right: -0.125rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -1670,15 +1703,15 @@ html[data-chat-font] .aui-root {
 		flex-basis: 100%;
 		width: 100%;
 		/* Sits close to the left edge, near the plus. */
-		padding-left: 6px;
-		padding-top: 8px;
-		padding-bottom: 8px;
+		padding-left: 0.375rem;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
 	}
 
 	/* Two-row gap between text and controls. On the line, not the input, so
 	   the placeholder max-height clamp never crops it like padding would. */
 	.unsloth-composer-line[data-expanded="true"] {
-		row-gap: 12px;
+		row-gap: 0.75rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-left {
@@ -1694,7 +1727,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-composer-input {
-		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-[0.9375rem] font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
+		@apply min-h-[40px] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent pl-0.5 pr-2 py-2 text-ui-15 font-[450] leading-6 outline-none placeholder:text-muted-foreground focus-visible:ring-0;
 	}
 
 	.unsloth-composer-plus {
@@ -1773,10 +1806,10 @@ html[data-chat-font] .aui-root {
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
 	   pills so the hover X is not pushed in too far. */
 	.unsloth-thinking-pill {
-		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-[0.875rem] font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
+		@apply inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground transition-colors hover:bg-primary/10 dark:hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40;
 		/* Reserve a text line so the icon-only (inactive) pill matches the
 		   text pills' height instead of collapsing to the icon. */
-		min-height: calc(1lh + 12px);
+		min-height: calc(1lh + 0.75rem);
 	}
 
 	.unsloth-thinking-pill[data-active="true"] {
@@ -1791,10 +1824,10 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Keep Thinking on the control row in narrow split layouts. */
-	@container (max-width: 576px) {
+	@container (max-width: 36rem) {
 		.unsloth-thinking-pill {
 			@apply size-8 justify-center gap-0 px-0;
-			min-height: 32px;
+			min-height: 2rem;
 		}
 
 		.unsloth-thinking-label,
@@ -1808,14 +1841,14 @@ html[data-chat-font] .aui-root {
 
 		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
 			content: attr(data-pill-label);
-			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[0.6875rem] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-white shadow-md;
 		}
 	}
 
 	/* Smaller tick for selected Thinking options. */
 	.unsloth-tick {
-		width: 12.8px !important;
-		height: 12.8px !important;
+		width: 0.8rem !important;
+		height: 0.8rem !important;
 	}
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
@@ -1824,8 +1857,8 @@ html[data-chat-font] .aui-root {
 		   item radius (12px) + side gutter (9px), so the curves run parallel.
 		   !important beats the global 14px dropdown radius. */
 		border-radius: 21px !important;
-		padding-top: 8px;
-		padding-bottom: 8px;
+		padding-top: 0.5rem;
+		padding-bottom: 0.5rem;
 		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
 		   sits evenly inset on all four sides. */
 		padding-left: 9px;
@@ -1853,7 +1886,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		) {
-		@apply gap-3 pl-3 pr-3 py-2 text-[0.875rem];
+		@apply gap-3 pl-3 pr-3 py-2 text-ui-14;
 		cursor: pointer;
 		/* Pin hover-box radius so dark matches light (container radius minus the
 		   side gutter keeps the curves concentric). */
@@ -1861,7 +1894,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.unsloth-plus-menu [data-slot="dropdown-menu-label"] {
-		@apply pl-3 pr-3 py-1.5 text-[0.75rem];
+		@apply pl-3 pr-3 py-1.5 text-ui-12;
 	}
 
 	/* Active (green) items keep their primary text and icon color on hover. */
@@ -1905,8 +1938,8 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-sub-trigger"]
 		)
 		svg {
-		width: 18.4px;
-		height: 18.4px;
+		width: 1.15rem;
+		height: 1.15rem;
 	}
 
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
@@ -2100,15 +2133,15 @@ html[data-chat-font] .aui-root {
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
-		padding-left: 20px;
-		margin-block: 8px;
+		padding-left: 1.25rem;
+		margin-block: 0.5rem;
 	}
 
 	[data-streamdown="ordered-list"] {
 		list-style-type: decimal;
 		list-style-position: outside;
-		padding-left: 20px;
-		margin-block: 8px;
+		padding-left: 1.25rem;
+		margin-block: 0.5rem;
 	}
 
 	[data-streamdown="list-item"] {
@@ -2125,13 +2158,13 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: 10px !important;
+		padding-bottom: 0.625rem !important;
 	}
 
 	[data-streamdown="code-block"] {
-		gap: 4px;
-		padding: 12px 16px;
-		border-radius: 24px;
+		gap: 0.25rem;
+		padding: 0.75rem 1rem;
+		border-radius: 1.5rem;
 		/* Wide lines must scroll inside the thread column, not widen past the composer (flex min-width:auto). */
 		max-width: 100%;
 		min-width: 0;
@@ -2151,21 +2184,21 @@ html[data-chat-font] .aui-root {
 
 	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
 	.aui-thread-root [data-streamdown="code-block"] {
-		font-size: 0.8125rem;
+		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
 	}
 
 	.aui-thread-root [data-streamdown="code-block-header"] {
-		font-size: 0.6875rem;
+		font-size: calc(0.6875rem * var(--ui-font-scale, 1));
 	}
 
-	@container (min-width: 576px) {
+	@container (min-width: 36rem) {
 		.aui-thread-root [data-streamdown="code-block"] {
-			font-size: 0.875rem;
+			font-size: calc(0.875rem * var(--ui-font-scale, 1));
 		}
 
 		.aui-thread-root [data-streamdown="code-block-header"] {
-			font-size: 0.75rem;
+			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}
 	}
 
@@ -2179,7 +2212,7 @@ html[data-chat-font] .aui-root {
 	   assistant message so the gap above the action bar is the same
 	   regardless of whether the response ends with a paragraph
 	   (margin-bottom: 0 by Tailwind preflight) or a streamdown block
-	   like a code fence (margin-bottom: 16px from `my-4`). Browser
+	   like a code fence (margin-bottom: 1rem from `my-4`). Browser
 	   block layout doesn't collapse trailing margin into a sibling
 	   container, so we zero it explicitly along the deepest
 	   `:last-child` path. Streamdown wraps content in several
@@ -2228,9 +2261,9 @@ html[data-chat-font] .aui-root {
 	/* Align fenced code blocks with the main chat column even when nested in lists. */
 	.aui-thread-root [data-streamdown="list-item"] > [data-streamdown="code-block"],
 	.aui-thread-root [data-streamdown="list-item"] [data-streamdown="code-block"] {
-		margin-left: -20px;
-		width: calc(100% + 20px);
-		max-width: calc(100% + 20px);
+		margin-left: -1.25rem;
+		width: calc(100% + 1.25rem);
+		max-width: calc(100% + 1.25rem);
 	}
 
 	.dark .aui-thread-root [data-streamdown="code-block"] {
@@ -2595,9 +2628,9 @@ html[data-chat-font] .aui-root {
 	display: grid;
 	grid-template-columns: repeat(8, minmax(0, 1fr));
 	gap: 14px;
-	width: min(66%, 288px);
-	padding: 24px;
-	border-radius: 24px;
+	width: min(66%, 18rem);
+	padding: 1.5rem;
+	border-radius: 1.5rem;
 }
 
 .generated-image-loading-dot {
@@ -2698,31 +2731,36 @@ html[data-chat-font] .aui-root {
   opacity: 1;
 }
 
-/* Library px font sizes re-based to rem so the UI font size setting scales
-   them too. Unlayered to beat the layered originals; same values at 16px. */
+/* Third-party UI text follows the typography scale. Values equal the
+   library defaults at the 16px setting. KaTeX's internal font-size:1px
+   sizing trick is layout, not text, and stays untouched. */
 .before\:text-\[13px\]::before {
-	/* streamdown citation chip utility. */
-	font-size: 0.8125rem;
+	/* streamdown citation chip utility (class scanned from node_modules). */
+	font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+}
+.recharts-text {
+	/* Chart axis/label text; beats the fontSize presentation attribute. */
+	font-size: calc(0.625rem * var(--ui-font-scale, 1));
 }
 .react-flow__edge-text.react-flow__edge-text {
 	/* Doubled class: react-flow's stylesheet loads after this file, so win
 	   on specificity, not order. */
-	font-size: 0.625rem;
+	font-size: calc(0.625rem * var(--ui-font-scale, 1));
 }
 .react-flow__attribution.react-flow__attribution {
-	font-size: 0.625rem;
+	font-size: calc(0.625rem * var(--ui-font-scale, 1));
 }
-/* Radix hides the select viewport scrollbar; restore the app's thin one.
-   Doubled attribute beats the runtime-injected [data-radix-select-viewport]
-   rules on specificity. */
-[data-slot="select-content"] [data-radix-select-viewport]::-webkit-scrollbar {
-	display: block !important;
-	width: 8px;
-}
-
 .react-flow__node-input.react-flow__node-input,
 .react-flow__node-default.react-flow__node-default,
 .react-flow__node-output.react-flow__node-output,
 .react-flow__node-group.react-flow__node-group {
-	font-size: 0.75rem;
+	font-size: calc(0.75rem * var(--ui-font-scale, 1));
+}
+
+/* Radix hides the select viewport scrollbar (the viewport is the scroller
+   so menu corners stay rounded); restore the app's thin one. The inline
+   scrollbar-width on the viewport handles Firefox. */
+[data-slot="select-content"] [data-radix-select-viewport]::-webkit-scrollbar {
+	display: block !important;
+	width: 8px;
 }

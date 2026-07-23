@@ -66,7 +66,7 @@ export function AvailableReferencesInline({
 
   return (
     <div className="space-y-1">
-      <p className="text-[0.625rem] font-medium text-muted-foreground">
+      <p className="text-ui-10 font-medium text-muted-foreground">
         Available references
       </p>
       <div ref={wrapperRef} className="relative">
@@ -83,8 +83,8 @@ export function AvailableReferencesInline({
                   variant="secondary"
                   className={
                     entry.source === "seed"
-                      ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-[0.625rem] text-blue-700 dark:text-blue-300"
-                      : "corner-squircle h-4 px-1.5 font-mono text-[0.625rem]"
+                      ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-ui-10 text-blue-700 dark:text-blue-300"
+                      : "corner-squircle h-4 px-1.5 font-mono text-ui-10"
                   }
                 >
                   {entry.name}
@@ -100,8 +100,8 @@ export function AvailableReferencesInline({
               variant="secondary"
               className={
                 entry.source === "seed"
-                  ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-[0.625rem] text-blue-700 dark:text-blue-300"
-                  : "corner-squircle h-4 px-1.5 font-mono text-[0.625rem]"
+                  ? "corner-squircle h-4 border-blue-500/25 bg-blue-500/10 px-1.5 font-mono text-ui-10 text-blue-700 dark:text-blue-300"
+                  : "corner-squircle h-4 px-1.5 font-mono text-ui-10"
               }
             >
               {entry.name}
@@ -110,7 +110,7 @@ export function AvailableReferencesInline({
           {!expanded && hiddenCount > 0 && (
             <button
               type="button"
-              className="corner-squircle h-4 px-1.5 text-[0.625rem] text-muted-foreground hover:text-foreground"
+              className="corner-squircle h-4 px-1.5 text-ui-10 text-muted-foreground hover:text-foreground"
               onClick={() => setExpanded(true)}
             >
               +{hiddenCount} more
@@ -119,7 +119,7 @@ export function AvailableReferencesInline({
           {expanded && collapsedCount < entries.length && (
             <button
               type="button"
-              className="corner-squircle h-4 px-1.5 text-[0.625rem] text-muted-foreground hover:text-foreground"
+              className="corner-squircle h-4 px-1.5 text-ui-10 text-muted-foreground hover:text-foreground"
               onClick={() => setExpanded(false)}
             >
               Show less

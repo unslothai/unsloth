@@ -28,7 +28,7 @@ export function DocumentStatusChip({
       size="sm"
       title={error ?? filename}
       className={cn(
-        "rounded-full inline-flex items-center gap-1.5 max-w-[256px]",
+        "rounded-full inline-flex items-center gap-1.5 max-w-[16rem]",
         status === "failed" && "border-destructive/40 text-destructive",
       )}
     >

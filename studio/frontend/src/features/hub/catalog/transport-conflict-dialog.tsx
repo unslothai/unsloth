@@ -60,7 +60,7 @@ export function TransportConflictDialog({
         if (!o) onCancel();
       }}
     >
-      <AlertDialogContent className="sm:!max-w-[352px]">
+      <AlertDialogContent className="sm:!max-w-[22rem]">
         <AlertDialogHeader>
           <AlertDialogTitle>Different transport mode</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>

@@ -213,7 +213,7 @@ function TauriUpdateLayer({
   }
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-32px)] max-w-[400px] flex-col items-stretch gap-2">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
       <UpdateBanner
         status={update.status}
         info={update.info}
@@ -263,8 +263,8 @@ const MAC_NATIVE_CHROME_STYLE = {
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-custom-titlebar-height": "34px",
-  "--studio-sidebar-expanded-width": "280px",
-  "--studio-sidebar-collapsed-width": "48px",
+  "--studio-sidebar-expanded-width": "17.5rem",
+  "--studio-sidebar-collapsed-width": "3rem",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
@@ -380,7 +380,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {children}
         {/* One bottom-right stack so overlays never overlap; they stack with a
             gap, download panel anchored at the corner with banners above. */}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-32px)] max-w-[400px] flex-col items-stretch gap-2">
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}

@@ -190,7 +190,7 @@ function LocalGgufVariantList({
 
   return (
     <div className="ml-6 mt-1 rounded-lg bg-muted/25 p-1.5">
-      <div className="mb-1 px-2 text-[0.625rem] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="mb-1 px-2 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground">
         Quantization
       </div>
       <div className="space-y-0.5">
@@ -210,12 +210,12 @@ function LocalGgufVariantList({
                 {variant.quant}
               </span>
               {variant.quant === defaultVariant ? (
-                <Badge variant="secondary" className="h-4 px-1.5 text-[0.625rem]">
+                <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">
                   recommended
                 </Badge>
               ) : null}
               {variant.downloaded ? (
-                <Badge variant="outline" className="h-4 px-1.5 text-[0.625rem]">
+                <Badge variant="outline" className="h-4 px-1.5 text-ui-10">
                   ready
                 </Badge>
               ) : null}
@@ -276,7 +276,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
             {selected.label || "Choose a local model"}
           </span>
           {compact ? null : (
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-11 text-muted-foreground">
               <span className="truncate">
                 {selected.label
                   ? selected.source
@@ -292,7 +292,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
         {compact && ggufVariant ? (
           <Badge
             variant="secondary"
-            className="h-4 px-1.5 font-mono text-[0.625rem]"
+            className="h-4 px-1.5 font-mono text-ui-10"
           >
             {ggufVariant}
           </Badge>
@@ -347,7 +347,7 @@ function LocalModelRow({
           <span className="block truncate font-medium">
             {getModelLabel(model)}
           </span>
-          <span className="mt-0.5 block truncate text-[0.6875rem] text-muted-foreground">
+          <span className="mt-0.5 block truncate text-ui-11 text-muted-foreground">
             {model.id}
           </span>
         </span>
@@ -356,11 +356,11 @@ function LocalModelRow({
             <Spinner className="size-3 text-muted-foreground" />
           ) : null}
           {expandable || directGguf ? (
-            <Badge variant="secondary" className="h-4 px-1.5 text-[0.625rem]">
+            <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">
               GGUF
             </Badge>
           ) : null}
-          <Badge variant="outline" className="h-4 px-1.5 text-[0.625rem]">
+          <Badge variant="outline" className="h-4 px-1.5 text-ui-10">
             {sourceLabel(model)}
           </Badge>
         </span>
@@ -596,7 +596,7 @@ export function LocalRecipeModelSelector({
         className="menu-soft-surface nodrag nowheel gap-0 overflow-hidden p-0"
         style={{
           width:
-            "min(max(var(--radix-popover-trigger-width), 544px), calc(100vw - 16px))",
+            "min(max(var(--radix-popover-trigger-width), 34rem), calc(100vw - 1rem))",
         }}
       >
         <div className="flex flex-col">
@@ -622,7 +622,7 @@ export function LocalRecipeModelSelector({
           </div>
 
           <div
-            className="nowheel max-h-[min(384px,calc(100vh-192px))] overflow-y-auto overscroll-contain p-1.5"
+            className="nowheel max-h-[min(24rem,calc(100vh-12rem))] overflow-y-auto overscroll-contain p-1.5"
             onWheelCapture={(event) => event.stopPropagation()}
           >
             <LocalModelResults
