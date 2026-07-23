@@ -936,143 +936,85 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
-    # Check the behavior users receive on each CI platform. Do not synthesize
-    # Linux on macOS or Windows: render-linux is production platform detection,
-    # not a public theme setting. Set the theme class only after preserving the
-    # real platform state, and wait for style recalculation before sampling.
-    step("chat typography platform, theme, and opt-out behavior")
-    typography_matrix = robust_evaluate(
-        page,
-        """async () => {
-            const root = document.documentElement;
-            const assistant = Array.from(
-                document.querySelectorAll('.aui-assistant-message-root')
-            );
-            const user = Array.from(
-                document.querySelectorAll('.aui-user-message-root')
-            );
-            if (assistant.length === 0 || user.length === 0) {
-                return { error: 'chat message roots are missing' };
-            }
-
-            const saved = {
-                cls: root.getAttribute('class'),
-                chatFont: root.getAttribute('data-chat-font'),
-                uiFont: root.getAttribute('data-ui-font'),
-            };
-            const ua = navigator.userAgent.toLowerCase();
-            const actualRenderLinux = root.classList.contains('render-linux');
-            const isDesktopLinux = ua.includes('linux') && !ua.includes('android');
-            const nextFrame = () => new Promise(requestAnimationFrame);
-            const read = () => {
+    def read_chat_typography(opt_out = None):
+        """Read real theme state, optionally exercising one Linux opt-out."""
+        return robust_evaluate(
+            page,
+            """async (optOut) => {
+                const root = document.documentElement;
+                const assistant = Array.from(
+                    document.querySelectorAll('.aui-assistant-message-root')
+                );
+                const user = Array.from(
+                    document.querySelectorAll('.aui-user-message-root')
+                );
+                if (assistant.length === 0 || user.length === 0) {
+                    return { error: 'chat message roots are missing' };
+                }
+                const saved = {
+                    cls: root.getAttribute('class'),
+                    chatFont: root.getAttribute('data-chat-font'),
+                    uiFont: root.getAttribute('data-ui-font'),
+                };
+                const ua = navigator.userAgent.toLowerCase();
                 const role = (nodes) => {
-                    const styles = nodes.map((node) => {
-                        const style = getComputedStyle(node);
-                        return {
-                            fontWeight: style.fontWeight,
-                            letterSpacing: style.letterSpacing,
-                        };
-                    });
+                    const styles = nodes.map((node) => getComputedStyle(node));
                     return {
-                        fontWeight: [...new Set(
-                            styles.map((style) => style.fontWeight)
-                        )],
-                        letterSpacing: [...new Set(
-                            styles.map((style) => style.letterSpacing)
-                        )],
+                        fontWeight: [...new Set(styles.map((style) => style.fontWeight))],
+                        letterSpacing: [...new Set(styles.map((style) => style.letterSpacing))],
                     };
                 };
-                return {
-                    assistant: role(assistant),
-                    user: role(user),
-                };
-            };
+                try {
+                    if (optOut === 'smoothingOff') root.classList.add('no-font-smoothing');
+                    if (optOut === 'chatFont') root.setAttribute('data-chat-font', '');
+                    if (optOut === 'uiFont') root.setAttribute('data-ui-font', '');
+                    await new Promise(requestAnimationFrame);
+                    return {
+                        actualRenderLinux: root.classList.contains('render-linux'),
+                        isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
+                        isDark: root.classList.contains('dark'),
+                        assistant: role(assistant),
+                        user: role(user),
+                    };
+                } finally {
+                    if (saved.cls === null) root.removeAttribute('class');
+                    else root.setAttribute('class', saved.cls);
+                    if (saved.chatFont === null) root.removeAttribute('data-chat-font');
+                    else root.setAttribute('data-chat-font', saved.chatFont);
+                    if (saved.uiFont === null) root.removeAttribute('data-ui-font');
+                    else root.setAttribute('data-ui-font', saved.uiFont);
+                }
+            }""",
+            opt_out,
+        )
 
-            try {
-                root.classList.remove('dark', 'no-font-smoothing');
-                root.removeAttribute('data-chat-font');
-                root.removeAttribute('data-ui-font');
-                await nextFrame();
-                await nextFrame();
-                const light = read();
-
-                root.classList.add('dark');
-                await nextFrame();
-                await nextFrame();
-                const dark = read();
-
-                root.classList.add('no-font-smoothing');
-                await nextFrame();
-                const smoothingOff = read();
-                root.classList.remove('no-font-smoothing');
-
-                root.setAttribute('data-chat-font', '');
-                await nextFrame();
-                const chatFont = read();
-                root.removeAttribute('data-chat-font');
-
-                root.setAttribute('data-ui-font', '');
-                await nextFrame();
-                const uiFont = read();
-
-                return {
-                    actualRenderLinux,
-                    isDesktopLinux,
-                    light,
-                    dark,
-                    smoothingOff,
-                    chatFont,
-                    uiFont,
-                };
-            } finally {
-                if (saved.cls === null) root.removeAttribute('class');
-                else root.setAttribute('class', saved.cls);
-                if (saved.chatFont === null) root.removeAttribute('data-chat-font');
-                else root.setAttribute('data-chat-font', saved.chatFont);
-                if (saved.uiFont === null) root.removeAttribute('data-ui-font');
-                else root.setAttribute('data-ui-font', saved.uiFont);
-            }
-        }""",
-    )
-    if typography_matrix.get("error"):
-        fail(typography_matrix["error"])
-    if typography_matrix["actualRenderLinux"] != typography_matrix["isDesktopLinux"]:
-        fail(f"desktop Linux detection mismatch: {typography_matrix!r}")
-
-    # Linux receives the calibrated default-font values. Other desktop
-    # platforms retain their native baseline, including after a dark-theme
-    # transition. Opt-outs restore the same baseline on every platform.
-    if typography_matrix["isDesktopLinux"]:
-        expected = {
-            "light": ("390", "0.155px"),
-            "dark": ("350", "0.3565px"),
-        }
-    else:
-        expected = {
-            "light": ("410", "0.155px"),
-            "dark": ("410", "0.31px"),
-        }
-    expected.update(
-        {
-            "smoothingOff": ("410", "0.31px"),
-            "chatFont": ("410", "0.31px"),
-            "uiFont": ("410", "0.31px"),
-        }
-    )
-    for branch, (expected_weight, expected_spacing) in expected.items():
+    def assert_chat_typography(label, typography, *, opt_out = False):
+        if typography.get("error"):
+            fail(typography["error"])
+        if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
+            fail(f"desktop Linux detection mismatch: {typography!r}")
+        is_dark = typography["isDark"]
+        expected_spacing = "0.31px" if is_dark else "0.155px"
+        if opt_out:
+            expected_weight = "410"
+        elif typography["isDesktopLinux"]:
+            expected_weight = "350" if is_dark else "390"
+            if is_dark:
+                expected_spacing = "0.3565px"
+        else:
+            expected_weight = "410"
         for role in ("assistant", "user"):
-            actual = typography_matrix[branch][role]
+            actual = typography[role]
             if actual["fontWeight"] != [expected_weight]:
                 fail(
-                    f"chat font weight {branch}/{role}: expected {expected_weight}, "
+                    f"chat font weight {label}/{role}: expected {expected_weight}, "
                     f"got {actual['fontWeight']!r}"
                 )
             if actual["letterSpacing"] != [expected_spacing]:
                 fail(
-                    f"chat letter spacing {branch}/{role}: expected {expected_spacing}, "
+                    f"chat letter spacing {label}/{role}: expected {expected_spacing}, "
                     f"got {actual['letterSpacing']!r}"
                 )
-    info("OK chat typography behavior")
 
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check
@@ -1082,6 +1024,7 @@ with sync_playwright() as p:
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
         observed = []
+        typography_states = []
         for cycle in range(3):
             # Wait for any prior dropdown to fully detach: clicking while
             # the view-transition is still open no-ops silently. The
@@ -1170,6 +1113,9 @@ with sync_playwright() as p:
             }""",
             )
             observed.append(bg)
+            typography = read_chat_typography()
+            assert_chat_typography(f"theme-cycle-{cycle + 1}", typography)
+            typography_states.append(typography)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
         # Across cycles we should see both a near-white (light) and a
@@ -1191,6 +1137,23 @@ with sync_playwright() as p:
                 f"cycles: light_seen={light_seen}, dark_seen={dark_seen} "
                 "(toggle may not flip on this runner's color-scheme)"
             )
+
+        # These are user-driven theme transitions, not synthetic class
+        # changes. A completed three-cycle toggle must expose both typography
+        # states before we check the Linux selector and its opt-outs.
+        if len(typography_states) != 3:
+            fail(f"chat typography observed {len(typography_states)} theme state(s), expected 3")
+        if {state["isDark"] for state in typography_states} != {False, True}:
+            fail(f"chat typography did not observe both themes: {typography_states!r}")
+        for opt_out in ("smoothingOff", "chatFont", "uiFont"):
+            assert_chat_typography(
+                opt_out,
+                read_chat_typography(opt_out),
+                opt_out = True,
+            )
+        info("OK chat typography platform, theme, and opt-out behavior")
+    else:
+        fail("chat typography requires the account-menu theme control")
 
     # ─────────────────────────────────────────────────────
     # 10. Sidebar nav: New Chat, Compare, Search, Recipes.
