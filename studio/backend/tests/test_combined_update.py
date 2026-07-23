@@ -377,9 +377,9 @@ def test_whisper_phase_pins_installer_to_checked_release(monkeypatch, tmp_path):
     assert cmd[cmd.index("--published-release-tag") + 1] == "v9"
 
 
-def test_whisper_phase_exit_2_degrades_to_kept_runtime(monkeypatch, tmp_path):
-    # Installer exit 2 is reserved for a valid release that cannot pair with
-    # this host. It must not fail the combined job; the existing runtime stays.
+def test_whisper_phase_exit_2_is_a_failed_phase(monkeypatch, tmp_path):
+    # No install occurred, so incompatibility must remain an actionable job
+    # error instead of producing a false success toast and hiding the banner.
     def _raise_exit_2(cmd, env, **kw):
         raise wupd._flow.InstallerExit(2, "installer exited 2: incompatible release")
 
@@ -387,19 +387,76 @@ def test_whisper_phase_exit_2_degrades_to_kept_runtime(monkeypatch, tmp_path):
     install_dir = tmp_path / "whisper.cpp"
     binary = _write_whisper_install(install_dir, "v1")
     monkeypatch.setattr(wupd, "_find_binary", lambda: binary)
-    result = wupd.run_chained_phase(
-        {
-            "install_dir": install_dir,
-            "repo": "unslothai/whisper.cpp",
-            "asset": None,
-            "backend": "cpu",
-            "script": tmp_path / "install_whisper_prebuilt.py",
-            "pin_release_tag": None,
-        },
-        lambda f: None,
+    with pytest.raises(wupd._flow.InstallerExit) as exc_info:
+        wupd.run_chained_phase(
+            {
+                "install_dir": install_dir,
+                "repo": "unslothai/whisper.cpp",
+                "asset": None,
+                "backend": "cpu",
+                "script": tmp_path / "install_whisper_prebuilt.py",
+                "pin_release_tag": None,
+            },
+            lambda f: None,
+        )
+    assert exc_info.value.returncode == 2
+
+
+def test_llama_update_survives_unavailable_whisper_module(monkeypatch, tmp_path):
+    import builtins
+
+    llama_dir = _setup_llama(monkeypatch, tmp_path)
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: None)
+    _patch_llama_installer(
+        monkeypatch,
+        on_start = lambda cmd: _write_llama_install(llama_dir, "b9518"),
     )
-    assert result["to_tag"] is None
-    assert "kept the existing runtime" in result["message"]
+    real_import = builtins.__import__
+
+    def guarded_import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        if name == "utils" and "whisper_cpp_update" in fromlist:
+            raise AssertionError("whisper module was re-imported after its failed probe")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    # A failed optional whisper probe must not be followed by an unconditional
+    # import. The valid llama phase still starts and completes.
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert job["phases"]["llama"]["state"] == "success"
+    assert job["phases"]["whisper"]["state"] == "skipped"
+    assert job["phases"]["whisper"]["reason"] == "unavailable"
+
+
+def test_macos_status_uses_compatible_resolver_release(monkeypatch, tmp_path):
+    _setup_whisper(
+        monkeypatch,
+        tmp_path,
+        installed = "v1.9.1-unsloth.1",
+        latest = "v1.9.2-unsloth.1",
+    )
+    monkeypatch.setattr(wupd.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **kw: {
+            "prebuilt_available": True,
+            "release_tag": "v1.9.1-unsloth.1",
+        },
+    )
+
+    status = wupd.get_update_status(force_refresh = True)
+    assert status["latest_tag"] == "v1.9.1-unsloth.1"
+    assert status["update_available"] is False
+    assert status["stale"] is False
 
 
 def test_whisper_phase_integrity_failure_is_not_swallowed(monkeypatch, tmp_path):

@@ -425,6 +425,19 @@ def test_main_maps_prebuilt_fallback_to_exit_error(tmp_path, monkeypatch):
     assert rc == M.EXIT_ERROR
 
 
+def test_main_forwards_requested_whisper_tag(tmp_path, monkeypatch):
+    seen = {}
+
+    def install(*args, **kwargs):
+        seen.update(kwargs)
+        return M.EXIT_SUCCESS
+
+    monkeypatch.setattr(M, "install_prebuilt", install)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--whisper-tag", "v1.9.0"])
+    assert rc == M.EXIT_SUCCESS
+    assert seen["whisper_tag"] == "v1.9.0"
+
+
 def test_main_reserves_exit_2_for_release_incompatibility(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise ReleaseCompatibilityError("slim bundle requires llama.cpp b2; installed b1")
@@ -1141,6 +1154,145 @@ def test_resolver_reports_install_kind_fat_additively(monkeypatch, capsys):
     assert set(payload) == _LEGACY_RESOLVER_KEYS | {"install_kind"}
     assert payload["install_kind"] == "fat"
     assert payload["asset"] == CPU_ASSET
+
+
+def _release_for_selection(release_tag: str, upstream_tag: str, artifact: dict) -> M.ReleaseBundle:
+    payload = _manifest([artifact])
+    payload["upstream_tag"] = upstream_tag
+    return M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = release_tag,
+        manifest = M.parse_manifest(payload),
+        asset_urls = {},
+    )
+
+
+def test_whisper_tag_selects_matching_published_upstream(monkeypatch):
+    latest_asset = "latest-linux-x64-cpu.tar.gz"
+    pinned_asset = "pinned-linux-x64-cpu.tar.gz"
+    latest = _release_for_selection(
+        "v1.9.2-unsloth.1",
+        "v1.9.2",
+        _artifact("linux", "x64", "cpu", latest_asset, "a" * 64),
+    )
+    pinned = _release_for_selection(
+        "v1.9.0-unsloth.3",
+        "v1.9.0",
+        _artifact("linux", "x64", "cpu", pinned_asset, "b" * 64),
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("an upstream pin consulted the unrelated newest release")
+        ),
+    )
+    monkeypatch.setattr(
+        M,
+        "_published_release_tags",
+        lambda repo: [latest.release_tag, pinned.release_tag],
+    )
+    monkeypatch.setattr(
+        M,
+        "_fetch_release_candidate",
+        lambda repo, tag: latest if tag == latest.release_tag else pinned,
+    )
+    monkeypatch.setattr(M, "fetch_release_checksums", lambda bundle: {pinned_asset: "b" * 64})
+
+    payload = M.resolve_prebuilt(
+        _host("linux", "x64"),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        whisper_tag = "v1.9.0",
+        backend = "cpu",
+        cpu_fallback = False,
+    )
+    assert payload["prebuilt_available"] is True
+    assert payload["release_tag"] == pinned.release_tag
+    assert payload["upstream_tag"] == "v1.9.0"
+
+
+def test_macos_walks_back_to_newest_compatible_release(monkeypatch):
+    latest_asset = "latest-macos-arm64-cpu.tar.gz"
+    compatible_asset = "compatible-macos-arm64-cpu.tar.gz"
+    latest = _release_for_selection(
+        "v1.9.2-unsloth.1",
+        "v1.9.2",
+        _artifact(
+            "macos",
+            "arm64",
+            "cpu",
+            latest_asset,
+            "a" * 64,
+            min_os = "macos-15.0",
+        ),
+    )
+    compatible = _release_for_selection(
+        "v1.9.1-unsloth.1",
+        "v1.9.1",
+        _artifact(
+            "macos",
+            "arm64",
+            "cpu",
+            compatible_asset,
+            "b" * 64,
+            min_os = "macos-13.0",
+        ),
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (latest, {latest_asset: "a" * 64}),
+    )
+    monkeypatch.setattr(
+        M,
+        "_published_release_tags",
+        lambda repo: [latest.release_tag, compatible.release_tag],
+    )
+    monkeypatch.setattr(M, "_fetch_release_candidate", lambda repo, tag: compatible)
+    monkeypatch.setattr(
+        M,
+        "fetch_release_checksums",
+        lambda bundle: {compatible_asset: "b" * 64},
+    )
+
+    payload = M.resolve_prebuilt(
+        _host("macos", "arm64", macos_version = (14, 7)),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        backend = "cpu",
+        cpu_fallback = False,
+    )
+    assert payload["prebuilt_available"] is True
+    assert payload["release_tag"] == compatible.release_tag
+
+
+def test_macos_walkback_never_masks_checksum_failure(monkeypatch):
+    asset = "latest-macos-arm64-cpu.tar.gz"
+    latest = _release_for_selection(
+        "v1.9.2-unsloth.1",
+        "v1.9.2",
+        _artifact("macos", "arm64", "cpu", asset, "a" * 64, min_os = "macos-13.0"),
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (latest, {asset: "b" * 64}),
+    )
+    monkeypatch.setattr(
+        M,
+        "_published_release_tags",
+        lambda repo: (_ for _ in ()).throw(AssertionError("integrity failure walked back")),
+    )
+
+    with pytest.raises(PrebuiltFallback, match = "disagrees"):
+        M._release_plan_for_host(
+            _host("macos", "arm64", macos_version = (14, 7)),
+            published_repo = "unslothai/whisper.cpp",
+            published_release_tag = None,
+            whisper_tag = "latest",
+            requested_backend = "cpu",
+        )
 
 
 def test_resolver_reports_install_kind_slim_when_paired(tmp_path, monkeypatch, capsys):

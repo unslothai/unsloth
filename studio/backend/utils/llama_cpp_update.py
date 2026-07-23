@@ -651,7 +651,10 @@ def start_update() -> dict:
             refusal["job"] = dict(_job)
         return refusal
 
-    from utils import whisper_cpp_update as _whisper
+    whisper_run = None
+    if whisper_spec is not None:
+        from utils import whisper_cpp_update as _whisper
+        whisper_run = lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress)
 
     phases = [
         {
@@ -683,11 +686,7 @@ def start_update() -> dict:
             # job-level reload flag the chat frontend resyncs on.
             "affects_job_reload": False,
             "skip_reason": (whisper_plan or {}).get("skip_reason") or "unavailable",
-            "run": (
-                (lambda set_progress: _whisper.run_chained_phase(whisper_spec, set_progress))
-                if whisper_spec
-                else None
-            ),
+            "run": whisper_run,
         },
     ]
     running = " + ".join(

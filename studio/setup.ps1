@@ -2655,12 +2655,13 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
 # Directory-local evidence that Unsloth created $Path, used to adopt a custom-home
-# llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
-# prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
-# from a user clone on Windows and stay under the strict guard.
+# llama.cpp or whisper.cpp predating the .unsloth-studio-owned marker (see
+# setup.sh). Only Unsloth prebuilt markers count; source builds are
+# indistinguishable from a user clone on Windows and stay under the strict guard.
 function Test-StudioOwnedAdoptable {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_WHISPER_PREBUILT_INFO.json") -PathType Leaf) { return $true }
     return $false
 }
 function Assert-StudioOwnedOrAbsent {

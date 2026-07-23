@@ -915,6 +915,188 @@ def fetch_release_for_install(
     return core.fetch_release_for_install(_OPS, repo, published_release_tag = published_release_tag)
 
 
+@dataclass(frozen = True)
+class WhisperReleasePlan:
+    bundle: ReleaseBundle
+    selection: InstallSelection | None
+    artifact: dict[str, Any]
+    resolved_backend: str
+    used_fallback: bool
+
+
+def _normalized_upstream_tag(value: str) -> str:
+    value = value.strip()
+    return value[1:] if value[:1].lower() == "v" else value
+
+
+def _bundle_matches_whisper_tag(bundle: ReleaseBundle, whisper_tag: str) -> bool:
+    requested = whisper_tag.strip()
+    if not requested or requested.lower() == "latest":
+        return True
+    upstream = bundle.manifest.get("upstream_tag")
+    return isinstance(upstream, str) and _normalized_upstream_tag(
+        upstream
+    ) == _normalized_upstream_tag(requested)
+
+
+def _published_release_tags(repo: str) -> list[str]:
+    """Published release tags in newest-first order for compatibility search."""
+    payload = fetch_json(f"https://api.github.com/repos/{repo}/releases?per_page=100")
+    if not isinstance(payload, list):
+        raise PrebuiltFallback(f"unexpected releases payload for {repo}")
+    releases = [
+        release
+        for release in payload
+        if isinstance(release, dict)
+        and not release.get("draft")
+        and not release.get("prerelease")
+        and isinstance(release.get("tag_name"), str)
+        and release.get("tag_name")
+    ]
+    releases.sort(key = lambda release: release.get("published_at") or "", reverse = True)
+    return [str(release["tag_name"]) for release in releases]
+
+
+def _fetch_release_candidate(repo: str, release_tag: str) -> ReleaseBundle:
+    """Fetch one candidate manifest by its deterministic download-host URL."""
+    manifest_url = release_asset_download_url(repo, release_tag, MANIFEST_ASSET_NAME)
+    try:
+        payload = _download_host_json(manifest_url)
+        manifest = parse_manifest(payload, label = f"{MANIFEST_ASSET_NAME} in {repo}@{release_tag}")
+    except Exception as exc:
+        raise PrebuiltFallback(
+            f"could not read {MANIFEST_ASSET_NAME} from {repo}@{release_tag}: {exc}"
+        ) from exc
+    return ReleaseBundle(repo = repo, release_tag = release_tag, manifest = manifest, asset_urls = {})
+
+
+def _plan_bundle(
+    host: HostInfo,
+    bundle: ReleaseBundle,
+    checksums: dict[str, str],
+    *,
+    published_repo: str,
+    requested_backend: str,
+    verify_checksums: bool,
+) -> WhisperReleasePlan:
+    artifact, resolved_backend, used_fallback = select_artifact_with_cpu_fallback(
+        bundle.manifest, host, requested_backend
+    )
+    selection = (
+        plan_selection(
+            host,
+            bundle,
+            published_repo = published_repo,
+            backend = requested_backend,
+            checksums = checksums,
+        )
+        if verify_checksums
+        else None
+    )
+    return WhisperReleasePlan(
+        bundle = bundle,
+        selection = selection,
+        artifact = artifact,
+        resolved_backend = resolved_backend,
+        used_fallback = used_fallback,
+    )
+
+
+def _release_plan_for_host(
+    host: HostInfo,
+    *,
+    published_repo: str,
+    published_release_tag: str | None,
+    whisper_tag: str,
+    requested_backend: str,
+    verify_checksums: bool = True,
+) -> WhisperReleasePlan:
+    """Select the requested or newest host-compatible published release.
+
+    Explicit published release pins never walk. An upstream ``whisper_tag``
+    searches published manifests for that exact upstream version. An unpinned
+    macOS install may walk older published releases only when the newest
+    manifest has no host-compatible artifact. Checksum and archive failures are
+    outside this search and remain hard failures.
+    """
+    requested_specific_tag = whisper_tag.strip().lower() not in ("", "latest")
+    first_bundle: ReleaseBundle | None = None
+    first_error: PrebuiltFallback | None = None
+    # An upstream version pin searches manifests directly. It must not depend
+    # on the unrelated newest release or its checksum index being healthy.
+    if not requested_specific_tag or published_release_tag:
+        first_bundle, first_checksums = fetch_release_for_install(
+            published_repo, published_release_tag = published_release_tag
+        )
+        if not _bundle_matches_whisper_tag(first_bundle, whisper_tag):
+            first_error = PrebuiltFallback(
+                f"{published_repo}@{first_bundle.release_tag} targets whisper.cpp "
+                f"{first_bundle.manifest.get('upstream_tag')}, not requested {whisper_tag}"
+            )
+        else:
+            try:
+                select_artifact_with_cpu_fallback(first_bundle.manifest, host, requested_backend)
+            except PrebuiltFallback as exc:
+                first_error = exc
+            else:
+                # Integrity validation happens only after compatibility succeeds.
+                # Its failures are never eligible for release walkback.
+                return _plan_bundle(
+                    host,
+                    first_bundle,
+                    first_checksums,
+                    published_repo = published_repo,
+                    requested_backend = requested_backend,
+                    verify_checksums = verify_checksums,
+                )
+
+    if published_release_tag:
+        assert first_error is not None
+        raise first_error
+
+    if not requested_specific_tag and not host.is_macos:
+        assert first_error is not None
+        raise first_error
+
+    for release_tag in _published_release_tags(published_repo):
+        if first_bundle is not None and release_tag == first_bundle.release_tag:
+            continue
+        try:
+            bundle = _fetch_release_candidate(published_repo, release_tag)
+        except PrebuiltFallback:
+            continue
+        if not _bundle_matches_whisper_tag(bundle, whisper_tag):
+            continue
+        try:
+            # Establish host compatibility before fetching or trusting this
+            # candidate's checksum index. Once selected, integrity failures must
+            # stop the install rather than silently downgrade again.
+            select_artifact_with_cpu_fallback(bundle.manifest, host, requested_backend)
+        except PrebuiltFallback:
+            continue
+        checksums = fetch_release_checksums(bundle) if verify_checksums else {}
+        plan = _plan_bundle(
+            host,
+            bundle,
+            checksums,
+            published_repo = published_repo,
+            requested_backend = requested_backend,
+            verify_checksums = verify_checksums,
+        )
+        log(
+            f"selected compatible published release {bundle.release_tag} "
+            f"(upstream {bundle.manifest.get('upstream_tag')})"
+        )
+        return plan
+
+    if requested_specific_tag:
+        raise PrebuiltFallback(
+            f"no published {COMPONENT} release for upstream tag {whisper_tag} supports this host"
+        )
+    assert first_error is not None
+    raise first_error
+
+
 def _install_from_bundle(
     install_dir: Path, host: HostInfo, bundle: ReleaseBundle, selection: InstallSelection
 ) -> None:
@@ -954,15 +1136,28 @@ def install_prebuilt(
     host = apply_host_overrides(
         detect_host(), has_rocm = has_rocm, rocm_gfx = rocm_gfx, force_cpu = cpu_fallback
     )
-    return core.install_prebuilt(
-        _OPS,
-        install_dir,
+    requested_backend = resolve_backend(host, backend, cpu_fallback = cpu_fallback)
+    os_token, arch_token = host_platform_tokens(host)
+    log(
+        f"target {COMPONENT} from {published_repo} "
+        f"({os_token}-{arch_token}, backend {requested_backend})"
+    )
+    plan = _release_plan_for_host(
+        host,
         published_repo = published_repo,
         published_release_tag = published_release_tag,
-        backend = backend,
-        cpu_fallback = cpu_fallback,
-        force = force,
+        whisper_tag = whisper_tag,
+        requested_backend = requested_backend,
+    )
+    if plan.selection is None:  # pragma: no cover - install plans always verify
+        raise PrebuiltFallback("install plan did not validate its checksum entry")
+    return core.install_selected_prebuilt(
+        _OPS,
+        install_dir,
         host = host,
+        bundle = plan.bundle,
+        selection = plan.selection,
+        force = force,
     )
 
 
@@ -977,17 +1172,38 @@ def resolve_prebuilt(
     *,
     published_repo: str,
     published_release_tag: str | None,
+    whisper_tag: str = "latest",
     backend: str | None,
     cpu_fallback: bool,
 ) -> dict[str, Any]:
-    return core.resolve_prebuilt(
-        _OPS,
-        host,
-        published_repo = published_repo,
-        published_release_tag = published_release_tag,
-        backend = backend,
-        cpu_fallback = cpu_fallback,
-    )
+    requested_backend = resolve_backend(host, backend, cpu_fallback = cpu_fallback)
+    try:
+        plan = _release_plan_for_host(
+            host,
+            published_repo = published_repo,
+            published_release_tag = published_release_tag,
+            whisper_tag = whisper_tag,
+            requested_backend = requested_backend,
+            verify_checksums = False,
+        )
+    except PrebuiltFallback:
+        return {"prebuilt_available": False, "repo": published_repo}
+    os_token, arch_token = host_platform_tokens(host)
+    payload = {
+        "prebuilt_available": True,
+        "repo": published_repo,
+        "release_tag": plan.bundle.release_tag,
+        "upstream_tag": plan.bundle.manifest.get("upstream_tag"),
+        "backend": plan.resolved_backend,
+        "requested_backend": requested_backend,
+        "cpu_fallback": plan.used_fallback,
+        "asset": str(plan.artifact.get("asset")),
+        "os": os_token,
+        "arch": arch_token,
+        "runtime_line": plan.artifact.get("runtime_line"),
+    }
+    payload.update(resolver_payload_extra(plan.artifact))
+    return payload
 
 
 # The whisper component descriptor: the declarative form of everything above,
@@ -1089,6 +1305,7 @@ def main(argv: list[str] | None = None) -> int:
                 host,
                 published_repo = args.published_repo,
                 published_release_tag = args.published_release_tag,
+                whisper_tag = args.whisper_tag,
                 backend = args.backend,
                 cpu_fallback = args.cpu_fallback,
             )

@@ -41,6 +41,7 @@ from utils.prebuilt.whisper_layout import canonical_install_root
 from utils.whisper_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
+    is_behind,
     latest_published_release,
     latest_release_assets,
     parse_release_version,
@@ -96,16 +97,20 @@ def _installer_script() -> Optional[Path]:
 _resolve_memo: dict = {}
 
 
-def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]:
+def _resolve_prebuilt_for_host(
+    *, force_refresh: bool = False, backend: Optional[str] = None
+) -> Optional[dict]:
     """Run install_whisper_prebuilt.py --resolve-prebuilt (no download); return
     {prebuilt_available, repo, release_tag, upstream_tag, backend, asset, os,
     arch, ...} or None. Fail-open: any error -> None so a source build never
     blocks the app."""
+    extra_args = ("--backend", backend) if backend else ()
     return _flow.resolve_prebuilt_for_host(
         force_refresh = force_refresh,
         memo = _resolve_memo,
         installer_script = lambda: _installer_script(),
         log_message = "whisper update: resolve-prebuilt failed",
+        extra_args = extra_args,
     )
 
 
@@ -233,15 +238,36 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
+    compatible_override = False
+    if sys.platform == "darwin" and marker is not None:
+        # The newest published release may require a newer macOS. Ask the same
+        # host-aware resolver the installer uses so the banner compares against
+        # the newest release this host can actually install, avoiding a repeated
+        # offer of an incompatible release after walkback.
+        resolved = _resolve_prebuilt_for_host(
+            force_refresh = force_refresh,
+            backend = marker.get("backend") if isinstance(marker.get("backend"), str) else None,
+        )
+        compatible_latest = (resolved or {}).get("release_tag")
+        if (resolved or {}).get("prebuilt_available") and isinstance(compatible_latest, str):
+            compatible_override = compatible_latest != latest
+            latest = compatible_latest
     # `behind` compares the release version with a downgrade guard, so a lagging
     # /releases/latest or lower published tag can't show a false update
     # (whisper_cpp_freshness.is_behind).
-    update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
+    update_available = bool(
+        freshness.get("has_marker")
+        and (
+            is_behind(installed, latest)
+            if sys.platform == "darwin" and marker is not None
+            else freshness.get("behind")
+        )
+    )
 
     # Size of the prebuilt Update would download, for the banner. Only when an
     # update is offered; fails open to None (offline / no matching asset).
     update_size_bytes = None
-    if update_available:
+    if update_available and not compatible_override:
         try:
             update_size_bytes = update_download_size_bytes(
                 marker,
@@ -258,7 +284,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     return {
         "supported": bool(freshness.get("has_marker")),
         "update_available": update_available,
-        "stale": bool(freshness.get("stale")),
+        "stale": bool(update_available and freshness.get("stale")),
         "installed_tag": installed,
         "latest_tag": latest,
         "published_repo": freshness.get("published_repo") or repo,
@@ -338,25 +364,15 @@ def _install_latest_while_blocked(
     cmd.extend(_rocm_install_args(asset))
     logger.info("whisper update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
-    try:
-        _flow.stream_installer(
-            cmd,
-            env,
-            set_progress = set_progress,
-            timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
-        )
-    except _flow.InstallerExit as exc:
-        if exc.returncode != 2:
-            raise
-        # Exit 2 is reserved by the whisper installer for a valid release that
-        # cannot pair with this host's installed llama runtime. Integrity,
-        # archive, and operational failures exit 1 and propagate as job errors.
-        logger.info("whisper update: incompatible release, keeping existing runtime")
-        return {
-            "to_tag": None,
-            "reload_required": model_was_active,
-            "message": "whisper.cpp release is incompatible; kept the existing runtime.",
-        }
+    # Every nonzero exit is a failed phase. In particular, exit 2 means the
+    # requested release was incompatible and no install happened, so reporting
+    # success would hide the banner and toast an update that never landed.
+    _flow.stream_installer(
+        cmd,
+        env,
+        set_progress = set_progress,
+        timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
+    )
 
     # Drop stale caches so the banner re-checks the swapped marker. If GitHub is
     # offline, latest stays unknown and the banner fails open.

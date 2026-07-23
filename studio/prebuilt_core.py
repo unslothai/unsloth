@@ -2286,7 +2286,6 @@ def install_prebuilt(
     bundle, checksums = ops.fetch_release_for_install(
         published_repo, published_release_tag = published_release_tag
     )
-    release_tag = bundle.release_tag
     selection = ops.plan_selection(
         host,
         bundle,
@@ -2294,6 +2293,32 @@ def install_prebuilt(
         backend = effective_backend,
         checksums = checksums,
     )
+
+    return install_selected_prebuilt(
+        ops,
+        install_dir,
+        host = host,
+        bundle = bundle,
+        selection = selection,
+        force = force,
+    )
+
+
+def install_selected_prebuilt(
+    ops: ModuleOps,
+    install_dir: Path,
+    *,
+    host: Any,
+    bundle: ReleaseBundle,
+    selection: InstallSelection,
+    force: bool,
+) -> int:
+    """Validate and activate an already selected release plan.
+
+    Components that need to examine more than one published release can keep
+    release selection component-specific while sharing the lock, idempotency,
+    atomic activation, and post-install verification path.
+    """
 
     if not force and ops.existing_install_matches(install_dir, host, selection):
         return 0
@@ -2307,7 +2332,9 @@ def install_prebuilt(
     server = ops.installed_server_path(install_dir, host)
     if not server.is_file():
         raise PrebuiltFallback(f"post-install verification failed: {server} is missing")
-    ops.log(f"installed {ops.COMPONENT} {release_tag} ({selection.backend}) at {install_dir}")
+    ops.log(
+        f"installed {ops.COMPONENT} {bundle.release_tag} " f"({selection.backend}) at {install_dir}"
+    )
     return 0
 
 

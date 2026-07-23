@@ -131,12 +131,14 @@ def resolve_prebuilt_for_host(
     memo: dict,
     installer_script: Callable[[], Optional[Path]],
     log_message: str,
+    extra_args: tuple[str, ...] = (),
 ) -> Optional[dict]:
     """Run ``<installer> --resolve-prebuilt latest --output-format json`` (no
     download); return the parsed payload or None. Fail-open: any error -> None so
     a source build never blocks the app."""
     now = time.time()
-    if not force_refresh and memo:
+    cache_key = tuple(extra_args)
+    if not force_refresh and memo.get("key") == cache_key:
         if now - memo.get("at", 0.0) < RESOLVE_TTL_SECONDS:
             return memo.get("value")
     script = installer_script()
@@ -144,15 +146,17 @@ def resolve_prebuilt_for_host(
         return None
     value: Optional[dict] = None
     try:
+        cmd = [
+            sys.executable,
+            str(script),
+            "--resolve-prebuilt",
+            "latest",
+            "--output-format",
+            "json",
+            *extra_args,
+        ]
         proc = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "--resolve-prebuilt",
-                "latest",
-                "--output-format",
-                "json",
-            ],
+            cmd,
             capture_output = True,
             text = True,
             timeout = 60,
@@ -166,7 +170,7 @@ def resolve_prebuilt_for_host(
         logger.debug(log_message, error = str(exc))
         value = None
     if value is not None:  # cache real answers; let failures retry next poll
-        memo.update(at = now, value = value)
+        memo.update(at = now, key = cache_key, value = value)
     return value
 
 

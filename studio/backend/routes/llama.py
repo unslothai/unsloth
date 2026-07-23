@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -85,6 +85,10 @@ class LlamaUpdateStatusResponse(BaseModel):
     )
     llama_update_available: bool = Field(
         False, description = "True when the latest llama.cpp release is newer than the install."
+    )
+    update_component: Optional[Literal["llama", "whisper"]] = Field(
+        None,
+        description = "Component whose versions the combined update banner should display.",
     )
     stale: bool = Field(
         False, description = "Update available AND install older than the staleness threshold."
