@@ -92,6 +92,7 @@ import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   getPreStreamRunReservationCount,
+  notifyPreStreamRunFailed,
   releasePreStreamRunReservation,
   tryReservePreStreamRun,
   discardQueuedChatRunSettings,
@@ -2083,7 +2084,7 @@ const Composer: FC<{
         // Attachment conversion happens before the adapter starts. If it
         // rejects there, the adapter cannot release the pre-stream slot.
         if (getPreStreamRunReservationCount() > 0) {
-          releasePreStreamRunReservation();
+          notifyPreStreamRunFailed(referenceThreadId);
         }
         toast.error("Could not prepare attachments", {
           description:
@@ -2091,13 +2092,15 @@ const Composer: FC<{
         });
       });
     } catch (error) {
-      releasePreStreamRunReservation();
+      if (getPreStreamRunReservationCount() > 0) {
+        notifyPreStreamRunFailed(referenceThreadId);
+      }
       toast.error("Could not prepare attachments", {
         description:
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui]);
+  }, [aui, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
