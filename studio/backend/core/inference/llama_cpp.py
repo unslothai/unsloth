@@ -6556,9 +6556,7 @@ class LlamaCppBackend:
                         projector_has_audio = (
                             read_mmproj_audio_capability(launch_mmproj_path) is True
                         )
-                        projector_has_vision = read_mmproj_vision_capability(
-                            launch_mmproj_path
-                        )
+                        projector_has_vision = read_mmproj_vision_capability(launch_mmproj_path)
                     except Exception as e:
                         logger.debug(f"mmproj capability read failed: {e}")
                 # Need both a resolved mmproj AND the config vision flag; a stray
