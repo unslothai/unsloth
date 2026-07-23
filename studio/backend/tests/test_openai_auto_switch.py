@@ -1487,6 +1487,35 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
     assert rec.calls[0].max_seq_length == 8192  # override keyed by repo id, not path
 
 
+def test_resolved_idle_reload_preserves_effective_projector_state(monkeypatch):
+    # A normal named request resolves even when it targets the just-idle-freed
+    # model. The exact path/quant stash must still carry text-only intent.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    resolved = ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = resolved,
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        ("/cache/snap/A", "Q4_K_M", "org/A-GGUF", False),
+    )
+
+    _run_hook("org/A-GGUF:Q4_K_M")
+
+    assert rec.calls[0].model_path == "/cache/snap/A"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+    assert rec.calls[0].load_mmproj is False
+
+
 def test_load_route_holds_lifecycle_gate(monkeypatch):
     # Lock the manual /load gate against silent revert: the route must wrap the
     # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
@@ -2902,6 +2931,32 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     )
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "/cache/snap/A"  # restored despite require_vision
+
+
+def test_require_vision_rejects_text_only_reload_stash(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        ("/cache/snap/A", "Q4_K_M", "org/A-GGUF", False),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/A-GGUF", object(), "t", require_vision = True
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert rec.calls == []
 
 
 def test_chat_validates_confirm_and_modality_before_switch():

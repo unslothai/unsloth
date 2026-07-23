@@ -65,6 +65,8 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /** Attach the projector for vision-capable GGUFs. Defaults to true. */
+  load_mmproj?: boolean;
   /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
    *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
    *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
@@ -181,6 +183,8 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** Effective projector state used by the loaded model. */
+  load_mmproj?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
@@ -233,6 +237,8 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** Effective projector state used by the active model. */
+  load_mmproj?: boolean;
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;

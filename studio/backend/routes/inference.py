@@ -3118,6 +3118,16 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def _effective_load_mmproj(requested: bool, extra_args: Optional[list[str]]) -> bool:
+    """Resolve the first-class toggle with explicit or inherited llama.cpp args.
+
+    This is the single projector state used for dedupe, training sizing,
+    download gating, and launch. A false first-class value is authoritative;
+    otherwise a last-wins ``--no-mmproj``/``--no-mmproj-auto`` extra disables it.
+    """
+    return bool(requested and not extra_args_disable_mmproj(extra_args))
+
+
 def _should_strip_split_mode(request: LoadRequest, backend_extra: Optional[list[str]]) -> bool:
     """Whether an inherited --split-mode (and its coupled --tensor-split) should
     be stripped on reload.
@@ -3215,8 +3225,15 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
+            strip_mmproj = "load_mmproj" in getattr(request, "model_fields_set", set()),
         )
     )
+    requested_load_mmproj = _effective_load_mmproj(
+        request.load_mmproj,
+        effective_extra,
+    )
+    if not llama_backend.is_diffusion and requested_load_mmproj != bool(llama_backend.load_mmproj):
+        return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
@@ -3611,11 +3628,12 @@ async def _maybe_auto_switch_model(
             if auto_switch_on and not reload_only
             else None
         )
+        last = get_last_unloaded_model()
+        stashed_load_mmproj: Optional[bool] = None
         if resolved is None:
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
-            last = get_last_unloaded_model()
             # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
             # leaves the GGUF slot empty but is the live model, so don't resurrect
             # the stale GGUF over it (that load would tear the active model down).
@@ -3625,16 +3643,34 @@ async def _maybe_auto_switch_model(
                 or getattr(get_inference_backend(), "active_model_name", None)
             ):
                 return
-            if len(last) == 3:
+            if len(last) >= 4:
+                target_id, variant, override_id, stashed_load_mmproj = last[:4]
+            elif len(last) == 3:
                 target_id, variant, override_id = last
+                stashed_load_mmproj = True
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+                stashed_load_mmproj = True
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
             # advertised repo id, the launch-override key and the public model id.
             target_id, variant, override_id = resolved
+            # A named request normally resolves even when it is restoring the
+            # model just freed by idle-unload. Preserve the effective projector
+            # state for that exact path/quant rather than silently re-enabling it.
+            if last and len(last) >= 4:
+                last_target, last_variant, last_override, last_load_mmproj = last[:4]
+                target_matches = (
+                    str(target_id).casefold() == str(last_target).casefold()
+                    or str(override_id).casefold() == str(last_override).casefold()
+                )
+                variant_matches = (
+                    str(variant or "").casefold() == str(last_variant or "").casefold()
+                )
+                if target_matches and variant_matches:
+                    stashed_load_mmproj = bool(last_load_mmproj)
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
@@ -3683,10 +3719,9 @@ async def _maybe_auto_switch_model(
         # path just restores the model the request was already using. Both vision and
         # audio input come from a companion mmproj (a filesystem probe) -- run it off
         # the loop, like the resolver above.
-        if (
-            require_vision
-            and resolved is not None
-            and not await asyncio.to_thread(_target_is_vision, target_id)
+        if require_vision and (
+            stashed_load_mmproj is False
+            or (resolved is not None and not await asyncio.to_thread(_target_is_vision, target_id))
         ):
             raise HTTPException(
                 status_code = 400,
@@ -3715,6 +3750,8 @@ async def _maybe_auto_switch_model(
                         # Apply this model's saved launch flags so the swap honors the config.
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                        if stashed_load_mmproj is not None:
+                            load_kwargs["load_mmproj"] = stashed_load_mmproj
                         if override.get("llama_extra_args") is not None:
                             load_kwargs["llama_extra_args"] = override["llama_extra_args"]
                         if override.get("max_seq_length") is not None:
@@ -3854,6 +3891,7 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    include_mmproj: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -3863,7 +3901,10 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+        companion_attrs = ["gguf_mtp_file"]
+        if include_mmproj:
+            companion_attrs.append("gguf_mmproj_file")
+        for attr in companion_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -3884,7 +3925,9 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = include_mmproj and bool(has_vision),
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -3944,6 +3987,7 @@ def _guard_chat_load_against_training(
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
+    include_mmproj: bool = True,
 ) -> None:
     """Protect active training from automatically placed chat-model loads.
 
@@ -3987,6 +4031,7 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            include_mmproj = include_mmproj,
         )
         if is_gguf
         else None
@@ -4099,6 +4144,10 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            # Explicit pass-through extras may override the toggle, but inherited
+            # projector flags belong to the previous Apply. When this request
+            # supplies load_mmproj, discard those stale flags first.
+            strip_mmproj = "load_mmproj" in fields_set,
         )
         try:
             extra_llama_args = validate_extra_args(stripped)
@@ -4344,6 +4393,7 @@ async def _load_model_impl(
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
                     tensor_parallel = llama_backend.tensor_parallel,
+                    load_mmproj = llama_backend.load_mmproj,
                     gpu_memory_mode = llama_backend.gpu_memory_mode,
                     gpu_layers = llama_backend.gpu_layers,
                     n_cpu_moe = llama_backend.n_cpu_moe,
@@ -4492,6 +4542,13 @@ async def _load_model_impl(
             extra_llama_args,
             effective_chat_template_override,
         )
+        # Resolve projector intent only after same-model extras inheritance.
+        # Every downstream consumer, including the training guard, receives the
+        # same effective state the llama.cpp child will launch with.
+        effective_load_mmproj = _effective_load_mmproj(
+            request.load_mmproj,
+            extra_llama_args,
+        )
 
         # Apply the training coexistence policy before the unload step below
         # frees the resident model. Off-loop: the default-mode guard does sync work.
@@ -4506,6 +4563,7 @@ async def _load_model_impl(
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
             gpu_memory_mode = request.gpu_memory_mode,
+            include_mmproj = effective_load_mmproj,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4526,9 +4584,7 @@ async def _load_model_impl(
                     _hub_download_blocks_gguf_load,
                     config.gguf_hf_repo,
                     config.gguf_variant,
-                    require_mmproj = bool(
-                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
-                    ),
+                    require_mmproj = bool(config.is_vision and effective_load_mmproj),
                     hf_token = request.hf_token,
                 ):
                     raise HTTPException(
@@ -4566,6 +4622,7 @@ async def _load_model_impl(
             _common_load_kwargs = dict(
                 model_identifier = config.identifier,
                 is_vision = config.is_vision,
+                load_mmproj = effective_load_mmproj,
                 n_ctx = request.max_seq_length,
                 chat_template_override = effective_chat_template_override,
                 cache_type_kv = request.cache_type_kv,
@@ -4588,7 +4645,7 @@ async def _load_model_impl(
             else:
                 # Local mode: llama-server loads via -m <path>
                 if native_grant_backed:
-                    if config.gguf_mmproj_file:
+                    if effective_load_mmproj and config.gguf_mmproj_file:
                         _validate_native_gguf_companion(
                             config.gguf_mmproj_file, config.gguf_file, "vision companion"
                         )
@@ -4743,6 +4800,7 @@ async def _load_model_impl(
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                load_mmproj = llama_backend.load_mmproj,
                 gpu_memory_mode = llama_backend.gpu_memory_mode,
                 gpu_layers = llama_backend.gpu_layers,
                 n_cpu_moe = llama_backend.n_cpu_moe,
@@ -5145,6 +5203,10 @@ async def validate_model(
             effective_extra_args = _resolve_inherited_extra_args(
                 request, config, model_identifier, None
             )
+            effective_load_mmproj = _effective_load_mmproj(
+                request.load_mmproj,
+                effective_extra_args,
+            )
             # Off-loop: guard does sync nvidia-smi / HF work.
             await asyncio.to_thread(
                 _guard_chat_load_against_training,
@@ -5161,6 +5223,7 @@ async def validate_model(
                     else 1
                 ),
                 gpu_memory_mode = request.gpu_memory_mode,
+                include_mmproj = effective_load_mmproj,
             )
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
@@ -5889,6 +5952,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                load_mmproj = llama_backend.load_mmproj,
                 gpu_memory_mode = llama_backend.gpu_memory_mode,
                 gpu_layers = llama_backend.gpu_layers,
                 n_cpu_moe = llama_backend.n_cpu_moe,

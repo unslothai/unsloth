@@ -235,6 +235,21 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
     assert auto != -1 and "_layer_min_gpus" in src[auto : auto + 200]
 
 
+def test_disabled_projector_clears_every_inherited_mmproj_env_form():
+    """The Studio toggle must override path, auto, and URL projector env flags."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    first_pop = src.index('env.pop("LLAMA_ARG_MMPROJ", None)')
+    start = src.rindex("if is_vision and not effective_mmproj_requested:", 0, first_pop)
+    end = src.index("# Windows + full offload", start)
+    block = src[start:end]
+    for env_name in (
+        "LLAMA_ARG_MMPROJ",
+        "LLAMA_ARG_MMPROJ_AUTO",
+        "LLAMA_ARG_MMPROJ_URL",
+    ):
+        assert f'env.pop("{env_name}", None)' in block
+
+
 # ── per-binary capability cache (pure) ───────────────────────────────
 
 
@@ -658,6 +673,25 @@ def test_tensor_off_echo_preserves_multi_gpu_fallback():
     assert (
         inference_routes._request_matches_loaded_settings(
             req, _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+        )
+        is True
+    )
+
+
+def test_diffusion_dedupe_ignores_projector_request_default():
+    """Diffusion never uses an mmproj, so LoadRequest's true default must not
+    restart an otherwise identical diffusion runner."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    backend._is_diffusion = True
+    backend._load_mmproj = False
+
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            LoadRequest(model_path = "owner/repo"),
+            backend,
         )
         is True
     )

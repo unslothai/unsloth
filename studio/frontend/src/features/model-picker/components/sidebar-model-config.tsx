@@ -44,6 +44,7 @@ function configSignature(config: PerModelConfig): string {
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.tensorParallel ? "1" : "0",
+    config.visionProjectorEnabled ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,

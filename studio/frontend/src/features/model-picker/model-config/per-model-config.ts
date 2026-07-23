@@ -16,6 +16,8 @@ export interface PerModelConfig {
   speculativeType: string | null;
   specDraftNMax: number | null;
   tensorParallel: boolean;
+  /** Whether a vision-capable GGUF should load its projector. Default on. */
+  visionProjectorEnabled: boolean;
   chatTemplateOverride: string | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
   // parse. null selectedGpuIds (all GPUs) is distinct from absent. The --tensor-split
@@ -34,6 +36,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   speculativeType: null,
   specDraftNMax: null,
   tensorParallel: false,
+  visionProjectorEnabled: true,
   chatTemplateOverride: null,
 };
 
@@ -64,7 +67,9 @@ export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-const STORAGE_SCHEMA_VERSION = 1;
+// v2 adds visionProjectorEnabled. Older clients must reject rather than
+// rewrite the record and silently drop its load-affecting projector intent.
+const STORAGE_SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
@@ -83,6 +88,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "speculativeType",
   "specDraftNMax",
   "tensorParallel",
+  "visionProjectorEnabled",
   "chatTemplateOverride",
   "gpuMemoryMode",
   "gpuLayers",
@@ -406,7 +412,10 @@ function writeMap(map: StoredMap): boolean {
   }
 }
 
-function warnDroppedFields(raw: Record<string, unknown>, version: number): void {
+function warnDroppedFields(
+  raw: Record<string, unknown>,
+  version: number,
+): void {
   if (!import.meta.env?.DEV) {
     return;
   }
@@ -426,7 +435,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     typeof partial.speculativeType === "string"
       ? canonicalizeSpeculativeType(partial.speculativeType)
       : null;
-  const speculativeType = rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
+  const speculativeType =
+    rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
   const specDraftNMax =
     speculativeType != null &&
     MTP_SPECULATIVE_TYPES.has(speculativeType) &&
@@ -453,6 +463,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
         : DEFAULT_PER_MODEL_CONFIG.tensorParallel,
+    visionProjectorEnabled:
+      typeof partial.visionProjectorEnabled === "boolean"
+        ? partial.visionProjectorEnabled
+        : DEFAULT_PER_MODEL_CONFIG.visionProjectorEnabled,
     chatTemplateOverride:
       typeof partial.chatTemplateOverride === "string" &&
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
@@ -589,6 +603,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.specDraftNMax == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
+    config.visionProjectorEnabled ===
+      DEFAULT_PER_MODEL_CONFIG.visionProjectorEnabled &&
     (config.chatTemplateOverride ?? null) === null &&
     gpuFieldsAtDefault(config)
   );

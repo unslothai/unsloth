@@ -763,6 +763,46 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured.get("llama_extra_args"), ["-c", "32768"])
         self.assertIn("n_parallel", captured)
 
+    def test_validate_uses_effective_inherited_mmproj_state(self):
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "unsloth/model-GGUF",
+            gguf_variant = "Q4_K_M",
+            load_mmproj = True,
+        )
+        cfg = SimpleNamespace(
+            identifier = "unsloth/model-GGUF",
+            display_name = "model-GGUF",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = True,
+            path = None,
+            base_model = None,
+        )
+        captured = {}
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/model-GGUF", "unsloth/model-GGUF", False),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                self.route,
+                "_resolve_inherited_extra_args",
+                return_value = ["--no-mmproj"],
+            ),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda config, **kw: captured.update(kw),
+            ),
+        ):
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertFalse(captured["include_mmproj"])
+
     def test_metadata_probe_skips_training_guard(self):
         # A header-only probe (include_context_length) allocates no VRAM, so the
         # training guard must not run -- else the staging GPU-layers / MoE sliders
@@ -928,6 +968,55 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
+    def test_local_excludes_projector_but_keeps_other_companions(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            model = p / "model.gguf"
+            projector = p / "mmproj.gguf"
+            drafter = p / "mtp.gguf"
+            model.write_bytes(b"m" * 1000)
+            projector.write_bytes(b"p" * 2000)
+            drafter.write_bytes(b"d" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(model),
+                gguf_mmproj_file = str(projector),
+                gguf_mtp_file = str(drafter),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            gb = self.route._estimate_gguf_required_gb(
+                cfg,
+                include_mmproj = False,
+            )
+        self.assertAlmostEqual(gb, 4000 / (1024**3), places = 9)
+
+    def test_remote_excludes_projector_from_companion_query(self):
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
+            patch.object(
+                self.route,
+                "_remote_gguf_companion_bytes",
+                return_value = 1 * 1024**3,
+            ) as comp,
+        ):
+            gb = self.route._estimate_gguf_required_gb(
+                cfg,
+                include_mmproj = False,
+            )
+        self.assertAlmostEqual(gb, 11.0, places = 6)
+        self.assertFalse(comp.call_args.kwargs["include_mmproj"])
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(
@@ -1064,6 +1153,64 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf.unload_model.assert_not_called()
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()
+
+    def test_load_guard_uses_effective_inherited_mmproj_state(self):
+        import contextlib
+        from unittest.mock import MagicMock
+        from models.inference import LoadRequest
+
+        inf = SimpleNamespace(active_model_name = None)
+        llama = SimpleNamespace(is_loaded = False, model_identifier = None, hf_variant = None)
+        cfg = SimpleNamespace(
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            base_model = None,
+            identifier = "unsloth/Qwen3-1.7B",
+        )
+        request = LoadRequest(
+            model_path = "unsloth/Qwen3-1.7B",
+            load_mmproj = True,
+        )
+        captured = {}
+
+        def stop_after_guard(config, **kwargs):
+            captured.update(kwargs)
+            raise HTTPException(status_code = 409, detail = "stop")
+
+        with (
+            patch("utils.transformers_version.latest_tier_active_for", return_value = False),
+            patch.object(self.route, "validate_extra_args", return_value = None),
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
+            ),
+            patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
+            patch.object(self.route, "get_inference_backend", return_value = inf),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
+            patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(
+                self.route,
+                "_resolve_inherited_extra_args",
+                return_value = ["--no-mmproj"],
+            ),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                side_effect = stop_after_guard,
+            ),
+        ):
+            with self.assertRaises(HTTPException):
+                asyncio.run(
+                    self.route.load_model(
+                        request,
+                        fastapi_request = MagicMock(),
+                        current_subject = "u",
+                    )
+                )
+        self.assertFalse(captured["include_mmproj"])
 
 
 if __name__ == "__main__":
