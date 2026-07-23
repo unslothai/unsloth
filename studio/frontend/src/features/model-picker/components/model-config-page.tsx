@@ -392,9 +392,11 @@ function GpuMemorySettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Host Memory</span>
           <InfoHint>
-            Default preserves inherited llama.cpp settings. Auto clears inherited
-            placement flags. Pinned locks mapped model pages in RAM. Resident also
-            disables memory mapping and loads the full model into locked RAM.
+            Controls host RAM only, not whether a GPU driver keeps weights in VRAM.
+            Default preserves inherited llama.cpp settings. Auto uses normal
+            memory-mapped loading. Locked RAM prevents mapped host pages from being
+            swapped. RAM copy disables memory mapping, but newer llama.cpp builds
+            cannot also lock that copy.
           </InfoHint>
         </div>
         <Select
@@ -419,8 +421,8 @@ function GpuMemorySettings({
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
             <SelectItem value="default">Default</SelectItem>
             <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="pinned">Pinned</SelectItem>
-            <SelectItem value="resident">Resident</SelectItem>
+            <SelectItem value="pinned">Locked RAM</SelectItem>
+            <SelectItem value="resident">RAM copy</SelectItem>
           </SelectContent>
         </Select>
       </div>
