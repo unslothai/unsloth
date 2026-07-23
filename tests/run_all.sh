@@ -17,6 +17,7 @@ sh "$TESTS_DIR/sh/test_uninstall_shared_icon.sh"
 sh "$TESTS_DIR/sh/test_torch_flavor.sh"
 sh "$TESTS_DIR/sh/test_redact_install_output.sh"
 sh "$TESTS_DIR/sh/test_install_uv_override_space.sh"
+sh "$TESTS_DIR/sh/test_install_rollback_lifecycle.sh"
 
 echo ""
 echo "=== Python tests ==="
