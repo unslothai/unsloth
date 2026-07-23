@@ -1196,7 +1196,8 @@ export function ModelsPage() {
         throwOnError: true,
         previousConfig,
       })
-        .then(() => {
+        .then((loaded) => {
+          if (loaded !== true) return;
           // Read fresh: the load is async, so the checkpoint may have changed.
           const store = useChatRuntimeStore.getState();
           if (!modelIdsMatch(store.params.checkpoint, runId)) {

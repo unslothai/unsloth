@@ -2263,7 +2263,9 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+          return;
+        }
+        if (wantBackgroundDownload) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2286,12 +2288,12 @@ export function ChatPage({
                 "Another download for this model is still running. Reselect it once that finishes to load it.",
             });
           }
-        } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          return;
         }
-        return;
+        const stopped = await cancelLoading();
+        if (!stopped) {
+          return;
+        }
       }
       const wantManagerStage =
         wantManagerDownload ||
@@ -2330,7 +2332,13 @@ export function ChatPage({
         previousConfig,
       });
     },
-    [selectModel, loadingModel, rememberedConfigFor, chatContextKey],
+    [
+      cancelLoading,
+      selectModel,
+      loadingModel,
+      rememberedConfigFor,
+      chatContextKey,
+    ],
   );
   useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
