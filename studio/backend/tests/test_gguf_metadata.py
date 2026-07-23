@@ -18,6 +18,7 @@ from utils.models.gguf_metadata import (
     read_gguf_general_metadata,
     read_gguf_staged_dims,
     read_mmproj_audio_capability,
+    read_mmproj_vision_capability,
 )
 
 
@@ -415,6 +416,18 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
+
+
+def test_mmproj_vision_capability_distinguishes_audio_only(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "audio-mmproj.gguf",
+        {"general.type": "mmproj"},
+        extra_bools = {
+            "clip.has_vision_encoder": False,
+            "clip.has_audio_encoder": True,
+        },
+    )
+    assert read_mmproj_vision_capability(str(p)) is False
 
 
 def test_csm_tokens_match_runtime_without_name_identity(tmp_path: Path):

@@ -23,6 +23,7 @@ from utils.models.gguf_metadata import (
     pairing_score,
     read_gguf_general_metadata,
     read_mmproj_audio_capability,
+    read_mmproj_vision_capability,
 )
 import structlog
 from loggers import get_logger
@@ -3022,8 +3023,15 @@ class ModelConfig:
                 gguf_audio_type = detect_gguf_audio_type(gguf_file)
                 projector_has_audio = False
                 if mmproj_file:
-                    gguf_is_vision = True
-                    logger.info(f"Detected mmproj for vision: {mmproj_file}")
+                    projector_has_vision = read_mmproj_vision_capability(mmproj_file)
+                    # Older vision projectors omit the flag, so only an explicit
+                    # false (used by audio-only projectors) disables images.
+                    gguf_is_vision = projector_has_vision is not False
+                    logger.info(
+                        "Detected mmproj: %s (vision=%s)",
+                        mmproj_file,
+                        gguf_is_vision,
+                    )
                     projector_has_audio = read_mmproj_audio_capability(mmproj_file) is True
                     if gguf_audio_type is None:
                         gguf_audio_type = detect_gguf_audio_type(mmproj_file)
@@ -3113,7 +3121,8 @@ class ModelConfig:
                     gguf_audio_type = detect_gguf_audio_type(cached_gguf)
                     projector_has_audio = False
                     if cached_mmproj:
-                        has_vision = True
+                        projector_has_vision = read_mmproj_vision_capability(cached_mmproj)
+                        has_vision = projector_has_vision is not False
                         projector_has_audio = read_mmproj_audio_capability(cached_mmproj) is True
                         if gguf_audio_type is None:
                             gguf_audio_type = detect_gguf_audio_type(cached_mmproj)
@@ -3122,11 +3131,26 @@ class ModelConfig:
                         str(cached_snapshot),
                         str(Path(cached_mmproj).parent) if cached_mmproj else None,
                     )
+                    config_source_is_local = True
+                    if (
+                        _raw_config_model_type(
+                            config_source,
+                            hf_token,
+                            local_files_only = True,
+                        )
+                        is None
+                        and not _env_offline()
+                    ):
+                        # A cached -hf load may contain only the selected GGUF.
+                        # Consult the repo config while online before defaulting
+                        # an unknown audio family to chat-capable.
+                        config_source = identifier
+                        config_source_is_local = False
                     gguf_audio_type, has_audio_input, is_chat_capable = _classify_audio_capability(
                         config_source,
                         gguf_audio_type,
                         hf_token,
-                        local_files_only = True,
+                        local_files_only = config_source_is_local,
                     )
                     has_audio_input = has_audio_input or projector_has_audio
                 else:

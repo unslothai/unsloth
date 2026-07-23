@@ -533,14 +533,22 @@ class InferenceBackend:
                 log_gpu_memory(f"After loading {model_name}")
                 return True
 
-            model_type = "vision" if config.is_vision else "text"
+            model_type = (
+                "vision"
+                if config.is_vision
+                else "audio-input"
+                if config.has_audio_input
+                else "text"
+            )
             adapter_info = " (LoRA adapter)" if self.models[model_name]["is_lora"] else ""
             logger.info(f"Loading {model_type} model{adapter_info}: {model_name}")
             log_gpu_memory(f"Before loading {model_name}")
 
             # Same load path for base models and LoRA adapters
-            if config.is_vision:
-                # Vision model (or vision LoRA adapter)
+            if config.is_vision or config.has_audio_input:
+                # Multimodal model (or adapter). Audio-input families need the
+                # processor returned by this path even when they have no image
+                # encoder; the text loader stores only a tokenizer.
                 model, processor = FastVisionModel.from_pretrained(
                     model_name = config.path,  # Can be base model OR LoRA adapter path
                     max_seq_length = max_seq_length,

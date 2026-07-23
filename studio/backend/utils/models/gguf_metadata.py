@@ -668,6 +668,15 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     return _read_gguf_bool(path, "clip.has_audio_encoder")
 
 
+def read_mmproj_vision_capability(path: str) -> Optional[bool]:
+    """``clip.has_vision_encoder`` from an mmproj GGUF.
+
+    An explicit ``False`` distinguishes audio-only projectors from legacy
+    vision projectors whose older metadata may omit the key.
+    """
+    return _read_gguf_bool(path, "clip.has_vision_encoder")
+
+
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     """True/False from ``general.type``; None means fall back to filename."""
     if not meta:
