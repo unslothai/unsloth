@@ -6574,9 +6574,7 @@ class LlamaCppBackend:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path)
-                        if effective_uses_mmproj
-                        else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_uses_mmproj else 0
                     )
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
