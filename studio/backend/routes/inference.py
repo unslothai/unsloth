@@ -5815,10 +5815,15 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         try:
             _bin = type(llama_backend)._find_llama_server_binary()
             _caps = type(llama_backend).probe_server_capabilities(_bin)
-            _supports_mtp = bool(_caps.get("supports_mtp", False))
+            # Fail open on inconclusive probes: False means a definitive
+            # "binary lacks MTP" to API consumers (update recommendation).
+            _supports_mtp = bool(
+                _caps.get("supports_mtp", False)
+                or _caps.get("mtp_probe_inconclusive", False)
+            )
         except Exception:
             _bin = None
-            _supports_mtp = False  # inconclusive: do not claim MTP in /status
+            _supports_mtp = False  # no usable binary: MTP genuinely unavailable
         try:
             from utils.llama_cpp_freshness import check_prebuilt_freshness
             _freshness = check_prebuilt_freshness(_bin)
