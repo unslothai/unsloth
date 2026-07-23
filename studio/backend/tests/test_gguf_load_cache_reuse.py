@@ -70,6 +70,8 @@ from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _hub_download_blocks_gguf_load,
+    _supplied_mmproj_for_loaded_model,
     cached_gguf_for_load,
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
@@ -742,7 +744,6 @@ class TestLoadHubDownloadExclusion:
         assert registry.has_active_variant(REPO, VARIANT) is False
 
     def test_other_variant_job_still_allows_complete_cached_load(self):
-        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
         from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
 
         registry = DownloadRegistry()
@@ -768,6 +769,70 @@ class TestLoadHubDownloadExclusion:
             require_mmproj = False,
             verify_sizes = True,
             hf_token = None,
+        )
+
+    def test_other_variant_job_allows_compatible_cross_snapshot_projector(
+        self, tmp_path
+    ):
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        main = tmp_path / "gemma-main.gguf"
+        mmproj = tmp_path / "gemma-mmproj.gguf"
+        main.touch()
+        mmproj.touch()
+        registry = DownloadRegistry()
+        registry.claim(
+            f"{REPO}::Q8_0",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = "Q8_0",
+        )
+
+        def cached_probe(*_args, require_mmproj = False, **_kwargs):
+            return None if require_mmproj else str(main)
+
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                side_effect = cached_probe,
+            ),
+            patch(
+                "utils.models.model_config.mmproj_matches_model_family",
+                return_value = True,
+            ),
+        ):
+            assert (
+                _hub_download_blocks_gguf_load(
+                    REPO,
+                    VARIANT,
+                    require_mmproj = True,
+                    mmproj_path = str(mmproj),
+                )
+                is False
+            )
+
+    def test_supplied_projector_is_kept_only_for_the_reused_cached_main(self, tmp_path):
+        cached_main = tmp_path / "old" / MAIN
+        downloaded_main = tmp_path / "new" / MAIN
+        mmproj = tmp_path / "projector" / "gemma-mmproj.gguf"
+        for path in (cached_main, downloaded_main, mmproj):
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.touch()
+
+        assert _supplied_mmproj_for_loaded_model(
+            cached_model_path = str(cached_main),
+            loaded_model_path = str(cached_main),
+            mmproj_path = str(mmproj),
+        ) == str(mmproj)
+        assert (
+            _supplied_mmproj_for_loaded_model(
+                cached_model_path = str(cached_main),
+                loaded_model_path = str(downloaded_main),
+                mmproj_path = str(mmproj),
+            )
+            is None
         )
 
     def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):

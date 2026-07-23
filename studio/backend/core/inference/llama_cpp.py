@@ -1303,6 +1303,7 @@ def _hub_download_blocks_gguf_load(
     hf_variant: Optional[str],
     *,
     require_mmproj: bool = False,
+    mmproj_path: Optional[str] = None,
     hf_token: Optional[str] = None,
 ) -> bool:
     """Whether an active Hub job makes this GGUF load unsafe.
@@ -1321,16 +1322,52 @@ def _hub_download_blocks_gguf_load(
             return True
     except Exception:
         return False
-    return (
-        cached_gguf_for_load(
-            hf_repo,
-            hf_variant,
-            require_mmproj = require_mmproj,
-            verify_sizes = True,
-            hf_token = hf_token,
-        )
-        is None
+    cached_main = cached_gguf_for_load(
+        hf_repo,
+        hf_variant,
+        require_mmproj = require_mmproj,
+        verify_sizes = True,
+        hf_token = hf_token,
     )
+    if cached_main is not None:
+        return False
+    if not require_mmproj or not mmproj_path:
+        return True
+
+    # ModelConfig can deliberately pair a verified main GGUF with a compatible
+    # projector from a newer cache snapshot. That load is still cache-only, so
+    # an unrelated download must not block it merely because the stricter
+    # same-snapshot probe above cannot see the supplied companion.
+    cached_main = cached_gguf_for_load(
+        hf_repo,
+        hf_variant,
+        verify_sizes = True,
+        hf_token = hf_token,
+    )
+    if cached_main is None or not Path(mmproj_path).is_file():
+        return True
+    try:
+        from utils.models.model_config import mmproj_matches_model_family
+
+        return not mmproj_matches_model_family(cached_main, mmproj_path)
+    except Exception:
+        return True
+
+
+def _supplied_mmproj_for_loaded_model(
+    *,
+    cached_model_path: Optional[str],
+    loaded_model_path: str,
+    mmproj_path: Optional[str],
+) -> Optional[str]:
+    """Keep a pre-resolved projector only when its cached main was reused."""
+    if not cached_model_path or not mmproj_path:
+        return None
+    try:
+        same_model = os.path.samefile(cached_model_path, loaded_model_path)
+    except OSError:
+        same_model = os.path.realpath(cached_model_path) == os.path.realpath(loaded_model_path)
+    return mmproj_path if same_model else None
 
 
 # Active GGUF loads by normalized repo ID.
@@ -1381,6 +1418,7 @@ def _with_gguf_load_marker(load: Callable):
                     (kwargs.get("is_vision") or kwargs.get("has_audio_input"))
                     and not extra_args_disable_mmproj(kwargs.get("extra_args"))
                 ),
+                mmproj_path = kwargs.get("mmproj_path"),
                 hf_token = kwargs.get("hf_token"),
             ):
                 raise RuntimeError(
@@ -6296,6 +6334,18 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
+                needs_mmproj = bool(
+                    (is_vision or has_audio_input)
+                    and not extra_args_disable_mmproj(extra_args)
+                )
+                cached_main_for_supplied_mmproj = None
+                if needs_mmproj and mmproj_path:
+                    cached_main_for_supplied_mmproj = cached_gguf_for_load(
+                        hf_repo,
+                        hf_variant,
+                        verify_sizes = True,
+                        hf_token = hf_token,
+                    )
                 with _hf_offline_if_dns_dead():
                     model_path = self._download_gguf(
                         hf_repo = hf_repo,
@@ -6303,16 +6353,18 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                     )
                     # Vision and audio-input GGUFs both need their projector.
-                    if (
-                        (is_vision or has_audio_input)
-                        and not mmproj_path
-                        and not extra_args_disable_mmproj(extra_args)
-                    ):
-                        mmproj_path = self._download_mmproj(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                            near_path = model_path,
+                    if needs_mmproj:
+                        mmproj_path = _supplied_mmproj_for_loaded_model(
+                            cached_model_path = cached_main_for_supplied_mmproj,
+                            loaded_model_path = model_path,
+                            mmproj_path = mmproj_path,
                         )
+                        if not mmproj_path:
+                            mmproj_path = self._download_mmproj(
+                                hf_repo = hf_repo,
+                                hf_token = hf_token,
+                                near_path = model_path,
+                            )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
                     # baked into the main GGUF (Qwen) have no mtp- sibling and

@@ -4557,6 +4557,7 @@ async def _load_model_impl(
                         (config.is_vision or config.has_audio_input)
                         and not extra_args_disable_mmproj(extra_llama_args)
                     ),
+                    mmproj_path = config.gguf_mmproj_file,
                     hf_token = request.hf_token,
                 ):
                     raise HTTPException(
