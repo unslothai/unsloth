@@ -517,7 +517,8 @@ def _normalize_url(url: str) -> Optional[str]:
         if lower.startswith(scheme):
             value = value[len(scheme) :]
             break
-    return value.lower()
+    host, separator, path = value.partition("/")
+    return host.lower() + (separator + path if separator else "")
 
 
 def _hf_repo_slug_from_url(url: str) -> Optional[str]:
@@ -535,7 +536,23 @@ def _hf_repo_slug_from_url(url: str) -> Optional[str]:
 def _slug_extends_base(derived: str, base: str) -> bool:
     if derived == base or not derived.startswith(base):
         return False
-    return not derived[len(base)].isalnum()
+    suffix = derived[len(base) :].lstrip("-_.").lower()
+    if not suffix:
+        return False
+    qualifier = suffix.split("-", 1)[0].split("_", 1)[0].split(".", 1)[0]
+    return qualifier in {
+        "gguf",
+        "quant",
+        "quantized",
+        "qat",
+        "awq",
+        "gptq",
+        "mlx",
+        "unsloth",
+        "bnb",
+        "4bit",
+        "8bit",
+    }
 
 
 def _weight_url_looks_like_derivative_of_projector(weight_url: str, projector_url: str) -> bool:

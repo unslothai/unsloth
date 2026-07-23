@@ -437,6 +437,30 @@ def test_pairing_score_derivative_url_requires_basename_evidence():
     assert pairing_score(weight, mmproj) == -1
 
 
+def test_pairing_score_rejects_arbitrary_slug_prefix():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        "general.basename": "Qwen3.5",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5",
+        "general.basename": "Qwen3.5",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_preserves_case_sensitive_repo_paths():
+    weight = {
+        "general.base_model.0.repo_url": "https://git.example.com/Org/Model",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://git.example.com/org/model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_rejects_derivative_projector_for_base_weight():
     weight = {
         "general.basename": "model",
