@@ -5591,19 +5591,17 @@ def _check_signal_escape_patterns(code: str):
                 )
             if (
                 (
-                    isinstance(func, ast.Name)
-                    and func.id in {"setattr", "delattr"}
+                    (isinstance(func, ast.Name) and func.id in {"setattr", "delattr"})
+                    or (isinstance(func, ast.Attribute) and func.attr in {"setattr", "delattr"})
                 )
-                or (
-                    isinstance(func, ast.Attribute)
-                    and func.attr in {"setattr", "delattr"}
+                and node.args
+                and _pyyaml_safe_loader_registry_mutation(
+                    node.args[0],
+                    self.yaml_aliases,
+                    self.yaml_safe_loader_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
                 )
-            ) and node.args and _pyyaml_safe_loader_registry_mutation(
-                node.args[0],
-                self.yaml_aliases,
-                self.yaml_safe_loader_aliases,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
             ):
                 self._record_unsafe_pyyaml(
                     node,

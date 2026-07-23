@@ -383,14 +383,8 @@ class TestPyYamlDeserialization:
                 "setattr(yaml.SafeLoader, 'yaml_constructors', {'!run': run})\n"
                 "yaml.load('!run x', Loader=yaml.SafeLoader)"
             ),
-            (
-                "import sys, yaml\n"
-                "getattr(sys, 'modules')['yaml'].unsafe_load(payload)"
-            ),
-            (
-                "import sys, yaml\n"
-                "vars(sys)['modules']['yaml'].unsafe_load(payload)"
-            ),
+            ("import sys, yaml\ngetattr(sys, 'modules')['yaml'].unsafe_load(payload)"),
+            ("import sys, yaml\nvars(sys)['modules']['yaml'].unsafe_load(payload)"),
             "import pydoc\npydoc.locate('yaml.unsafe_load')(payload)",
             (
                 "from pkgutil import resolve_name as resolve\n"
