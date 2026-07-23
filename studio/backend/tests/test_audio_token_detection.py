@@ -76,6 +76,20 @@ def test_whisper_identity_preserves_loader_audio_type(monkeypatch):
     assert _classify_audio_capability("model", "whisper") == ("whisper", True, False)
 
 
+def test_structured_codec_identity_overrides_ambiguous_token_heuristics(monkeypatch):
+    for model_type, expected in (("csm", "csm"), ("dac", "dac"), ("snac", "snac")):
+        monkeypatch.setattr(
+            model_config,
+            "_raw_config_model_type",
+            lambda *args, _model_type = model_type, **kwargs: _model_type,
+        )
+        assert _classify_audio_capability("model", "audio_vlm") == (
+            expected,
+            False,
+            False,
+        )
+
+
 def test_cached_audio_projector_is_forwarded_and_clears_false_vision():
     source = inspect.getsource(model_config.ModelConfig.from_identifier)
     assert "gguf_mmproj_file = cached_mmproj" in source
@@ -98,6 +112,7 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
     assert 'kwargs.get("is_vision") or kwargs.get("has_audio_input")' in guard_source
     assert "(config.is_vision or config.has_audio_input)" in route_source
     assert "config and config.has_audio_input" in route_source
+    assert "not extra_args_disable_mmproj(retry_extra_args)" in route_source
     assert "await asyncio.to_thread(" in route_source
     assert "_resolve_load_model_config" in route_source
 

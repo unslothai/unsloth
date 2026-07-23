@@ -4322,7 +4322,14 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             )
             needs_audio_projector_retry = False
-            if gguf_runtime_matches and not getattr(llama_backend, "_has_audio_input", False):
+            retry_extra_args = (
+                extra_llama_args if extra_llama_args is not None else llama_backend.extra_args
+            )
+            if (
+                gguf_runtime_matches
+                and not extra_args_disable_mmproj(retry_extra_args)
+                and not getattr(llama_backend, "_has_audio_input", False)
+            ):
                 config = await asyncio.to_thread(
                     _resolve_load_model_config,
                     model_identifier,

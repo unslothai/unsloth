@@ -587,6 +587,11 @@ def _build_detection_sets():
 
 _VLM_MODEL_TYPES, _VLM_CLASS_NAMES, _AUDIO_ONLY_MODEL_TYPES = _build_detection_sets()
 _AUDIO_INPUT_MODEL_TYPES = frozenset({"qwen3_asr", "whisper"})
+_SUPPORTED_AUDIO_CODEC_MODEL_TYPES = {
+    "csm": "csm",
+    "dac": "dac",
+    "snac": "snac",
+}
 _AUDIO_CHAT_MODEL_TYPES = frozenset(
     {
         "granite_speech",
@@ -909,11 +914,15 @@ def is_vision_model(
         if gguf_file:
             companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
             mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
-            is_vision = mmproj_file is not None
+            projector_has_vision = (
+                read_mmproj_vision_capability(mmproj_file) if mmproj_file else None
+            )
+            is_vision = mmproj_file is not None and projector_has_vision is not False
             logger.debug(
-                "Local GGUF vision check for '%s': mmproj=%s, is_vision=%s",
+                "Local GGUF vision check for '%s': mmproj=%s, projector_vision=%s, is_vision=%s",
                 gguf_file,
                 mmproj_file,
+                projector_has_vision,
                 is_vision,
             )
             return is_vision
@@ -1228,6 +1237,8 @@ def _classify_audio_capability(
         # model: that would route them into the TTS/codec loader.
         if model_type == "qwen3_asr":
             return None, True, False
+        if model_type in _SUPPORTED_AUDIO_CODEC_MODEL_TYPES:
+            return _SUPPORTED_AUDIO_CODEC_MODEL_TYPES[model_type], False, False
         classified = (
             "whisper"
             if model_type == "whisper"
