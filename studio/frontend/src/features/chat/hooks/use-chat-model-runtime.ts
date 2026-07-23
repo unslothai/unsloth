@@ -129,6 +129,7 @@ type ActiveModelLoadRun = {
 
 type SharedModelLoadHandle = {
   run: ActiveModelLoadRun;
+  supersedeOwnerIntent: () => void;
   cancel: (preserveCheckpoint?: boolean) => Promise<boolean>;
 };
 
@@ -693,6 +694,7 @@ export function useChatModelRuntime() {
             if (shared.run.rollbackConfig) {
               previousConfig = shared.run.rollbackConfig;
             }
+            shared.supersedeOwnerIntent();
             const stopped = await shared.cancel(true);
             replacementNeedsRollback =
               replacementNeedsRollback ||
@@ -833,6 +835,9 @@ export function useChatModelRuntime() {
       activeLoadRunRef.current = run;
       sharedModelLoadHandle = {
         run,
+        supersedeOwnerIntent: () => {
+          loadIntentRef.current += 1;
+        },
         cancel: (preserveCheckpoint = false) =>
           cancelLoadRun(run, preserveCheckpoint),
       };
