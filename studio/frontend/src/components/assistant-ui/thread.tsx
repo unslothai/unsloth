@@ -862,9 +862,6 @@ const Composer: FC<{
   menuSide?: "top" | "bottom";
 }> = ({ disabled, threadId, menuSide }) => {
   const aui = useAui();
-  useAuiEvent("thread.runStart", () => {
-    void aui.composer().reset();
-  });
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
