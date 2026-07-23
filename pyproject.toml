@@ -25,10 +25,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "wheel>=0.42.0",
     "packaging",
-    "torch>=2.4.0,<2.11.0",
+    "torch>=2.4.0,<2.12.0",
     "torchvision",
     "numpy",
     "tqdm",
@@ -48,7 +48,7 @@ dependencies = [
     "diffusers",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
-    "typer",
+    "typer>=0.12.0",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
@@ -91,7 +91,7 @@ triton = [
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -110,7 +110,7 @@ huggingface = [
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
-    "typer",
+    "typer>=0.12.0",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
@@ -488,7 +488,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -504,7 +504,7 @@ colab-new = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[triton]",
     "sentence-transformers",
-    "typer",
+    "typer>=0.12.0",
     "pydantic",
     "pyyaml",
     "nest-asyncio",
