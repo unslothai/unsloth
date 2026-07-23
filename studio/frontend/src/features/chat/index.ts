@@ -73,6 +73,13 @@ export {
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
 export {
+  consumeQueuedChatRunSettings,
+  discardQueuedChatRunSettings,
+  registerQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
+  type QueuedChatRunSettings,
+} from "./utils/queued-chat-run-settings";
+export {
   PLUS_MENU_ORDER,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,

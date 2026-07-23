@@ -114,6 +114,8 @@ import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import {
   PRE_STREAM_RUN_FAILED_EVENT,
   getPreStreamRunReservationCount,
+  releasePreStreamRunReservation,
+  tryReservePreStreamRun,
   type PromptQueueRunFailedEventDetail,
 } from "./utils/prompt-queue-boundary";
 import {
@@ -1041,6 +1043,15 @@ export function SharedComposer({
       return;
     }
 
+    let compareReservationPending = false;
+    if (isGeneralizedCompare) {
+      if (!tryReservePreStreamRun()) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      compareReservationPending = true;
+    }
+
     setText("");
     setPendingImages([]);
     setPendingAudio(null);
@@ -1396,10 +1407,19 @@ export function SharedComposer({
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
+          compareReservationPending = false;
         }
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
+          if (!compareReservationPending) {
+            if (!tryReservePreStreamRun()) {
+              throw new Error(
+                "Generation capacity became busy before Model 2 could start.",
+              );
+            }
+            compareReservationPending = true;
+          }
           const needsLoad =
             model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
             (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
@@ -1419,6 +1439,7 @@ export function SharedComposer({
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
+          compareReservationPending = false;
         }
 
         compareStepSucceededRef.current = true;
@@ -1436,6 +1457,9 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
+        if (compareReservationPending) {
+          releasePreStreamRunReservation();
+        }
         setComparing(false);
       }
     } else {

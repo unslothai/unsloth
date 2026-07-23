@@ -28,6 +28,10 @@ CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_tex
 SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
     encoding = "utf-8"
 )
+CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding = "utf-8")
+QUEUED_SETTINGS = (
+    FRONTEND / "features/chat/utils/queued-chat-run-settings.ts"
+).read_text(encoding = "utf-8")
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -150,6 +154,27 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
     assert "preStreamRunReservations" in QUEUE_BOUNDARY
     assert "releasePreStreamRunReservation();" in CHAT_ADAPTER
     assert "runtime.setThreadRunning(threadKey, true);" in CHAT_ADAPTER
+
+
+def test_retry_edit_and_compare_preflights_reserve_global_capacity():
+    assert THREAD.count("reserveInteractiveRun(event)") >= 3
+    assert "if (!reserveInteractiveRun()) return;" in THREAD
+    assert "if (!tryReservePreStreamRun())" in SHARED_COMPOSER
+    assert "compareReservationPending = true;" in SHARED_COMPOSER
+    assert "releasePreStreamRunReservation();" in SHARED_COMPOSER
+
+
+def test_background_queue_snapshots_settings_and_blocks_model_changes():
+    target = _between(
+        THREAD,
+        "const createPromptQueueTarget = useCallback(",
+        "const dismissWaitToast",
+    )
+    assert "snapshotQueuedChatRunSettings(chatStateAtQueueStart)" in target
+    assert "registerQueuedChatRunSettings(" in target
+    assert "consumeQueuedChatRunSettings(resolvedThreadId)" in CHAT_ADAPTER
+    assert "params: { ...state.params }" in QUEUED_SETTINGS
+    assert "usePromptQueueUI.getState().isRunning" in CHAT_PAGE
 
 
 def test_bulk_archive_and_clear_stop_prompt_queues_first():

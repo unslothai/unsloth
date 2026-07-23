@@ -11,6 +11,7 @@ import {
   notifyPreStreamRunFailed,
   releasePreStreamRunReservation,
 } from "../utils/prompt-queue-boundary";
+import { consumeQueuedChatRunSettings } from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -2050,6 +2051,11 @@ export function createOpenAIStreamAdapter(
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const queuedRunSettings =
+        consumeQueuedChatRunSettings(resolvedThreadId);
+      if (queuedRunSettings) {
+        runtime = { ...runtime, ...queuedRunSettings };
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
@@ -2109,7 +2115,7 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      if (!useChatRuntimeStore.getState().params.checkpoint) {
+      if (!runtime.params.checkpoint) {
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
@@ -2139,7 +2145,9 @@ export function createOpenAIStreamAdapter(
       }
 
       // Re-read store after auto-load / model-ready wait.
-      runtime = useChatRuntimeStore.getState();
+      runtime = queuedRunSettings
+        ? { ...useChatRuntimeStore.getState(), ...queuedRunSettings }
+        : useChatRuntimeStore.getState();
       const { params } = runtime;
       const {
         supportsTools,
@@ -3247,13 +3255,11 @@ export function createOpenAIStreamAdapter(
                         },
                       }
                     : {}),
-                  auto_heal_tool_calls:
-                    useChatRuntimeStore.getState().autoHealToolCalls,
-                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
-                  max_tool_calls_per_message:
-                    useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  auto_heal_tool_calls: runtime.autoHealToolCalls,
+                  nudge_tool_calls: runtime.nudgeToolCalls,
+                  max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
-                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    const mins = runtime.toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
