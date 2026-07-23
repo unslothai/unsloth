@@ -1918,6 +1918,86 @@ class TestInstallShStructure:
                 "installing CPU-only PyTorch" in r3.stderr
             ), f"an inferred arch with no wheel family must keep the CPU warning: {r3.stderr!r}"
 
+    def test_no_version_cpu_warning_respects_gfx_override(self):
+        """With UNSLOTH_ROCM_GFX_ARCH set on a KFD-only host that has no ROCm
+        version sources, the gfx probe is seeded by the override, so the
+        no-version endpoint used to print 'falling back to CPU-only PyTorch'
+        even though the reroute then installs the per-arch wheels (Codex P3).
+        A supported override must defer; an unsupported override, or a
+        readable-gfx host without an override, keeps the CPU warning."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute get_torch_index_url")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        fn = _extract_sh_function_body(source, "get_torch_index_url")
+        probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
+        family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        assert fn and probe_fn and family_fn
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
+                f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
+            # Silence every ROCm version source, not just amd-smi: a dev box with
+            # a real hipconfig/dpkg would otherwise resolve a version and skip
+            # the no-version endpoint this test exercises.
+            with open(os.path.join(d, "amd-smi"), "w", encoding = "utf-8", newline = "\n") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            for name in ("hipconfig", "dpkg-query", "rpm"):
+                with open(os.path.join(d, name), "w", encoding = "utf-8", newline = "\n") as f:
+                    f.write("#!/bin/sh\nexit 1\n")
+            for name in ("uname", "amd-smi", "hipconfig", "dpkg-query", "rpm"):
+                os.chmod(os.path.join(d, name), 0o755)
+            script = (
+                "set -euo pipefail\n"
+                "_ensure_rocm_probe_env() { :; }\n"
+                "_trim_index_path_slashes() { printf '%s\\n' \"$1\"; }\n"
+                "_has_usable_nvidia_gpu() { return 1; }\n"
+                "_has_amd_rocm_gpu() { return 0; }\n"
+                "_infer_linux_amd_gfx_arch() { return 1; }\n"
+                + probe_fn + "\n" + family_fn + "\n" + fn + "\n"
+                "get_torch_index_url\n"
+            )
+            sp = os.path.join(d, "gtiu.sh")
+            with open(sp, "w", encoding = "utf-8", newline = "\n") as f:
+                f.write(script)
+
+            def run(rocminfo_body, **extra):
+                with open(os.path.join(d, "rocminfo"), "w", encoding = "utf-8", newline = "\n") as f:
+                    f.write("#!/bin/sh\n" + rocminfo_body)
+                os.chmod(os.path.join(d, "rocminfo"), 0o755)
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
+                for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
+                            "UNSLOTH_PYTORCH_MIRROR", "ROCR_VISIBLE_DEVICES",
+                            "HIP_VISIBLE_DEVICES"):
+                    env.pop(var, None)
+                if "UNSLOTH_ROCM_GFX_ARCH" not in extra:
+                    env.pop("UNSLOTH_ROCM_GFX_ARCH", None)
+                return subprocess.run(
+                    [shell, sp.replace("\\", "/")], env = env, capture_output = True, text = True
+                )
+
+            # Supported override on a tool-blind host: defer to the reroute.
+            r = run("exit 0\n", UNSLOTH_ROCM_GFX_ARCH = "gfx1151")
+            assert r.returncode == 0, f"override case aborted: {r.stderr}"
+            assert r.stdout.strip().endswith("/cpu")
+            assert (
+                "falling back to CPU-only PyTorch" not in r.stderr
+            ), f"a supported override must not get the false CPU warning: {r.stderr!r}"
+            assert (
+                "UNSLOTH_ROCM_GFX_ARCH=gfx1151 is set" in r.stderr
+            ), f"the override deferral must be announced: {r.stderr!r}"
+            # Unsupported override: the reroute can't map it -> CPU warning stays.
+            r2 = run("exit 0\n", UNSLOTH_ROCM_GFX_ARCH = "gfx906")
+            assert r2.returncode == 0, f"unsupported-override case aborted: {r2.stderr}"
+            assert "falling back to CPU-only PyTorch" in r2.stderr, (
+                f"an unmappable override must keep the CPU warning: {r2.stderr!r}"
+            )
+            # Readable gfx, no override, no version: deliberate CPU fallback.
+            r3 = run('echo "  Name:  gfx1151"\n')
+            assert r3.returncode == 0, f"readable-gfx case aborted: {r3.stderr}"
+            assert "falling back to CPU-only PyTorch" in r3.stderr, (
+                f"a readable-gfx host without a version keeps the CPU warning: {r3.stderr!r}"
+            )
+
     def test_reroute_gate_covers_kfd_only(self):
         """The runtime-less reroute must fire for a KFD-only host: _has_amd_rocm_gpu
         is now true via the KFD topology, so the gate also accepts a detected GPU
@@ -1971,6 +2051,14 @@ class TestInstallShStructure:
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx110X-all/ GFX:gfx1100" in r.stdout
             ), f"KFD-only host must reach the AMD arch index: {r.stdout!r}"
+            # The diagnostic must not claim /dev/kfd is missing: KFD visibility is
+            # exactly what detected this host (Codex P3).
+            assert (
+                "ROCm runtime not visible" not in r.stderr
+            ), f"KFD-only reroute must not claim /dev/kfd is missing: {r.stderr!r}"
+            assert (
+                "visible via the kernel driver (KFD)" in r.stderr
+            ), f"KFD-only reroute must name the tooling gap: {r.stderr!r}"
             # Readable gfx: the */cpu index is a deliberate fallback -> untouched.
             r2 = run("return 0", "echo gfx1151")
             assert r2.returncode == 0, f"readable-gfx case aborted: {r2.stderr}"
@@ -1983,6 +2071,9 @@ class TestInstallShStructure:
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx110X-all/ GFX:gfx1100" in r3.stdout
             ), f"the original undetected-GPU reroute must keep working: {r3.stdout!r}"
+            assert (
+                "ROCm runtime not visible" in r3.stderr
+            ), f"a truly runtime-invisible host keeps the original diagnostic: {r3.stderr!r}"
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""

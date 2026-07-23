@@ -2395,6 +2395,16 @@ get_torch_index_url() {
         # fresh-install case: the GPU is real, but with no ROCm userspace the
         # correct PyTorch build can't be selected. Warn with an actionable fix
         # rather than silently installing CPU PyTorch.
+        # A user-set UNSLOTH_ROCM_GFX_ARCH seeded the probe above, so rocminfo/
+        # amd-smi may still be unable to see the GPU; when the named arch maps to
+        # a wheel family, the runtime-less reroute (gated on the override) will
+        # install the AMD per-arch wheels -- a CPU-only warning here would be
+        # false for that path. Defer like the inferable-arch branch does.
+        if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
+           _amd_arch_index_family_for_gfx "$_amd_gfx_probe" >/dev/null 2>&1; then
+            echo "[WARN] AMD GPU detected with no readable ROCm version, but UNSLOTH_ROCM_GFX_ARCH=$_amd_gfx_probe is set -- routing to AMD per-arch wheels." >&2
+            echo "$_base/cpu"; return
+        fi
         echo "[WARN] AMD GPU detected, but no ROCm/HIP install was found to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
         echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
         echo "[WARN]   Arch / CachyOS : sudo pacman -S rocm-hip-sdk" >&2
@@ -2945,7 +2955,13 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                             ;;
                     esac
                     echo "" >&2
-                    echo "  [WARN] ROCm runtime not visible (/dev/kfd, rocminfo, amd-smi) but $_linux_inferred_gfx inferred." >&2
+                    # KFD-only hosts reach this reroute with /dev/kfd present
+                    # (that's what detected them), so don't claim it's missing.
+                    if _has_amd_rocm_gpu; then
+                        echo "  [WARN] AMD GPU visible via the kernel driver (KFD) but rocminfo/amd-smi can't read its gfx arch; using $_linux_inferred_gfx." >&2
+                    else
+                        echo "  [WARN] ROCm runtime not visible (/dev/kfd, rocminfo, amd-smi) but $_linux_inferred_gfx inferred." >&2
+                    fi
                     echo "  [WARN] Routing to AMD arch-specific wheels ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))." >&2
                     echo "  [WARN] These wheels bundle their own ROCm runtime; install the kernel stack for native compute:" >&2
                     echo "  [WARN]   https://docs.unsloth.ai/get-started/install-and-update/amd" >&2
