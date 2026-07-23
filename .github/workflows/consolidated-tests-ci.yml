@@ -274,6 +274,7 @@ jobs:
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
+            tests/saving/test_is_vlm_detection.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
@@ -365,6 +366,7 @@ jobs:
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
             tests/saving/test_gguf_single_pass_export.py \
+            tests/saving/test_is_vlm_detection.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
