@@ -874,6 +874,27 @@ def test_connect_claude_compact_window_omitted_without_context(fake_studio, monk
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in result.output
 
 
+def test_launch_native_posix_child_gets_current_pwd(fake_studio, monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/stale/outer/repo")
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+
+    def run(command, env):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+
+    result = CliRunner().invoke(start.start_app, ["opencode"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["command"][0] == "/usr/local/bin/opencode"
+    if os.name != "nt":
+        assert captured["env"]["PWD"] == os.getcwd()
+
+
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
