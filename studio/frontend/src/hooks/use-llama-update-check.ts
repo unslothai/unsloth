@@ -30,6 +30,7 @@ export interface LlamaUpdateJob {
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
+  component: "llama.cpp" | "whisper.cpp";
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -55,13 +56,30 @@ function parseJob(value: unknown): LlamaUpdateJob {
 function parseStatus(value: unknown): LlamaUpdateStatus | null {
   if (!value || typeof value !== "object") return null;
   const s = value as Record<string, unknown>;
+  const component =
+    s.update_component === "whisper" ? "whisper.cpp" : "llama.cpp";
+  const whisper =
+    s.whisper && typeof s.whisper === "object"
+      ? (s.whisper as Record<string, unknown>)
+      : null;
+  // Legacy top-level version fields intentionally retain their llama meaning.
+  // A whisper-only update must display the nested whisper release instead of
+  // presenting equal llama tags as a new llama update.
+  const details = component === "whisper.cpp" && whisper ? whisper : s;
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
-    installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
-    latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    component,
+    installed_tag:
+      typeof details.installed_tag === "string"
+        ? details.installed_tag
+        : null,
+    latest_tag:
+      typeof details.latest_tag === "string" ? details.latest_tag : null,
     update_size_bytes:
-      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
+      typeof details.update_size_bytes === "number"
+        ? details.update_size_bytes
+        : null,
     job: parseJob(s.job),
   };
 }
@@ -163,8 +181,12 @@ export function useLlamaUpdateCheck({
   // can drop or double-fire the notification.
   const notifyReloadIfNeeded = useCallback(
     (job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">) => {
+      // "error" is included for partial chained updates: the llama phase can
+      // land (and unload the server) before a later phase fails, and the
+      // backend keeps reload_required set in exactly that case. Without the
+      // resync the chat UI would keep pointing at the unloaded model.
       if (
-        job.state === "success" &&
+        (job.state === "success" || job.state === "error") &&
         job.reload_required &&
         job.finished_at !== reloadNotifiedForRef.current
       ) {
@@ -202,7 +224,9 @@ export function useLlamaUpdateCheck({
             reloadRequired: s.job.reload_required,
           });
         } else if (s.job.state === "error") {
-          // Keep the banner visible so retry is available.
+          // Keep the banner visible so retry is available. A partial chained
+          // update can still have unloaded the llama server before failing.
+          notifyReloadIfNeeded(s.job);
           onDone?.({ ok: false, error: s.job.error });
         } else {
           onDone?.({ ok: false, error: "update did not complete" });
