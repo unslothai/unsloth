@@ -167,6 +167,7 @@ export function useTrainingActions() {
         payload.hf_dataset,
         false,
         payload.project_name ?? "",
+        payload.hf_token,
       );
       const response = await startTraining(payload);
 
