@@ -336,11 +336,11 @@ def test_initial_load_uses_staged_config_payload():
     numeric = _read("features/model-picker/components/numeric-value-input.tsx")
     assert "export type NumericValueInputHandle" in numeric
     assert "commit:" in numeric
-    # Codex P1: commit returns null unless the user actually edited the field,
+    # P1: commit returns null unless the user actually edited the field,
     # so Load/Save with untouched Auto does not pin native context.
     assert "dirtyRef.current" in numeric
     assert "return null;" in numeric
-    # Codex P2: blur clears dirtyRef after commit so Reset/slider cannot be
+    # P2: blur clears dirtyRef after commit so Reset/slider cannot be
     # overwritten by a stale draft on a later Load.
     assert "dirtyRef.current = false;" in numeric
     assert "draftRef.current = String(final);" in numeric
