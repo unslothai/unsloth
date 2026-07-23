@@ -167,9 +167,11 @@ function HighlightedCode({ code: source, language }: { code: string; language: s
         </Streamdown>
       ) : (
         // A div, not a <pre>: the container's [&_pre]:!p-0 would override a
-        // <pre>'s padding and shift the content by p-3 when shiki swaps in. This
-        // keeps the same p-3 the highlighted code block gets, so there is no jump.
-        <div className="whitespace-pre-wrap break-words p-3 font-mono text-xs text-muted-foreground">
+        // <pre>'s padding and shift the content by p-3 when shiki swaps in. Keep
+        // the same p-3, and whitespace-pre (not pre-wrap) so long lines scroll in
+        // the container's overflow-auto exactly like the highlighted <pre>, rather
+        // than wrapping taller and then collapsing when shiki swaps in.
+        <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
           {display}
         </div>
       )}
