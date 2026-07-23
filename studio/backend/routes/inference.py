@@ -3255,10 +3255,17 @@ def _request_matches_loaded_settings(
             )
         ):
             return False
-    # A regular GGUF may narrow the requested placement pool. Accept either the
-    # original request or the effective status-echoed subset; diffusion keeps
-    # its single-device normalization.
-    if not llama_backend.matches_gpu_ids(request.gpu_ids):
+    # A changed GPU pick must reload. The diffusion runner collapses a multi-GPU
+    # request to its single lowest device (it drives one device only), so the
+    # backend records just that device; compare the request the same way, or a
+    # multi-GPU pick that resolves to the same device needlessly reloads.
+    if llama_backend.is_diffusion:
+        _req_gpu_ids = [sorted(request.gpu_ids)[0]] if request.gpu_ids else None
+        _loaded_gpu_ids = llama_backend.gpu_ids
+    else:
+        _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
+        _loaded_gpu_ids = llama_backend.requested_gpu_ids
+    if _req_gpu_ids != _loaded_gpu_ids:
         return False
     # GGUF host-memory placement mode is first-class; any change must reload (#7164).
     if LlamaCppBackend._canonical_memory_mode(
@@ -3974,14 +3981,14 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
 
-    # No readable local header: fall back to the name heuristic so an uncached
-    # remote GGUF that will route to the diffusion runner isn't treated as normal.
+    # No readable local header: use only the DiffusionGemma family name as a
+    # hint. A bare "diffusion" substring is common in otherwise normal model
+    # names and must not route them to the single-GPU diffusion runner.
     identity = " ".join(
         str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
-    if "diffusion" in identity:
-        return True
-    return None
+    normalized_identity = _re.sub(r"[^a-z0-9]+", "", identity)
+    return True if "diffusiongemma" in normalized_identity else None
 
     from utils.hardware import DeviceType, get_device
     from utils.hardware.hardware import resolve_requested_gpu_ids

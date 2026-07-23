@@ -613,11 +613,15 @@ def test_gguf_load_and_status_responses_include_requested_gpu_pool():
 def test_gpu_ids_property_default_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
     backend._gpu_ids = [0, 1]
+    backend._requested_gpu_ids = [0, 1, 2]
     assert backend.gpu_ids == [0, 1]
+    assert backend.requested_gpu_ids == [0, 1, 2]
     backend._process = _FakeProcess()
     backend.unload_model()
     assert backend.gpu_ids is None
+    assert backend.requested_gpu_ids is None
 
 
 def _target_state_gpu_ids(backend, gpu_ids):
@@ -650,24 +654,15 @@ def test_gpu_ids_reload_detection_is_order_insensitive():
     assert _target_state_gpu_ids(backend, None) is False
 
 
-def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
+def test_gpu_ids_reload_detection_uses_raw_request_after_fit_narrows():
     backend = _loaded_backend("auto")
-    backend._requested_gpu_ids = [0, 1]
     backend._gpu_ids = [0]
-    backend._last_load_kwargs = {"gpu_ids": [0, 1], "model_identifier": "owner/repo"}
+    backend._requested_gpu_ids = [0, 1]
 
-    # The original request still matches after the fitter narrows it.
+    # Repeating the original request dedupes even though fit used one GPU.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
-    assert backend.requested_gpu_ids == [0, 1]
-    # The status response echoes the effective pin, which must also round-trip.
-    # Treat the incoming subset as the latest intent so status and a future
-    # reload do not restore GPU 1 after the user removed it.
-    assert _target_state_gpu_ids(backend, [0]) is True
-    assert backend.requested_gpu_ids == [0]
-    assert backend._last_load_kwargs == {"gpu_ids": [0], "model_identifier": "owner/repo"}
-    # A genuinely different placement pool still reloads.
-    assert _target_state_gpu_ids(backend, [1]) is False
-    assert _target_state_gpu_ids(backend, None) is False
+    # Deliberately changing the request to the effective subset still reloads.
+    assert _target_state_gpu_ids(backend, [0]) is False
 
 
 def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
@@ -752,8 +747,10 @@ def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
     # raw, effective, and diffusion pins cannot drift apart.
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
-    assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
-    assert "llama_backend._record_matching_gpu_request(request.gpu_ids)" in match_impl
+    guard = match_impl.index("if llama_backend.is_diffusion:")
+    collapse = match_impl.index("[sorted(request.gpu_ids)[0]] if request.gpu_ids else None")
+    compare = match_impl.index("if _req_gpu_ids != _loaded_gpu_ids:")
+    assert guard < collapse < compare
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────

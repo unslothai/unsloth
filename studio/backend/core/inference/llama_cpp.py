@@ -2088,6 +2088,8 @@ class LlamaCppBackend:
         self._tensor_split: Optional[List[float]] = None
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
+        # Raw requested GPU pin before automatic fit narrows the active subset.
+        self._requested_gpu_ids: Optional[List[int]] = None
         # GGUF memory placement mode (None = auto; pinned/resident map to --mlock/--no-mmap).
         self._memory_mode: Optional[str] = None
         # Raw requested mode for the response echo. _memory_mode canonicalizes
@@ -2568,6 +2570,11 @@ class LlamaCppBackend:
     def gpu_ids(self) -> Optional[List[int]]:
         """User-picked physical GPU indices, or None for automatic selection."""
         return self._gpu_ids
+
+    @property
+    def requested_gpu_ids(self) -> Optional[List[int]]:
+        """Raw requested GPU pin before automatic fit narrows it."""
+        return self._requested_gpu_ids
 
     @property
     def memory_mode(self) -> Optional[str]:
@@ -5384,10 +5391,7 @@ class LlamaCppBackend:
         # above), not the whole pick, and clears any explicit pin from a prior
         # chat load; a multi-GPU list would misreport placement and mis-dedup.
         self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
-        # The frontend prefers requested_gpu_ids when hydrating the picker.
-        # Diffusion uses only one device, so echo the collapsed effective pin,
-        # not unused members of the original request.
-        self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None
+        self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -6935,7 +6939,8 @@ class LlamaCppBackend:
                     self._gpu_layers = -1
                     self._n_cpu_moe = 0
                     self._tensor_split = None
-                self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
+                self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
+                self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
                 # tensor at launch; drop it when fewer than 2 GPUs are in use --
                 # tensor split is a no-op there and aborts on some architectures.
@@ -7953,6 +7958,15 @@ class LlamaCppBackend:
                     gpu_indices = sorted(
                         discrete_ids or [idx for idx, _free in _detected_gpus]
                     )
+
+                # Status reports the explicit subset the launch actually uses,
+                # while reload dedupe compares requested_gpu_ids so repeating a
+                # wider request that fit narrowed does not restart the server.
+                if gpu_ids:
+                    effective_pin = gpu_indices if gpu_indices is not None else gpu_ids
+                    self._gpu_ids = sorted(int(idx) for idx in effective_pin)
+                else:
+                    self._gpu_ids = None
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
@@ -9429,10 +9443,18 @@ class LlamaCppBackend:
                 )
             ):
                 return False
-        # A changed GPU pick must reload. Regular GGUF accepts either the raw
-        # requested placement pool or the effective status-echoed subset;
-        # diffusion compares its normalized single-device pick.
-        if not self.matches_gpu_ids(gpu_ids):
+        # A changed GPU pick must reload (compare order-insensitively; None/[]
+        # both mean automatic). The diffusion runner collapses a multi-GPU pick
+        # to its single lowest device, so self._gpu_ids holds just that device;
+        # normalize the request the same way, or a multi-GPU pick that resolves
+        # to the same device needlessly reloads.
+        if self._is_diffusion:
+            requested_gpu_pick = [sorted(gpu_ids)[0]] if gpu_ids else None
+            loaded_gpu_pick = self._gpu_ids or None
+        else:
+            requested_gpu_pick = sorted(gpu_ids) if gpu_ids else None
+            loaded_gpu_pick = self._requested_gpu_ids or None
+        if loaded_gpu_pick != requested_gpu_pick:
             return False
 
         # GGUF host-memory placement mode is first-class; a change must reload (#7164).
@@ -9650,6 +9672,7 @@ class LlamaCppBackend:
             self._n_cpu_moe = 0
             self._tensor_split = None
             self._gpu_ids = None
+            self._requested_gpu_ids = None
             self._memory_mode = None
             self._requested_memory_mode = None
             self._launched_with_inherited_mem_env = False
