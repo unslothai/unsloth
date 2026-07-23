@@ -319,9 +319,8 @@ def test_child_env_wsl_rocm_prepends_system_hip(monkeypatch, tmp_path):
 
 
 def test_child_env_adds_cuda_runtime_dirs_for_cuda_bundle(monkeypatch, tmp_path):
-    # A CUDA bundle ships libggml-cuda.so but not libcudart/libcublas, so the
-    # launch env must expose the CUDA-from-PyTorch wheel dirs; the bundle dir must
-    # still come first so its co-located libs win.
+    # Versioned CUDA backend modules are valid too. They still need the
+    # CUDA-from-PyTorch wheel dirs for libcudart/libcublas at launch.
     if sys.platform == "darwin":
         pytest.skip("no CUDA on macOS")
     import utils.prebuilt.runtime_libs as rl
@@ -329,7 +328,8 @@ def test_child_env_adds_cuda_runtime_dirs_for_cuda_bundle(monkeypatch, tmp_path)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "whisper-server").write_text("#!/bin/sh\n")
-    (bindir / "libggml-cuda.so").write_text("")  # marks this as a CUDA bundle
+    module_name = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so.0"
+    (bindir / module_name).write_text("")
     cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
     cuda_dir.mkdir(parents = True)
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(cuda_dir)])

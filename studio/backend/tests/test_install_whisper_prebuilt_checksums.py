@@ -138,6 +138,9 @@ def test_fetch_release_for_install_prefers_download_host(monkeypatch):
     assert bundle.asset_urls[_CPU_ASSET].startswith(
         f"https://github.com/{_REPO}/releases/download/"
     )
+    walked = iwp._fetch_release_candidate(_REPO, _TAG)
+    assert iwp.SHA256_ASSET_NAME in walked.asset_urls
+    assert _CPU_ASSET in walked.asset_urls
 
 
 def test_fetch_release_for_install_explicit_tag_skips_the_head(monkeypatch):

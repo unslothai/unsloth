@@ -653,6 +653,7 @@ def test_apply_whisper_failure_keeps_llama_partial_success(monkeypatch, tmp_path
     assert "whisper installer exploded" in (job["error"] or "")
     # The llama phase's reload_required survives the whisper failure.
     assert job["reload_required"] is True
+    assert job["to_tag"] == "b9518"
     assert job["phases"]["llama"]["state"] == "success"
     assert job["phases"]["whisper"]["state"] == "error"
 

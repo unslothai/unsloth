@@ -302,7 +302,13 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     # resolve at launch when they live only in site-packages/nvidia/*/lib. Placed
     # after bin_dir so co-located libs still win; empty for other bundles.
     cuda_runtime_dirs: list[str] = []
-    if any((Path(bin_dir) / name).exists() for name in ("libggml-cuda.so", "ggml-cuda.dll")):
+    bundle_dir = Path(bin_dir)
+    has_cuda_module = any(
+        path.is_file()
+        for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
+        for path in bundle_dir.glob(pattern)
+    )
+    if has_cuda_module:
         try:
             from utils.prebuilt.runtime_libs import python_runtime_dirs
             cuda_runtime_dirs = python_runtime_dirs()

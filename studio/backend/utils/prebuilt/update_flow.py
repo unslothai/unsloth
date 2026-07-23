@@ -405,6 +405,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
                 job.update(
                     state = JOB_ERROR,
                     message = " ".join(done_messages + [failure]),
+                    to_tag = primary_to_tag,
                     error = str(exc),
                     finished_at = utcnow(),
                 )

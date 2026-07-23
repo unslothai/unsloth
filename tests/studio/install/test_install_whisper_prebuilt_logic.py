@@ -425,7 +425,7 @@ def test_main_maps_prebuilt_fallback_to_exit_error(tmp_path, monkeypatch):
     assert rc == M.EXIT_ERROR
 
 
-def test_main_forwards_requested_whisper_tag(tmp_path, monkeypatch):
+def test_main_forwards_requested_whisper_tags(tmp_path, monkeypatch):
     seen = {}
 
     def install(*args, **kwargs):
@@ -436,6 +436,16 @@ def test_main_forwards_requested_whisper_tag(tmp_path, monkeypatch):
     rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--whisper-tag", "v1.9.0"])
     assert rc == M.EXIT_SUCCESS
     assert seen["whisper_tag"] == "v1.9.0"
+
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(
+        M,
+        "resolve_prebuilt",
+        lambda host, **kwargs: seen.update(kwargs)
+        or {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"},
+    )
+    assert M.main(["--resolve-prebuilt", "v1.8.0", "--output-format", "json"]) == 0
+    assert seen["whisper_tag"] == "v1.8.0"
 
 
 def test_main_reserves_exit_2_for_release_incompatibility(tmp_path, monkeypatch):

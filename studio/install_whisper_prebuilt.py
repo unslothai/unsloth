@@ -967,7 +967,19 @@ def _fetch_release_candidate(repo: str, release_tag: str) -> ReleaseBundle:
         raise PrebuiltFallback(
             f"could not read {MANIFEST_ASSET_NAME} from {repo}@{release_tag}: {exc}"
         ) from exc
-    return ReleaseBundle(repo = repo, release_tag = release_tag, manifest = manifest, asset_urls = {})
+    asset_names = {MANIFEST_ASSET_NAME, SHA256_ASSET_NAME}
+    asset_names.update(
+        str(artifact["asset"])
+        for artifact in manifest.get("artifacts", [])
+        if isinstance(artifact, dict) and artifact.get("asset")
+    )
+    asset_urls = {name: release_asset_download_url(repo, release_tag, name) for name in asset_names}
+    return ReleaseBundle(
+        repo = repo,
+        release_tag = release_tag,
+        manifest = manifest,
+        asset_urls = asset_urls,
+    )
 
 
 def _plan_bundle(
@@ -1305,7 +1317,7 @@ def main(argv: list[str] | None = None) -> int:
                 host,
                 published_repo = args.published_repo,
                 published_release_tag = args.published_release_tag,
-                whisper_tag = args.whisper_tag,
+                whisper_tag = args.resolve_prebuilt,
                 backend = args.backend,
                 cpu_fallback = args.cpu_fallback,
             )
