@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""setup.sh and setup.ps1 must map UNSLOTH_LLAMA_CPP_BACKEND=cpu to
-install_llama_prebuilt.py's --force-cpu so users can force the CPU-only prebuilt
-on GPU hosts (#7213). The match is case-insensitive and whitespace-trimmed, an
-unrecognized value warns instead of silently falling back, and macOS warns (no
-CPU-only bundle). Runs the real block extracted from each script so the tests
-track the shipped logic.
+"""Backend selector coverage for setup.sh and setup.ps1.
+
+cpu maps to install_llama_prebuilt.py's persisted --force-cpu option. vulkan is
+accepted and passed through in the environment for the installer to consume.
+The match is case-insensitive and whitespace-trimmed, unknown values warn, and
+macOS warns for the CPU-only choice.
 """
 
 import os
@@ -81,7 +81,15 @@ def test_backend_auto_no_flag_no_warn(value):
 
 
 @_SKIP_NO_BASH
-@pytest.mark.parametrize("value", ["vulkan", "gpu", "cuda"])
+@pytest.mark.parametrize("value", ["vulkan", "VULKAN", " vulkan "])
+def test_backend_vulkan_is_accepted(value):
+    args, stderr = _run(value)
+    assert "--force-cpu" not in args
+    assert "Ignoring" not in stderr
+
+
+@_SKIP_NO_BASH
+@pytest.mark.parametrize("value", ["gpu", "cuda"])
 def test_backend_unknown_warns_and_no_flag(value):
     args, stderr = _run(value)
     assert "--force-cpu" not in args
@@ -110,7 +118,8 @@ def _run_ps1(value: str | None) -> str:
     # The override is normalized (assign + warn) at the top of the prebuilt block and
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
-        r'\$llamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?Write-Host.*?\n\s*\}',
+        r'\$llamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?'
+        r'Ignoring UNSLOTH_LLAMA_CPP_BACKEND=.*?\n\s*\}',
         re.DOTALL,
     )
     apply_flag = _ps1_search(
@@ -147,7 +156,15 @@ def test_ps1_backend_auto_no_flag_no_warn(value):
 
 
 @_SKIP_NO_PWSH
-@pytest.mark.parametrize("value", ["vulkan", "gpu", "cuda"])
+@pytest.mark.parametrize("value", ["vulkan", "VULKAN", " vulkan "])
+def test_ps1_backend_vulkan_is_accepted(value):
+    out = _run_ps1(value)
+    assert "--force-cpu" not in out
+    assert "Ignoring" not in out
+
+
+@_SKIP_NO_PWSH
+@pytest.mark.parametrize("value", ["gpu", "cuda"])
 def test_ps1_backend_unknown_warns_and_no_flag(value):
     out = _run_ps1(value)
     assert "--force-cpu" not in out

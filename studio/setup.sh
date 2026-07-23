@@ -37,9 +37,9 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default) or "cpu". When "cpu", forces
-#                               the CPU-only prebuilt bundle on GPU hosts.
-#                               Fixes Intel iGPU Vulkan crashes (#7213).
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
+#                               forces the CPU-only prebuilt. "vulkan" selects
+#                               Vulkan even when CUDA or ROCm is detected.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -1369,10 +1369,10 @@ else
         # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
-    # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
-    # prebuilt via --force-cpu, bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU crash (#7213).
-    # No effect on macOS: the universal bundle already runs on CPU (Metal is a runtime
-    # -ngl choice), so warn instead of writing a misleading forced-CPU marker.
+    # The backend override is case-insensitive and trimmed. cpu maps to the
+    # persisted --force-cpu choice. vulkan is consumed directly by
+    # install_llama_prebuilt.py and remains scoped to llama.cpp, so it does not
+    # change the torch backend used for training.
     _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
     case "$_llama_backend" in
         cpu)
@@ -1382,8 +1382,15 @@ else
                 _PREBUILT_CMD+=(--force-cpu)
             fi
             ;;
+        vulkan)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
+            else
+                step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_INFO"
+            fi
+            ;;
         ""|auto) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$UNSLOTH_LLAMA_CPP_BACKEND' (expected 'auto' or 'cpu')" "$C_WARN" >&2 ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$UNSLOTH_LLAMA_CPP_BACKEND' (expected 'auto', 'cpu', or 'vulkan')" "$C_WARN" >&2 ;;
     esac
     _PREBUILT_LOG="$(mktemp)"
     set +e

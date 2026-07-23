@@ -33,9 +33,9 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default) or "cpu". When "cpu", forces
-# the CPU-only prebuilt bundle on GPU hosts. Fixes Intel iGPU Vulkan
-# crashes (#7213).
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
+# forces the CPU-only prebuilt. "vulkan" selects Vulkan even when CUDA or
+# ROCm is detected.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -3699,14 +3699,16 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, whitespace-trimmed) forces the
-        # CPU-only prebuilt via --force-cpu (persisted so updates keep it). Fixes Intel
-        # iGPU Vulkan crash (#7213).
+        # The backend override is case-insensitive and whitespace-trimmed. cpu
+        # maps to the persisted --force-cpu choice. vulkan is consumed directly
+        # by install_llama_prebuilt.py and does not change the torch backend.
         $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
-        } elseif ($llamaBackend -and $llamaBackend -ne "auto") {
-            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto' or 'cpu')" -ForegroundColor Yellow
+        } elseif ($llamaBackend -eq "vulkan") {
+            Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
+        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "vulkan")) {
+            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
