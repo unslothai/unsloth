@@ -346,9 +346,26 @@ def test_initial_load_uses_staged_config_payload():
     assert "draftRef.current = String(final);" in numeric
     # Codex follow-up: same-click Load after blur still sees the committed draft.
     assert "lastBlurCommittedRef" in numeric
+    # Invalid drafts must not turn Auto into an explicit pin.
+    assert "const commitDraft = (raw: string): number | null" in numeric
+    assert re.search(
+        r"if \(final == null\) \{\s*"
+        r"draftRef\.current = String\(value\);\s*"
+        r"lastBlurCommittedRef\.current = null;",
+        numeric,
+    )
     # handleRun only promotes commit() when non-null.
     assert "committedContext != null" in page
     assert "customContextLength: committedContext" in page
+
+
+def test_context_commit_rechecks_persistence_only_shortcut():
+    """Committed context changes must bypass persistence-only saves."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectiveConfig =" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "const effectivePersistenceOnly =" in src
+    assert "if (effectivePersistenceOnly)" in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():

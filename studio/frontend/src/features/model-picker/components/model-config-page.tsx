@@ -758,12 +758,21 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
-    const committedContext =
-      target.isGguf ? contextInputRef.current?.commit() : undefined;
+    const committedContext = target.isGguf
+      ? contextInputRef.current?.commit()
+      : undefined;
+    const effectiveConfig =
+      committedContext != null
+        ? { ...config, customContextLength: committedContext }
+        : config;
     const effectiveRuntimeConfig =
       committedContext != null
         ? { ...runtimeConfig, customContextLength: committedContext }
         : runtimeConfig;
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
+    const effectivePersistenceOnly =
+      isActiveModel && effectiveAtBaseline && rememberChanged;
     const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
     let saveFailed = false;
     if (remember) {
@@ -775,7 +784,7 @@ export function ModelConfigPage({
     } else {
       saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
     }
-    if (persistenceOnly) {
+    if (effectivePersistenceOnly) {
       if (saveFailed) {
         toast.error("Couldn't save settings for this model.");
         return;

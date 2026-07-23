@@ -35,7 +35,7 @@ function sanitizeNumeric(raw: string, allowNegative: boolean): string {
 }
 
 export type NumericValueInputHandle = {
-  /** Commit a focused/same-click draft; null when the user did not edit. */
+  /** Commit a valid focused/same-click draft; null when none is pending. */
   commit: () => number | null;
 };
 
@@ -83,10 +83,10 @@ export const NumericValueInput = forwardRef<
     lastBlurCommittedRef.current = null;
   }, [value]);
 
-  const commitDraft = (raw: string): number => {
+  const commitDraft = (raw: string): number | null => {
     const parsed = Number.parseFloat(raw);
     if (!Number.isFinite(parsed)) {
-      return value;
+      return null;
     }
     const final = snapToStep(parsed, step, min, max);
     if (final !== value) {
@@ -101,18 +101,12 @@ export const NumericValueInput = forwardRef<
       commit: () => {
         if (dirtyRef.current) {
           const raw = draftRef.current;
-          const parsed = Number.parseFloat(raw);
-          if (!Number.isFinite(parsed)) {
-            dirtyRef.current = false;
-            lastBlurCommittedRef.current = null;
-            if (focused) {
-              setFocused(false);
-            }
-            return null;
-          }
           const final = commitDraft(raw);
           dirtyRef.current = false;
           lastBlurCommittedRef.current = null;
+          if (final == null) {
+            draftRef.current = String(value);
+          }
           if (focused) {
             setFocused(false);
           }
@@ -167,8 +161,13 @@ export const NumericValueInput = forwardRef<
         } else if (dirtyRef.current) {
           const final = commitDraft(draftRef.current);
           dirtyRef.current = false;
-          draftRef.current = String(final);
-          lastBlurCommittedRef.current = final;
+          if (final == null) {
+            draftRef.current = String(value);
+            lastBlurCommittedRef.current = null;
+          } else {
+            draftRef.current = String(final);
+            lastBlurCommittedRef.current = final;
+          }
         }
         setFocused(false);
       }}
