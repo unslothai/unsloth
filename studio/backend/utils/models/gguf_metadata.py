@@ -255,16 +255,12 @@ def _parse_gguf_audio_type(path: str) -> Optional[str]:
         return "audio_vlm"
     if bicodec:
         return "bicodec"
-    if (
-        {
-            b"<|audio_start|>",
-            b"<|audio_end|>",
-            b"<|text_start|>",
-            b"<|text_end|>",
-        }
-        <= found
-        or {b"<|c1_0|>", b"<|c2_0|>"} <= found
-    ):
+    if {
+        b"<|audio_start|>",
+        b"<|audio_end|>",
+        b"<|text_start|>",
+        b"<|text_end|>",
+    } <= found or {b"<|c1_0|>", b"<|c2_0|>"} <= found:
         return "dac"
     if custom_tokens > 10000:
         return "snac"
