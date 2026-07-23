@@ -600,6 +600,7 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      const hfToken = useChatRuntimeStore.getState().hfToken || null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -637,7 +638,6 @@ export function useChatModelRuntime() {
               ? (stateBeforeUnload.ggufContextLength ?? 0)
               : previousMaxSeqLength,
           );
-          const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathExpiresAtMs =
@@ -1255,8 +1255,13 @@ export function useChatModelRuntime() {
           try {
             const prog =
               ggufVariant && expectedBytes > 0
-                ? await getGgufDownloadProgress(modelId, ggufVariant, expectedBytes)
-                : await getDownloadProgress(modelId);
+                ? await getGgufDownloadProgress(
+                    modelId,
+                    ggufVariant,
+                    expectedBytes,
+                    hfToken,
+                  )
+                : await getDownloadProgress(modelId, hfToken);
             if (!loadingModelRef.current) return;
 
             if (prog.progress > 0 && prog.progress < 1) {
