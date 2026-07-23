@@ -55,6 +55,7 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import { notifyPreStreamRunFailed } from "./utils/prompt-queue-boundary";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -874,7 +875,14 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   return {
     ...adapter,
     async *run(options) {
-      await waitForRunStartHistoryAppend(options.messages);
+      try {
+        await waitForRunStartHistoryAppend(options.messages);
+      } catch (error) {
+        // The adapter has not started yet, so it cannot release the capacity
+        // reserved by the composer/prompt queue for this run.
+        notifyPreStreamRunFailed(options.unstable_threadId ?? null);
+        throw error;
+      }
       const result = adapter.run(options);
       if (!result) {
         return;
@@ -1154,7 +1162,8 @@ function useStudioRuntimeAdapters(
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
             if (
-              visibleThreadId === localThreadId &&
+              (visibleThreadId === localThreadId ||
+                visibleThreadId === remoteId) &&
               store.activeThreadId !== remoteId
             ) {
               store.setActiveThreadId(remoteId);
@@ -1168,7 +1177,8 @@ function useStudioRuntimeAdapters(
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
             if (
-              visibleThreadId === localThreadId &&
+              (visibleThreadId === localThreadId ||
+                visibleThreadId === remoteId) &&
               store.activeThreadId !== remoteId
             ) {
               store.setActiveThreadId(remoteId);

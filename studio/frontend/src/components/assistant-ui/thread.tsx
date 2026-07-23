@@ -2152,7 +2152,10 @@ const Composer: FC<{
   );
 
   const handleSubmit = useCallback(
-    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+    (event: {
+      preventDefault: () => void;
+      stopPropagation?: () => void;
+    }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         return;
@@ -2387,7 +2390,9 @@ const Composer: FC<{
                 clearStoredDraft();
                 startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
               }}
-              onSendClick={interceptSend}
+              // ComposerPrimitive.Send handles clicks itself rather than
+              // submitting the form, so run the complete queue/capacity path.
+              onSendClick={handleSubmit}
               onStopClick={stopQueue}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
