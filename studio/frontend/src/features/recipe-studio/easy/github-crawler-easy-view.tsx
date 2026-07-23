@@ -147,7 +147,7 @@ export function GithubCrawlerEasyView({
         <h3 className="text-xs font-semibold uppercase text-muted-foreground">
           Run settings
         </h3>
-        <div className="grid gap-3 sm:grid-cols-[minmax(0,160px)_minmax(0,1fr)]">
+        <div className="grid gap-3 sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]">
           <div className="grid gap-1.5">
             <FieldLabel
               label="Rows to generate"

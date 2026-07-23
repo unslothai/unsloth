@@ -184,7 +184,7 @@ export function InlineLlm({ config, onUpdate }: InlineLlmProps): ReactElement {
           </Select>
         </InlineField>
       )}
-      <p className="text-[0.6875rem] text-muted-foreground">
+      <p className="text-ui-11 text-muted-foreground">
         Prompt/system edited on aux nodes.
       </p>
     </div>

@@ -126,7 +126,7 @@ export function DatasetDownloadSection({
       }
     >
       <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-        <span className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground">
+        <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
           {isDownloaded && <DotTag tone="success" label="On device" />}
           {!isDownloaded && isPartial && !downloading && (
             <Tooltip>

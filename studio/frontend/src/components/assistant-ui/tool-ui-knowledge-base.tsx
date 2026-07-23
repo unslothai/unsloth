@@ -48,7 +48,7 @@ export function CitationBadge({
     <Badge
       variant="outline"
       size="sm"
-      className={`rounded-full inline-flex items-center gap-1.5 max-w-[240px] ${
+      className={`rounded-full inline-flex items-center gap-1.5 max-w-[15rem] ${
         clickable
           ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
           : "cursor-default"

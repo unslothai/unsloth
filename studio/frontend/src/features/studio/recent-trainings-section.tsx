@@ -22,7 +22,7 @@ export function RecentTrainingsSection() {
 
   return (
     <section className="mt-10">
-      <h2 className="mb-4 text-[1.125rem] font-semibold tracking-[-0.02em] text-foreground">
+      <h2 className="mb-4 text-ui-18 font-semibold tracking-[-0.02em] text-foreground">
         Recent trainings
       </h2>
       <HistoryCardGrid

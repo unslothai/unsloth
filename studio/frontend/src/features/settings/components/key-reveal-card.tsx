@@ -61,7 +61,7 @@ export function KeyRevealCard({
         />
       </button>
       <div className="flex items-center justify-between gap-3 pt-0.5">
-        <p className="text-[0.6875rem] text-muted-foreground">
+        <p className="text-ui-11 text-muted-foreground">
           {t("settings.apiKeys.copyNow")}
         </p>
         <Button

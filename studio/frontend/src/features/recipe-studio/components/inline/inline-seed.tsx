@@ -74,7 +74,7 @@ export function InlineSeed({
         </div>
         <div className="min-w-0">
           <p className="truncate text-xs font-medium">{summary}</p>
-          <p className="truncate text-[0.6875rem] text-muted-foreground">
+          <p className="truncate text-ui-11 text-muted-foreground">
             {warning ??
               `${itemsLabel} · limit ${limit} · ${commentsLabel} · ${tokenLabel}`}
           </p>
@@ -106,7 +106,7 @@ export function InlineSeed({
             placeholder="org/repo"
           />
         </InlineField>
-        <p className="text-[0.6875rem] text-muted-foreground">
+        <p className="text-ui-11 text-muted-foreground">
           Load columns in dialog.
         </p>
       </div>
@@ -132,7 +132,7 @@ export function InlineSeed({
         <p className="truncate text-xs font-medium">
           {fileName || "No file selected"}
         </p>
-        <p className="text-[0.6875rem] text-muted-foreground">
+        <p className="text-ui-11 text-muted-foreground">
           {isLocal ? "Structured file" : "Unstructured document"} · configure in
           dialog
         </p>

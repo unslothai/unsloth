@@ -22,7 +22,7 @@ def test_narrow_composer_collapses_thinking_to_the_bulb():
 
     # Query the composer width instead of the full viewport.
     assert css.count("container-type: inline-size;") >= 2
-    compact_start = css.index("@container (max-width: 576px)")
+    compact_start = css.index("@container (max-width: 36rem)")
     compact_end = css.index("/* Smaller tick", compact_start)
     compact_rule = css[compact_start:compact_end]
 

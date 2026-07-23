@@ -160,7 +160,7 @@ export function FolderBrowser({
         </DialogHeader>
 
         {/* Breadcrumb */}
-        <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-6 py-2 font-mono text-[0.6875rem] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-0.5 border-t border-border/50 px-6 py-2 font-mono text-ui-11 text-muted-foreground">
           {crumbs.length === 0 ? (
             <span className="text-muted-foreground/60">(loading…)</span>
           ) : (
@@ -191,7 +191,7 @@ export function FolderBrowser({
                 type="button"
                 onClick={() => navigate(s, showHidden)}
                 disabled={loading}
-                className="rounded-full border border-border/50 px-2 py-0.5 font-mono text-[0.625rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
+                className="rounded-full border border-border/50 px-2 py-0.5 font-mono text-ui-10 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40"
                 title={s}
               >
                 {s.length > 36 ? `…${s.slice(-33)}` : s}
@@ -244,14 +244,14 @@ export function FolderBrowser({
                 )}
               {showModelHints && data.model_files_here !== undefined &&
                 data.model_files_here > 0 && (
-                  <div className="border-t border-border/30 px-6 py-1.5 text-[0.625rem] text-foreground/70">
+                  <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-foreground/70">
                     {data.model_files_here} model file
                     {data.model_files_here === 1 ? "" : "s"} in this folder.
                     Click "Use this folder" to scan it.
                   </div>
                 )}
               {data.truncated === true && (
-                <div className="border-t border-border/30 px-6 py-1.5 text-[0.625rem] text-muted-foreground/70">
+                <div className="border-t border-border/30 px-6 py-1.5 text-ui-10 text-muted-foreground/70">
                   Showing first {data.entries.length} entries. Narrow the path
                   to see more.
                 </div>
@@ -280,7 +280,7 @@ export function FolderBrowser({
                   />
                   <span className="truncate font-mono">{e.name}</span>
                   {showModelHints && e.has_models && (
-                    <span className="ml-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-[0.5625rem] uppercase tracking-wider text-muted-foreground">
+                    <span className="ml-auto shrink-0 rounded-full border border-border/50 px-1.5 py-0 text-ui-9 uppercase tracking-wider text-muted-foreground">
                       models
                     </span>
                   )}

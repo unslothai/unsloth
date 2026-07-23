@@ -104,25 +104,25 @@ export function RecipeStudioHeader({
               onBlur={closeWorkflowNameEditor}
               onKeyDown={handleWorkflowNameKeyDown}
               autoFocus={true}
-              className="h-7 w-full max-w-[min(352px,50vw)]"
+              className="h-7 w-full max-w-[min(22rem,50vw)]"
               aria-label="Recipe name"
             />
           ) : (
             <button
               type="button"
               onClick={() => setEditingWorkflowName(true)}
-              className="max-w-[min(352px,50vw)] truncate text-sm font-semibold text-foreground hover:text-primary"
+              className="max-w-[min(22rem,50vw)] truncate text-sm font-semibold text-foreground hover:text-primary"
               title={workflowName}
               aria-label={`Edit recipe name: ${workflowName}`}
             >
               {workflowName}
             </button>
           )}
-          <Badge variant="secondary" className="h-6 shrink-0 text-[0.625rem]">
+          <Badge variant="secondary" className="h-6 shrink-0 text-ui-10">
             {STATUS_MESSAGE_CLASS[saveTone]}
           </Badge>
           <span
-            className="hidden max-w-[192px] truncate text-xs text-muted-foreground sm:inline"
+            className="hidden max-w-[12rem] truncate text-xs text-muted-foreground sm:inline"
             title={savedAtLabel}
           >
             {savedAtLabel}
@@ -148,7 +148,7 @@ export function RecipeStudioHeader({
             <PopoverTrigger asChild={true}>
               <button
                 type="button"
-                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-[0.625rem] font-medium ${RECIPE_STUDIO_WARNING_BADGE_TONE}`}
+                className={`inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-ui-10 font-medium ${RECIPE_STUDIO_WARNING_BADGE_TONE}`}
               >
                 <HugeiconsIcon icon={Alert02Icon} className="size-3" />
                 {warnings.length}
