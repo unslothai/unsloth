@@ -235,12 +235,7 @@ def _short_colab_url(url: str, port: int) -> str:
 
 def _is_colab_proxy_url(url: str, port: int) -> bool:
     """True when *url* looks like a real Colab kernel proxy, not a localhost fallback."""
-    return bool(
-        url
-        and isinstance(url, str)
-        and url.startswith("https://")
-        and str(port) in url
-    )
+    return bool(url and isinstance(url, str) and url.startswith("https://") and str(port) in url)
 
 
 # Height for serve_kernel_port_as_iframe (~82vh on a 1080p screen, clamped).
