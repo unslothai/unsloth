@@ -390,11 +390,7 @@ class TestPyYamlDeserialization:
                 "from pkgutil import resolve_name as resolve\n"
                 "resolve('yaml.unsafe_load')(payload)"
             ),
-            (
-                "import pydoc\n"
-                "runner = pydoc.locate('yaml.unsafe_load')\n"
-                "runner(payload)"
-            ),
+            ("import pydoc\nrunner = pydoc.locate('yaml.unsafe_load')\nrunner(payload)"),
             (
                 "from pkgutil import resolve_name as resolve\n"
                 "runner = resolve('yaml.unsafe_load')\n"

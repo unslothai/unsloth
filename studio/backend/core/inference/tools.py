@@ -828,10 +828,9 @@ def _pyyaml_resolver_target(node, resolver_aliases: set[str]) -> str | None:
     """Return a literal PyYAML target produced by pydoc/pkgutil resolvers."""
     if not (isinstance(node, ast.Call) and node.args and _is_yaml_string(node.args[0])):
         return None
-    if (
-        isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"locate", "resolve_name"}
-    ) or (isinstance(node.func, ast.Name) and node.func.id in resolver_aliases):
+    if (isinstance(node.func, ast.Attribute) and node.func.attr in {"locate", "resolve_name"}) or (
+        isinstance(node.func, ast.Name) and node.func.id in resolver_aliases
+    ):
         return _subscript_key(node.args[0])
     return None
 
@@ -968,15 +967,14 @@ def _pyyaml_safe_loader_mutation_call(
     mapping_mutators = {"update", "setdefault", "pop", "clear", "__setitem__"}
     func = call.func
     if isinstance(func, ast.Attribute):
-        if (
-            func.attr in (_PYYAML_SAFE_LOADER_MUTATORS | mapping_mutators)
-            and _pyyaml_safe_loader_registry_mutation(
-                func.value,
-                yaml_aliases,
-                safe_loader_aliases,
-                dynamic_import_aliases,
-                dynamic_namespace_aliases,
-            )
+        if func.attr in (
+            _PYYAML_SAFE_LOADER_MUTATORS | mapping_mutators
+        ) and _pyyaml_safe_loader_registry_mutation(
+            func.value,
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
         ):
             return True
         if (
@@ -5173,8 +5171,7 @@ def _check_signal_escape_patterns(code: str):
                 value, self.dynamic_import_aliases, self.dynamic_namespace_aliases
             )
             dynamic_import_module_alias = (
-                isinstance(value, ast.Name)
-                and value.id in self.dynamic_import_module_aliases
+                isinstance(value, ast.Name) and value.id in self.dynamic_import_module_aliases
             )
             dynamic_namespace_alias = value is not None and _is_dynamic_namespace(
                 value, self.dynamic_namespace_aliases
