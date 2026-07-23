@@ -794,9 +794,9 @@ class TestDetectGgufFromCache:
             {"BF16/foo.gguf": 1},
         )
         out = _detect_gguf_from_hf_cache("unsloth/gpt-oss-20b-BF16")
-        assert out == "BF16/foo.gguf", (
-            f"subdir-only layout must resolve to relative path, got {out}"
-        )
+        assert (
+            out == "BF16/foo.gguf"
+        ), f"subdir-only layout must resolve to relative path, got {out}"
 
     def test_subdir_quant_keeps_be_model_name_token(self, hf_cache):
         _build_cache(
