@@ -10945,11 +10945,10 @@ class LlamaCppBackend:
                                     from core.inference.chat_template_helpers import (
                                         neutralize_think_markup_streaming,
                                     )
+
                                     reasoning_markup_buffer += reasoning
                                     reasoning, reasoning_markup_buffer = (
-                                        neutralize_think_markup_streaming(
-                                            reasoning_markup_buffer
-                                        )
+                                        neutralize_think_markup_streaming(reasoning_markup_buffer)
                                     )
                                 if reasoning:
                                     reasoning_accum += reasoning
