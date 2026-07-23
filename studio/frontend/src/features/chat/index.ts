@@ -57,6 +57,19 @@ export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
 export {
+  usePromptQueueUI,
+  type PromptQueueUIEntry,
+  type PromptQueueUIItem,
+  type PromptQueueUIItemStatus,
+  type PromptQueueUIState,
+} from "./stores/prompt-queue-ui-store";
+export {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+  type PromptQueueRunFailedEventDetail,
+  type PromptQueueStopEventDetail,
+} from "./utils/prompt-queue-boundary";
+export {
   PLUS_MENU_ORDER,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
@@ -77,7 +90,10 @@ export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";
 export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
-export { listStoredChatThreads } from "./utils/chat-history-storage";
+export {
+  listStoredChatThreads,
+  markThreadIncognito,
+} from "./utils/chat-history-storage";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export {
