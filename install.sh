@@ -2233,6 +2233,30 @@ EOF
     return 1
 }
 
+# Reads the AMD gfx arch for wheel-index decisions: a user-set
+# UNSLOTH_ROCM_GFX_ARCH is authoritative (lowercased), else rocminfo, then
+# amd-smi. rocminfo/amd-smi honor ROCR/HIP_VISIBLE_DEVICES, so a container mask
+# (e.g. ROCR_VISIBLE_DEVICES=-1) would hide a GPU that the env-independent KFD
+# detection still sees -- the tool probes run with the masks cleared. Prints the
+# gfx token(s) or nothing when unreadable, and always returns 0 (a failing probe
+# as the last command would trip set -e in callers' assignments). Shared by
+# get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
+# can never disagree on what "readable" means.
+_probe_amd_gfx_arch() {
+    _ensure_rocm_probe_env
+    _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
+        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    fi
+    if [ -z "$_pg" ] && command -v amd-smi >/dev/null 2>&1; then
+        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        if [ -z "$_pg" ]; then
+            _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        fi
+    fi
+    printf '%s\n' "$_pg"
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2290,24 +2314,21 @@ get_torch_index_url() {
         # Strix reroute (gfx1150/1151 -> arch-specific index) learns gfx from
         # rocminfo/amd-smi, so if those are missing OR do not enumerate the GPU, an
         # unknown-arch box might be Strix and would get the broken _grouped_mm
-        # wheels. Probe gfx the same way the reroute does; if it is unreadable, stay
-        # on CPU and point the user at the fix instead of guessing.
-        # A user-supplied UNSLOTH_ROCM_GFX_ARCH is authoritative (setup.sh honors it
-        # for llama.cpp too); otherwise probe rocminfo/amd-smi like the reroute does.
-        _amd_gfx_probe=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
-        # rocminfo/amd-smi honor ROCR/HIP_VISIBLE_DEVICES, so a container mask
-        # (e.g. ROCR_VISIBLE_DEVICES=-1) hides the GPU and would force CPU even
-        # though KFD detection is env-independent -- read the arch with the masks
-        # cleared (the Strix reroute keeps them for per-GPU index selection).
-        if [ -z "$_amd_gfx_probe" ] && command -v rocminfo >/dev/null 2>&1; then
-            _amd_gfx_probe=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        fi
-        if [ -z "$_amd_gfx_probe" ] && command -v amd-smi >/dev/null 2>&1; then
-            _amd_gfx_probe=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-            [ -z "$_amd_gfx_probe" ] && \
-                _amd_gfx_probe=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        fi
+        # wheels. Probe via the shared helper (override first, then rocminfo/amd-smi
+        # with visibility masks cleared); if the arch is unreadable, never guess a
+        # rocm index. A KFD-only host whose arch is still inferable from hardware
+        # IDs (PCI/cpuinfo/lspci) returns the cpu index and lets the runtime-less
+        # reroute below upgrade it to AMD per-arch wheels -- the reroute gate uses
+        # this same probe, so the handoff can't misfire. Only when inference fails
+        # too is CPU final, with the actionable warning.
+        _amd_gfx_probe=$(_probe_amd_gfx_arch)
         if [ -z "$_amd_gfx_probe" ]; then
+            if _amd_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null) && \
+               [ -n "$_amd_inferred_gfx" ] && \
+               _amd_arch_index_family_for_gfx "$_amd_inferred_gfx" >/dev/null 2>&1; then
+                echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
+                echo "$_base/cpu"; return
+            fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
             echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
             echo "$_base/cpu"; return
@@ -2879,14 +2900,20 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo
 # in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's
 # per-arch wheels like install.ps1 does on Windows (unslothai#7301).
-# Gated on _has_amd_rocm_gpu being FALSE: a */cpu index on a host whose GPU IS
-# visible to the ROCm probes is a deliberate fallback (unsupported/unreadable
-# ROCm version, after its own warning), not a missing runtime -- rerouting it
-# would contradict that decision. An explicit UNSLOTH_ROCM_GFX_ARCH override
-# stays authoritative either way.
+# Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at
+# all (_has_amd_rocm_gpu false), or the GPU is visible only through the
+# env-independent KFD topology while rocminfo/amd-smi can't read its arch
+# (KFD-only host, unslothai#7314 -- before the KFD detection fix these hosts
+# reached this reroute via the false branch, so the empty-probe condition
+# preserves that routing). A */cpu index chosen WITH a readable gfx
+# (unsupported/unreadable ROCm version, after its own warning) is a deliberate
+# fallback -- rerouting it would contradict that decision, and stays excluded
+# because the shared probe returns its gfx. An explicit UNSLOTH_ROCM_GFX_ARCH
+# override stays authoritative either way.
 if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
    ! _has_usable_nvidia_gpu && \
-   { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu; } && \
+   { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu || \
+     [ -z "$(_probe_amd_gfx_arch)" ]; } && \
    case "$(uname -s)" in Linux) true ;; *) false ;; esac && \
    case "$_ARCH" in x86_64|amd64) true ;; *) false ;; esac; then
     # ROCm torch wheels are x86_64-only; get_torch_index_url returns CPU on other

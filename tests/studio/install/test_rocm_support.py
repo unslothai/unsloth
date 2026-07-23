@@ -1690,18 +1690,22 @@ class TestInstallShStructure:
         _grouped_mm wheels because the reroute has no gfx to correct it."""
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         body = _extract_sh_function_body(source, "get_torch_index_url")
-        probe = body.find("_amd_gfx_probe")
+        probe = body.find("_amd_gfx_probe=$(_probe_amd_gfx_arch)")
         assert probe >= 0, "get_torch_index_url must probe the gfx arch before picking a rocm index"
-        # The probe reads gfx (not just tests binary presence), from rocminfo AND
-        # amd-smi, so an installed-but-not-enumerating probe still falls to CPU.
-        assert "rocminfo 2>/dev/null) | grep -oE 'gfx" in body, "probe must read gfx from rocminfo"
+        # The shared probe reads gfx (not just tests binary presence), from rocminfo
+        # AND amd-smi, so an installed-but-not-enumerating probe still falls to CPU.
+        helper = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
+        assert helper, "install.sh must define the shared _probe_amd_gfx_arch helper"
         assert (
-            "amd-smi list 2>/dev/null) | grep -oE 'gfx" in body
+            "rocminfo 2>/dev/null) | grep -oE 'gfx" in helper
+        ), "probe must read gfx from rocminfo"
+        assert (
+            "amd-smi list 2>/dev/null) | grep -oE 'gfx" in helper
         ), "probe must read gfx from amd-smi"
         # The probe clears ROCR/HIP_VISIBLE_DEVICES so a container mask
         # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection.
         assert (
-            "unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" in body
+            "unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" in helper
         ), "the gfx probe must clear the visibility masks so a mask can't force CPU"
         cpu_guard = body.find('if [ -z "$_amd_gfx_probe" ]')
         assert cpu_guard >= 0, "unreadable gfx must fall back to CPU"
@@ -1733,16 +1737,20 @@ class TestInstallShStructure:
         fallback: an air-gapped/rocminfo-less Strix host that names its arch should
         still reach a rocm index instead of being forced to CPU."""
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
-        body = _extract_sh_function_body(source, "get_torch_index_url")
-        seed = body.find("_amd_gfx_probe=$(printf")
-        assert seed >= 0, "the gfx gate must seed _amd_gfx_probe from UNSLOTH_ROCM_GFX_ARCH"
-        assert "UNSLOTH_ROCM_GFX_ARCH" in body[seed : seed + 80]
-        assert seed < body.find(
+        helper = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
+        assert helper, "install.sh must define the shared _probe_amd_gfx_arch helper"
+        seed = helper.find("$(printf")
+        assert seed >= 0, "the gfx probe must seed from UNSLOTH_ROCM_GFX_ARCH"
+        assert "UNSLOTH_ROCM_GFX_ARCH" in helper[seed : seed + 80]
+        assert seed < helper.find(
             "rocminfo 2>/dev/null) | grep -oE 'gfx"
         ), "the override must be read before probing rocminfo"
-        assert seed < body.find(
+        body = _extract_sh_function_body(source, "get_torch_index_url")
+        call = body.find("_amd_gfx_probe=$(_probe_amd_gfx_arch)")
+        assert call >= 0, "get_torch_index_url must call the shared probe"
+        assert call < body.find(
             'if [ -z "$_amd_gfx_probe" ]; then'
-        ), "the override must be read before the CPU fallback guard"
+        ), "the probe must run before the CPU fallback guard"
 
     def test_gfx_override_seeds_reroute_without_tools(self):
         """The Strix reroute must honour UNSLOTH_ROCM_GFX_ARCH even when rocminfo and
@@ -1796,12 +1804,8 @@ class TestInstallShStructure:
         if not shell:
             pytest.skip("bash needed to execute the probe block")
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        block = re.search(
-            r"^        _amd_gfx_probe=\$\(printf.*?^        fi\n.*?^        fi\n",
-            source,
-            re.S | re.M,
-        )
-        assert block, "could not extract the gfx probe block"
+        probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
+        assert probe_fn, "could not extract _probe_amd_gfx_arch"
         with tempfile.TemporaryDirectory() as d:
             # rocminfo that mimics ROCR_VISIBLE_DEVICES=-1 hiding all agents.
             with open(os.path.join(d, "rocminfo"), "w", encoding = "utf-8") as f:
@@ -1812,7 +1816,10 @@ class TestInstallShStructure:
                 )
             os.chmod(os.path.join(d, "rocminfo"), 0o755)
             script = (
-                "set -euo pipefail\n" + block.group(0) + '\nprintf "OK:%s\\n" "$_amd_gfx_probe"\n'
+                "set -euo pipefail\n"
+                "_ensure_rocm_probe_env() { :; }\n"
+                + probe_fn
+                + '\n_amd_gfx_probe=$(_probe_amd_gfx_arch)\nprintf "OK:%s\\n" "$_amd_gfx_probe"\n'
             )
 
             def run(**extra):
@@ -1826,6 +1833,142 @@ class TestInstallShStructure:
             assert (
                 "OK:gfx1151" in r.stdout
             ), f"a visibility mask must not blind the gfx probe: {r.stdout!r}"
+
+    def test_kfd_only_inferable_gfx_defers_to_reroute(self):
+        """A KFD-only host (GPU detected, gfx unreadable) whose arch IS inferable
+        from hardware IDs must not print the 'installing CPU-only PyTorch' warning:
+        get_torch_index_url returns the cpu index quietly and the runtime-less
+        reroute upgrades it to AMD per-arch wheels. Only when inference also fails
+        (or maps to no supported family) is CPU final, with the actionable hint."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute get_torch_index_url")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        fn = _extract_sh_function_body(source, "get_torch_index_url")
+        probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
+        family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        assert fn and probe_fn and family_fn
+        with tempfile.TemporaryDirectory() as d:
+            # uname -> Linux/x86_64 so the AMD branch runs on any dev host; the
+            # rocminfo/amd-smi shims enumerate nothing (KFD-only host).
+            with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
+                f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
+            for name in ("rocminfo", "amd-smi"):
+                with open(os.path.join(d, name), "w", encoding = "utf-8", newline = "\n") as f:
+                    f.write("#!/bin/sh\nexit 0\n")
+            for name in ("uname", "rocminfo", "amd-smi"):
+                os.chmod(os.path.join(d, name), 0o755)
+
+            def run(infer_stub):
+                script = (
+                    "set -euo pipefail\n"
+                    "_ensure_rocm_probe_env() { :; }\n"
+                    "_trim_index_path_slashes() { printf '%s\\n' \"$1\"; }\n"
+                    "_has_usable_nvidia_gpu() { return 1; }\n"
+                    "_has_amd_rocm_gpu() { return 0; }\n"
+                    + infer_stub
+                    + "\n" + probe_fn + "\n" + family_fn + "\n" + fn + "\n"
+                    "get_torch_index_url\n"
+                )
+                # Run from a file, not -c: Windows bash mangles multi-KB -c strings.
+                sp = os.path.join(d, "gtiu.sh")
+                with open(sp, "w", encoding = "utf-8", newline = "\n") as f:
+                    f.write(script)
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                for var in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_TORCH_INDEX_URL",
+                            "UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_PYTORCH_MIRROR",
+                            "ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+                    env.pop(var, None)
+                return subprocess.run(
+                    [shell, sp.replace("\\", "/")], env = env, capture_output = True, text = True
+                )
+
+            r = run("_infer_linux_amd_gfx_arch() { echo gfx1100; }")
+            assert r.returncode == 0, f"inferable case aborted: {r.stderr}"
+            assert r.stdout.strip().endswith("/cpu"), f"must hand */cpu to the reroute: {r.stdout!r}"
+            assert "inferring gfx1100" in r.stderr, f"must announce the inference handoff: {r.stderr!r}"
+            assert (
+                "installing CPU-only PyTorch" not in r.stderr
+            ), f"must not promise a CPU-only install the reroute will override: {r.stderr!r}"
+            r2 = run("_infer_linux_amd_gfx_arch() { return 1; }")
+            assert r2.returncode == 0, f"uninferable case aborted: {r2.stderr}"
+            assert r2.stdout.strip().endswith("/cpu")
+            assert "installing CPU-only PyTorch" in r2.stderr, (
+                f"uninferable gfx must keep the actionable CPU warning: {r2.stderr!r}"
+            )
+            r3 = run("_infer_linux_amd_gfx_arch() { echo gfx906; }")
+            assert r3.returncode == 0, f"unsupported-family case aborted: {r3.stderr}"
+            assert r3.stdout.strip().endswith("/cpu")
+            assert "installing CPU-only PyTorch" in r3.stderr, (
+                f"an inferred arch with no wheel family must keep the CPU warning: {r3.stderr!r}"
+            )
+
+    def test_reroute_gate_covers_kfd_only(self):
+        """The runtime-less reroute must fire for a KFD-only host: _has_amd_rocm_gpu
+        is now true via the KFD topology, so the gate also accepts a detected GPU
+        whose gfx probe is empty (unslothai#7314 P2). A */cpu index chosen with a
+        READABLE gfx (deliberate ROCm-version fallback) must stay un-rerouted."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the reroute block")
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        block = re.search(
+            r'^if \[ "\$_torch_index_pinned" = false \] && \[ "\$SKIP_TORCH" = false \] && \\\n'
+            r".*?^fi\n",
+            source,
+            re.S | re.M,
+        )
+        assert block, "could not extract the runtime-less reroute block"
+        family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        assert family_fn
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
+                f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
+            os.chmod(os.path.join(d, "uname"), 0o755)
+
+            def run(gpu_stub, probe_stub):
+                script = (
+                    "set -euo pipefail\n"
+                    "_has_usable_nvidia_gpu() { return 1; }\n"
+                    f"_has_amd_rocm_gpu() {{ {gpu_stub}; }}\n"
+                    f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
+                    "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
+                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n"
+                    + family_fn + "\n"
+                    "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
+                    "TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu\n"
+                    + block.group(0)
+                    + 'printf "URL:%s GFX:%s\\n" "$TORCH_INDEX_URL" "${UNSLOTH_ROCM_GFX_ARCH:-}"\n'
+                )
+                # Run from a file, not -c: Windows bash mangles multi-KB -c strings.
+                sp = os.path.join(d, "reroute.sh")
+                with open(sp, "w", encoding = "utf-8", newline = "\n") as f:
+                    f.write(script)
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                for var in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_AMD_ROCM_MIRROR"):
+                    env.pop(var, None)
+                return subprocess.run(
+                    [shell, sp.replace("\\", "/")], env = env, capture_output = True, text = True
+                )
+
+            # KFD-only: GPU detected, probe empty -> reroute to per-arch wheels.
+            r = run("return 0", "printf '\\n'")
+            assert r.returncode == 0, f"kfd-only reroute aborted: {r.stderr}"
+            assert (
+                "URL:https://repo.amd.com/rocm/whl/gfx110X-all/ GFX:gfx1100" in r.stdout
+            ), f"KFD-only host must reach the AMD arch index: {r.stdout!r}"
+            # Readable gfx: the */cpu index is a deliberate fallback -> untouched.
+            r2 = run("return 0", "echo gfx1151")
+            assert r2.returncode == 0, f"readable-gfx case aborted: {r2.stderr}"
+            assert (
+                "URL:https://download.pytorch.org/whl/cpu GFX:" in r2.stdout
+            ), f"a deliberate CPU fallback must not be rerouted: {r2.stdout!r}"
+            # No AMD GPU detected at all: the pre-KFD-fix path still reroutes.
+            r3 = run("return 1", "printf '\\n'")
+            assert r3.returncode == 0, f"undetected-GPU case aborted: {r3.stderr}"
+            assert (
+                "URL:https://repo.amd.com/rocm/whl/gfx110X-all/ GFX:gfx1100" in r3.stdout
+            ), f"the original undetected-GPU reroute must keep working: {r3.stdout!r}"
 
     def test_get_torch_index_url_uses_nvidia_detected_flag(self):
         """get_torch_index_url must track NVIDIA via _nvidia_detected (proc-only NVIDIA still picks CUDA)."""
