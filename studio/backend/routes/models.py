@@ -129,6 +129,7 @@ try:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _hf_metadata_unavailable,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
         is_audio_input_type,
@@ -162,6 +163,7 @@ except ImportError:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _hf_metadata_unavailable,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
         is_audio_input_type,
@@ -1791,6 +1793,9 @@ def _get_max_position_embeddings(config) -> Optional[int]:
 
 def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Optional[int]:
     """Total size of model weight files from HF Hub."""
+    if _hf_metadata_unavailable():
+        return None
+
     try:
         from huggingface_hub import HfApi
 
