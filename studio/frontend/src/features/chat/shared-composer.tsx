@@ -1057,7 +1057,9 @@ export function SharedComposer({
           ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
-            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
+            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds, {
+                fromPersisted: true,
+              })
             : compareLoadKnobs.selectedGpuIds;
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --

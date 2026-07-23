@@ -586,16 +586,22 @@ export function rebalanceSplit(
 // set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
 // way to clear it. A null pick (= automatic) passes through unchanged, and an
 // unpopulated device cache leaves the pick alone (the backend still guards).
+//
+// ``fromPersisted`` gates the index-space-change clear: a pick loaded from a
+// saved PerModelConfig may have been stored under the other llama.cpp backend's
+// index space (physical CUDA/ROCm ids vs ggml Vulkan ordinals), so drop it when
+// the space changed this session. A LIVE store pick (the user just chose it from
+// the current picker) is always in the current space, so callers reading
+// store.selectedGpuIds must leave fromPersisted false -- else a fresh Vulkan
+// selection gets nulled for the whole first post-swap session.
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  opts: { fromPersisted?: boolean } = {},
 ): number[] | null {
   if (ids == null) return ids;
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
-  // A pick saved under the other index space (physical CUDA/ROCm ids vs ggml
-  // Vulkan ordinals, after a llama.cpp backend swap) can pass the membership
-  // check below by number alone while meaning a different card; drop it.
-  if (gpuIndexSpaceChangedSinceLastSession()) return null;
+  if (opts.fromPersisted && gpuIndexSpaceChangedSinceLastSession()) return null;
   const kept = ids.filter((i) => pinnable.includes(i));
   return kept.length > 0 ? kept : null;
 }

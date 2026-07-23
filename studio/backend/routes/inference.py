@@ -3973,13 +3973,15 @@ def _guard_chat_load_against_training(
 
     # A Vulkan build's gpu_ids are ggml Vulkan ordinals with no defined mapping
     # to the physical index space this guard sizes against (the free-VRAM rows
-    # of get_visible_gpu_utilization, _diffusion_gpu_arg's device token). Drop
-    # the pick and size like an unpinned load: the pool math below still
-    # protects training on every visible card, which is the conservative read
-    # when the ordinal-to-card mapping is unknown.
+    # of get_visible_gpu_utilization, _diffusion_gpu_arg's device token). Don't
+    # resolve them as physical ids, but keep the pick COUNT: dropping to the
+    # whole-pool estimate could OK a load that lands on a busy selected card and
+    # OOMs training, so size against the N most-constrained visible cards.
+    worst_case_gpu_count = None
     if is_gguf and requested_gpu_ids:
         try:
             if LlamaCppBackend._is_vulkan_backend():
+                worst_case_gpu_count = len(set(requested_gpu_ids))
                 requested_gpu_ids = None
         except Exception as e:
             logger.debug("Vulkan backend check failed in chat-load guard: %s", e)
@@ -4014,6 +4016,7 @@ def _guard_chat_load_against_training(
         is_gguf = is_gguf,
         required_override_gb = required_override_gb,
         single_device_gpu = diffusion_gpu,
+        worst_case_gpu_count = worst_case_gpu_count,
     )
     if ok:
         return
@@ -4453,6 +4456,21 @@ async def _load_model_impl(
             # pins the pick with --device Vulkan<i>, so probe, picker, and pin
             # share one index space (physical ids are never involved).
             if LlamaCppBackend._is_vulkan_backend():
+                # Diffusion GGUFs bypass llama-server: the diffusion runner
+                # forwards gpu_ids[0] as a CUDA/DG_GPU device token, NOT
+                # --device Vulkan<i>, so a Vulkan ordinal would target the wrong
+                # card. Reject the pick for anything that can route there
+                # (diffusion or not-yet-classifiable), matching the training
+                # guard's `diffusion_kind is not False` treatment.
+                if _classify_diffusion_gguf(config) is not False:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            "GPU selection (gpu_ids) is not supported for diffusion "
+                            "GGUF models on a Vulkan llama.cpp build: the diffusion "
+                            "runner cannot map ggml Vulkan ordinals. Omit gpu_ids."
+                        ),
+                    )
                 try:
                     LlamaCppBackend.validate_vulkan_gpu_ids(effective_gpu_ids)
                 except ValueError as exc:
@@ -5070,8 +5088,19 @@ async def validate_model(
                     ),
                 )
             # Mirror /load: a Vulkan build validates the pick in ggml's own
-            # Vulkan ordinal space (the space the --device pin uses).
+            # Vulkan ordinal space (the space the --device pin uses), and rejects
+            # picks for diffusion GGUFs (their runner takes a CUDA/DG_GPU token,
+            # not --device Vulkan<i>, so an ordinal targets the wrong card).
             if LlamaCppBackend._is_vulkan_backend():
+                if _classify_diffusion_gguf(config) is not False:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = (
+                            "GPU selection (gpu_ids) is not supported for diffusion "
+                            "GGUF models on a Vulkan llama.cpp build: the diffusion "
+                            "runner cannot map ggml Vulkan ordinals. Omit gpu_ids."
+                        ),
+                    )
                 try:
                     LlamaCppBackend.validate_vulkan_gpu_ids(effective_gpu_ids)
                 except ValueError as exc:

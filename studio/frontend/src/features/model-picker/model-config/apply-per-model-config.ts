@@ -52,7 +52,9 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     splitRatio: null,
     selectedGpuIds:
       config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        ? reconcilePersistedGpuIds(config.selectedGpuIds, {
+            fromPersisted: true,
+          })
         : null,
   });
 }
