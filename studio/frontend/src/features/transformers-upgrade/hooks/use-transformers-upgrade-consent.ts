@@ -10,19 +10,21 @@ interface ConfirmArgs {
   upgrade: TransformersUpgradeInfo | null | undefined;
   /** When no release is installable, offer continuing into the caller's custom-code gate. */
   trustRemoteCodeFallback?: boolean;
+  dialogOwner?: unknown;
 }
-
 /** Pause a load needing a newer transformers on the consent dialog and run the install.
  *  Resolves true when the load can continue; false on cancel or not-installable with no fallback. */
 export async function confirmTransformersUpgradeIfNeeded({
   modelName,
   upgrade,
   trustRemoteCodeFallback,
+  dialogOwner,
 }: ConfirmArgs): Promise<boolean> {
   if (!upgrade) return true;
   return useTransformersUpgradeDialogStore
     .getState()
     .requestConsent(modelName, upgrade, {
       trustRemoteCodeFallback: Boolean(trustRemoteCodeFallback),
+      owner: dialogOwner,
     });
 }

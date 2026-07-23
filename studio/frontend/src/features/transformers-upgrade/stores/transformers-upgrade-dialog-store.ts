@@ -9,6 +9,7 @@ type Resolver = (installed: boolean) => void;
 
 // One in-flight consent; a new request resolves any prior pending one as declined.
 let pendingResolver: Resolver | null = null;
+let pendingOwner: unknown;
 let cancelAfterInstall = false;
 
 interface TransformersUpgradeDialogStore {
@@ -35,12 +36,12 @@ interface TransformersUpgradeDialogStore {
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
-    options?: { trustRemoteCodeFallback?: boolean },
+    options?: { trustRemoteCodeFallback?: boolean; owner?: unknown },
   ) => Promise<boolean>;
   /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
   /** Decline immediately, or wait for an in-flight install to settle first. */
-  cancelPending: () => void;
+  cancelPending: (owner?: unknown) => void;
   resolve: (installed: boolean) => void;
 }
 
@@ -58,6 +59,7 @@ export const useTransformersUpgradeDialogStore =
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
         pendingResolver = resolve;
+        pendingOwner = options?.owner;
         cancelAfterInstall = false;
         set({
           open: true,
@@ -135,8 +137,9 @@ export const useTransformersUpgradeDialogStore =
         });
       }
     },
-    cancelPending: () => {
+    cancelPending: (owner) => {
       if (!pendingResolver) return;
+      if (owner !== undefined && pendingOwner !== owner) return;
       if (get().phase === "installing") {
         cancelAfterInstall = true;
         return;
@@ -146,6 +149,7 @@ export const useTransformersUpgradeDialogStore =
     resolve: (installed) => {
       const resolver = pendingResolver;
       pendingResolver = null;
+      pendingOwner = undefined;
       cancelAfterInstall = false;
       set({
         open: false,
