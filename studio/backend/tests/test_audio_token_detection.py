@@ -83,11 +83,7 @@ def test_structured_codec_identity_overrides_ambiguous_token_heuristics(monkeypa
             "_raw_config_model_type",
             lambda *args, _model_type = model_type, **kwargs: _model_type,
         )
-        assert _classify_audio_capability("model", "audio_vlm") == (
-            expected,
-            False,
-            False,
-        )
+        assert _classify_audio_capability("model", "audio_vlm") == (expected, False, False)
 
 
 def test_cached_audio_projector_is_forwarded_and_clears_false_vision():
