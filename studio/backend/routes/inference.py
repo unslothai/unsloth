@@ -5818,7 +5818,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             # Fail open on inconclusive probes: False means a definitive
             # "binary lacks MTP" to API consumers (update recommendation).
             _supports_mtp = bool(
-                _caps.get("supports_mtp", False) or _caps.get("mtp_probe_inconclusive", False)
+                _caps.get("supports_mtp", False)
+                or (
+                    _caps.get("found", False)
+                    and _caps.get("mtp_probe_inconclusive", False)
+                )
             )
         except Exception:
             _bin = None
