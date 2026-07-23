@@ -895,24 +895,14 @@ export function AppSidebar() {
     variant: "project" | "recent",
   ) {
     const isPinned = pinnedIdSet.has(item.id);
-    // Touch/coarse pointers have no hover, so reveal row actions immediately
-    // (mirrors hub model rows and project chat lists).
-    const touchVisibleAction =
-      "[@media(pointer:coarse)]:opacity-100 [@media(pointer:coarse)]:pointer-events-auto";
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
         : "group/recent-item relative";
     const actionClass =
       variant === "project"
-        ? cn(
-            "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
-            touchVisibleAction,
-          )
-        : cn(
-            "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
-            touchVisibleAction,
-          );
+        ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+        : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
