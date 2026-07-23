@@ -71,6 +71,24 @@ def _is_colab_proxy_url(url: str, port: int) -> bool:
     return bool(url and isinstance(url, str) and url.startswith("https://") and str(port) in url)
 
 
+def _is_colab_runtime() -> bool:
+    """True on a real Colab notebook kernel (not colabtools-only ``google.colab`` imports).
+
+    ``serve_kernel_port_as_iframe`` only needs a port, so when ``eval_js`` fails and
+    ``get_colab_url()`` falls back to localhost we must still call the helper on real
+    Colab. ``COLAB_RELEASE_TAG`` is set in notebook kernels but not by colabtools alone.
+    """
+    import os
+
+    if "COLAB_RELEASE_TAG" not in os.environ:
+        return False
+    try:
+        import google.colab  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _ready_card_html(url: str, port: int) -> str:
     """Branded ready card for the in-notebook Studio view.
 
@@ -80,7 +98,7 @@ def _ready_card_html(url: str, port: int) -> str:
     users at ``start(cloudflare=True)`` for a shareable new-window link.
     """
     short_url = _short_colab_url(url, port)
-    if _is_colab_proxy_url(url, port):
+    if _is_colab_runtime() or _is_colab_proxy_url(url, port):
         return f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -351,10 +369,12 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
         except Exception as e:
             logger.info(f"Could not render Cloudflare link card ({e}).")
 
-    # Only trust Colab's kernel-port helper when we have a real proxy URL.
-    # colabtools outside Colab can import google.colab and queue JS without
-    # appending an iframe; localhost HTML embed is the better fallback there.
-    if _is_colab_proxy_url(url, port) and _embed_kernel_port_iframe(port):
+    # Real Colab: kernel helper only needs the port (works when eval_js failed).
+    # colabtools can import google.colab without COLAB_RELEASE_TAG — use HTML embed.
+    if _is_colab_runtime():
+        if _embed_kernel_port_iframe(port):
+            return
+    elif _is_colab_proxy_url(url, port) and _embed_kernel_port_iframe(port):
         return
     _embed_html_iframe(url, port)
 

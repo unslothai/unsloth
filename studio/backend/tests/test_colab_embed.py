@@ -33,7 +33,29 @@ def test_ready_card_html_does_not_open_colab_proxy_in_new_tab():
     assert "Scroll down" in html
 
 
-def test_ready_card_html_keeps_open_button_for_localhost():
+def test_is_colab_runtime_requires_release_tag(monkeypatch):
+    monkeypatch.delenv("COLAB_RELEASE_TAG", raising = False)
+    with patch.dict("sys.modules", {"google.colab": object()}):
+        assert colab._is_colab_runtime() is False
+
+    monkeypatch.setenv("COLAB_RELEASE_TAG", "test")
+    with patch.dict("sys.modules", {"google.colab": object()}):
+        assert colab._is_colab_runtime() is True
+
+    monkeypatch.setenv("COLAB_RELEASE_TAG", "test")
+    with patch.dict("sys.modules", {"google.colab": None}):
+        assert colab._is_colab_runtime() is False
+
+
+def test_ready_card_html_uses_scroll_down_on_colab_runtime_localhost(monkeypatch):
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    html = colab._ready_card_html("http://localhost:8888", 8888)
+    assert "window.open" not in html
+    assert "Scroll down" in html
+
+
+def test_ready_card_html_keeps_open_button_for_localhost_outside_colab(monkeypatch):
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: False)
     html = colab._ready_card_html("http://localhost:8888", 8888)
     assert "window.open" in html
     assert 'href="http://localhost:8888"' in html
@@ -116,10 +138,33 @@ def test_show_and_embed_renders_cloudflare_card(monkeypatch):
     assert "share.trycloudflare.com" in displayed[0]
 
 
-def test_show_and_embed_skips_kernel_helper_for_localhost(monkeypatch):
+def test_show_and_embed_uses_kernel_helper_on_colab_runtime_despite_localhost(monkeypatch):
     calls: list[str] = []
 
     monkeypatch.setattr(colab, "get_colab_url", lambda port: f"http://localhost:{port}")
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(colab, "show_link", lambda port, *, _url = None: calls.append("show_link"))
+    monkeypatch.setattr(
+        colab,
+        "_embed_kernel_port_iframe",
+        lambda port: calls.append("kernel_iframe") or True,
+    )
+    monkeypatch.setattr(
+        colab,
+        "_embed_html_iframe",
+        lambda url, port: calls.append("html_iframe") or True,
+    )
+
+    colab._show_and_embed(8888)
+
+    assert calls == ["show_link", "kernel_iframe"]
+
+
+def test_show_and_embed_skips_kernel_helper_for_localhost_outside_colab(monkeypatch):
+    calls: list[str] = []
+
+    monkeypatch.setattr(colab, "get_colab_url", lambda port: f"http://localhost:{port}")
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: False)
     monkeypatch.setattr(colab, "show_link", lambda port, *, _url = None: calls.append("show_link"))
     monkeypatch.setattr(
         colab,
