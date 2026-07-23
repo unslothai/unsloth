@@ -1399,11 +1399,7 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     index_width = len(m.group(2))
     total = m.group(3)
     sibling_pat = re.compile(
-        r"^"
-        + re.escape(prefix)
-        + rf"-\d{{{index_width}}}-of-"
-        + re.escape(total)
-        + r"\.gguf$",
+        r"^" + re.escape(prefix) + rf"-\d{{{index_width}}}-of-" + re.escape(total) + r"\.gguf$",
         re.IGNORECASE,
     )
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
@@ -12195,11 +12191,8 @@ class LlamaCppBackend:
                 # capability decision.
                 try:
                     from utils.models.gguf_metadata import detect_gguf_audio_type
-
                     metadata_type = (
-                        detect_gguf_audio_type(self._gguf_path)
-                        if self._gguf_path
-                        else None
+                        detect_gguf_audio_type(self._gguf_path) if self._gguf_path else None
                     )
                 except Exception as exc:
                     logger.debug("GGUF audio identity probe failed: %s", exc)

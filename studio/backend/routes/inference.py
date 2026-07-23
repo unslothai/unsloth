@@ -1071,9 +1071,7 @@ except ImportError:
 
 
 def _resolve_load_model_config(
-    model_identifier: str,
-    hf_token: Optional[str],
-    gguf_variant: Optional[str],
+    model_identifier: str, hf_token: Optional[str], gguf_variant: Optional[str]
 ) -> Optional[ModelConfig]:
     """Resolve model metadata without blocking an async route's event loop."""
     with _hf_offline_if_dns_dead():
