@@ -53,23 +53,34 @@ assert_present "macOS: IndexedDB kept"                   "$H/Library/WebKit/$BID
 assert_present "macOS: Application Support kept"         "$H/Library/Application Support/$BID"
 assert_present "macOS: unrelated app cache kept"         "$H/Library/Caches/com.other.app"
 
-# ── 2. Linux: cache dir removed, data/config kept ──
+# ── 2. Linux: cache paths removed (XDG cache dir AND the cache subdirs wry
+# keys to the app data dir), user-facing storage kept ──
 H=$(mktemp -d -p "$_TMP_ROOT")
-mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID" "$H/.config/$BID" "$H/.cache/other.app"
+D="$H/.local/share/$BID"
+mkdir -p "$H/.cache/$BID" "$D/WebKitCache" "$D/CacheStorage" "$D/serviceworkers" \
+         "$D/localstorage" "$D/indexeddb" "$H/.config/$BID" "$H/.cache/other.app"
+: > "$D/cookies.sqlite"
 uname() { echo Linux; }
-HOME="$H" XDG_CACHE_HOME="" _clear_webview_caches
-assert_gone    "linux: ~/.cache/$BID removed"     "$H/.cache/$BID"
-assert_present "linux: ~/.local/share/$BID kept"  "$H/.local/share/$BID"
-assert_present "linux: ~/.config/$BID kept"       "$H/.config/$BID"
-assert_present "linux: unrelated app cache kept"  "$H/.cache/other.app"
+HOME="$H" XDG_CACHE_HOME="" XDG_DATA_HOME="" _clear_webview_caches
+assert_gone    "linux: ~/.cache/$BID removed"          "$H/.cache/$BID"
+assert_gone    "linux: data-dir WebKitCache removed"   "$D/WebKitCache"
+assert_gone    "linux: data-dir CacheStorage removed"  "$D/CacheStorage"
+assert_gone    "linux: data-dir serviceworkers removed" "$D/serviceworkers"
+assert_present "linux: localstorage kept"              "$D/localstorage"
+assert_present "linux: indexeddb kept"                 "$D/indexeddb"
+assert_present "linux: cookies kept"                   "$D/cookies.sqlite"
+assert_present "linux: ~/.config/$BID kept"            "$H/.config/$BID"
+assert_present "linux: unrelated app cache kept"       "$H/.cache/other.app"
 
-# ── 3. Linux: XDG_CACHE_HOME override honored ──
+# ── 3. Linux: XDG_CACHE_HOME / XDG_DATA_HOME overrides honored ──
 H=$(mktemp -d -p "$_TMP_ROOT")
 XDG=$(mktemp -d -p "$_TMP_ROOT")
-mkdir -p "$XDG/$BID" "$H/.cache/$BID"
-HOME="$H" XDG_CACHE_HOME="$XDG" _clear_webview_caches
-assert_gone    "linux: XDG_CACHE_HOME/$BID removed"        "$XDG/$BID"
-assert_present "linux: ~/.cache/$BID kept under override"  "$H/.cache/$BID"
+mkdir -p "$XDG/cache/$BID" "$XDG/data/$BID/WebKitCache" "$XDG/data/$BID/localstorage" "$H/.cache/$BID"
+HOME="$H" XDG_CACHE_HOME="$XDG/cache" XDG_DATA_HOME="$XDG/data" _clear_webview_caches
+assert_gone    "linux: XDG_CACHE_HOME/$BID removed"          "$XDG/cache/$BID"
+assert_gone    "linux: XDG_DATA_HOME WebKitCache removed"    "$XDG/data/$BID/WebKitCache"
+assert_present "linux: XDG_DATA_HOME localstorage kept"      "$XDG/data/$BID/localstorage"
+assert_present "linux: ~/.cache/$BID kept under override"    "$H/.cache/$BID"
 
 # ── 4. Nothing to clear is a clean no-op ──
 H=$(mktemp -d -p "$_TMP_ROOT")

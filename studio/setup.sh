@@ -492,7 +492,18 @@ _clear_webview_caches() {
             )
             ;;
         Linux)
-            _wvc_paths=("${XDG_CACHE_HOME:-$HOME/.cache}/$_wvc_bid")
+            # wry keys the WebKitGTK base-cache dir to the app DATA dir (same
+            # as base-data), so cache subdirs also live under
+            # ~/.local/share/<bid>. Clear only the cache-typed subdirs there;
+            # sibling localstorage/, indexeddb/, and cookies stay.
+            _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}/$_wvc_bid"
+            _wvc_paths=(
+                "${XDG_CACHE_HOME:-$HOME/.cache}/$_wvc_bid"
+                "$_wvc_data/WebKitCache"
+                "$_wvc_data/CacheStorage"
+                "$_wvc_data/serviceworkers"
+                "$_wvc_data/ServiceWorkers"
+            )
             ;;
         *) return 0 ;;
     esac
