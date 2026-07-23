@@ -143,6 +143,21 @@ def test_quoted_close_tag_split_across_feeds_stays_in_reasoning():
     assert visible2.strip() == "ok"
 
 
+def test_quoted_close_tag_split_mid_marker_stays_in_reasoning():
+    # Close tag split after opening quote across feeds (#7066 / Codex follow-up).
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning1, visible1 = ex.feed('echo "</thi')
+    assert visible1 == ""
+    assert reasoning1 == "echo "
+    reasoning2, visible2 = ex.feed('nk>" about training</think>\nok')
+    assert "</think>" not in reasoning2
+    assert "about training" in reasoning2
+    assert visible2.strip() == "ok"
+
+
 def test_streaming_neutralize_splits_marker_across_chunks():
     emit1, buf1 = neutralize_think_markup_streaming("</thi")
     assert emit1 == ""

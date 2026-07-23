@@ -10718,10 +10718,17 @@ def _coerce_responses_reasoning_text(value: Any) -> str:
 
 def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
     """Number of trailing chars to retain because they may start a marker."""
-    for size in range(min(len(text), max(len(m) for m in markers) - 1), 0, -1):
+    if not text or not markers:
+        return 0
+    max_marker = max(len(m) for m in markers) - 1
+    for size in range(min(len(text), max_marker), 0, -1):
         suffix = text[-size:]
-        if any(marker.startswith(suffix) for marker in markers):
-            return size
+        for marker in markers:
+            if marker.startswith(suffix):
+                return size
+            # A partial close tag may follow an opening quote (`echo "</thi`).
+            if suffix and suffix[0] in "\"'`" and marker.startswith(suffix[1:]):
+                return size
     return 0
 
 
@@ -12553,6 +12560,9 @@ async def anthropic_count_tokens(
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    openai_messages = neutralize_control_markup_in_messages(openai_messages)
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
     try:
@@ -12732,6 +12742,9 @@ async def anthropic_messages(
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
+    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+
+    openai_messages = neutralize_control_markup_in_messages(openai_messages)
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
