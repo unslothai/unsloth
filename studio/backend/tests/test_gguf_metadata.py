@@ -331,6 +331,84 @@ def test_pairing_score_base_model_url_mismatch():
     assert pairing_score(weight, mmproj) == -1
 
 
+def test_pairing_score_base_model_url_derivative_repack_match():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": (
+            "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+        ),
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_base_model_url_derivative_quant_match():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": (
+            "https://huggingface.co/vendor/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic"
+        ),
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_non_hf_hosts():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://github.com/acme/Model-VL-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_nested_namespaces():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": (
+            "https://gitlab.example.com/acme/models/Model-VL-GGUF"
+        ),
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/models/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_bare_repo_ids():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "acme/Model-VL-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "acme/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_rejects_basename_mismatch():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_base_model_url_trailing_slash_normalised():
     weight = {
         "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B/",
@@ -339,6 +417,38 @@ def test_pairing_score_base_model_url_trailing_slash_normalised():
         "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
     }
     assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_base_model_url_scheme_and_git_normalised():
+    weight = {
+        "general.base_model.0.repo_url": "http://huggingface.co/Qwen/Qwen3.5-9B.GIT",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+    }
+    assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_derivative_url_requires_basename_evidence():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model-v2-GGUF",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_derivative_projector_for_base_weight():
+    weight = {
+        "general.basename": "model",
+        "general.base_model.0.repo_url": "https://huggingface.co/org/model",
+    }
+    mmproj = {
+        "general.basename": "model",
+        "general.base_model.0.repo_url": "https://huggingface.co/other/model-ft",
+    }
+    assert pairing_score(weight, mmproj) == -1
 
 
 def test_pairing_score_basename_plus_org_fallback():
