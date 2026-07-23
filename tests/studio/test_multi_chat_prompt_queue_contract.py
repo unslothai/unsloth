@@ -21,9 +21,7 @@ RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").read_t
     encoding = "utf-8"
 )
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
-RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(
-    encoding = "utf-8"
-)
+RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(encoding = "utf-8")
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
@@ -226,10 +224,12 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
 
 
 def test_persisted_new_chat_accepts_its_promoted_remote_id():
-    assert RUNTIME_PROVIDER.count(
-        "visibleThreadId === localThreadId ||\n"
-        "                visibleThreadId === remoteId"
-    ) >= 2
+    assert (
+        RUNTIME_PROVIDER.count(
+            "visibleThreadId === localThreadId ||\n                visibleThreadId === remoteId"
+        )
+        >= 2
+    )
 
 
 def test_sidebar_distinguishes_running_queues_from_completed_background_chats():
