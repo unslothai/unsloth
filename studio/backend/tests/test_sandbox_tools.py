@@ -459,6 +459,30 @@ class TestPyYamlDeserialization:
             "import yaml\nvars(yaml.loader)['Loader'](payload).get_single_data()",
             "from yaml import unsafe_load\nglobals()['unsafe_load'](payload)",
             "from yaml import unsafe_load as loads\nlocals()['loads'](payload)",
+            (
+                "from yaml import unsafe_load\n"
+                "globals()['unsafe' + '_load'](payload)"
+            ),
+            "import pydoc\npydoc.locate(name)(payload)",
+            (
+                "from pkgutil import resolve_name\n"
+                "resolve_name('yaml.' + loader_name)(payload)"
+            ),
+            (
+                "import yaml\n"
+                "getattr(yaml.SafeLoader, 'add_' + 'constructor')('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "getattr(__builtins__, '__' + 'import__')('yaml')"
+                ".unsafe_load(payload)"
+            ),
+            (
+                "import yaml\n"
+                "s = setattr\n"
+                "s(yaml.SafeLoader, 'yaml_constructors', {'!run': run})\n"
+                "yaml.safe_load('!run x')"
+            ),
         ],
     )
     def test_unsafe_pyyaml_loaders_blocked(self, code):
@@ -536,6 +560,8 @@ class TestPyYamlDeserialization:
             "import sys, yaml\nsys.modules['yaml'].safe_load('a: 1')",
             "import yaml\nglobals().get('yaml').safe_load('a: 1')",
             ("from yaml import load\nload = print\nload('not deserialized')"),
+            "target = object()\ns = setattr\ns(target, 'value', 1)",
+            "import pydoc\npydoc.locate('json.dumps')",
         ],
     )
     def test_safe_pyyaml_loaders_allowed(self, code):

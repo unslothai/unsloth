@@ -834,13 +834,24 @@ def _reflected_member(node) -> tuple[object, str] | None:
 
 def _pyyaml_resolver_target(node, resolver_aliases: set[str]) -> str | None:
     """Return a literal PyYAML target produced by pydoc/pkgutil resolvers."""
-    if not (isinstance(node, ast.Call) and node.args and _is_yaml_string(node.args[0])):
+    if not (_is_pyyaml_resolver_call(node, resolver_aliases) and _is_yaml_string(node.args[0])):
         return None
-    if (isinstance(node.func, ast.Attribute) and node.func.attr in {"locate", "resolve_name"}) or (
-        isinstance(node.func, ast.Name) and node.func.id in resolver_aliases
-    ):
-        return _subscript_key(node.args[0])
-    return None
+    return _subscript_key(node.args[0])
+
+
+def _is_pyyaml_resolver_call(node, resolver_aliases: set[str]) -> bool:
+    """Whether ``node`` calls a stdlib string-to-object resolver."""
+    return bool(
+        isinstance(node, ast.Call)
+        and node.args
+        and (
+            (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"locate", "resolve_name"}
+            )
+            or (isinstance(node.func, ast.Name) and node.func.id in resolver_aliases)
+        )
+    )
 
 
 def _is_pyyaml_module_expr(
@@ -1045,6 +1056,23 @@ def _pyyaml_safe_loader_mutation_call(
     """Whether a bound, reflected, or unbound call mutates SafeLoader state."""
     mapping_mutators = {"update", "setdefault", "pop", "clear", "setitem", "__setitem__"}
     func = call.func
+    if (
+        isinstance(func, ast.Call)
+        and isinstance(func.func, ast.Name)
+        and func.func.id == "getattr"
+        and len(func.args) >= 2
+        and _subscript_key(func.args[1]) is None
+        and _pyyaml_loader_is_safe(
+            func.args[0],
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
+    ):
+        # A computed reflected member can resolve to any SafeLoader registry
+        # mutator, so it cannot be approved by this static policy.
+        return True
     if isinstance(func, ast.Attribute):
         if func.attr in (
             _PYYAML_SAFE_LOADER_MUTATORS | mapping_mutators
@@ -5061,8 +5089,9 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_safe_loader_aliases: set[str] = set()
             self.yaml_safe_loader_registry_aliases: set[str] = set()
             self.yaml_module_mutator_aliases: set[str] = set()
+            self.pyyaml_registry_setter_aliases = {"setattr", "delattr"}
             self.dynamic_import_aliases = {"__import__", "import_module"}
-            self.dynamic_import_module_aliases = {"builtins", "importlib"}
+            self.dynamic_import_module_aliases = {"__builtins__", "builtins", "importlib"}
             self.dynamic_namespace_aliases: set[str] = set()
             self.pyyaml_resolver_aliases: set[str] = set()
             self.function_parameter_aliases: set[str] = set()
@@ -5287,6 +5316,18 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
             )
+            registry_setter = value is not None and (
+                (
+                    isinstance(value, ast.Name)
+                    and value.id in self.pyyaml_registry_setter_aliases
+                )
+                or (
+                    isinstance(value, ast.Attribute)
+                    and value.attr in {"setattr", "delattr"}
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id in self.dynamic_import_module_aliases
+                )
+            )
             yaml_path = (
                 _pyyaml_attribute_path(
                     value,
@@ -5339,6 +5380,7 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_safe_loader_aliases.difference_update(names)
             self.yaml_safe_loader_registry_aliases.difference_update(names)
             self.yaml_module_mutator_aliases.difference_update(names)
+            self.pyyaml_registry_setter_aliases.difference_update(names)
             self.dynamic_import_aliases.difference_update(names)
             self.dynamic_import_module_aliases.difference_update(names)
             self.dynamic_namespace_aliases.difference_update(names)
@@ -5349,6 +5391,8 @@ def _check_signal_escape_patterns(code: str):
                 self.yaml_safe_loader_registry_aliases.update(names)
             if module_mutator:
                 self.yaml_module_mutator_aliases.update(names)
+            if registry_setter:
+                self.pyyaml_registry_setter_aliases.update(names)
             if yaml_alias:
                 self.yaml_aliases.update(names)
             if reference_kind in _PYYAML_LOAD_NAMES:
@@ -5377,6 +5421,7 @@ def _check_signal_escape_patterns(code: str):
                 self.yaml_safe_loader_aliases.copy(),
                 self.yaml_safe_loader_registry_aliases.copy(),
                 self.yaml_module_mutator_aliases.copy(),
+                self.pyyaml_registry_setter_aliases.copy(),
                 self.dynamic_import_aliases.copy(),
                 self.dynamic_import_module_aliases.copy(),
                 self.dynamic_namespace_aliases.copy(),
@@ -5391,6 +5436,7 @@ def _check_signal_escape_patterns(code: str):
                 self.yaml_safe_loader_aliases,
                 self.yaml_safe_loader_registry_aliases,
                 self.yaml_module_mutator_aliases,
+                self.pyyaml_registry_setter_aliases,
                 self.dynamic_import_aliases,
                 self.dynamic_import_module_aliases,
                 self.dynamic_namespace_aliases,
@@ -5406,9 +5452,10 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_safe_loader_aliases = set.intersection(*(state[4] for state in states))
             self.yaml_safe_loader_registry_aliases = set().union(*(state[5] for state in states))
             self.yaml_module_mutator_aliases = set().union(*(state[6] for state in states))
-            self.dynamic_import_aliases = set().union(*(state[7] for state in states))
-            self.dynamic_import_module_aliases = set().union(*(state[8] for state in states))
-            self.dynamic_namespace_aliases = set().union(*(state[9] for state in states))
+            self.pyyaml_registry_setter_aliases = set().union(*(state[7] for state in states))
+            self.dynamic_import_aliases = set().union(*(state[8] for state in states))
+            self.dynamic_import_module_aliases = set().union(*(state[9] for state in states))
+            self.dynamic_namespace_aliases = set().union(*(state[10] for state in states))
 
         def visit_If(self, node):
             self.visit(node.test)
@@ -5809,7 +5856,11 @@ def _check_signal_escape_patterns(code: str):
                     "Unsafe PyYAML deserialization dynamic module escapes direct policy inspection",
                 )
             func = node.func
-            if _pyyaml_resolver_target(node, self.pyyaml_resolver_aliases) is not None:
+            resolver_target = _pyyaml_resolver_target(node, self.pyyaml_resolver_aliases)
+            if resolver_target is not None or (
+                _is_pyyaml_resolver_call(node, self.pyyaml_resolver_aliases)
+                and _subscript_key(node.args[0]) is None
+            ):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization through stored stdlib callable resolver",
@@ -5817,7 +5868,10 @@ def _check_signal_escape_patterns(code: str):
             if (
                 isinstance(func, ast.Call)
                 and func.args
-                and _is_yaml_string(func.args[0])
+                and (
+                    _is_yaml_string(func.args[0])
+                    or _subscript_key(func.args[0]) is None
+                )
                 and (
                     (
                         isinstance(func.func, ast.Attribute)
@@ -5832,6 +5886,21 @@ def _check_signal_escape_patterns(code: str):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization through stdlib callable resolver",
+                )
+            if (
+                isinstance(func, ast.Subscript)
+                and _is_dynamic_namespace(func.value, self.dynamic_namespace_aliases)
+                and _subscript_key(func.slice) is None
+                and (
+                    self.yaml_aliases
+                    or self.yaml_load_aliases
+                    or self.yaml_unsafe_load_aliases
+                    or self.yaml_unsafe_loader_aliases
+                )
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization policy bypass through dynamic global lookup",
                 )
             if (
                 isinstance(func, ast.Call)
@@ -5892,7 +5961,10 @@ def _check_signal_escape_patterns(code: str):
                 )
             if (
                 (
-                    (isinstance(func, ast.Name) and func.id in {"setattr", "delattr"})
+                    (
+                        isinstance(func, ast.Name)
+                        and func.id in self.pyyaml_registry_setter_aliases
+                    )
                     or (isinstance(func, ast.Attribute) and func.attr in {"setattr", "delattr"})
                 )
                 and node.args
