@@ -847,6 +847,47 @@ def test_route_to_vulkan_prebuilt_keeps_hip_when_one_gpu_is_supported():
     assert persist is None
 
 
+def test_route_to_vulkan_prebuilt_auto_fallback_uses_active_gfx_only():
+    # HIP_VISIBLE_DEVICES can hide a supported dGPU; fallback must follow the
+    # active arch (_pick_rocm_gfx_target), not every physical GPU in hipinfo.
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx803",
+        rocm_gfx_targets = ["gfx1201", "gfx803"],
+    )
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == UPSTREAM
+    assert persist == "vulkan"
+    assert routed.has_rocm is False
+
+
+def test_route_to_vulkan_prebuilt_unknown_gfx_does_not_auto_fallback():
+    host = _windows_amd_host(
+        has_rocm = True,
+        rocm_gfx_target = None,
+        rocm_gfx_targets = [],
+    )
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
+def test_route_to_vulkan_prebuilt_family_gfx_token_keeps_rocm():
+    host = _windows_amd_host(rocm_gfx_target = "gfx110X", rocm_gfx_targets = ["gfx110X"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
+def test_route_to_vulkan_prebuilt_gfx1103_keeps_rocm():
+    host = _windows_amd_host(rocm_gfx_target = "gfx1103", rocm_gfx_targets = ["gfx1103"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
 def test_route_to_vulkan_prebuilt_explicit_opt_in_on_mixed_amd(monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
     host = _windows_amd_host(

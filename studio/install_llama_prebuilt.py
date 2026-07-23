@@ -64,9 +64,10 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# ggml-org/llama.cpp release.yml windows-hip job GPU_TARGETS. Cards below this
-# floor (e.g. gfx803 / RX 480) are invisible to the HIP prebuilt; Vulkan is the
-# practical llama-server backend on Windows for those hosts (#7357).
+# ggml-org/llama.cpp release.yml windows-hip job GPU_TARGETS, plus gfx1103 which
+# the fork windows-rocm gfx110X bundle covers. Cards below this floor (e.g.
+# gfx803 / RX 480) are invisible to the HIP prebuilt; Vulkan is the practical
+# llama-server backend on Windows for those hosts (#7357).
 WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
     {
         "gfx1030",
@@ -75,12 +76,15 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
         "gfx1100",
         "gfx1101",
         "gfx1102",
+        "gfx1103",
         "gfx1150",
         "gfx1151",
         "gfx1200",
         "gfx1201",
     }
 )
+# Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
+WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
 # elevation (its manifest is asInvoker), so this is just harmless belt-and-
@@ -6074,19 +6078,39 @@ def _host_rocm_gfx_targets(host: HostInfo) -> list[str]:
     return []
 
 
+def _active_rocm_gfx_target(host: HostInfo) -> str | None:
+    """The gfx HIP will run on (visible-device aware), not every physical GPU."""
+    if host.rocm_gfx_target:
+        return host.rocm_gfx_target.lower().strip()
+    return None
+
+
+def _gfx_is_windows_hip_supported(gfx: str) -> bool:
+    token = gfx.lower().strip()
+    if token in WINDOWS_ROCM_FAMILY_GFX_LABELS:
+        return True
+    return token in WINDOWS_HIP_PREBUILT_GFX_TARGETS
+
+
 def _host_has_windows_hip_prebuilt_gfx(host: HostInfo) -> bool:
-    return any(
-        target in WINDOWS_HIP_PREBUILT_GFX_TARGETS for target in _host_rocm_gfx_targets(host)
-    )
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        return False
+    return _gfx_is_windows_hip_supported(active)
 
 
 def _should_auto_vulkan_for_amd_windows(host: HostInfo) -> bool:
-    """True when every detected AMD GPU is below the Windows HIP prebuilt floor."""
+    """True when the active AMD GPU is below the Windows HIP prebuilt floor."""
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        # ROCm confirmed but gfx unknown (--has-rocm only): keep the legacy HIP /
+        # fork / source path instead of forcing Vulkan.
+        return False
     return (
         host.is_windows
         and host.has_rocm
         and not host.has_usable_nvidia
-        and not _host_has_windows_hip_prebuilt_gfx(host)
+        and not _gfx_is_windows_hip_supported(active)
     )
 
 
@@ -6151,10 +6175,10 @@ def _route_to_vulkan_prebuilt(
             )
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
-        targets = ", ".join(_host_rocm_gfx_targets(host)) or "unknown"
+        active = _active_rocm_gfx_target(host) or "unknown"
         log(
-            "No detected AMD GPU arch is supported by the Windows HIP prebuilt "
-            f"({targets}); installing the upstream Vulkan llama.cpp prebuilt instead"
+            "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
+            f"({active}); installing the upstream Vulkan llama.cpp prebuilt instead"
         )
         host = _vulkan_only_host(host)
         persist_backend = "vulkan"
