@@ -1222,12 +1222,36 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
 
 
 # ── diffusion GGUFs clear host-residency memory-mode state ───────────────────
-# The merged impl keeps #6414's single-device gpu_ids collapse for diffusion (it does
-# NOT reject gpu_ids in load_model) and moved the explicit pinned/resident memory_mode
-# rejection into the route (_reject_diffusion_memory_mode). #7188's load_model-level
-# rejection tests for both are therefore dropped; what remains here is the kept
-# load_model behaviour: a diffusion load clears any host-residency memory_mode carried
-# from a prior llama-server load (the diffusion runner has no --mlock/--no-mmap).
+# The route rejects known DiffusionGemma Vulkan pins and explicit host-memory modes
+# before teardown. load_model retains a post-download Vulkan guard for a remote
+# uncached model whose architecture was not known to the route (#7239). A successful
+# diffusion load also clears any host-residency memory_mode carried from a prior
+# llama-server load because the diffusion runner has no --mlock/--no-mmap support.
+
+
+def test_remote_diffusion_load_rejects_vulkan_ordinal_after_download(tmp_path):
+    """A renamed remote DiffusionGemma may be unclassifiable until its downloaded
+    GGUF header is read. Never pass its Vulkan ordinal to the CUDA diffusion runner."""
+    gguf = tmp_path / "renamed.gguf"
+    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._download_gguf = lambda **_kwargs: str(gguf)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    backend._start_diffusion_server = lambda **_kwargs: pytest.fail(
+        "Vulkan ordinal reached the CUDA diffusion runner"
+    )
+
+    with pytest.raises(ValueError, match = "no defined mapping"):
+        backend.load_model(
+            hf_repo = "renamed/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "renamed/model",
+            speculative_type = "off",
+            gpu_ids = [1],
+        )
 
 
 @pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])

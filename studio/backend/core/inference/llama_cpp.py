@@ -6682,6 +6682,18 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
+                # The diffusion runner pins its child by CUDA visibility mask, so a
+                # ggml Vulkan ordinal cannot be honored. The route rejects models it
+                # can classify before teardown; this covers a remote uncached GGUF
+                # whose architecture is first known after download (#7239).
+                if is_vulkan_backend and gpu_ids:
+                    raise ValueError(
+                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                        "its device by CUDA physical index, which has no defined mapping "
+                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                        "device."
+                    )
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
