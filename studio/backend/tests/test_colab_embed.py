@@ -65,7 +65,12 @@ def test_ready_card_html_keeps_open_button_for_localhost_outside_colab(monkeypat
 def test_embed_kernel_port_iframe_uses_colab_helper():
     colab_output = MagicMock()
     google_colab = SimpleNamespace(output = colab_output)
-    with patch.dict("sys.modules", {"google.colab": google_colab}):
+    # `import google.colab` resolves the top-level `google` package first, so
+    # mock it too or the import fails when no real google package is installed.
+    google_pkg = SimpleNamespace(colab = google_colab)
+    with patch.dict(
+        "sys.modules", {"google": google_pkg, "google.colab": google_colab}
+    ):
         assert colab._embed_kernel_port_iframe(8888) is True
     colab_output.serve_kernel_port_as_iframe.assert_called_once_with(
         8888,
