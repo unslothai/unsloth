@@ -1556,6 +1556,7 @@ const Composer: FC<{
   const draftThreadId = referenceThreadId;
   const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
   const lastDraftKeyRef = useRef(draftKey);
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
@@ -1574,6 +1575,7 @@ const Composer: FC<{
       return;
     }
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
+    draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
   // Without this the restore effect above puts the sent text back when the
@@ -1583,6 +1585,10 @@ const Composer: FC<{
     draftKeyRef.current = draftKey;
   }, [draftKey]);
   const clearStoredDraft = useCallback(() => {
+    if (draftSaveTimerRef.current !== null) {
+      clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
     const key = draftKeyRef.current;
     if (key) {
       writeComposerDraft(key, "");
