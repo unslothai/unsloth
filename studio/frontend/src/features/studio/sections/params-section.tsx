@@ -222,6 +222,25 @@ export function ParamsSection(): ReactElement {
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
 
+  // LoftQ is not supported on MLX (the backend rejects it), so clear a stale
+  // selection to lora on Apple Silicon -- whether persisted, applied from a
+  // model default, or imported -- so the backend never receives it.
+  const setLoraVariant = store.setLoraVariant;
+  useEffect(() => {
+    if (isMac && store.loraVariant === "loftq") {
+      setLoraVariant("lora");
+    }
+  }, [isMac, store.loraVariant, setLoraVariant]);
+
+  // Packing is not supported on MLX (the backend forces it off), so clear it on
+  // Apple Silicon -- the checkbox is disabled and the flag is never sent.
+  const setPacking = store.setPacking;
+  useEffect(() => {
+    if (isMac && store.packing) {
+      setPacking(false);
+    }
+  }, [isMac, store.packing, setPacking]);
+
   const trySetContextLength = (input: string): number | null => {
     const n = Number(input);
     if (Number.isInteger(n) && n > 0) {
@@ -724,8 +743,9 @@ export function ParamsSection(): ReactElement {
                       <button
                         key={opt.value}
                         type="button"
+                        disabled={isMac && opt.value === "loftq"}
                         onClick={() => store.setLoraVariant(opt.value)}
-                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
                           store.loraVariant === opt.value
                             ? "border-ring-strong bg-primary/5"
                             : "border-border hover:border-foreground/20"
@@ -733,7 +753,9 @@ export function ParamsSection(): ReactElement {
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
                         <p className="text-[10px] text-muted-foreground">
-                          {opt.desc}
+                          {isMac && opt.value === "loftq"
+                            ? "Not supported on Apple Silicon"
+                            : opt.desc}
                         </p>
                       </button>
                     ))}
@@ -1127,14 +1149,37 @@ export function ParamsSection(): ReactElement {
                       <Checkbox
                         id="packing"
                         checked={store.packing}
+                        disabled={isMac}
                         onCheckedChange={(v) => store.setPacking(!!v)}
                       />
                       <label
                         htmlFor="packing"
-                        className="text-xs cursor-pointer text-muted-foreground"
+                        className={`text-xs text-muted-foreground ${
+                          isMac
+                            ? "cursor-not-allowed opacity-60"
+                            : "cursor-pointer"
+                        }`}
                       >
                         {t("studio.params.enablePacking")}
                       </label>
+                      {isMac && (
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <button
+                              type="button"
+                              className="text-foreground/70 hover:text-foreground"
+                            >
+                              <HugeiconsIcon
+                                icon={InformationCircleIcon}
+                                className="size-3"
+                              />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Packing is not supported on Apple Silicon (MLX).
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </div>
                   )}
                   {!store.isEmbeddingModel && !isCpt && !isRawText && (
