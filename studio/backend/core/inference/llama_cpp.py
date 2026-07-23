@@ -4085,7 +4085,9 @@ class LlamaCppBackend:
             # The drafter is served under the same --parallel slot count as the
             # main model, so price its KV per slot too: a sliding-window drafter
             # (Gemma) grows KV with slots and would otherwise be under-reserved.
-            kv = db._estimate_kv_cache_bytes(n_ctx, heavier, n_parallel = n_parallel)
+            # swa_full: the draft caches against the full target window, so its SWA
+            # layers are not window-capped and grow with n_ctx (safe upper bound).
+            kv = db._estimate_kv_cache_bytes(n_ctx, heavier, n_parallel = n_parallel, swa_full = True)
             return kv or None
         nextn = self._nextn_predict_layers or 0
         n_kv = self._n_kv_heads or self._n_heads
