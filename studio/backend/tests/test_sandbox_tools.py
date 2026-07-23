@@ -315,7 +315,9 @@ class TestSandboxEnvIsolation:
         from core.inference.tools import _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "win32")
-        git_dir = tmp_path / "Program Files" / "Git" / "cmd"
+        prog = tmp_path / "Program Files"
+        monkeypatch.setenv("ProgramFiles", str(prog))
+        git_dir = prog / "Git" / "cmd"
         git_dir.mkdir(parents = True)
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_dir / "git.exe"))
         env = _build_safe_env(str(tmp_path))
@@ -347,20 +349,44 @@ class TestSandboxEnvIsolation:
         assert str(fake_git) not in parts
 
     def test_git_cmd_shim_extension_added_to_pathext(self, monkeypatch, tmp_path):
-        """A host git resolved as a .cmd shim stays resolvable under the
-        restricted PATHEXT (cwd lookup is disabled separately)."""
+        """A host git resolved as a .cmd shim under a trusted root stays
+        resolvable under the restricted PATHEXT (cwd lookup disabled)."""
         import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "win32")
-        shim_dir = tmp_path / "scoop" / "shims"
-        shim_dir.mkdir(parents = True)
-        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim_dir / "git.cmd"))
+        prog = tmp_path / "Program Files"
+        monkeypatch.setenv("ProgramFiles", str(prog))
+        git_dir = prog / "Git" / "cmd"
+        git_dir.mkdir(parents = True)
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(git_dir / "git.cmd")
+        )
         env = _build_safe_env(str(tmp_path))
-        assert str(shim_dir) in env["PATH"].split(os.pathsep)
+        assert str(git_dir) in env["PATH"].split(os.pathsep)
         assert env["PATHEXT"] == ".EXE;.COM;.CMD"
 
-    def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
+    def test_user_writable_git_dir_refused(self, monkeypatch, tmp_path):
+        """Git resolved from a per-user manager (Scoop shims) is NOT trusted:
+        an attacker could drop rg.exe beside it and hit the auto-approve gate."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+        shim_dir = tmp_path / "users" / "alice" / "scoop" / "shims"
+        shim_dir.mkdir(parents = True)
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(shim_dir / "git.exe")
+        )
+        env = _build_safe_env(str(tmp_path))
+        assert str(shim_dir) not in env["PATH"].split(os.pathsep)
+        # No trusted git launcher -> PATHEXT stays minimal.
+        assert env["PATHEXT"] == ".EXE;.COM"
+
+    def test_no_default_current_directory_in_exe_path_set_on_windows(
+        self, monkeypatch, tmp_path
+    ):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
         import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env

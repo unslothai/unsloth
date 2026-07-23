@@ -2493,6 +2493,29 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     return True
 
 
+def _is_trusted_windows_program_dir(path: str) -> bool:
+    """True when ``path`` sits under a system-managed install root.
+
+    Program Files (+ x86 / W6432) and ``%SystemRoot%`` are admin-writable
+    only, so a bare auto-approved command resolving from a Git dir there
+    cannot be replaced by an unprivileged attacker. Per-user managers
+    (Scoop/Choco shims under the profile) are refused (#7317).
+    """
+    roots = []
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot"):
+        val = os.environ.get(var)
+        if val:
+            roots.append(val)
+    if not roots:
+        roots = [r"C:\Program Files", r"C:\Program Files (x86)", r"C:\Windows"]
+    norm = os.path.normcase(os.path.normpath(path))
+    for root in roots:
+        root_norm = os.path.normcase(os.path.normpath(root))
+        if norm == root_norm or norm.startswith(root_norm + os.sep):
+            return True
+    return False
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
@@ -2527,15 +2550,17 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
-    # Windows Git installs live outside System32; inherit only the dir of the
-    # git the HOST shell resolves (never a name-matched, possibly user-writable
-    # dir) so bare `git` resolves without weakening the sandbox PATH (#7317).
+    # Windows Git installs live outside System32; inherit the dir of the git
+    # the HOST shell resolves, but ONLY when it sits under a system install
+    # root (Program Files, windir). A user-writable dir (Scoop/Choco shims)
+    # is refused: it would let an attacker drop rg.exe/jq.exe beside git and
+    # have an auto-approved bare command execute it (#7317).
     git_ext = ""
     if sys.platform == "win32":
         git_exe = shutil.which("git")
         if git_exe:
             git_dir = os.path.dirname(git_exe)
-            if os.path.isabs(git_dir):
+            if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
                 path_entries.append(git_dir)
                 # A .cmd/.bat git shim needs its extension in PATHEXT below.
                 git_ext = os.path.splitext(git_exe)[1].upper()
