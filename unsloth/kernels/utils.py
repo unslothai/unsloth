@@ -1116,11 +1116,21 @@ def matmul_lora(
             W = W.dequantize()
         else:
             W = W.contiguous()
+        # custom_fwd disables autocast, so reconcile the activation dtype to the
+        # weight (compute) dtype as autocast would (e.g. fp32 fast_rms_layernorm
+        # output meeting fp16/bf16 base weights).
+        if X.dtype != W.dtype:
+            X = X.to(W.dtype)
+            dtype = W.dtype
         out = torch_matmul(X, W.t(), out = out)
     elif W.dtype == torch.float8_e4m3fn:
         out = fp8_linear(X, W, W_quant)
     else:
         W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        # See note above: align the activation dtype to the base weight dtype.
+        if X.dtype != W.dtype:
+            X = X.to(W.dtype)
+            dtype = W.dtype
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W
