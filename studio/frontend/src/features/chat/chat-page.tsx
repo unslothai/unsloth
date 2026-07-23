@@ -478,20 +478,28 @@ const CompareContent = memo(function CompareContent({
   );
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
+  const usedInventoryFallbackRef = useRef(false);
 
   // Wait for the full LoRA inventory before choosing the layout, then freeze
   // that choice. Generalized compare temporarily changes the global checkpoint
   // as it visits each pane; those later changes must never remount the layout.
   useEffect(() => {
-    if (!modelRuntimeHydrated && !modelsError) return;
-    setIsLoraCompare(
-      (current) =>
-        current ??
-        (modelRuntimeHydrated
-          ? getIsLoraCompareFromState(useChatRuntimeStore.getState())
-          : false),
-    );
-  }, [modelRuntimeHydrated, modelsError]);
+    if (modelRuntimeHydrated) {
+      const detected = getIsLoraCompareFromState(
+        useChatRuntimeStore.getState(),
+      );
+      if (usedInventoryFallbackRef.current) {
+        usedInventoryFallbackRef.current = false;
+        setIsLoraCompare(detected);
+      } else {
+        setIsLoraCompare((current) => current ?? detected);
+      }
+      return;
+    }
+    if (!modelsError || isLoraCompare !== null) return;
+    usedInventoryFallbackRef.current = true;
+    setIsLoraCompare(false);
+  }, [modelRuntimeHydrated, modelsError, isLoraCompare]);
 
   if (isLoraCompare === null) {
     return <div className="min-h-0 flex-1" aria-busy="true" />;
