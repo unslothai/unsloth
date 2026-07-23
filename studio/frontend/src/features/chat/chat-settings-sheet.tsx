@@ -496,6 +496,7 @@ export function ChatSettingsPanel({
     activePresetSource,
     params,
     customContextLength,
+    ggufContextLength,
     kvCacheDtype,
     gpuMemoryMode,
     gpuLayers,
@@ -513,12 +514,14 @@ export function ChatSettingsPanel({
     () => formatPresetLoadConfigSummary(capturePresetLoadConfig()),
     [
       customContextLength,
+      ggufContextLength,
       kvCacheDtype,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,
       tensorParallel,
       speculativeType,
+      specDraftNMax,
       params.maxSeqLength,
     ],
   );

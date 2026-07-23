@@ -16,7 +16,11 @@ import {
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
-import { GPU_LAYERS_AUTO, normalizeSpeculativeType } from "../stores/chat-runtime-store";
+import {
+  GPU_LAYERS_AUTO,
+  useChatRuntimeStore,
+  normalizeSpeculativeType,
+} from "../stores/chat-runtime-store";
 
 /** Load/runtime knobs saved in a chat preset (excludes per-model-only blobs). */
 export type PresetLoadConfig = Pick<
@@ -133,8 +137,16 @@ export function isSamePresetLoadConfig(
 
 export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const snapshot = currentRuntimePerModelConfig({ includeMaxSeqLength: true });
+  const store = useChatRuntimeStore.getState();
+  const isGguf =
+    store.activeGgufVariant != null ||
+    store.ggufContextLength != null ||
+    (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const effectiveContextLength =
+    snapshot.customContextLength ??
+    (isGguf ? store.ggufContextLength : null);
   const captured: PresetLoadConfig = {
-    customContextLength: snapshot.customContextLength ?? null,
+    customContextLength: effectiveContextLength ?? null,
     maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),

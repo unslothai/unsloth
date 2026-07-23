@@ -36,3 +36,15 @@ def test_persisted_preset_serializes_load_config():
     assert "normalizePresetLoadConfig(item.loadConfig)" in storage
     api = _read("studio/frontend/src/features/chat/api/chat-settings-api.ts")
     assert "loadConfig?: Record<string, unknown>" in api
+
+
+def test_capture_reads_gguf_loaded_context():
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    assert "store.ggufContextLength" in source
+    assert "effectiveContextLength" in source
+
+
+def test_backend_chat_preset_accepts_load_config():
+    routes = _read("studio/backend/routes/chat_history.py")
+    assert "class ChatPresetLoadConfig" in routes
+    assert "loadConfig: Optional[ChatPresetLoadConfig]" in routes
