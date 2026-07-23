@@ -475,10 +475,7 @@ def test_autoload_no_model_error_is_actionable():
     """With no valid on-device candidate the user is told to select or
     explicitly download a model instead of getting a silent remote load."""
     src = _read("features/chat/api/chat-adapter.ts")
-    assert (
-        "Select a model in the top bar, or download one from the Hub, then retry."
-        in src
-    )
+    assert "Select a model in the top bar, or download one from the Hub, then retry." in src
 
 
 def test_autoload_inventory_failure_is_not_empty_inventory():
@@ -508,9 +505,7 @@ def test_autoload_uses_unified_backend_inventory():
         src,
         re.S,
     )
-    sources = re.search(
-        r"const AUTO_LOAD_LOCAL_SOURCES[^;]*;", src, re.S
-    )
+    sources = re.search(r"const AUTO_LOAD_LOCAL_SOURCES[^;]*;", src, re.S)
     assert sources, "AUTO_LOAD_LOCAL_SOURCES not found"
     for source in ('"models_dir"', '"lmstudio"', '"custom"'):
         assert source in sources.group(0), source
@@ -591,7 +586,7 @@ def test_remembered_model_record_supports_local_sources():
     # Same storage key: v1 records parse backward-compatibly, no migration.
     assert 'const STORAGE_KEY = "unsloth.last-local-model-load.v1";' in src
     # Legacy records carry no source and default to the managed cache.
-    assert 'isLastLocalModelSource(parsed.source)' in src
+    assert "isLastLocalModelSource(parsed.source)" in src
     assert ': "hf_cache";' in src
     # The GGUF-variant requirement is scoped to managed-cache records; a
     # local GGUF's load target identifies the file, so null stays valid.
