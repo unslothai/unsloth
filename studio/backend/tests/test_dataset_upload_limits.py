@@ -120,9 +120,7 @@ def test_training_dataset_preview_uses_only_request_hf_token(
     ("hf_token", "expected_token"),
     ((None, False), ("  request-token\n", "request-token")),
 )
-def test_legacy_dataset_card_uses_only_request_hf_token(
-    monkeypatch, hf_token, expected_token
-):
+def test_legacy_dataset_card_uses_only_request_hf_token(monkeypatch, hf_token, expected_token):
     captured_tokens = []
 
     class _DatasetCard:
