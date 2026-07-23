@@ -564,6 +564,7 @@ class TestChatCompletionRequestToolFields:
 
     def test_confirm_tool_calls_rejected_for_oai_compat_with_client_tools(self, monkeypatch):
         """Client-supplied tools stay on passthrough; confirm is not supported there."""
+
         class _UnusedBackend:
             is_loaded = False
 

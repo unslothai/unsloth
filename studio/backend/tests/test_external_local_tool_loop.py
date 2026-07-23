@@ -352,7 +352,9 @@ def test_stream_external_local_tool_loop_awaiting_confirmation(monkeypatch):
     def fake_wait_tool_decision(_slot, _approval_id, _cancel_event):
         return "allow"
 
-    monkeypatch.setattr("core.inference.external_agentic.wait_tool_decision", fake_wait_tool_decision)
+    monkeypatch.setattr(
+        "core.inference.external_agentic.wait_tool_decision", fake_wait_tool_decision
+    )
     monkeypatch.setattr(
         "core.inference.external_agentic.execute_tool",
         lambda *_a, **_k: "ok",
@@ -414,7 +416,13 @@ def test_stream_external_local_tool_loop_forwards_rag_scope(monkeypatch):
     }
     seen = {"rag_scope": None}
 
-    def fake_execute_tool(_name, _arguments, *_args, rag_scope=None, **_kwargs):
+    def fake_execute_tool(
+        _name,
+        _arguments,
+        *_args,
+        rag_scope = None,
+        **_kwargs,
+    ):
         seen["rag_scope"] = _args[4] if len(_args) > 4 else rag_scope
         return "hits"
 
