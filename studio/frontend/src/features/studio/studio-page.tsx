@@ -165,7 +165,7 @@ export function StudioPage(): ReactElement {
         />
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
-          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
             {t("studio.title")}
           </h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>

@@ -143,10 +143,10 @@ export function ChatSearchDialog() {
                   strokeWidth={2}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
-                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                <span className="min-w-0 flex-1 truncate text-ui-13 font-medium">
                   {item.title || "Untitled chat"}
                 </span>
-                <span className="shrink-0 text-[11px] text-muted-foreground">
+                <span className="shrink-0 text-ui-11 text-muted-foreground">
                   {formatRelative(item.createdAt)}
                 </span>
               </CommandPrimitive.Item>

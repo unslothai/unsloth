@@ -1416,11 +1416,80 @@ exit 0
             $suffix++
             $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
         }
-        Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
+        # Publish the rollback state before the atomic rename so interruption
+        # cannot land after Move-Item but before cleanup knows where the old venv went.
+        try {
+            Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
+        } catch {
+            # A collision or ordinary rename failure leaves the original in place.
+            # Keep state active only when the rename happened before interruption.
+            if (Test-Path -LiteralPath $ExistingDir) {
+                $script:StudioVenvRollbackActive = $false
+                $script:StudioVenvRollbackDir = $null
+            }
+            throw
+        }
         substep "previous environment preserved for rollback"
+    }
+
+    function Remove-StudioVenvTreeWithRetry {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [Parameter(Mandatory = $true)][string]$Label
+        )
+        $lastError = $null
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            } catch {
+                $lastError = $_.Exception.Message
+            }
+            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
+        }
+        Write-Host "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
+        if ($lastError) { Write-Host "       $lastError" -ForegroundColor Yellow }
+        return $false
+    }
+
+    function Test-StudioVenvRollbackMustBePreserved {
+        param([Parameter(Mandatory = $true)][System.IO.FileSystemInfo]$Rollback)
+        # Preserve anything outside the installer's timestamp.PID[.suffix] format.
+        if ($Rollback.Name -notmatch '^unsloth_studio\.rollback\.[0-9]{14}\.([0-9]+)(?:\.[0-9]+)?$') {
+            return $true
+        }
+        $ownerPid = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$ownerPid)) { return $true }
+        if ($ownerPid -eq $PID) { return $true }
+        return $null -ne (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)
+    }
+
+    function Remove-StaleStudioVenvRollbacks {
+        try {
+            $rollbacks = @(
+                Get-ChildItem -LiteralPath $StudioHome -Directory -Force -ErrorAction Stop |
+                    Where-Object { $_.Name -like 'unsloth_studio.rollback.*' }
+            )
+        } catch {
+            Write-Host "[WARN] Could not inspect stale environment rollbacks in $StudioHome" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            return
+        }
+        foreach ($rollback in $rollbacks) {
+            if (($rollback.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Write-Host "[WARN] Refusing to remove rollback reparse point $($rollback.FullName)" -ForegroundColor Yellow
+                continue
+            }
+            # A concurrent installer may have moved its live venv aside. The PID
+            # in the generated name keeps this run from deleting its rescue copy.
+            if (Test-StudioVenvRollbackMustBePreserved -Rollback $rollback) { continue }
+            if (Remove-StudioVenvTreeWithRetry -Path $rollback.FullName -Label "stale environment rollback") {
+                substep "removed stale environment rollback $($rollback.Name)"
+            }
+        }
     }
 
     function Restore-StudioVenvRollback {
@@ -1434,7 +1503,9 @@ exit 0
         substep "restoring previous environment after failed install..." "Yellow"
         try {
             if (Test-Path -LiteralPath $target) {
-                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
+                    throw "Could not remove incomplete environment at $target"
+                }
             }
             Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             substep "restored previous environment"
@@ -1449,13 +1520,17 @@ exit 0
     function Complete-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
-            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        # The replacement is committed. Disable restoration before deleting the
+        # backup so interruption cannot restore a partially deleted environment.
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
+        }
     }
 
+    $studioVenvReplacementCommitted = $false
+    try {
     if (Test-Path -LiteralPath $VenvPython) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
@@ -2272,7 +2347,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2286,7 +2361,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2360,7 +2435,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2372,7 +2447,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2400,7 +2475,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.4" "unsloth>=2026.7.4" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.6" "unsloth>=2026.7.5" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2688,6 +2763,13 @@ exit 0
     }
     Refresh-SessionPath  # sync current session with registry
     Complete-StudioVenvRollback
+    $studioVenvReplacementCommitted = $true
+    Remove-StaleStudioVenvRollbacks
+    } finally {
+        if (-not $studioVenvReplacementCommitted) {
+            Restore-StudioVenvRollback
+        }
+    }
 
     # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy
     # User PATH entry (Machine > User > current $env:Path) would win.

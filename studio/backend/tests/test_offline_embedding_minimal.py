@@ -85,11 +85,19 @@ def _is_embedding_model(*args, **kwargs):
 
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
-    """Point the HF cache at a fresh temp dir."""
+    """Point the HF cache at a fresh temp dir.
+
+    get_hf_cache_paths() reads an import-time env snapshot, not live os.environ,
+    so point it (and thus active_hf_hub_cache + the snapshot lookup's selected
+    root) at this temp cache too."""
     root = tmp_path / "hub"
     root.mkdir()
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = root),
+    )
     return root
 
 
@@ -198,18 +206,25 @@ def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
     assert hf_cache_snapshot_dir("org/emb") == snapshot
 
 
-def test_snapshot_dir_st_home_is_exclusive(tmp_path, monkeypatch):
-    # With SENTENCE_TRANSFORMERS_HOME set, ST loads only from it, so a model living only under
-    # HF_HUB_CACHE must not be reported.
+def test_snapshot_dir_prefers_selected_cache_over_st_home(tmp_path, monkeypatch):
+    # The RAG loader passes cache_folder=active_hf_hub_cache(), which overrides
+    # SENTENCE_TRANSFORMERS_HOME, so the snapshot + offline security lookup must
+    # search the selected cache even when ST_HOME points elsewhere. Otherwise the
+    # gate scans a cache the model never loads from and a pickle weight in the
+    # selected cache slips through.
     st_home = tmp_path / "st_home"
     st_home.mkdir()
-    hub = tmp_path / "hub"
-    hub.mkdir()
+    selected = tmp_path / "hub"
+    selected.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
-    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
     monkeypatch.delenv("HF_HOME", raising = False)
-    _make_cache(hub, "org/emb", {"modules.json": MODULES_JSON})  # only in the HF hub cache
-    assert hf_cache_snapshot_dir("org/emb") is None
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = selected),
+    )
+    snapshot = _make_cache(selected, "org/emb", {"modules.json": MODULES_JSON})  # only in selected
+    assert hf_cache_snapshot_dir("org/emb") == snapshot
 
 
 def test_snapshot_is_loadable_with_config_and_weights(hf_cache):
