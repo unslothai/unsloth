@@ -3094,6 +3094,13 @@ export function createOpenAIStreamAdapter(
                       confirm_tool_calls:
                         permissionMode === "ask" || permissionMode === "auto",
                       bypass_permissions: bypassPermissions,
+                      max_tool_calls_per_message:
+                        useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                      tool_call_timeout: (() => {
+                        const mins =
+                          useChatRuntimeStore.getState().toolCallTimeout;
+                        return mins >= 9999 ? 9999 : mins * 60;
+                      })(),
                     }
                   : {}),
               provider_id: externalProvider.id,

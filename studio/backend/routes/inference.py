@@ -7203,15 +7203,15 @@ async def openai_chat_completions(
             if _cfg is not None:
                 _ext_provider_type = _cfg.get("provider_type")
         from core.inference.external_agentic import provider_supports_local_tool_runtime
+        from state.tool_policy import get_tool_policy as _get_tool_policy_ext
 
+        _cli_policy_ext = _get_tool_policy_ext()
+        _tools_on_ext = _effective_enable_tools(payload)
+        _mcp_allowed_ext = bool(payload.mcp_enabled) and _cli_policy_ext is not False
         _ext_local_tools = (
             provider_supports_local_tool_runtime(_ext_provider_type)
             and payload.stream
-            and (
-                payload.enable_tools is True
-                or bool(payload.enabled_tools)
-                or bool(payload.mcp_enabled)
-            )
+            and (_tools_on_ext or _mcp_allowed_ext)
             and not payload.tools
         )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
