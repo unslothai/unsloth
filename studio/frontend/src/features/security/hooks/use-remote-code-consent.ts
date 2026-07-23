@@ -16,8 +16,8 @@ interface ConfirmArgs {
   requiresTrustRemoteCode?: boolean;
   // Called on approval with the pinning fingerprint.
   onApprove: (fingerprint: string | null) => void;
+  dialogOwner?: unknown;
 }
-
 /** Gate a load that may need trust_remote_code: scan, show the consent dialog, and on
  *  approval call onApprove with the pinning fingerprint. Returns false if declined. */
 export async function confirmRemoteCodeIfNeeded({
@@ -25,6 +25,7 @@ export async function confirmRemoteCodeIfNeeded({
   hfToken,
   requiresTrustRemoteCode,
   onApprove,
+  dialogOwner,
 }: ConfirmArgs): Promise<boolean> {
   let scan: RemoteCodeScan;
   try {
@@ -61,7 +62,7 @@ export async function confirmRemoteCodeIfNeeded({
 
   const confirmed = await useRemoteCodeConsentDialogStore
     .getState()
-    .requestConsent(scan);
+    .requestConsent(scan, dialogOwner);
   if (!confirmed) {
     // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter +
     // base) so untrusted code is not left on disk. Fall back to the primary flag for an older backend.

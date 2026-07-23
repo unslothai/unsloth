@@ -27,9 +27,13 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "if (!stopped)" in runtime
     assert "await refresh();" in runtime
     assert "if (!preserveCheckpoint) clearCheckpoint();" in cancel
-    assert "useTransformersUpgradeDialogStore.getState().cancelPending();" in cancel
-    assert "useRemoteCodeConsentDialogStore.getState().resolve(false);" in cancel
-    assert 'useHfTokenWarningStore.getState().resolve("cancel");' in cancel
+    assert 'useHfTokenWarningStore.getState().resolve("cancel", run);' in cancel
+    assert (
+        "useRemoteCodeConsentDialogStore.getState().resolve(false, run);" in cancel
+    )
+    assert (
+        "useTransformersUpgradeDialogStore.getState().cancelPending(run);" in cancel
+    )
     assert "await run.completionPromise;" in cancel
 
 

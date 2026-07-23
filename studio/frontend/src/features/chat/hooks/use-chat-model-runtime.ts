@@ -480,9 +480,9 @@ export function useChatModelRuntime() {
 
       const model = run.info;
       run.abortController.abort();
-      useHfTokenWarningStore.getState().resolve("cancel");
-      useRemoteCodeConsentDialogStore.getState().resolve(false);
-      useTransformersUpgradeDialogStore.getState().cancelPending();
+      useHfTokenWarningStore.getState().resolve("cancel", run);
+      useRemoteCodeConsentDialogStore.getState().resolve(false, run);
+      useTransformersUpgradeDialogStore.getState().cancelPending(run);
       loadAbortRef.current = null;
       loadingModelRef.current = null;
       useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
@@ -509,7 +509,7 @@ export function useChatModelRuntime() {
           // task to observe the abort. The unload route waits for cancellation
           // to settle before it returns, preventing a late /load activation.
           await unloadModel({ model_path: model.id });
-          if (run.rollbackCheckpoint) {
+          if (run.rollbackCheckpoint && run.backendLoadStarted) {
             run.previousCheckpointWasUnloaded = true;
           }
           // Every owned confirmation above is now declined. If a transformers
@@ -613,7 +613,12 @@ export function useChatModelRuntime() {
         (initialInFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
         (initialInFlightLoad.nativePathToken ?? null) ===
           (nativePathToken ?? null);
-      if (initiallyLoadingSamePick && !initialActiveRun?.cancelPromise) return;
+      if (initiallyLoadingSamePick && !initialActiveRun?.cancelPromise) {
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig);
+        }
+        return;
+      }
       // Register the user's intent before awaiting cancellation. This prevents
       // the superseded run's error cleanup from restoring its previous config
       // over settings already applied by the new caller.
@@ -635,7 +640,12 @@ export function useChatModelRuntime() {
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick && !activeRun?.cancelPromise) return;
+        if (loadingSamePick && !activeRun?.cancelPromise) {
+          if (typeof selection !== "string" && selection.previousConfig) {
+            applyPerModelConfigToRuntime(selection.previousConfig);
+          }
+          return;
+        }
 
         // A load owned by another runtime surface cannot be safely cancelled
         // through this hook.
@@ -893,6 +903,8 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
+            }, {
+              dialogOwner: run,
             });
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
@@ -902,6 +914,7 @@ export function useChatModelRuntime() {
                 upgrade: validation.transformers_upgrade,
                 // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
+                dialogOwner: run,
               });
               // The install unloads the previous model before the swap (even when
               // the swap then fails), so any exit after this point must roll back.
@@ -935,6 +948,7 @@ export function useChatModelRuntime() {
                   trustRemoteCode = true;
                   approvedRemoteCodeFingerprint = fp;
                 },
+                dialogOwner: run,
               });
               if (!approved) {
                 throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
@@ -1048,6 +1062,8 @@ export function useChatModelRuntime() {
               n_cpu_moe: loadNCpuMoe,
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
+            }, {
+              dialogOwner: run,
             });
 
             // If cancelled while loading, don't update UI to show

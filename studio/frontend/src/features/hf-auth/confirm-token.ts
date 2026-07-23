@@ -14,9 +14,9 @@ export interface PreparedHfToken {
   proceed: boolean;
   token: string | null;
 }
-
 interface PrepareHfTokenOptions {
   allowAnonymous?: boolean;
+  dialogOwner?: unknown;
 }
 
 // A caller can retain the pre-dialog payload while the shared store is cleared.
@@ -50,7 +50,7 @@ export async function prepareHfTokenForUse(
 
   const decision = await useHfTokenWarningStore
     .getState()
-    .requestDecision(allowAnonymous);
+    .requestDecision(allowAnonymous, options.dialogOwner);
   if (decision === "anonymous") {
     anonymousForSession.add(normalized);
     useHfTokenStore.getState().clearToken();
