@@ -404,9 +404,10 @@ async def stream_external_local_tool_loop(
 
     # Budget exhausted after tool rounds — one final synthesis pass without tools.
     if not cancel_event.is_set():
-        from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+        if max_tool_iterations > 0:
+            from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
 
-        conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
         final_gen = client.stream_chat_completion(
             messages = conversation,
             model = model,

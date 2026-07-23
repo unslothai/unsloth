@@ -6824,7 +6824,14 @@ async def _proxy_to_external_provider(
         _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
         loop_messages = list(chat_messages)
         if _nudge:
-            loop_messages = [{"role": "system", "content": _nudge}, *loop_messages]
+            if loop_messages and loop_messages[0].get("role") == "system":
+                merged = dict(loop_messages[0])
+                merged["content"] = (
+                    str(merged.get("content") or "").rstrip() + "\n\n" + _nudge
+                ).strip()
+                loop_messages = [merged, *loop_messages[1:]]
+            else:
+                loop_messages = [{"role": "system", "content": _nudge}, *loop_messages]
 
         _confirm = _permission_mode_confirm(payload)
         cancel_event = threading.Event()
