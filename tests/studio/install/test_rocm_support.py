@@ -1245,9 +1245,7 @@ class TestGfx906LegacyReroute:
         # on the rocm6.3 index (torch <= 2.9.x there).
         assert "torch>=2.4,<2.11.0" in torch_call
         # gfx906 has no prebuilt bnb -- the generic wheel must not be installed.
-        assert not any(
-            "bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list
-        )
+        assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
