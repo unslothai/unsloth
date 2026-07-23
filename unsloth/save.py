@@ -1494,6 +1494,23 @@ def install_llm_compressor():
     except Exception:
         pass
 
+    # Already installed but not importable in THIS process? Do not reinstall. The in-process import
+    # can fail under Unsloth's transformers patches (the compressed export quantizes in an isolated
+    # subprocess that re-imports cleanly), and reinstalling the version-capped, torch/transformers-
+    # pinned spec makes pip re-resolve and backtrack destructively (it drags in numpy<2 built from
+    # source and the export fails). Only fall through to a pip install when it is genuinely absent.
+    try:
+        from importlib.metadata import version as _iv, PackageNotFoundError as _PNF
+        try:
+            _iv("llmcompressor")
+            # Present; the compressed-export subprocess performs the real import. The caller only
+            # uses this to trigger the install and fail fast, so returning None here is safe.
+            return None, None
+        except _PNF:
+            pass
+    except Exception:
+        pass
+
     # Opt-out for locked-down / air-gapped setups: forbid the auto-install, require a manual one.
     if os.environ.get("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0").lower() not in (
         "0",
