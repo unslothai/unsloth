@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { useRef, useState } from "react";
+import { forwardRef, useImperativeHandle, useRef, useState } from "react";
 
 export function snapToStep(
   value: number,
@@ -28,43 +28,70 @@ function sanitizeNumeric(raw: string, allowNegative: boolean): string {
   return `${sign}${head}${tail}`;
 }
 
-export function NumericValueInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  displayValue,
-  className,
-  ariaLabel,
-  size: sizeAttr,
-  disabled = false,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step: number;
-  onChange: (v: number) => void;
-  displayValue?: string;
-  className?: string;
-  ariaLabel?: string;
-  size?: number;
-  disabled?: boolean;
-}) {
+export type NumericValueInputHandle = {
+  /** Commit a focused draft and return the resolved numeric value. */
+  commit: () => number;
+};
+
+export const NumericValueInput = forwardRef<
+  NumericValueInputHandle,
+  {
+    value: number;
+    min?: number;
+    max?: number;
+    step: number;
+    onChange: (v: number) => void;
+    displayValue?: string;
+    className?: string;
+    ariaLabel?: string;
+    size?: number;
+    disabled?: boolean;
+  }
+>(function NumericValueInput(
+  {
+    value,
+    min,
+    max,
+    step,
+    onChange,
+    displayValue,
+    className,
+    ariaLabel,
+    size: sizeAttr,
+    disabled = false,
+  },
+  ref,
+) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
   const cancelBlurCommitRef = useRef(false);
 
-  const commit = (raw: string) => {
+  const commitDraft = (raw: string): number => {
     const parsed = Number.parseFloat(raw);
     if (!Number.isFinite(parsed)) {
-      return;
+      return value;
     }
     const final = snapToStep(parsed, step, min, max);
     if (final !== value) {
       onChange(final);
     }
+    return final;
   };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      commit: () => {
+        if (!focused) {
+          return value;
+        }
+        const final = commitDraft(draft);
+        setFocused(false);
+        return final;
+      },
+    }),
+    [draft, focused, max, min, onChange, step, value],
+  );
 
   const displayed = focused ? draft : (displayValue ?? String(value));
 
@@ -91,7 +118,7 @@ export function NumericValueInput({
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
         } else {
-          commit(draft);
+          commitDraft(draft);
         }
         setFocused(false);
       }}
@@ -110,4 +137,4 @@ export function NumericValueInput({
       className={cn(className)}
     />
   );
-}
+});

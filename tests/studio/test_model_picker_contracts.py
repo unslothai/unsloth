@@ -316,11 +316,26 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     src = _read("features/model-picker/components/model-config-page.tsx")
     # Load-only substitution of the resolved value.
     assert "maxSeqLength: maxSeqLengthValue" in src
-    assert "const loadConfig" in src
-    # The persisted record is loaded via onRun(loadConfig), and save uses the
-    # untouched runtimeConfig (so a reset/default config stays default).
-    assert "onRun(loadConfig)" in src
+    assert "const effectiveLoadConfig" in src
+    # The persisted record is saved from effectiveRuntimeConfig; the load request
+    # carries effectiveLoadConfig (with any committed context input).
+    assert "onRun(effectiveLoadConfig)" in src
     assert "savePerModelConfig(" in src
+
+
+def test_initial_load_uses_staged_config_payload():
+    """Run-settings Load must pass the staged config through to /load even when
+    React has not flushed NumericValueInput blur commits into the store yet."""
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "const pendingLoadConfig =" in runtime
+    assert "pendingLoadConfig?.kvCacheDtype" in runtime
+    assert "pendingLoadConfig?.customContextLength" in runtime
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "contextInputRef" in page
+    assert "contextInputRef.current?.commit()" in page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    assert "export type NumericValueInputHandle" in numeric
+    assert "commit:" in numeric
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
