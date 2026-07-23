@@ -75,6 +75,7 @@ from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
+from utils.datasets.text_validation import validate_text_sft_dataset
 from utils.paths import (
     ensure_dir,
     resolve_dataset_path,
@@ -2674,6 +2675,18 @@ class UnslothTrainer:
                 if split_result is not None:
                     train_portion, eval_dataset = split_result
                     dataset_info["dataset"] = train_portion
+
+            dataset_info["dataset"] = validate_text_sft_dataset(
+                dataset_info["dataset"],
+                split_name = "train",
+                is_vlm = self.is_vlm,
+            )
+            if eval_dataset is not None:
+                eval_dataset = validate_text_sft_dataset(
+                    eval_dataset,
+                    split_name = "eval",
+                    is_vlm = self.is_vlm,
+                )
 
             return (dataset_info, eval_dataset)
 
