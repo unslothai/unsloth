@@ -8,6 +8,9 @@ from typing import Literal
 
 from datasets import Dataset
 
+from .iterable import is_streaming_dataset
+from .text_validation import validate_text_sft_dataset
+
 
 @dataclass(frozen = True)
 class RawTextNotice:
@@ -117,6 +120,7 @@ def prepare_raw_text_dataset(
     notices: list[RawTextNotice] = []
     mode_title = mode_label.capitalize()
     split_scope = _split_scope(split_name)
+    validation_split_name = split_name or "raw text"
 
     col_names = resolve_column_names(dataset)
     if "text" not in col_names:
@@ -151,12 +155,30 @@ def prepare_raw_text_dataset(
         )
         dataset = dataset.rename_column(renamed_col, "text")
 
+    streaming = is_streaming_dataset(dataset) or not hasattr(dataset, "__len__")
+    if streaming:
+        # Validate raw strings lazily before the existing filter/EOS maps.
+        # Null/non-string rows remain eligible for the established lazy drop.
+        dataset = validate_text_sft_dataset(
+            dataset,
+            split_name = validation_split_name,
+            allow_non_string = True,
+        )
+
     dataset, invalid_row_notices = _drop_invalid_text_rows(
         dataset,
         mode_title = mode_title,
         split_scope = split_scope,
     )
     notices.extend(invalid_row_notices)
+
+    if not streaming:
+        # Materialized raw datasets can be checked completely before EOS
+        # mutation. Null/non-string rows have already been dropped above.
+        dataset = validate_text_sft_dataset(
+            dataset,
+            split_name = validation_split_name,
+        )
 
     if append_eos:
         if not eos_token:
