@@ -821,6 +821,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
   const [compareSubmitting, setCompareSubmitting] = useState(false);
+  const compareSubmittingRef = useRef(false);
+  const idleThreadRefreshRef = useRef(0);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -845,17 +847,31 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     [model1, model2, onModelsChange],
   );
 
-  const refreshCompareThreadIds = useCallback(async () => {
+  const lookupCompareThreadIds = useCallback(async () => {
     const threads = await listStoredChatThreads({ pairId });
-    setModel1ThreadId(
-      threads.find((t) => t.modelType === "model1" || t.modelType === "base")
-        ?.id,
-    );
-    setModel2ThreadId(
-      threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
-        ?.id,
-    );
+    return {
+      model1ThreadId: threads.find(
+        (t) => t.modelType === "model1" || t.modelType === "base",
+      )?.id,
+      model2ThreadId: threads.find(
+        (t) => t.modelType === "model2" || t.modelType === "lora",
+      )?.id,
+    };
   }, [pairId]);
+
+  const applyCompareThreadIds = useCallback(
+    (ids: Awaited<ReturnType<typeof lookupCompareThreadIds>>) => {
+      setModel1ThreadId(ids.model1ThreadId);
+      setModel2ThreadId(ids.model2ThreadId);
+    },
+    [],
+  );
+
+  const handleComparingChange = useCallback((submitting: boolean) => {
+    compareSubmittingRef.current = submitting;
+    if (submitting) idleThreadRefreshRef.current += 1;
+    setCompareSubmitting(submitting);
+  }, []);
 
   // Resolve the persisted pair independently of submission state. A send can
   // begin before IndexedDB returns; cancelling that first lookup would make the
@@ -863,9 +879,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   useEffect(() => {
     let isActive = true;
     initialThreadLookupCompleteRef.current = false;
-    refreshCompareThreadIds()
-      .then(() => {
+    lookupCompareThreadIds()
+      .then((ids) => {
         if (!isActive) return;
+        applyCompareThreadIds(ids);
         initialThreadLookupCompleteRef.current = true;
       })
       .catch((error) => {
@@ -876,7 +893,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [refreshCompareThreadIds]);
+  }, [applyCompareThreadIds, lookupCompareThreadIds]);
 
   // Once the initial lookup is known, refresh IDs after completed sends so
   // newly-created compare threads become the next turn's continuation targets.
@@ -888,12 +905,33 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     ) {
       return;
     }
-    void refreshCompareThreadIds().catch((error) => {
-      if (!isExpectedBackgroundChatStorageError(error)) {
-        throw error;
-      }
-    });
-  }, [compareRunning, compareSubmitting, refreshCompareThreadIds]);
+    const requestId = ++idleThreadRefreshRef.current;
+    let isActive = true;
+    void lookupCompareThreadIds()
+      .then((ids) => {
+        if (
+          !isActive ||
+          compareSubmittingRef.current ||
+          idleThreadRefreshRef.current !== requestId
+        ) {
+          return;
+        }
+        applyCompareThreadIds(ids);
+      })
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [
+    applyCompareThreadIds,
+    compareRunning,
+    compareSubmitting,
+    lookupCompareThreadIds,
+  ]);
 
   const model1LoraBase = getLoraBaseModel(loraModels, model1);
   const model2LoraBase = getLoraBaseModel(loraModels, model2);
@@ -924,7 +962,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
-            onComparingChange={setCompareSubmitting}
+            onComparingChange={handleComparingChange}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
           />

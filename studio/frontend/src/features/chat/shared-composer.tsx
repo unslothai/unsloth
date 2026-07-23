@@ -35,6 +35,7 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { isExternalModelId } from "./external-providers";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
@@ -1465,8 +1466,15 @@ export function SharedComposer({
         if (run.cleanup) await run.cleanup;
         if (compareRunsRef.current.owns(run)) {
           compareStepSucceededRef.current = false;
-          let originalModelStillActive = false;
-          if (modelSwitchState.originCheckpoint && !run.cleanup) {
+          const originIsExternal = isExternalModelId(
+            modelSwitchState.originCheckpoint,
+          );
+          let originalModelStillActive = originIsExternal;
+          if (
+            modelSwitchState.originCheckpoint &&
+            !originIsExternal &&
+            !run.cleanup
+          ) {
             try {
               const status = await getInferenceStatus();
               originalModelStillActive =
@@ -1483,9 +1491,9 @@ export function SharedComposer({
           // checkpoint even when cancellation hid the response. Fail closed,
           // while restoring the prompt's per-turn tool/reasoning choices.
           if (
-            upgradeUnloadedActive ||
+            (!originIsExternal && upgradeUnloadedActive) ||
             (modelSwitchState.originCheckpoint && !originalModelStillActive) ||
-            run.cleanup
+            (!originIsExternal && run.cleanup)
           ) {
             useChatRuntimeStore.getState().clearCheckpoint();
             useChatRuntimeStore.setState(compareTurnOptions);
