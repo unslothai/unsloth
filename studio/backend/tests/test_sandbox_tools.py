@@ -380,7 +380,49 @@ class TestSandboxEnvIsolation:
         # No trusted git launcher -> PATHEXT stays minimal.
         assert env["PATHEXT"] == ".EXE;.COM"
 
-    def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
+    def test_windows_temp_git_dir_refused(self, monkeypatch, tmp_path):
+        """A git under a world-writable %SystemRoot% subdir (Windows\\Temp) is
+        NOT trusted, even though it sits under the Windows root."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        temp_git = tmp_path / "Windows" / "Temp" / "Git" / "cmd"
+        temp_git.mkdir(parents = True)
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(temp_git / "git.exe")
+        )
+        env = _build_safe_env(str(tmp_path))
+        assert str(temp_git) not in env["PATH"].split(os.pathsep)
+
+    def test_trusted_program_dir_matches_via_realpath(self, monkeypatch, tmp_path):
+        """The trust check canonicalizes paths, so a symlinked/short alias of
+        Program Files still matches (stand-in for 8.3 PROGRA~1 on Windows)."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        real_prog = tmp_path / "Program Files"
+        (real_prog / "Git" / "cmd").mkdir(parents = True)
+        alias = tmp_path / "PROGRA~1"
+        try:
+            alias.symlink_to(real_prog, target_is_directory = True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink unsupported in this environment")
+        monkeypatch.setenv("ProgramFiles", str(real_prog))
+        git_via_alias = alias / "Git" / "cmd" / "git.exe"
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(git_via_alias)
+        )
+        env = _build_safe_env(str(tmp_path))
+        parts = [os.path.normcase(os.path.realpath(p)) for p in env["PATH"].split(os.pathsep)]
+        assert os.path.normcase(str(real_prog / "Git" / "cmd")) in parts
+
+    def test_no_default_current_directory_in_exe_path_set_on_windows(
+        self, monkeypatch, tmp_path
+    ):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
         import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env

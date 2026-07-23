@@ -2496,21 +2496,27 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
 def _is_trusted_windows_program_dir(path: str) -> bool:
     """True when ``path`` sits under a system-managed install root.
 
-    Program Files (+ x86 / W6432) and ``%SystemRoot%`` are admin-writable
-    only, so a bare auto-approved command resolving from a Git dir there
-    cannot be replaced by an unprivileged attacker. Per-user managers
-    (Scoop/Choco shims under the profile) are refused (#7317).
+    Only the Program Files roots are trusted (admin-writable only), never
+    ``%SystemRoot%``: Git does not install there and it holds world-writable
+    subdirs like ``Windows\\Temp``. Per-user managers (Scoop/Choco shims
+    under the profile) are refused. Paths are canonicalized so an 8.3 short
+    alias (``C:\\PROGRA~1``) still matches its long root (#7317).
     """
+
+    def _canon(p: str) -> str:
+        # realpath expands 8.3 short names on Windows; harmless elsewhere.
+        return os.path.normcase(os.path.normpath(os.path.realpath(p)))
+
     roots = []
-    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot"):
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
         val = os.environ.get(var)
         if val:
             roots.append(val)
     if not roots:
-        roots = [r"C:\Program Files", r"C:\Program Files (x86)", r"C:\Windows"]
-    norm = os.path.normcase(os.path.normpath(path))
+        roots = [r"C:\Program Files", r"C:\Program Files (x86)"]
+    norm = _canon(path)
     for root in roots:
-        root_norm = os.path.normcase(os.path.normpath(root))
+        root_norm = _canon(root)
         if norm == root_norm or norm.startswith(root_norm + os.sep):
             return True
     return False
