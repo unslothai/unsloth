@@ -31,6 +31,40 @@ def test_api_monitor_tracks_reply_usage_and_context():
     assert entry["duration_ms"] is not None
 
 
+def test_api_monitor_can_be_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS", "1")
+    monitor = ApiMonitor(max_entries = 3)
+
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+
+    assert entry_id is None
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_usage(entry_id, prompt_tokens = 4, completion_tokens = 6)
+    monitor.finish(entry_id)
+    assert monitor.snapshot() == []
+    assert monitor.active_count() == 0
+
+
+def test_api_monitor_explicit_enabled_overrides_env(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS", "1")
+    monitor = ApiMonitor(max_entries = 3, enabled = True)
+
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+
+    assert entry_id is not None
+    assert len(monitor.snapshot()) == 1
+
+
 def test_api_monitor_summary_omits_full_prompt_and_reply():
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
