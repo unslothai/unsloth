@@ -49,7 +49,6 @@ export class StreamInterruptedError extends Error {
     this.name = "StreamInterruptedError";
   }
 }
-
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
@@ -116,11 +115,13 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: { dialogOwner?: unknown; signal?: AbortSignal },
 ): Promise<LoadModelResponse> {
-  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/load", {
     method: "POST",
+    signal: options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...payload,
@@ -134,11 +135,13 @@ export async function loadModel(
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { dialogOwner?: unknown; signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
-  const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  const preparedToken = await prepareHfTokenForUse(payload.hf_token, options);
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
+    signal: options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,

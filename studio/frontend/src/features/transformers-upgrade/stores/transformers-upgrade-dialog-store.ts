@@ -9,6 +9,8 @@ type Resolver = (installed: boolean) => void;
 
 // One in-flight consent; a new request resolves any prior pending one as declined.
 let pendingResolver: Resolver | null = null;
+let pendingOwner: unknown;
+let cancelAfterInstall = false;
 
 interface TransformersUpgradeDialogStore {
   open: boolean;
@@ -34,10 +36,12 @@ interface TransformersUpgradeDialogStore {
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
-    options?: { trustRemoteCodeFallback?: boolean },
+    options?: { trustRemoteCodeFallback?: boolean; owner?: unknown },
   ) => Promise<boolean>;
   /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
+  /** Decline immediately, or wait for an in-flight install to settle first. */
+  cancelPending: (owner?: unknown) => void;
   resolve: (installed: boolean) => void;
 }
 
@@ -55,6 +59,8 @@ export const useTransformersUpgradeDialogStore =
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
         pendingResolver = resolve;
+        pendingOwner = options?.owner;
+        cancelAfterInstall = false;
         set({
           open: true,
           modelName,
@@ -86,6 +92,10 @@ export const useTransformersUpgradeDialogStore =
           set({ serverUnloadedChat: true });
         }
       } catch (error) {
+        if (pendingResolver === requestResolver && cancelAfterInstall) {
+          get().resolve(false);
+          return;
+        }
         // Ignore the failure if a newer request superseded this consent.
         if (pendingResolver === requestResolver) {
           set({
@@ -99,6 +109,10 @@ export const useTransformersUpgradeDialogStore =
         return;
       }
       if (pendingResolver === requestResolver) {
+        if (cancelAfterInstall) {
+          get().resolve(false);
+          return;
+        }
         if (result.success) {
           // serverUnloadedChat was latched above (and is never reset here): a
           // retry after a failed-after-unload attempt reports false because the
@@ -123,9 +137,20 @@ export const useTransformersUpgradeDialogStore =
         });
       }
     },
+    cancelPending: (owner) => {
+      if (!pendingResolver) return;
+      if (owner !== undefined && pendingOwner !== owner) return;
+      if (get().phase === "installing") {
+        cancelAfterInstall = true;
+        return;
+      }
+      get().resolve(false);
+    },
     resolve: (installed) => {
       const resolver = pendingResolver;
       pendingResolver = null;
+      pendingOwner = undefined;
+      cancelAfterInstall = false;
       set({
         open: false,
         modelName: null,

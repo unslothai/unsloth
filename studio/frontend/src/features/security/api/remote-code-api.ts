@@ -48,9 +48,11 @@ interface RemoteCodeScanResponse {
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
+  signal?: AbortSignal,
 ): Promise<RemoteCodeScan> {
   const response = await authFetch(`/api/models/remote-code-scan`, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model_name: modelName, hf_token: hfToken ?? null }),
   });

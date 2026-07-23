@@ -14,9 +14,10 @@ export interface PreparedHfToken {
   proceed: boolean;
   token: string | null;
 }
-
 interface PrepareHfTokenOptions {
   allowAnonymous?: boolean;
+  dialogOwner?: unknown;
+  signal?: AbortSignal;
 }
 
 // A caller can retain the pre-dialog payload while the shared store is cleared.
@@ -37,8 +38,11 @@ export async function prepareHfTokenForUse(
 
   let validation;
   try {
-    validation = await validateHfToken(normalized);
+    validation = await validateHfToken(normalized, options.signal);
   } catch {
+    if (options.signal?.aborted) {
+      return { proceed: false, token: normalized };
+    }
     // Validation is advisory. Let the real operation retain its own error.
     return { proceed: true, token: normalized };
   }
@@ -48,9 +52,15 @@ export async function prepareHfTokenForUse(
     return { proceed: true, token: normalized };
   }
 
+  // Validation can finish after the owning operation was cancelled. Avoid
+  // opening a new warning after cancellation already dismissed its dialogs.
+  if (options.signal?.aborted) {
+    return { proceed: false, token: normalized };
+  }
+
   const decision = await useHfTokenWarningStore
     .getState()
-    .requestDecision(allowAnonymous);
+    .requestDecision(allowAnonymous, options.dialogOwner);
   if (decision === "anonymous") {
     anonymousForSession.add(normalized);
     useHfTokenStore.getState().clearToken();

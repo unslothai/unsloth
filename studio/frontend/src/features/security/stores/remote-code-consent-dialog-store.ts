@@ -9,27 +9,31 @@ type Resolver = (confirmed: boolean) => void;
 // One in-flight consent at a time; a new request resolves any prior pending one as
 // declined so its promise never leaks.
 let pendingResolver: Resolver | null = null;
+let pendingOwner: unknown;
 
 interface RemoteCodeConsentDialogStore {
   open: boolean;
   scan: RemoteCodeScan | null;
-  requestConsent: (scan: RemoteCodeScan) => Promise<boolean>;
-  resolve: (confirmed: boolean) => void;
+  requestConsent: (scan: RemoteCodeScan, owner?: unknown) => Promise<boolean>;
+  resolve: (confirmed: boolean, owner?: unknown) => void;
 }
 
 export const useRemoteCodeConsentDialogStore = create<RemoteCodeConsentDialogStore>()(
   (set) => ({
     open: false,
     scan: null,
-    requestConsent: (scan) =>
+    requestConsent: (scan, owner) =>
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
         pendingResolver = resolve;
+        pendingOwner = owner;
         set({ open: true, scan });
       }),
-    resolve: (confirmed) => {
+    resolve: (confirmed, owner) => {
+      if (owner !== undefined && pendingOwner !== owner) return;
       const resolver = pendingResolver;
       pendingResolver = null;
+      pendingOwner = undefined;
       set({ open: false, scan: null });
       resolver?.(confirmed);
     },

@@ -1864,6 +1864,8 @@ export function ChatPage({
     selectModel,
     ejectModel,
     cancelLoading,
+    invalidatePendingModelSelection,
+    isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
     loadToastDismissed,
@@ -2263,7 +2265,9 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+          return;
+        }
+        if (wantBackgroundDownload) {
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -2286,12 +2290,10 @@ export function ChatPage({
                 "Another download for this model is still running. Reselect it once that finishes to load it.",
             });
           }
-        } else {
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
+          return;
         }
-        return;
+        // selectModel owns superseding cancellation so it can preserve the
+        // working checkpoint as the rollback target for the replacement.
       }
       const wantManagerStage =
         wantManagerDownload ||
@@ -2330,7 +2332,12 @@ export function ChatPage({
         previousConfig,
       });
     },
-    [selectModel, loadingModel, rememberedConfigFor, chatContextKey],
+    [
+      selectModel,
+      loadingModel,
+      rememberedConfigFor,
+      chatContextKey,
+    ],
   );
   useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
@@ -2471,11 +2478,11 @@ export function ChatPage({
   });
 
   const handleCheckpointChange = useCallback(
-    (
+    async (
       value: string,
       meta?: ModelSelectorChangeMeta,
     ) => {
-      const store = useChatRuntimeStore.getState();
+      let store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
@@ -2487,6 +2494,23 @@ export function ChatPage({
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {
+        const selectionIntentId = invalidatePendingModelSelection();
+        const hadLocalLoad = Boolean(
+          store.modelLoading || store.loadingModelPick,
+        );
+        if (hadLocalLoad) {
+          const stopped = await cancelLoading(true);
+          if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
+          if (!stopped) {
+            toast.error("Could not stop the current model load", {
+              description:
+                "The hosted model was not selected because the local backend state is uncertain.",
+            });
+            return;
+          }
+          store = useChatRuntimeStore.getState();
+        }
+        if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -2674,6 +2698,9 @@ export function ChatPage({
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
+      cancelLoading,
+      invalidatePendingModelSelection,
+      isModelSelectionIntentCurrent,
       stageOrLoad,
       view,
     ],
