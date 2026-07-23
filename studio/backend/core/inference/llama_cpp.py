@@ -10464,7 +10464,17 @@ class LlamaCppBackend:
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
-            conversation.extend(_auto["messages"])
+            # Retrieved passages can quote think/ChatML markers; neutralize
+            # before they enter the chat template (#7066).
+            from core.inference.chat_template_helpers import (
+                neutralize_message_content_for_role,
+            )
+            for _msg in _auto["messages"]:
+                _clean = dict(_msg)
+                _clean["content"] = neutralize_message_content_for_role(
+                    _clean.get("role"), _clean.get("content")
+                )
+                conversation.append(_clean)
 
         url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0

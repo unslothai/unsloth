@@ -10915,6 +10915,19 @@ class _ResponsesReasoningExtractor:
 
         return "".join(reasoning_parts), "".join(visible_parts)
 
+    def flush_structured(self) -> str:
+        """Finalize the structured-reasoning holdback (stream switched away)."""
+        if not self._structured_buffer:
+            return ""
+        from core.inference.chat_template_helpers import (
+            neutralize_think_markup_streaming,
+        )
+
+        tail, self._structured_buffer = neutralize_think_markup_streaming(
+            self._structured_buffer, finalize = True
+        )
+        return tail
+
     def finish(self) -> tuple[str, str]:
         structured_tail = ""
         if self._structured_buffer:
@@ -11970,6 +11983,24 @@ async def _responses_stream(
                             "delta": reasoning_delta,
                         },
                     )
+                if delta.get("tool_calls"):
+                    # Tool-call delta: flush held reasoning first so the
+                    # reasoning item keeps its output_index before the call.
+                    _held_tail = extractor.flush_structured()
+                    if _held_tail:
+                        for event in _ensure_reasoning_open():
+                            yield event
+                        full_reasoning += _held_tail
+                        yield _sse(
+                            "response.reasoning_text.delta",
+                            {
+                                "type": "response.reasoning_text.delta",
+                                "item_id": reasoning_state["item_id"],
+                                "output_index": reasoning_state["output_index"],
+                                "content_index": 0,
+                                "delta": _held_tail,
+                            },
+                        )
                 # Heal text-form tool calls in the visible stream (never in
                 # reasoning text): promoted calls join the structured tc loop
                 # below through the same state machinery, and healer events are
