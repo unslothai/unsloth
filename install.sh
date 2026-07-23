@@ -2144,6 +2144,92 @@ _amd_gpu_present_via_pci() {
     return 1
 }
 
+# Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
+_amd_arch_index_family_for_gfx() {
+    case "$1" in
+        gfx1201|gfx1200) echo gfx120X-all ;;
+        gfx1151) echo gfx1151 ;;
+        gfx1150) echo gfx1150 ;;
+        gfx1103|gfx1102|gfx1101|gfx1100) echo gfx110X-all ;;
+        gfx1036|gfx1035|gfx1034|gfx1033|gfx1032|gfx1031|gfx1030) echo gfx103X-all ;;
+        gfx90a) echo gfx90a ;;
+        gfx908) echo gfx908 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Map a GPU marketing name to gfx arch (kept in sync with install.ps1 nameArchTable).
+_infer_amd_gfx_arch_from_gpu_name() {
+    case "$1" in
+        *"9070 XT"*|*9080*) echo gfx1201 ;;
+        *9070*|*9060*) echo gfx1200 ;;
+        *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) echo gfx1151 ;;
+        *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) echo gfx1150 ;;
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*) echo gfx1102 ;;
+        *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*) echo gfx1100 ;;
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*) echo gfx1103 ;;
+        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) echo gfx1030 ;;
+        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) echo gfx1032 ;;
+        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*) echo gfx1034 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Best-effort gfx inference when ROCm tools can't see the GPU (unslothai#7301).
+# Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
+_infer_linux_amd_gfx_arch() {
+    if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        printf '%s\n' "$(printf '%s' "$UNSLOTH_ROCM_GFX_ARCH" | tr '[:upper:]' '[:lower:]')"
+        return 0
+    fi
+    # On WSL /proc/cpuinfo and lspci still report the host APU, but without the
+    # ROCDXG bridge (librocdxg over /dev/dxg) the AMD wheels can't reach the GPU;
+    # keep the CPU fallback there unless that runtime is present (the explicit
+    # override above still wins). Mirrors install_python_stack.py.
+    _gpu_evidence=""
+    if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
+        for _d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
+            { [ -e "$_d/librocdxg.so" ] || [ -e "$_d/librocdxg.so.1" ]; } && _rocdxg=1 && break
+        done
+        [ -n "${_rocdxg:-}" ] || return 1
+        # WSL enumerates no PCI display device; /dev/dxg + librocdxg IS the
+        # GPU evidence there.
+        _gpu_evidence=1
+    elif _amd_gpu_present_via_pci; then
+        _gpu_evidence=1
+    fi
+    # /proc/cpuinfo leaks the HOST CPU model into VMs/containers that received
+    # no AMD GPU, so the CPU-model text alone is not GPU evidence: require an
+    # AMD display device (PCI vendor 0x1002, class 0x03*) before trusting it.
+    # The lspci fallback below needs no gate; an AMD display line IS evidence.
+    if [ -n "$_gpu_evidence" ] && grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null; then
+        echo gfx1151
+        return 0
+    fi
+    if [ -n "$_gpu_evidence" ] && grep -qiE '890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
+        echo gfx1150
+        return 0
+    fi
+    if command -v lspci >/dev/null 2>&1; then
+        # A non-AMD controller can enumerate first (Intel/ASPEED before an AMD
+        # dGPU), so scan every display-class line and take the first AMD one
+        # that maps. The vendor guard is case-SENSITIVE (a -i "ATI" would match
+        # "CorporATIon" on every Intel/NVIDIA line); whole-line matching also
+        # survives the 0000: PCI domain prefix. Mirrors install_python_stack.py.
+        _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        while IFS= read -r _ln; do
+            [ -n "$_ln" ] || continue
+            if _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_ln"); then
+                echo "$_gfx"
+                return 0
+            fi
+        done <<EOF
+$_amd_disp
+EOF
+    fi
+    return 1
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2751,6 +2837,60 @@ fi
 [ "$_torch_index_pinned" = true ] || _maybe_bootstrap_rocm_wsl || true
 
 TORCH_INDEX_URL=$(get_torch_index_url)
+
+# Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo
+# in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's
+# per-arch wheels like install.ps1 does on Windows (unslothai#7301).
+# Gated on _has_amd_rocm_gpu being FALSE: a */cpu index on a host whose GPU IS
+# visible to the ROCm probes is a deliberate fallback (unsupported/unreadable
+# ROCm version, after its own warning), not a missing runtime -- rerouting it
+# would contradict that decision. An explicit UNSLOTH_ROCM_GFX_ARCH override
+# stays authoritative either way.
+if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
+   ! _has_usable_nvidia_gpu && \
+   { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu; } && \
+   case "$(uname -s)" in Linux) true ;; *) false ;; esac && \
+   case "$_ARCH" in x86_64|amd64) true ;; *) false ;; esac; then
+    # ROCm torch wheels are x86_64-only; get_torch_index_url returns CPU on other
+    # arches, so an inferred/overridden gfx must not reroute arm64 to AMD wheels.
+    case "$TORCH_INDEX_URL" in
+        */cpu)
+            _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            if [ -n "$_linux_inferred_gfx" ]; then
+                _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
+                if [ -n "$_amd_family" ]; then
+                    _amd_mirror="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+                    while [ "${_amd_mirror%/}" != "$_amd_mirror" ]; do
+                        _amd_mirror="${_amd_mirror%/}"
+                    done
+                    TORCH_INDEX_URL="${_amd_mirror}/${_amd_family}/"
+                    # Hand the inferred arch to setup.sh (llama.cpp): it re-probes
+                    # ROCm on its own, and on these runtime-less hosts its probes
+                    # find nothing, so without this it classifies the box as
+                    # non-ROCm and installs the CPU prebuilt while torch just got
+                    # AMD per-arch wheels. setup.sh and install_llama_prebuilt.py
+                    # both honor UNSLOTH_ROCM_GFX_ARCH, so exporting it is the
+                    # whole handoff (a user-set override re-exports unchanged).
+                    export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
+                    case "$_linux_inferred_gfx" in
+                        gfx1201|gfx1200|gfx1151|gfx1150)
+                            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+                            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+                            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+                            ;;
+                    esac
+                    echo "" >&2
+                    echo "  [WARN] ROCm runtime not visible (/dev/kfd, rocminfo, amd-smi) but $_linux_inferred_gfx inferred." >&2
+                    echo "  [WARN] Routing to AMD arch-specific wheels ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))." >&2
+                    echo "  [WARN] These wheels bundle their own ROCm runtime; install the kernel stack for native compute:" >&2
+                    echo "  [WARN]   https://docs.unsloth.ai/get-started/install-and-update/amd" >&2
+                    echo "  [WARN] Tip: set UNSLOTH_ROCM_GFX_ARCH=$_linux_inferred_gfx to skip inference next time." >&2
+                    echo "" >&2
+                fi
+            fi
+            ;;
+    esac
+fi
 
 # Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
 # downstream scripts (setup.sh -> install_python_stack.py) know what was
