@@ -901,8 +901,8 @@ export function AppSidebar() {
         : "group/recent-item relative";
     const actionClass =
       variant === "project"
-        ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-        : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
+        ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+        : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
@@ -987,7 +987,7 @@ export function AppSidebar() {
               togglePinnedChat(item.id);
             }}
             aria-label={isPinned ? "Unpin chat" : "Pin chat"}
-            className="sidebar-row-action is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
           >
             <span className="sidebar-row-action-glyph">
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
@@ -1002,7 +1002,7 @@ export function AppSidebar() {
               togglePinnedChat(item.id);
             }}
             aria-label="Unpin chat"
-            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
           >
             <span className="sidebar-row-action-glyph">
               <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />

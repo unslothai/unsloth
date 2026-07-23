@@ -141,10 +141,15 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         0
     ]
     assert "[@media(pointer:coarse)]:pr-6" in block
+    assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
     coarse_idx = css_source.index("@media (pointer: coarse)")
     base_idx = css_source.index(".sidebar-row-action {")
     assert coarse_idx > base_idx
-    coarse_block = css_source[coarse_idx : coarse_idx + 200]
+    coarse_block = css_source[coarse_idx : coarse_idx + 280]
+    assert "sidebar-touch-reveal" in coarse_block
     assert "opacity-100" in coarse_block
     assert "pointer-events-auto" in coarse_block
+    # Must not reveal every sidebar-row-action (project/run/nav rows lack padding).
+    assert ".sidebar-row-action {\n\t\t\t@apply opacity-100" not in coarse_block
+    assert ".sidebar-row-action.sidebar-touch-reveal" in coarse_block
