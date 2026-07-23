@@ -625,6 +625,10 @@ def _target_state_gpu_ids(backend, gpu_ids):
 def test_gpu_ids_reload_detection_is_order_insensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
+    # A real non-narrowed load records the raw request too; the non-diffusion
+    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order-insensitive comparison.
+    backend._requested_gpu_ids = [0, 1]
     # Same set, different order -> no reload.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
     # Different set -> reload.
