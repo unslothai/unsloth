@@ -80,6 +80,46 @@ export function drainThinkMarkupBuffer(
   };
 }
 
+/**
+ * True when a close tag looks like quoted/code content rather than a block
+ * end (#7066): flanked by quote chars, with the leading quote OPENING a span
+ * (odd count of that quote char since the reasoning start).
+ */
+function isLiteralThinkClose(
+  raw: string,
+  spanStart: number,
+  closeIndex: number,
+): boolean {
+  const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
+  const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
+  if (!before || !after) return false;
+  if (!`"'\``.includes(before) || !`"'\``.includes(after)) return false;
+  let count = 0;
+  for (let i = spanStart; i < closeIndex; i++) {
+    if (raw[i] === before) count++;
+  }
+  return count % 2 === 1;
+}
+
+/** First structural (non-quoted) close tag at or after `from`. */
+function findStructuralThinkClose(
+  raw: string,
+  spanStart: number,
+  from: number,
+): number {
+  let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
+  while (
+    closeIndex !== -1 &&
+    isLiteralThinkClose(raw, spanStart, closeIndex)
+  ) {
+    closeIndex = raw.indexOf(
+      THINK_CLOSE_TAG,
+      closeIndex + THINK_CLOSE_TAG.length,
+    );
+  }
+  return closeIndex;
+}
+
 export function parseAssistantContent(raw: string): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
@@ -97,7 +137,11 @@ export function parseAssistantContent(raw: string): ContentPart[] {
     appendTextPart(parts, raw.slice(cursor, openIndex));
 
     const reasoningStart = openIndex + THINK_OPEN_TAG.length;
-    const closeIndex = raw.indexOf(THINK_CLOSE_TAG, reasoningStart);
+    const closeIndex = findStructuralThinkClose(
+      raw,
+      reasoningStart,
+      reasoningStart,
+    );
     if (closeIndex === -1) {
       appendReasoningPart(parts, raw.slice(reasoningStart));
       break;

@@ -11678,7 +11678,16 @@ class LlamaCppBackend:
                     # A tool ran this turn, so it counts against the caller's budget.
                     _turn_executed_real_tool = True
                     yield completion.tool_end_event()
-                    conversation.append(completion.tool_message())
+                    # Tool output can quote think/ChatML markers; neutralize
+                    # before it re-enters the prompt (#7066).
+                    from core.inference.chat_template_helpers import (
+                        neutralize_message_content_for_role,
+                    )
+                    _tool_msg = dict(completion.tool_message())
+                    _tool_msg["content"] = neutralize_message_content_for_role(
+                        _tool_msg.get("role"), _tool_msg.get("content")
+                    )
+                    conversation.append(_tool_msg)
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
@@ -11792,6 +11801,8 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        # Holds partial literal think markers across chunks (#7066).
+        reasoning_markup_buffer = ""
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
         _metadata_usage = None
@@ -11818,6 +11829,22 @@ class LlamaCppBackend:
                         if not line:
                             continue
                         if line == "data: [DONE]":
+                            if reasoning_markup_buffer:
+                                from core.inference.chat_template_helpers import (
+                                    neutralize_think_markup_streaming,
+                                )
+                                _flushed, reasoning_markup_buffer = (
+                                    neutralize_think_markup_streaming(
+                                        reasoning_markup_buffer,
+                                        finalize = True,
+                                    )
+                                )
+                                if _flushed:
+                                    reasoning_text += _flushed
+                                    if not in_thinking:
+                                        cumulative += "<think>"
+                                        in_thinking = True
+                                    cumulative += _flushed
                             if in_thinking:
                                 if (
                                     _final_reasoning_started_at is not None
@@ -11859,6 +11886,16 @@ class LlamaCppBackend:
                                 if reasoning:
                                     if _final_reasoning_started_at is None:
                                         _final_reasoning_started_at = time.monotonic()
+                                    from core.inference.chat_template_helpers import (
+                                        neutralize_think_markup_streaming,
+                                    )
+                                    reasoning_markup_buffer += reasoning
+                                    reasoning, reasoning_markup_buffer = (
+                                        neutralize_think_markup_streaming(
+                                            reasoning_markup_buffer
+                                        )
+                                    )
+                                if reasoning:
                                     reasoning_text += reasoning
                                     if not in_thinking:
                                         cumulative += "<think>"
@@ -11868,6 +11905,22 @@ class LlamaCppBackend:
 
                                 token = delta.get("content", "")
                                 if token:
+                                    if reasoning_markup_buffer:
+                                        from core.inference.chat_template_helpers import (
+                                            neutralize_think_markup_streaming,
+                                        )
+                                        _flushed, reasoning_markup_buffer = (
+                                            neutralize_think_markup_streaming(
+                                                reasoning_markup_buffer,
+                                                finalize = True,
+                                            )
+                                        )
+                                        if _flushed:
+                                            reasoning_text += _flushed
+                                            if not in_thinking:
+                                                cumulative += "<think>"
+                                                in_thinking = True
+                                            cumulative += _flushed
                                     if (
                                         _final_reasoning_started_at is not None
                                         and not _final_reasoning_summary_emitted
