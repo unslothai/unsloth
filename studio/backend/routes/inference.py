@@ -4310,19 +4310,14 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             )
             needs_audio_projector_retry = False
-            if (
-                gguf_runtime_matches
-                and not getattr(llama_backend, "_has_audio_input", False)
-            ):
+            if gguf_runtime_matches and not getattr(llama_backend, "_has_audio_input", False):
                 with _hf_offline_if_dns_dead():
                     config = ModelConfig.from_identifier(
                         model_id = model_identifier,
                         hf_token = request.hf_token,
                         gguf_variant = request.gguf_variant,
                     )
-                needs_audio_projector_retry = bool(
-                    config and config.has_audio_input
-                )
+                needs_audio_projector_retry = bool(config and config.has_audio_input)
             if gguf_runtime_matches and not needs_audio_projector_retry:
                 logger.info(
                     "Model already loaded (GGUF): "

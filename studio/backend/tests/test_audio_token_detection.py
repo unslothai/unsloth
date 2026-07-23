@@ -86,14 +86,12 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
 
     backend_source = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     guard_source = inspect.getsource(llama_cpp._with_gguf_load_marker)
-    route_source = (
-        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-    ).read_text()
+    route_source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
 
     assert "has_audio_input = has_audio_input" in backend_source
     assert "has_audio_input and not self._has_audio_input" in inspect.getsource(
         llama_cpp.LlamaCppBackend._already_in_target_state
     )
-    assert "kwargs.get(\"is_vision\") or kwargs.get(\"has_audio_input\")" in guard_source
+    assert 'kwargs.get("is_vision") or kwargs.get("has_audio_input")' in guard_source
     assert "(config.is_vision or config.has_audio_input)" in route_source
     assert "config and config.has_audio_input" in route_source
