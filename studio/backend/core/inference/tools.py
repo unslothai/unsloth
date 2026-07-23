@@ -728,9 +728,9 @@ def _is_dynamic_import_callable(
     if isinstance(node, ast.Attribute):
         return node.attr in {"import_module", "__import__"}
     if isinstance(node, ast.Subscript):
-        return _is_dynamic_namespace(
-            node.value, dynamic_namespace_aliases
-        ) and _subscript_key(node.slice) in {"import_module", "__import__"}
+        return _is_dynamic_namespace(node.value, dynamic_namespace_aliases) and _subscript_key(
+            node.slice
+        ) in {"import_module", "__import__"}
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -771,9 +771,9 @@ def _is_pyyaml_module_expr(
     if isinstance(node, ast.Name):
         return node.id in yaml_aliases
     if isinstance(node, ast.Subscript):
-        return _is_dynamic_namespace(
-            node.value, dynamic_namespace_aliases
-        ) and _is_yaml_string(node.slice)
+        return _is_dynamic_namespace(node.value, dynamic_namespace_aliases) and _is_yaml_string(
+            node.slice
+        )
     if not (isinstance(node, ast.Call) and node.args):
         return False
     module_name = node.args[0]
@@ -785,9 +785,7 @@ def _is_pyyaml_module_expr(
         and _is_dynamic_namespace(node.func.value, dynamic_namespace_aliases)
     ):
         return True
-    return _is_dynamic_import_callable(
-        node.func, dynamic_import_aliases, dynamic_namespace_aliases
-    )
+    return _is_dynamic_import_callable(node.func, dynamic_import_aliases, dynamic_namespace_aliases)
 
 
 def _pyyaml_attribute_path(
@@ -4772,9 +4770,7 @@ def _check_signal_escape_patterns(code: str):
             for alias in node.names:
                 if alias.name != "*":
                     bound = alias.asname or alias.name
-                    self._update_pyyaml_bindings(
-                        [ast.Name(id = bound, ctx = ast.Store())], None
-                    )
+                    self._update_pyyaml_bindings([ast.Name(id = bound, ctx = ast.Store())], None)
             if node.module == "signal":
                 self.imports_signal = True
                 for alias in node.names:

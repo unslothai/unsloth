@@ -249,11 +249,7 @@ class TestPyYamlDeserialization:
                 "import yaml\n"
                 "yaml.load('a: 1', Loader=SafeLoader)"
             ),
-            (
-                "import yaml\n"
-                "namespace = globals()\n"
-                "namespace['yaml'].unsafe_load('a: 1')"
-            ),
+            ("import yaml\nnamespace = globals()\nnamespace['yaml'].unsafe_load('a: 1')"),
             (
                 "import importlib\n"
                 "getattr(importlib, 'import_module')('yaml').unsafe_load('a: 1')"
