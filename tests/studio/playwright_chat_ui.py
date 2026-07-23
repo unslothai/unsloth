@@ -936,13 +936,14 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
-    # The production stylesheet uses separate Linux compensation for light and
-    # dark text. Exercise the compiled selector directly so this remains
-    # deterministic even if the theme menu animation is slow on CI.
-    step("chat typography platform, theme, and opt-out matrix")
-    weight_matrix = robust_evaluate(
+    # Check the behavior users receive on each CI platform. Do not synthesize
+    # Linux on macOS or Windows: render-linux is production platform detection,
+    # not a public theme setting. Set the theme class only after preserving the
+    # real platform state, and wait for style recalculation before sampling.
+    step("chat typography platform, theme, and opt-out behavior")
+    typography_matrix = robust_evaluate(
         page,
-        """() => {
+        """async () => {
             const root = document.documentElement;
             const assistant = Array.from(
                 document.querySelectorAll('.aui-assistant-message-root')
@@ -962,6 +963,7 @@ with sync_playwright() as p:
             const ua = navigator.userAgent.toLowerCase();
             const actualRenderLinux = root.classList.contains('render-linux');
             const isDesktopLinux = ua.includes('linux') && !ua.includes('android');
+            const nextFrame = () => new Promise(requestAnimationFrame);
             const read = () => {
                 const role = (nodes) => {
                     const styles = nodes.map((node) => {
@@ -987,24 +989,30 @@ with sync_playwright() as p:
             };
 
             try {
-                root.classList.add('render-linux');
                 root.classList.remove('dark', 'no-font-smoothing');
                 root.removeAttribute('data-chat-font');
                 root.removeAttribute('data-ui-font');
+                await nextFrame();
+                await nextFrame();
                 const light = read();
 
                 root.classList.add('dark');
+                await nextFrame();
+                await nextFrame();
                 const dark = read();
 
                 root.classList.add('no-font-smoothing');
+                await nextFrame();
                 const smoothingOff = read();
                 root.classList.remove('no-font-smoothing');
 
                 root.setAttribute('data-chat-font', '');
+                await nextFrame();
                 const chatFont = read();
                 root.removeAttribute('data-chat-font');
 
                 root.setAttribute('data-ui-font', '');
+                await nextFrame();
                 const uiFont = read();
 
                 return {
@@ -1026,35 +1034,45 @@ with sync_playwright() as p:
             }
         }""",
     )
-    if weight_matrix.get("error"):
-        fail(weight_matrix["error"])
-    if weight_matrix["actualRenderLinux"] != weight_matrix["isDesktopLinux"]:
-        fail(f"desktop Linux detection mismatch: {weight_matrix!r}")
-    for branch, expected in (
-        ("light", "390"),
-        ("dark", "350"),
-        ("smoothingOff", "410"),
-        ("chatFont", "410"),
-        ("uiFont", "410"),
-    ):
+    if typography_matrix.get("error"):
+        fail(typography_matrix["error"])
+    if typography_matrix["actualRenderLinux"] != typography_matrix["isDesktopLinux"]:
+        fail(f"desktop Linux detection mismatch: {typography_matrix!r}")
+
+    # Linux receives the calibrated default-font values. Other desktop
+    # platforms retain their native baseline, including after a dark-theme
+    # transition. Opt-outs restore the same baseline on every platform.
+    if typography_matrix["isDesktopLinux"]:
+        expected = {
+            "light": ("390", "0.155px"),
+            "dark": ("350", "0.3565px"),
+        }
+    else:
+        expected = {
+            "light": ("410", "0.155px"),
+            "dark": ("410", "0.31px"),
+        }
+    expected.update(
+        {
+            "smoothingOff": ("410", "0.31px"),
+            "chatFont": ("410", "0.31px"),
+            "uiFont": ("410", "0.31px"),
+        }
+    )
+    for branch, (expected_weight, expected_spacing) in expected.items():
         for role in ("assistant", "user"):
-            actual = weight_matrix[branch][role]["fontWeight"]
-            if actual != [expected]:
-                fail(f"chat font weight {branch}/{role}: " f"expected {expected}, got {actual!r}")
-    for branch, expected in (
-        ("light", "0.155px"),
-        ("dark", "0.3565px"),
-        ("smoothingOff", "0.31px"),
-        ("chatFont", "0.31px"),
-        ("uiFont", "0.31px"),
-    ):
-        for role in ("assistant", "user"):
-            actual = weight_matrix[branch][role]["letterSpacing"]
-            if actual != [expected]:
+            actual = typography_matrix[branch][role]
+            if actual["fontWeight"] != [expected_weight]:
                 fail(
-                    f"chat letter spacing {branch}/{role}: " f"expected {expected}, got {actual!r}"
+                    f"chat font weight {branch}/{role}: expected {expected_weight}, "
+                    f"got {actual['fontWeight']!r}"
                 )
-    info("OK chat typography matrix")
+            if actual["letterSpacing"] != [expected_spacing]:
+                fail(
+                    f"chat letter spacing {branch}/{role}: expected {expected_spacing}, "
+                    f"got {actual['letterSpacing']!r}"
+                )
+    info("OK chat typography behavior")
 
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check
