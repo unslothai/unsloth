@@ -173,6 +173,13 @@ async def stream_external_local_tool_loop(
     created = int(time.time())
     cancel_event = cancel_event or threading.Event()
 
+    # 9999 is the "no limit" sentinel; pass None so execute_tool never times out
+    # (mirrors the local GGUF loop).
+    effective_tool_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+    # Total tool calls executed across all rounds must not exceed the caller's
+    # per-message budget, even when a single completion returns parallel calls.
+    calls_remaining = max_tool_iterations
+
     enabled_names = {
         (t.get("function") or {}).get("name")
         for t in tools
@@ -187,6 +194,7 @@ async def stream_external_local_tool_loop(
         tool_calls_acc: dict[int, dict[str, Any]] = {}
         finish_reason: Optional[str] = None
         saw_content = False
+        assistant_content = ""
 
         gen = client.stream_chat_completion(
             messages = conversation,
@@ -202,6 +210,21 @@ async def stream_external_local_tool_loop(
             tool_choice = tool_choice,
             stream = True,
         )
+        # Watcher: Stop may fire while the remote is still in prefill and the
+        # iterator is blocked awaiting the next SSE line. Close the generator
+        # so the `async for` unblocks immediately instead of waiting for a
+        # chunk or the read timeout.
+        async def _watch_cancel(active_gen) -> None:
+            try:
+                while not cancel_event.is_set():
+                    await asyncio.sleep(0.1)
+                await active_gen.aclose()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        watcher = asyncio.ensure_future(_watch_cancel(gen))
         try:
             async for line in gen:
                 if cancel_event.is_set():
@@ -229,6 +252,7 @@ async def stream_external_local_tool_loop(
                 content = delta.get("content")
                 if content:
                     saw_content = True
+                    assistant_content += str(content)
                     yield _openai_content_chunk_line(
                         completion_id = completion_id,
                         created = created,
@@ -259,6 +283,11 @@ async def stream_external_local_tool_loop(
                     if isinstance(tc_delta, dict):
                         _merge_tool_call_delta(tool_calls_acc, tc_delta)
         finally:
+            watcher.cancel()
+            try:
+                await watcher
+            except (asyncio.CancelledError, Exception):
+                pass
             try:
                 await gen.aclose()
             except Exception:
@@ -281,6 +310,11 @@ async def stream_external_local_tool_loop(
             yield "data: [DONE]"
             return
 
+        # Enforce the per-message call budget across parallel calls in a round.
+        if calls_remaining <= 0:
+            break
+        ordered_calls = ordered_calls[:calls_remaining]
+
         # Normalize ids for the conversation transcript.
         assistant_tool_calls = []
         for i, tc in enumerate(ordered_calls):
@@ -300,7 +334,9 @@ async def stream_external_local_tool_loop(
         conversation.append(
             {
                 "role": "assistant",
-                "content": None,
+                # Retain any streamed explanation so the follow-up round keeps
+                # the model's own context for interpreting tool results.
+                "content": assistant_content or None,
                 "tool_calls": assistant_tool_calls,
             }
         )
@@ -308,6 +344,7 @@ async def stream_external_local_tool_loop(
         for tc in assistant_tool_calls:
             if cancel_event.is_set():
                 break
+            calls_remaining -= 1
             name = tc["function"]["name"]
             raw_args = tc["function"].get("arguments") or "{}"
             arguments = _coerce_tool_arguments(raw_args)
@@ -373,7 +410,7 @@ async def stream_external_local_tool_loop(
                             name,
                             arguments,
                             cancel_event,
-                            tool_call_timeout,
+                            effective_tool_timeout,
                             session_id,
                             thread_id,
                             rag_scope,
