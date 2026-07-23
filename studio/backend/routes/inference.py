@@ -6806,6 +6806,12 @@ async def _proxy_to_external_provider(
         and payload.stream
         and (_tools_on_ext or _mcp_allowed_ext)
         and not payload.tools  # client-supplied tools stay on passthrough
+        # Callers opting out via tool_choice="none" skip the loop, mirroring
+        # the local GGUF routing gate.
+        and not (
+            payload.tool_choice == "none"
+            and not _explicit_studio_tool_loop_requested(payload)
+        )
     )
 
     async def _stream_local_tools():

@@ -401,6 +401,7 @@ async def stream_external_local_tool_loop(
         continue
 
     # Budget exhausted after tool rounds — one final synthesis pass without tools.
+    final_finish_reason = None
     if not cancel_event.is_set():
         if max_tool_iterations > 0:
             from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
@@ -436,6 +437,9 @@ async def stream_external_local_tool_loop(
                 if not choices or not isinstance(choices[0], dict):
                     continue
                 choice = choices[0]
+                if choice.get("finish_reason"):
+                    # Surface truncation (length/content_filter) to clients.
+                    final_finish_reason = choice["finish_reason"]
                 delta = choice.get("delta") or {}
                 if not isinstance(delta, dict):
                     delta = {}
@@ -477,6 +481,6 @@ async def stream_external_local_tool_loop(
         created = created,
         model = model,
         content = "",
-        finish_reason = "stop",
+        finish_reason = final_finish_reason or "stop",
     )
     yield "data: [DONE]"
