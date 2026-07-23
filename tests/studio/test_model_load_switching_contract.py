@@ -29,7 +29,7 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "if (!preserveCheckpoint) clearCheckpoint();" in cancel
     assert "useTransformersUpgradeDialogStore.getState().cancelPending();" in cancel
     assert "useRemoteCodeConsentDialogStore.getState().resolve(false);" in cancel
-    assert "useHfTokenWarningStore.getState().resolve(\"cancel\");" in cancel
+    assert 'useHfTokenWarningStore.getState().resolve("cancel");' in cancel
     assert "await run.completionPromise;" in cancel
 
 
@@ -85,7 +85,6 @@ def test_replacement_carries_forward_an_already_unloaded_rollback_target():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousCheckpointWasUnloaded: replacementNeedsRollback" in runtime
     assert (
-        "replacementNeedsRollback ||\n"
-        "          activeRun.previousCheckpointWasUnloaded"
+        "replacementNeedsRollback ||\n          activeRun.previousCheckpointWasUnloaded"
     ) in runtime
     assert "let previousWasUnloaded = run.previousCheckpointWasUnloaded;" in runtime
