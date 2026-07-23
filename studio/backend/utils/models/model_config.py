@@ -18,9 +18,12 @@ from utils.paths import (
 )
 from utils.utils import without_hf_auth
 from utils.models.gguf_metadata import (
+    detect_gguf_audio_type,
     is_mmproj_by_metadata,
     pairing_score,
     read_gguf_general_metadata,
+    read_mmproj_audio_capability,
+    read_mmproj_vision_capability,
 )
 import structlog
 from loggers import get_logger
@@ -539,7 +542,7 @@ _CURATED_REMOTE_VLM_TYPES = frozenset(
 )
 
 # Fallbacks used only if the transformers registry import fails.
-_FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
+_FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "qwen3_asr", "whisper"})
 
 
 def _build_detection_sets():
@@ -583,6 +586,41 @@ def _build_detection_sets():
 
 
 _VLM_MODEL_TYPES, _VLM_CLASS_NAMES, _AUDIO_ONLY_MODEL_TYPES = _build_detection_sets()
+_AUDIO_INPUT_MODEL_TYPES = frozenset({"qwen3_asr", "whisper"})
+_SUPPORTED_AUDIO_CODEC_MODEL_TYPES = {
+    "csm": "csm",
+    "dac": "dac",
+    "snac": "snac",
+}
+_AUDIO_CHAT_MODEL_TYPES = frozenset(
+    {
+        "granite_speech",
+        "qwen2_audio",
+        "qwen2_5_omni",
+        "qwen3_omni_moe",
+        "voxtral",
+    }
+)
+_NON_CHAT_AUDIO_MODEL_TYPES = (
+    _AUDIO_ONLY_MODEL_TYPES
+    | _AUDIO_INPUT_MODEL_TYPES
+    | {
+        "clap",
+        "clvp",
+        "dac",
+        "encodec",
+        "gemma3n_audio",
+        "jukebox",
+        "mimi",
+        "parakeet_encoder",
+        "qwen2_audio_encoder",
+        "snac",
+        "speech_to_text_2",
+        "univnet",
+        "voxtral_encoder",
+        "xcodec",
+    }
+)
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -610,6 +648,34 @@ def _is_vlm(config) -> bool:
         or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
         or model_type in _VLM_MODEL_TYPES
     )
+
+
+def _raw_config_model_type(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Optional[str]:
+    """Read ``model_type`` without requiring installed Transformers support."""
+    try:
+        if is_local_path(model_name):
+            local = Path(normalize_path(model_name)).expanduser()
+            config_path = (local.parent if local.is_file() else local) / "config.json"
+        else:
+            from huggingface_hub import hf_hub_download
+            config_path = Path(
+                hf_hub_download(
+                    repo_id = model_name,
+                    filename = "config.json",
+                    token = hf_token,
+                    local_files_only = local_files_only,
+                    cache_dir = active_hf_hub_cache(),
+                )
+            )
+        value = json.loads(config_path.read_text()).get("model_type")
+        return value if isinstance(value, str) else None
+    except Exception as exc:
+        logger.debug("Could not read raw model_type for '%s': %s", model_name, exc)
+        return None
 
 
 def _raw_config_has_vision_config(
@@ -848,11 +914,15 @@ def is_vision_model(
         if gguf_file:
             companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
             mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
-            is_vision = mmproj_file is not None
+            projector_has_vision = (
+                read_mmproj_vision_capability(mmproj_file) if mmproj_file else None
+            )
+            is_vision = mmproj_file is not None and projector_has_vision is not False
             logger.debug(
-                "Local GGUF vision check for '%s': mmproj=%s, is_vision=%s",
+                "Local GGUF vision check for '%s': mmproj=%s, projector_vision=%s, is_vision=%s",
                 gguf_file,
                 mmproj_file,
+                projector_has_vision,
                 is_vision,
             )
             return is_vision
@@ -978,7 +1048,8 @@ def _is_vision_model_uncached(
         return None
 
 
-VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
+VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm", "asr")
+_NON_CHAT_AUDIO_TYPES = frozenset(VALID_AUDIO_TYPES) - {"audio_vlm"}
 
 # Keyed like the vision cache by (name, token, local_files_only) so an unauthenticated
 # or offline miss cannot poison a later authenticated / online lookup.
@@ -997,7 +1068,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000,
 }
 
 
@@ -1136,8 +1207,51 @@ def _detect_audio_from_tokenizer(
 
 
 def is_audio_input_type(audio_type: Optional[str]) -> bool:
-    """True if an audio_type accepts audio input: whisper (ASR), audio_vlm (Gemma3n)."""
-    return audio_type in ("whisper", "audio_vlm")
+    """True for speech recognition and conversational audio-input types."""
+    return audio_type in ("whisper", "audio_vlm", "asr")
+
+
+def _classify_audio_capability(
+    model_name: str,
+    audio_type: Optional[str],
+    hf_token: Optional[str] = None,
+    *,
+    local_files_only: bool = False,
+) -> Tuple[Optional[str], bool, bool]:
+    """Return ``(audio_type, has_audio_input, is_chat_capable)``.
+
+    Structured model identity wins over token heuristics: ASR/codec families
+    stay non-chat, while conversational audio families remain chat-capable
+    even when their vocabularies contain codec-like markers.
+    """
+    model_type = _raw_config_model_type(
+        model_name,
+        hf_token,
+        local_files_only = local_files_only,
+    )
+    if model_type in _AUDIO_CHAT_MODEL_TYPES:
+        return "audio_vlm", True, True
+    if model_type in _NON_CHAT_AUDIO_MODEL_TYPES:
+        # Qwen3-ASR safetensors use the generic multimodal model loader. Keep
+        # their input capability, but do not label them as a codec-backed audio
+        # model: that would route them into the TTS/codec loader.
+        if model_type == "qwen3_asr":
+            return None, True, False
+        if model_type in _SUPPORTED_AUDIO_CODEC_MODEL_TYPES:
+            return _SUPPORTED_AUDIO_CODEC_MODEL_TYPES[model_type], False, False
+        classified = (
+            "whisper"
+            if model_type == "whisper"
+            else "asr"
+            if model_type in _AUDIO_INPUT_MODEL_TYPES
+            else audio_type
+        )
+        return classified, model_type in _AUDIO_INPUT_MODEL_TYPES, False
+    return (
+        audio_type,
+        is_audio_input_type(audio_type),
+        audio_type not in _NON_CHAT_AUDIO_TYPES,
+    )
 
 
 def _is_mmproj(filename: str) -> bool:
@@ -1255,7 +1369,7 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
 
 
 _GGUF_SPLIT_FILE_RE = re.compile(
-    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    r"^(?P<prefix>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})\.gguf$",
     re.IGNORECASE,
 )
 
@@ -1719,6 +1833,24 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
+def _local_gguf_config_source(gguf_file: str, *search_roots: Optional[str | Path]) -> str:
+    """Return the nearest directory carrying config metadata for a GGUF."""
+    candidates = [Path(gguf_file).parent]
+    candidates.extend(Path(root) for root in search_roots if root is not None)
+    for candidate in dict.fromkeys(candidates):
+        if (candidate / "config.json").is_file():
+            return str(candidate)
+        metadata = candidate / "export_metadata.json"
+        if metadata.is_file():
+            try:
+                base = json.loads(metadata.read_text()).get("base_model")
+                if isinstance(base, str) and base:
+                    return base
+            except Exception as exc:
+                logger.debug("Could not read export metadata at %s: %s", metadata, exc)
+    return str(candidates[0])
+
+
 def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
@@ -1771,6 +1903,63 @@ def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = Non
     yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
 
 
+def _compatible_cached_mmproj(repo_id: str, gguf_file: str) -> Optional[str]:
+    """Find a projector from another cached snapshot with positive identity.
+
+    Same-snapshot companions are handled by ``detect_mmproj_file``. Crossing a
+    revision boundary requires a projector snapshot at least as new as the
+    selected weight snapshot plus either matching GGUF metadata or recognized,
+    equal filename families. This permits a projector fetched on demand into a
+    newer snapshot without reviving a projector removed by a newer weight
+    revision. An anonymous ``mmproj.gguf`` is not enough.
+    """
+    weight_meta = read_gguf_general_metadata(gguf_file)
+    weight_family = _detect_family_token(Path(gguf_file).name)
+    candidates: list[tuple[int, float, str]] = []
+    gguf_snapshot = next(
+        (parent for parent in Path(gguf_file).parents if parent.parent.name == "snapshots"),
+        None,
+    )
+    try:
+        gguf_snapshot_mtime = gguf_snapshot.stat().st_mtime if gguf_snapshot else None
+    except OSError:
+        gguf_snapshot_mtime = None
+    for snapshot in _iter_hf_cache_snapshots(repo_id):
+        if gguf_snapshot is not None and snapshot == gguf_snapshot:
+            continue
+        if gguf_snapshot_mtime is not None:
+            try:
+                if snapshot.stat().st_mtime < gguf_snapshot_mtime:
+                    continue
+            except OSError:
+                continue
+        for candidate in _iter_gguf_files(snapshot, recursive = True):
+            metadata = read_gguf_general_metadata(str(candidate))
+            metadata_kind = is_mmproj_by_metadata(metadata)
+            if metadata_kind is False or (metadata_kind is None and not _is_mmproj(candidate.name)):
+                continue
+            score = pairing_score(weight_meta, metadata)
+            if score < 0:
+                continue
+            if score == 0:
+                candidate_family = _detect_family_token(candidate.name)
+                if (
+                    weight_family is None
+                    or candidate_family is None
+                    or candidate_family != weight_family
+                ):
+                    continue
+            try:
+                mtime = candidate.stat().st_mtime
+            except OSError:
+                mtime = 0
+            candidates.append((score, mtime, str(candidate)))
+    if not candidates:
+        return None
+    candidates.sort(reverse = True)
+    return candidates[0][2]
+
+
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     """Variants from the local HF cache snapshot, or None if not cached.
 
@@ -1780,14 +1969,58 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
     would shadow those real variants, so keep scanning older snapshots for
     actual variants and carry the vision flag across snapshots.
     """
-    any_vision = False
+    newest_projector_mtime: Optional[float] = None
+    newest_variant_mtime: Optional[float] = None
+    complete_variants: list[GgufVariantInfo] = []
+    seen_quants: set[str] = set()
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
-        any_vision = any_vision or has_vision
-        if variants:
-            return variants, any_vision
-    if any_vision:
-        return [], True
+        try:
+            snapshot_mtime = snap.stat().st_mtime
+        except OSError:
+            continue
+        if has_vision:
+            newest_projector_mtime = max(
+                newest_projector_mtime or snapshot_mtime,
+                snapshot_mtime,
+            )
+        contributed = False
+        for variant in variants:
+            if variant.quant in seen_quants:
+                continue
+            candidate = snap / variant.filename
+            split = _GGUF_SPLIT_FILE_RE.match(candidate.name)
+            if split is None:
+                complete = candidate.is_file()
+            else:
+                prefix = split.group("prefix").casefold()
+                total_text = split.group("total")
+                expected = set(range(1, int(total_text) + 1))
+                present = {
+                    int(found.group("index"))
+                    for sibling in _iter_gguf_files(candidate.parent)
+                    if (found := _GGUF_SPLIT_FILE_RE.match(sibling.name))
+                    and found.group("prefix").casefold() == prefix
+                    and found.group("total") == total_text
+                    and sibling.is_file()
+                }
+                complete = present == expected
+            if not complete:
+                continue
+            complete_variants.append(variant)
+            seen_quants.add(variant.quant)
+            contributed = True
+        if contributed:
+            newest_variant_mtime = max(
+                newest_variant_mtime or snapshot_mtime,
+                snapshot_mtime,
+            )
+    has_vision = newest_projector_mtime is not None and (
+        newest_variant_mtime is None or newest_projector_mtime >= newest_variant_mtime
+    )
+    if complete_variants or has_vision:
+        complete_variants.sort(key = lambda variant: -variant.size_bytes)
+        return complete_variants, has_vision
     return None
 
 
@@ -2657,6 +2890,7 @@ class ModelConfig:
     is_audio: bool = False  # TTS audio model?
     audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
+    is_chat_capable: bool = True  # Suitable for automatic loading into chat?
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
@@ -2693,6 +2927,9 @@ class ModelConfig:
 
             is_vision = is_vision_model(base_model, hf_token = hf_token)
             audio_type = detect_audio_type(base_model, hf_token = hf_token)
+            audio_type, has_audio_input, is_chat_capable = _classify_audio_capability(
+                base_model, audio_type, hf_token
+            )
 
             display_name = lora_path_obj.name
             identifier = lora_path  # path is the identifier for local LoRAs
@@ -2707,7 +2944,8 @@ class ModelConfig:
                 is_lora = True,
                 is_audio = audio_type is not None and audio_type != "audio_vlm",
                 audio_type = audio_type,
-                has_audio_input = is_audio_input_type(audio_type),
+                has_audio_input = has_audio_input,
+                is_chat_capable = is_chat_capable,
                 base_model = base_model,
             )
 
@@ -2793,11 +3031,43 @@ class ModelConfig:
                 # mmproj-*.gguf lives at the snapshot root.
                 companion_root = _local_gguf_companion_search_root(path, gguf_file)
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+                gguf_audio_type = detect_gguf_audio_type(gguf_file)
+                projector_has_audio = False
+                projector_has_vision = None
                 if mmproj_file:
-                    gguf_is_vision = True
-                    logger.info(f"Detected mmproj for vision: {mmproj_file}")
+                    projector_has_vision = read_mmproj_vision_capability(mmproj_file)
+                    # Older vision projectors omit the flag, so only an explicit
+                    # false (used by audio-only projectors) disables images.
+                    gguf_is_vision = projector_has_vision is not False
+                    logger.info(
+                        "Detected mmproj: %s (vision=%s)",
+                        mmproj_file,
+                        gguf_is_vision,
+                    )
+                    projector_has_audio = read_mmproj_audio_capability(mmproj_file) is True
+                    if gguf_audio_type is None:
+                        gguf_audio_type = detect_gguf_audio_type(mmproj_file)
                 elif base_is_vision:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
+
+                config_source = _local_gguf_config_source(
+                    gguf_file,
+                    companion_root,
+                    str(gguf_dir),
+                )
+                gguf_audio_type, has_audio_input, is_chat_capable = _classify_audio_capability(
+                    config_source,
+                    gguf_audio_type,
+                    hf_token,
+                    local_files_only = True,
+                )
+                has_audio_input = has_audio_input or projector_has_audio
+                if (
+                    projector_has_audio
+                    and gguf_audio_type == "asr"
+                    and projector_has_vision is not True
+                ):
+                    gguf_is_vision = False
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
@@ -2813,6 +3083,10 @@ class ModelConfig:
                     is_vision = gguf_is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_audio = gguf_audio_type is not None and gguf_audio_type != "audio_vlm",
+                    audio_type = gguf_audio_type,
+                    has_audio_input = has_audio_input,
+                    is_chat_capable = is_chat_capable,
                     gguf_file = gguf_file,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
@@ -2829,6 +3103,7 @@ class ModelConfig:
                     LLAMA_SERVER_NOT_FOUND_DETAIL,
                     LlamaCppBackend,
                     LlamaServerNotFoundError,
+                    cached_gguf_for_load,
                 )
 
                 if not LlamaCppBackend._find_llama_server_binary(include_denied = True):
@@ -2845,6 +3120,71 @@ class ModelConfig:
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
+                cached_gguf = cached_gguf_for_load(identifier, variant)
+                cached_mmproj = None
+                if cached_gguf:
+                    cached_snapshot = next(
+                        (
+                            parent
+                            for parent in Path(cached_gguf).parents
+                            if parent.parent.name == "snapshots"
+                        ),
+                        Path(cached_gguf).parent,
+                    )
+                    cached_mmproj = detect_mmproj_file(
+                        cached_gguf,
+                        search_root = str(cached_snapshot),
+                    )
+                    if cached_mmproj is None:
+                        cached_mmproj = _compatible_cached_mmproj(identifier, cached_gguf)
+                    gguf_audio_type = detect_gguf_audio_type(cached_gguf)
+                    projector_has_audio = False
+                    projector_has_vision = None
+                    if cached_mmproj:
+                        projector_has_vision = read_mmproj_vision_capability(cached_mmproj)
+                        has_vision = projector_has_vision is not False
+                        projector_has_audio = read_mmproj_audio_capability(cached_mmproj) is True
+                        if gguf_audio_type is None:
+                            gguf_audio_type = detect_gguf_audio_type(cached_mmproj)
+                    config_source = _local_gguf_config_source(
+                        cached_gguf,
+                        str(cached_snapshot),
+                        str(Path(cached_mmproj).parent) if cached_mmproj else None,
+                    )
+                    config_source_is_local = True
+                    if (
+                        _raw_config_model_type(
+                            config_source,
+                            hf_token,
+                            local_files_only = True,
+                        )
+                        is None
+                        and not _env_offline()
+                    ):
+                        # A cached -hf load may contain only the selected GGUF.
+                        # Consult the repo config while online before defaulting
+                        # an unknown audio family to chat-capable.
+                        config_source = identifier
+                        config_source_is_local = False
+                    gguf_audio_type, has_audio_input, is_chat_capable = _classify_audio_capability(
+                        config_source,
+                        gguf_audio_type,
+                        hf_token,
+                        local_files_only = config_source_is_local,
+                    )
+                    has_audio_input = has_audio_input or projector_has_audio
+                    if (
+                        projector_has_audio
+                        and gguf_audio_type == "asr"
+                        and projector_has_vision is not True
+                    ):
+                        has_vision = False
+                else:
+                    gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
+                    gguf_audio_type, has_audio_input, is_chat_capable = _classify_audio_capability(
+                        identifier, gguf_audio_type, hf_token
+                    )
+
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 logger.info(
                     f"Detected remote GGUF repo '{identifier}', "
@@ -2859,7 +3199,12 @@ class ModelConfig:
                     is_vision = has_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_audio = gguf_audio_type is not None and gguf_audio_type != "audio_vlm",
+                    audio_type = gguf_audio_type,
+                    has_audio_input = has_audio_input,
+                    is_chat_capable = is_chat_capable,
                     gguf_file = None,
+                    gguf_mmproj_file = cached_mmproj,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )
@@ -2931,7 +3276,9 @@ class ModelConfig:
 
         vision = is_vision_model(check_model, hf_token = hf_token)
         audio_type_val = detect_audio_type(check_model, hf_token = hf_token)
-        has_audio_in = is_audio_input_type(audio_type_val)
+        audio_type_val, has_audio_in, is_chat_capable = _classify_audio_capability(
+            check_model, audio_type_val, hf_token
+        )
 
         display_name = Path(path).name if is_local else identifier.split("/")[-1]
 
@@ -2946,6 +3293,7 @@ class ModelConfig:
             is_audio = audio_type_val is not None and audio_type_val != "audio_vlm",
             audio_type = audio_type_val,
             has_audio_input = has_audio_in,
+            is_chat_capable = is_chat_capable,
             base_model = base_model,
         )
 

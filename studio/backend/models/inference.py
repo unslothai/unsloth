@@ -285,6 +285,12 @@ class ValidateModelResponse(BaseModel):
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
+    is_audio: bool = Field(False, description = "Whether this is an audio-only/STT/TTS model")
+    audio_type: Optional[str] = Field(None, description = "Audio type, when detected")
+    has_audio_input: bool = Field(False, description = "Whether model accepts audio input")
+    is_chat_capable: bool = Field(
+        True, description = "Whether the model is suitable for automatic chat loading"
+    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",

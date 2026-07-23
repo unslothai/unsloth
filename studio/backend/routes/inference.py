@@ -1070,6 +1070,18 @@ except ImportError:
     )
 
 
+def _resolve_load_model_config(
+    model_identifier: str, hf_token: Optional[str], gguf_variant: Optional[str]
+) -> Optional[ModelConfig]:
+    """Resolve model metadata without blocking an async route's event loop."""
+    with _hf_offline_if_dns_dead():
+        return ModelConfig.from_identifier(
+            model_id = model_identifier,
+            hf_token = hf_token,
+            gguf_variant = gguf_variant,
+        )
+
+
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
     return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
 
@@ -3859,15 +3871,16 @@ def _estimate_gguf_required_gb(
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
-        total_bytes = 0
         main = getattr(config, "gguf_file", None)
+        main_bytes = 0
         if main and Path(main).is_file():
-            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
-            f = getattr(config, attr, None)
-            if f and Path(f).is_file():
-                total_bytes += Path(f).stat().st_size
-        if total_bytes > 0:
+            main_bytes = LlamaCppBackend._get_gguf_size_bytes(str(main))
+        if main_bytes > 0:
+            total_bytes = main_bytes
+            for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+                f = getattr(config, attr, None)
+                if f and Path(f).is_file():
+                    total_bytes += Path(f).stat().st_size
             return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
@@ -3884,7 +3897,9 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = bool(has_vision or getattr(config, "has_audio_input", False)),
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -4285,13 +4300,14 @@ async def _load_model_impl(
         llama_backend = get_llama_cpp_backend()
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
+        config: Optional[ModelConfig] = None
         if request.gguf_variant or is_direct_gguf_request:
             gguf_variant_matches = is_direct_gguf_request or bool(
                 llama_backend.hf_variant
                 and request.gguf_variant
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
             )
-            if (
+            gguf_runtime_matches = (
                 llama_backend.is_loaded
                 and gguf_variant_matches
                 and llama_backend.model_identifier
@@ -4304,7 +4320,24 @@ async def _load_model_impl(
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
+            )
+            needs_audio_projector_retry = False
+            retry_extra_args = (
+                extra_llama_args if extra_llama_args is not None else llama_backend.extra_args
+            )
+            if (
+                gguf_runtime_matches
+                and not extra_args_disable_mmproj(retry_extra_args)
+                and not getattr(llama_backend, "_has_audio_input", False)
             ):
+                config = await asyncio.to_thread(
+                    _resolve_load_model_config,
+                    model_identifier,
+                    request.hf_token,
+                    request.gguf_variant,
+                )
+                needs_audio_projector_retry = bool(config and config.has_audio_input)
+            if gguf_runtime_matches and not needs_audio_projector_retry:
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4401,11 +4434,12 @@ async def _load_model_impl(
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
+        if config is None:
+            config = await asyncio.to_thread(
+                _resolve_load_model_config,
+                model_identifier,
+                request.hf_token,
+                request.gguf_variant,
             )
 
         if not config:
@@ -4527,8 +4561,10 @@ async def _load_model_impl(
                     config.gguf_hf_repo,
                     config.gguf_variant,
                     require_mmproj = bool(
-                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                        (config.is_vision or config.has_audio_input)
+                        and not extra_args_disable_mmproj(extra_llama_args)
                     ),
+                    mmproj_path = config.gguf_mmproj_file,
                     hf_token = request.hf_token,
                 ):
                     raise HTTPException(
@@ -4566,6 +4602,7 @@ async def _load_model_impl(
             _common_load_kwargs = dict(
                 model_identifier = config.identifier,
                 is_vision = config.is_vision,
+                has_audio_input = config.has_audio_input,
                 n_ctx = request.max_seq_length,
                 chat_template_override = effective_chat_template_override,
                 cache_type_kv = request.cache_type_kv,
@@ -4584,6 +4621,7 @@ async def _load_model_impl(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
+                    mmproj_path = config.gguf_mmproj_file,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>
@@ -5028,7 +5066,10 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
+        # Resolution can inspect GGUF headers and Hugging Face metadata. Keep
+        # all synchronous filesystem/network work off FastAPI's event loop.
+        config = await asyncio.to_thread(
+            ModelConfig.from_identifier,
             model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
@@ -5236,6 +5277,10 @@ async def validate_model(
             is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
+            is_audio = getattr(config, "is_audio", False),
+            audio_type = getattr(config, "audio_type", None),
+            has_audio_input = getattr(config, "has_audio_input", False),
+            is_chat_capable = getattr(config, "is_chat_capable", True),
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,

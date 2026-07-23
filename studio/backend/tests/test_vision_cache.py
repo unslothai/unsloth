@@ -191,6 +191,17 @@ class TestLocalGgufVisionDetection:
         assert is_vision_model(str(model)) is True
 
     @patch(
+        "utils.models.model_config.read_mmproj_vision_capability",
+        return_value = False,
+    )
+    def test_audio_only_mmproj_is_not_reported_as_vision(self, _mock_capability, tmp_path):
+        model = tmp_path / "audio-input-Q4_K_M.gguf"
+        model.write_bytes(b"")
+        (tmp_path / "mmproj-audio.gguf").write_bytes(b"")
+
+        assert is_vision_model(str(model)) is False
+
+    @patch(
         "utils.models.model_config._is_vision_model_subprocess",
         side_effect = AssertionError("GGUF must not use Transformers vision detection"),
     )
