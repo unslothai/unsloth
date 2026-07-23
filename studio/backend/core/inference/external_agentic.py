@@ -406,7 +406,6 @@ async def stream_external_local_tool_loop(
     if not cancel_event.is_set():
         if max_tool_iterations > 0:
             from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
-
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
         final_gen = client.stream_chat_completion(
             messages = conversation,
