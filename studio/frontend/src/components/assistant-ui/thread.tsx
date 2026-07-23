@@ -1440,12 +1440,6 @@ const Composer: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
-  const resetAfterComposerSendRef = useRef(false);
-  useAuiEvent("thread.runStart", () => {
-    if (!resetAfterComposerSendRef.current) return;
-    resetAfterComposerSendRef.current = false;
-    void aui.composer().reset();
-  });
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
@@ -1582,6 +1576,18 @@ const Composer: FC<{
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
+  // Without this the restore effect above puts the sent text back when the
+  // runtime rebinds on the first message.
+  const draftKeyRef = useRef(draftKey);
+  useEffect(() => {
+    draftKeyRef.current = draftKey;
+  }, [draftKey]);
+  const clearStoredDraft = useCallback(() => {
+    const key = draftKeyRef.current;
+    if (key) {
+      writeComposerDraft(key, "");
+    }
+  }, []);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1732,9 +1738,10 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
+      clearStoredDraft();
       aui.composer().send();
     }
-  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+  }, [pendingSend, indexingActive, aui, clearStoredDraft, dismissWaitToast]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
@@ -1777,6 +1784,7 @@ const Composer: FC<{
         flushResourcesSync(() => {
           aui.composer().setText("");
         });
+        clearStoredDraft();
         startPromptQueue(
           [queuedPrompt],
           createPromptQueueTarget(),
@@ -1810,6 +1818,7 @@ const Composer: FC<{
           closeOverlay();
           return;
         }
+        clearStoredDraft();
         setImageToolsEnabled(true);
         setPendingImageEditReference({
           threadId: overlay.threadId ?? referenceThreadId,
@@ -1827,13 +1836,15 @@ const Composer: FC<{
             );
         });
         closeOverlay();
+        return;
       }
 
-      resetAfterComposerSendRef.current = true;
+      clearStoredDraft();
     },
     [
       aui,
       canQueueCurrentPrompt,
+      clearStoredDraft,
       closeOverlay,
       composerText,
       createPromptQueueTarget,
@@ -1955,6 +1966,7 @@ const Composer: FC<{
                 flushResourcesSync(() => {
                   aui.composer().setText("");
                 });
+                clearStoredDraft();
                 startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
               }}
               onSendClick={interceptSend}
