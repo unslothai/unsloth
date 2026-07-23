@@ -685,8 +685,7 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
 
 @_NEEDS_BASH
 def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
-    # Some builds put the --spec-type enum on the indented description line.
-    # Looking only at the first physical "--spec-type" line falsely reported
+    # Enum on the indented line: first-line-only probing falsely reported
     # "lacks MTP" (#7302).
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
@@ -703,8 +702,7 @@ def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
 
 @_NEEDS_BASH
 def test_probe_server_capabilities_empty_help_fails_open(tmp_path):
-    # Binary exists but --help prints nothing (crash stub / empty): must not
-    # claim the prebuilt lacks MTP (#7302).
+    # --help prints nothing: must not claim the prebuilt lacks MTP (#7302).
     fake = tmp_path / "llama-server"
     fake.write_text("#!/usr/bin/env bash\nexit 0\n")
     fake.chmod(0o755)
@@ -769,7 +767,7 @@ def test_mtp_token_from_spec_help_prefers_draft_mtp():
     )
     assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type [none|mtp|ngram-cache]") == "mtp"
     assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,ngram-mod") is None
-    # Do not match incidental substrings.
+    # No incidental substring matches.
     assert LlamaCppBackend._mtp_token_from_spec_help("prompt cache") is None
 
 

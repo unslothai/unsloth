@@ -5816,7 +5816,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             _bin = type(llama_backend)._find_llama_server_binary()
             _caps = type(llama_backend).probe_server_capabilities(_bin)
             # Fail open on inconclusive probes: False means a definitive
-            # "binary lacks MTP" to API consumers (update recommendation).
+            # "binary lacks MTP" to API consumers.
             _supports_mtp = bool(
                 _caps.get("supports_mtp", False)
                 or (_caps.get("found", False) and _caps.get("mtp_probe_inconclusive", False))

@@ -2829,24 +2829,18 @@ class LlamaCppBackend:
                     return False
                 return "argument has been removed" not in desc
 
-            # MTP token from the full --spec-type help *block* (declaration
-            # line + indented continuation). Older probing only looked at the
-            # first physical line containing "--spec-type", which misses builds
-            # that put the enum on the next indented line (#7302 false
-            # "lacks MTP" reports). Prefer draft-mtp (PR #22673) over the later
-            # bare `mtp` rename.
+            # MTP token from the full --spec-type help block (decl + indented
+            # continuation). First-line-only probing missed builds putting the
+            # enum on the next line (#7302). Prefer draft-mtp (PR #22673) over mtp.
             spec_help = blocks.get("--spec-type") or ""
             if not spec_help:
-                # Fallback: join every line mentioning --spec-type (covers
-                # parsers that fail to attach the block, without scanning the
-                # entire --help dump for incidental "mtp" mentions).
+                # Fallback: join --spec-type lines, avoiding incidental "mtp" in --help.
                 spec_help = "\n".join(
                     line for line in help_text.splitlines() if "--spec-type" in line
                 )
             mtp_token = cls._mtp_token_from_spec_help(spec_help)
-            # Only a resolved --spec-type block can *confirm* missing MTP.
-            # Empty/crash/--help failure leaves saw_spec_type False so we
-            # fail open on supports_mtp (no false "prebuilt lacks MTP" banner).
+            # Only a resolved --spec-type block confirms missing MTP; empty/crash
+            # leaves saw_spec_type False so supports_mtp fails open.
             saw_spec_type = bool(spec_help.strip()) and "--spec-type" in spec_help
 
             # ngram-mod flag flavor. Post-rename builds advertise both new
@@ -2888,9 +2882,9 @@ class LlamaCppBackend:
             help_text = ""
 
         help_nonempty = bool(help_text.strip())
-        # Confirmed MTP only when a successful --help listed a --spec-type block
-        # with mtp/draft-mtp. Nonempty successful --help without --spec-type is a
-        # definitive pre-spec binary. Failed/empty probes stay inconclusive (#7302).
+        # Confirmed only when a successful --help lists a --spec-type block with
+        # mtp/draft-mtp; nonempty --help without it is a definitive pre-spec
+        # binary; failed/empty probes stay inconclusive (#7302).
         if saw_spec_type and probe_ok:
             supports_mtp = mtp_token is not None
             mtp_probe_inconclusive = False
@@ -2931,9 +2925,7 @@ class LlamaCppBackend:
         text = spec_help or ""
         if "draft-mtp" in text:
             return "draft-mtp"
-        # Bare `mtp` as an enum token: `|mtp|`, `,mtp,`, `[mtp]`, `(mtp)`, etc.
-        # Avoid matching substrings inside draft-mtp (already handled) or
-        # unrelated words.
+        # Bare `mtp` enum token (`|mtp|`, `,mtp,`, ...), not a substring.
         if re.search(r"(?<![A-Za-z0-9_-])mtp(?![A-Za-z0-9_-])", text):
             return "mtp"
         return None
