@@ -1875,6 +1875,7 @@ export function ChatPage({
     selectModel,
     ejectModel,
     cancelLoading,
+    invalidatePendingModelSelection,
     loadingModel,
     loadProgress,
     loadToastDismissed,
@@ -2303,6 +2304,11 @@ export function ChatPage({
         }
         const stopped = await cancelLoading();
         if (!stopped) {
+          if (!loadingModel) {
+            toast.info("Another model is already loading", {
+              description: "Wait for it to finish or cancel it first.",
+            });
+          }
           return;
         }
       }
@@ -2506,6 +2512,7 @@ export function ChatPage({
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {
+        invalidatePendingModelSelection();
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -2693,6 +2700,7 @@ export function ChatPage({
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
+      invalidatePendingModelSelection,
       stageOrLoad,
       view,
     ],

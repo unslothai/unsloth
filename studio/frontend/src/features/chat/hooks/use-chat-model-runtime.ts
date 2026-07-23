@@ -461,7 +461,10 @@ export function useChatModelRuntime() {
   );
 
   const cancelLoadRun = useCallback(
-    async (expectedRun?: ActiveModelLoadRun): Promise<boolean> => {
+    async (
+      expectedRun?: ActiveModelLoadRun,
+      preserveCheckpoint = false,
+    ): Promise<boolean> => {
       const run = activeLoadRunRef.current;
       if (!run || (expectedRun && !ownsModelLoadRun(run, expectedRun))) {
         return false;
@@ -478,7 +481,7 @@ export function useChatModelRuntime() {
       setLoadingModel(null);
       setLoadProgress(null);
       setLoadToastDismissedState(false);
-      clearCheckpoint();
+      if (!preserveCheckpoint) clearCheckpoint();
       if (tid != null) toast.dismiss(tid);
       const isCachedOrLocal = model.isDownloaded || model.isCachedLora;
       toast.info("Stopping model load", {
@@ -490,12 +493,13 @@ export function useChatModelRuntime() {
       const cancelPromise = (async (): Promise<boolean> => {
         try {
           // AbortController cannot interrupt every preflight await (for
-          // example, a consent dialog). Do not let a replacement claim the
-          // slot until the originating frontend task has observed the abort.
-          // Unload only after that task settles so a late /load response cannot
-          // re-activate the cancelled model after cleanup.
-          await run.completionPromise;
+          // example, a consent dialog), and it is not passed to the backend
+          // /load request. /unload is the operation that promptly interrupts an
+          // in-flight backend load, so send it before waiting for the frontend
+          // task to observe the abort. The unload route waits for cancellation
+          // to settle before it returns, preventing a late /load activation.
           await unloadModel({ model_path: model.id });
+          await run.completionPromise;
           return true;
         } catch (error) {
           const detail =
@@ -546,6 +550,10 @@ export function useChatModelRuntime() {
     (): Promise<boolean> => cancelLoadRun(),
     [cancelLoadRun],
   );
+
+  const invalidatePendingModelSelection = useCallback(() => {
+    loadIntentRef.current += 1;
+  }, []);
 
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
@@ -621,7 +629,9 @@ export function useChatModelRuntime() {
           return;
         }
 
-        const stopped = await cancelLoadRun(activeRun);
+        // Keep the working checkpoint as the rollback target for the
+        // replacement. A standalone Stop still clears the selection.
+        const stopped = await cancelLoadRun(activeRun, true);
         if (loadIntentRef.current !== loadIntentId) return;
         if (!stopped) {
           if (typeof selection !== "string" && selection.previousConfig) {
@@ -1694,6 +1704,7 @@ export function useChatModelRuntime() {
     selectModel,
     ejectModel,
     cancelLoading,
+    invalidatePendingModelSelection,
     loadingModel,
     loadProgress,
     loadToastDismissed,
