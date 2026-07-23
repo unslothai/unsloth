@@ -299,6 +299,52 @@ class TestPyYamlDeserialization:
                 "[(SafeLoader := get_loader()) for _ in [0]]\n"
                 "yaml.load('a: 1', Loader=SafeLoader)"
             ),
+            (
+                "import yaml\n"
+                "yaml.SafeLoader.add_multi_constructor("
+                "'tag:yaml.org,2002:python/object/apply:', "
+                "yaml.constructor.FullConstructor.construct_python_object_apply)\n"
+                "yaml.load('!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=yaml.SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "yaml.SafeLoader.yaml_multi_constructors["
+                "'tag:yaml.org,2002:python/'] = "
+                "yaml.constructor.FullConstructor.construct_python_object_apply\n"
+                "yaml.load('a: 1', Loader=yaml.SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "globals().__getitem__('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "globals().__getitem__.__call__('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import sys, yaml\n"
+                "sys.modules.__getitem__('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "name = 'yaml'\n"
+                "__import__(name).unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "def parse(im):\n"
+                "    return im('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')\n"
+                "parse(__import__)"
+            ),
+            (
+                "import importlib\n"
+                "importlib.__getattribute__('import_module')('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
         ],
     )
     def test_unsafe_pyyaml_loaders_blocked(self, code):
@@ -332,11 +378,16 @@ class TestPyYamlDeserialization:
         "code",
         [
             "import yaml\nyaml.safe_load('a: 1')",
-            "import yaml\nlist(yaml.safe_load_all('a: 1\n---\nb: 2'))",
+            "import yaml\nlist(yaml.safe_load_all('a: 1\\n---\\nb: 2'))",
             "from yaml import safe_load as loads\nloads('a: 1')",
-            ("from yaml import safe_load_all as loads_all\nlist(loads_all('a: 1\n---\nb: 2'))"),
+            (
+                "from yaml import safe_load_all as loads_all\n"
+                "list(loads_all('a: 1\\n---\\nb: 2'))"
+            ),
             "import yaml\nyaml.load('a: 1', Loader=yaml.SafeLoader)",
             "import yaml\nyaml.load('a: 1', Loader=yaml.BaseLoader)",
+            "import yaml\nyaml.load('a: 1', Loader=yaml.loader.SafeLoader)",
+            "import yaml\nyaml.load('a: 1', Loader=yaml.cyaml.CSafeLoader)",
             "import yaml\nyaml.load('a: 1', yaml.CSafeLoader)",
             "from yaml import load, SafeLoader\nload('a: 1', Loader=SafeLoader)",
             "from yaml import load, BaseLoader\nload('a: 1', Loader=BaseLoader)",
