@@ -87,11 +87,28 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
-import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
 import {
   PLUS_MENU_ORDER,
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+  getPreStreamRunReservationCount,
+  notifyPreStreamRunFailed,
+  releasePreStreamRunReservation,
+  tryReservePreStreamRun,
+  discardQueuedChatRunSettings,
+  discardQueuedChatRunSettingsForThread,
+  registerQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
   composerDraftKey,
+  markThreadIncognito,
+  type PromptQueueRunFailedEventDetail,
+  type PromptQueueStopEventDetail,
   readComposerDraft,
+  type PromptQueueUIEntry,
+  type PromptQueueUIItem,
+  type PromptQueueUIItemStatus,
+  type PromptQueueUIState,
+  usePromptQueueUI,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -179,7 +196,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { create } from "zustand";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useIsMobile } from "@/hooks/use-mobile";
 
@@ -187,50 +203,17 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
 
-// Single-chat prompt queue. State lives at module level so it survives the
-// Composer remount when the first queued message creates a new thread, and
-// detection subscribes to runningByThreadId instead of aui.thread() so the
-// welcome-screen composer can queue safely before a thread is bound.
-type PromptQueueUIEntry = {
-  current: number;
-  total: number;
-};
-
-type PromptQueueUIItemStatus = "queued" | "next" | "waiting" | "running";
-
-type PromptQueueUIItem = {
-  id: string;
-  prompt: string;
-  position: number;
-  total: number;
-  status: PromptQueueUIItemStatus;
-  threadIds: string[];
-  canEdit: boolean;
-  canRemove: boolean;
-};
-
-interface PromptQueueUIState {
-  byThreadId: Record<string, PromptQueueUIEntry>;
-  current: number;
-  total: number;
-  items: PromptQueueUIItem[];
-  isRunning: boolean;
-}
-
-const usePromptQueueUI = create<PromptQueueUIState>(() => ({
-  byThreadId: {},
-  current: 0,
-  total: 0,
-  items: [],
-  isRunning: false,
-}));
-
+// Prompt queues live at module level so they survive Composer remounts,
+// including the first queued message that creates a new thread. Each chat gets
+// its own queue run; completion detection subscribes to runningByThreadId
+// instead of aui.thread() so queues can keep advancing in the background.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
   getRunningThreadIds: () => string[];
-  append: (prompt: string) => void;
+  append: (prompt: string) => void | Promise<void>;
   cancel: () => void;
   isIndexing: () => boolean;
+  usesThreadDocuments: boolean;
 };
 
 type PromptQueueItem = {
@@ -238,18 +221,31 @@ type PromptQueueItem = {
   prompt: string;
   target: PromptQueueTarget;
   dispatched: boolean;
+  dispatchRetries: number;
+};
+
+type PromptQueueRun = {
+  id: string;
+  items: PromptQueueItem[];
+  index: number;
+  generation: number;
+  prevStoreRunning: boolean;
+  waitingForTargetIdle: boolean;
+  retryTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
+const PROMPT_QUEUE_DISPATCH_RETRY_MS = 500;
+const PROMPT_QUEUE_MAX_DISPATCH_RETRIES = 5;
+const PROMPT_QUEUE_GLOBAL_CONCURRENCY = 1;
 
-let promptQueueItems: PromptQueueItem[] = [];
-let promptQueueIndex = 0;
-let promptQueueIsRunning = false;
-let promptQueueGeneration = 0;
-let promptQueuePrevStoreRunning = false;
-let promptQueueWaitingForTargetIdle = false;
+const promptQueueRuns = new Map<string, PromptQueueRun>();
+const promptQueueActiveRunIds = new Set<string>();
+const promptQueueDispatchingRunIds = new Set<string>();
+const promptQueueRunOrder: string[] = [];
 let promptQueueStoreUnsub: (() => void) | null = null;
-let promptQueueRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let promptQueuePumpTimer: ReturnType<typeof setTimeout> | null = null;
+let promptQueueRoundRobinCursor = 0;
 
 function compactIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
@@ -259,49 +255,121 @@ function createPromptQueueItemId() {
   return `prompt-queue-${crypto.randomUUID()}`;
 }
 
-function stopPromptQueueSubscription({
-  resetRunningState = true,
-}: {
-  resetRunningState?: boolean;
-} = {}) {
+function createPromptQueueRunId() {
+  return `prompt-queue-run-${crypto.randomUUID()}`;
+}
+
+function stopPromptQueueSubscription() {
   if (promptQueueStoreUnsub) {
     promptQueueStoreUnsub();
     promptQueueStoreUnsub = null;
   }
-  if (resetRunningState) {
-    promptQueuePrevStoreRunning = false;
-  }
 }
 
-function resetPromptQueue() {
-  promptQueueGeneration += 1;
-  promptQueueIsRunning = false;
-  promptQueueItems = [];
-  promptQueueIndex = 0;
-  promptQueueWaitingForTargetIdle = false;
-  if (promptQueueRetryTimer) {
-    clearTimeout(promptQueueRetryTimer);
-    promptQueueRetryTimer = null;
+function clearPromptQueuePumpTimer() {
+  if (!promptQueuePumpTimer) {
+    return;
   }
+  clearTimeout(promptQueuePumpTimer);
+  promptQueuePumpTimer = null;
+}
+
+function clearPromptQueueRetryTimer(run: PromptQueueRun) {
+  if (!run.retryTimer) {
+    return;
+  }
+  clearTimeout(run.retryTimer);
+  run.retryTimer = null;
+}
+
+function deletePromptQueueRun(run: PromptQueueRun) {
+  run.generation += 1;
+  clearPromptQueueRetryTimer(run);
+  promptQueueActiveRunIds.delete(run.id);
+  promptQueueDispatchingRunIds.delete(run.id);
+  promptQueueRuns.delete(run.id);
+  const orderIndex = promptQueueRunOrder.indexOf(run.id);
+  if (orderIndex >= 0) {
+    promptQueueRunOrder.splice(orderIndex, 1);
+    if (promptQueueRoundRobinCursor > orderIndex) {
+      promptQueueRoundRobinCursor -= 1;
+    }
+    if (promptQueueRunOrder.length > 0) {
+      promptQueueRoundRobinCursor %= promptQueueRunOrder.length;
+    } else {
+      promptQueueRoundRobinCursor = 0;
+    }
+  }
+  if (promptQueueRuns.size === 0) {
+    clearPromptQueuePumpTimer();
+    stopPromptQueueSubscription();
+  }
+  syncPromptQueueUI();
+}
+
+function resetPromptQueues() {
+  for (const run of promptQueueRuns.values()) {
+    run.generation += 1;
+    clearPromptQueueRetryTimer(run);
+  }
+  promptQueueRuns.clear();
+  promptQueueActiveRunIds.clear();
+  promptQueueDispatchingRunIds.clear();
+  promptQueueRunOrder.length = 0;
+  promptQueueRoundRobinCursor = 0;
+  clearPromptQueuePumpTimer();
   stopPromptQueueSubscription();
   syncPromptQueueUI();
 }
 
-function appendQueuedPrompt(item: PromptQueueItem) {
-  item.dispatched = true;
+function requestPromptQueuePumpIfReady(delay = 0) {
+  if (hasReadyPromptQueueRun()) {
+    requestPromptQueuePump(delay);
+  }
+}
+
+function handleQueuedPromptAppendFailure(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  error: unknown,
+) {
+  if (!isActivePromptQueueItem(run, item, run.generation)) {
+    return;
+  }
+  item.dispatched = false;
+  promptQueueActiveRunIds.delete(run.id);
   syncPromptQueueUI();
-  item.target.append(item.prompt);
+  item.dispatchRetries += 1;
+  if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
+    console.error("Prompt queue dispatch failed permanently:", error);
+    deletePromptQueueRun(run);
+    requestPromptQueuePumpIfReady();
+    return;
+  }
+  scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+}
+
+function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
+  item.dispatched = true;
+  promptQueueActiveRunIds.add(run.id);
+  syncPromptQueueUI();
+  try {
+    const result = item.target.append(item.prompt);
+    if (result && typeof result.catch === "function") {
+      void result.catch((error) => {
+        handleQueuedPromptAppendFailure(run, item, error);
+      });
+    }
+  } catch (error) {
+    handleQueuedPromptAppendFailure(run, item, error);
+  }
 }
 
 async function targetHasIndexingDocuments(item: PromptQueueItem) {
   if (item.target.isIndexing()) {
     return true;
   }
-  const state = useChatRuntimeStore.getState();
-  if (
-    !state.ragEnabled ||
-    state.ragSource.type !== "thread"
-  ) {
+  if (!item.target.usesThreadDocuments) {
     return false;
   }
   const threadId = item.target.getDocumentThreadId();
@@ -318,32 +386,142 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
   }
 }
 
-function isActivePromptQueueItem(item: PromptQueueItem, generation: number) {
-  if (!promptQueueIsRunning || generation !== promptQueueGeneration) {
+function getActivePromptQueueItem(run: PromptQueueRun) {
+  return run.items[Math.max(run.index, 0)];
+}
+
+function isActivePromptQueueItem(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  generation: number,
+) {
+  if (promptQueueRuns.get(run.id) !== run || generation !== run.generation) {
     return false;
   }
-  return promptQueueItems[Math.max(promptQueueIndex, 0)] === item;
+  return getActivePromptQueueItem(run) === item;
 }
 
 function scheduleQueuedPromptDispatch(
+  run: PromptQueueRun,
   item: PromptQueueItem,
   delay: number,
-  generation = promptQueueGeneration,
+  generation = run.generation,
 ) {
-  if (promptQueueRetryTimer) {
-    clearTimeout(promptQueueRetryTimer);
-  }
-  promptQueueRetryTimer = setTimeout(() => {
-    promptQueueRetryTimer = null;
-    void dispatchQueuedPrompt(item, generation);
+  clearPromptQueueRetryTimer(run);
+  run.retryTimer = setTimeout(() => {
+    run.retryTimer = null;
+    if (isActivePromptQueueItem(run, item, generation)) {
+      requestPromptQueuePump();
+    }
   }, delay);
 }
 
+function getPromptQueueActiveGenerationCount() {
+  return Math.max(
+    Object.values(useChatRuntimeStore.getState().runningByThreadId).filter(
+      Boolean,
+    ).length,
+    promptQueueActiveRunIds.size +
+      promptQueueDispatchingRunIds.size +
+      getPreStreamRunReservationCount(),
+  );
+}
+
+function promptQueueHasCapacity() {
+  return getPromptQueueActiveGenerationCount() < PROMPT_QUEUE_GLOBAL_CONCURRENCY;
+}
+
+function reserveInteractiveRun(
+  event?: {
+    preventDefault: () => void;
+    stopPropagation?: () => void;
+  },
+): boolean {
+  if (
+    !usePromptQueueUI.getState().isRunning &&
+    promptQueueHasCapacity() &&
+    tryReservePreStreamRun()
+  ) {
+    return true;
+  }
+  event?.preventDefault();
+  event?.stopPropagation?.();
+  toast.error("Wait for the current response to finish");
+  return false;
+}
+
+function isPromptQueueRunReadyToDispatch(run: PromptQueueRun) {
+  const item = getActivePromptQueueItem(run);
+  return Boolean(
+    item &&
+      run.index >= 0 &&
+      !item.dispatched &&
+      !run.waitingForTargetIdle &&
+      !run.retryTimer &&
+      !promptQueueActiveRunIds.has(run.id) &&
+      !promptQueueDispatchingRunIds.has(run.id),
+  );
+}
+
+function getNextReadyPromptQueueRun() {
+  if (promptQueueRunOrder.length === 0) {
+    return null;
+  }
+  const size = promptQueueRunOrder.length;
+  for (let offset = 0; offset < size; offset += 1) {
+    const orderIndex = (promptQueueRoundRobinCursor + offset) % size;
+    const runId = promptQueueRunOrder[orderIndex];
+    const run = promptQueueRuns.get(runId);
+    if (!run || !isPromptQueueRunReadyToDispatch(run)) {
+      continue;
+    }
+    promptQueueRoundRobinCursor = (orderIndex + 1) % size;
+    return run;
+  }
+  return null;
+}
+
+function requestPromptQueuePump(delay = 0) {
+  if (promptQueuePumpTimer) {
+    return;
+  }
+  promptQueuePumpTimer = setTimeout(() => {
+    promptQueuePumpTimer = null;
+    pumpPromptQueues();
+  }, delay);
+}
+
+function pumpPromptQueues() {
+  ensurePromptQueueSubscription();
+  while (promptQueueHasCapacity()) {
+    const run = getNextReadyPromptQueueRun();
+    if (!run) {
+      return;
+    }
+    const item = getActivePromptQueueItem(run);
+    if (!item) {
+      deletePromptQueueRun(run);
+      continue;
+    }
+    promptQueueDispatchingRunIds.add(run.id);
+    dispatchQueuedPrompt(run, item, run.generation)
+      .catch(() => undefined)
+      .finally(() => {
+        promptQueueDispatchingRunIds.delete(run.id);
+        syncPromptQueueUI();
+        if (!promptQueueActiveRunIds.has(run.id)) {
+          requestPromptQueuePump();
+        }
+      });
+  }
+}
+
 async function dispatchQueuedPrompt(
+  run: PromptQueueRun,
   item: PromptQueueItem,
-  generation = promptQueueGeneration,
+  generation = run.generation,
 ) {
-  if (!isActivePromptQueueItem(item, generation)) {
+  if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
   if (
@@ -352,24 +530,30 @@ async function dispatchQueuedPrompt(
       useChatRuntimeStore.getState().runningByThreadId,
     )
   ) {
-    promptQueueWaitingForTargetIdle = true;
-    promptQueuePrevStoreRunning = true;
+    run.waitingForTargetIdle = true;
+    run.prevStoreRunning = true;
+    promptQueueActiveRunIds.delete(run.id);
     syncPromptQueueUI();
-    startPromptQueueSubscription();
+    ensurePromptQueueSubscription();
+    handlePromptQueueRunState(
+      run,
+      useChatRuntimeStore.getState().runningByThreadId,
+    );
     return;
   }
   const hasIndexingDocuments = await targetHasIndexingDocuments(item);
-  if (!isActivePromptQueueItem(item, generation)) {
+  if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
   if (hasIndexingDocuments) {
-    scheduleQueuedPromptDispatch(item, PROMPT_QUEUE_INDEXING_RETRY_MS);
+    promptQueueActiveRunIds.delete(run.id);
+    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_INDEXING_RETRY_MS);
     return;
   }
-  if (!isActivePromptQueueItem(item, generation)) {
+  if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  appendQueuedPrompt(item);
+  appendQueuedPrompt(run, item);
 }
 
 function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
@@ -378,6 +562,7 @@ function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
     prompt,
     target,
     dispatched: false,
+    dispatchRetries: 0,
   };
 }
 
@@ -394,6 +579,54 @@ function getPromptQueueTargetIds(target: PromptQueueTarget) {
     ...target.getRunningThreadIds(),
     target.getDocumentThreadId(),
   ]);
+}
+
+function getPromptQueueRunTargetIds(run: PromptQueueRun) {
+  return compactIds(
+    run.items.flatMap((item) => getPromptQueueTargetIds(item.target)),
+  );
+}
+
+function promptQueueRunMatchesThreadIds(
+  run: PromptQueueRun,
+  threadIds: string[],
+) {
+  return getPromptQueueRunTargetIds(run).some((id) => threadIds.includes(id));
+}
+
+function findPromptQueueRunByTarget(target: PromptQueueTarget) {
+  const targetIds = getPromptQueueTargetIds(target);
+  if (targetIds.length === 0) {
+    return null;
+  }
+  for (const run of promptQueueRuns.values()) {
+    if (promptQueueRunMatchesThreadIds(run, targetIds)) {
+      return run;
+    }
+  }
+  return null;
+}
+
+function findPromptQueueRunByItemId(itemId: string) {
+  for (const run of promptQueueRuns.values()) {
+    const itemIndex = run.items.findIndex((item) => item.id === itemId);
+    if (itemIndex >= 0) {
+      return { run, itemIndex, item: run.items[itemIndex] };
+    }
+  }
+  return null;
+}
+
+function findPromptQueueRunByThreadIds(threadIds: string[]) {
+  if (threadIds.length === 0) {
+    return null;
+  }
+  for (const run of promptQueueRuns.values()) {
+    if (promptQueueRunMatchesThreadIds(run, threadIds)) {
+      return run;
+    }
+  }
+  return null;
 }
 
 function findPromptQueueEntry(
@@ -417,15 +650,48 @@ function canRemovePromptQueueItem(item: PromptQueueItem) {
   return !item.dispatched;
 }
 
-function promptQueueItemMatchesThreadIds(
-  item: PromptQueueUIItem,
-  threadIds: string[],
-) {
-  return item.threadIds.some((threadId) => threadIds.includes(threadId));
+function getPromptQueueRunProgress(run: PromptQueueRun) {
+  const activeItemIndex = Math.max(run.index, 0);
+  const total = run.items.length;
+  const current = run.index >= 0 ? Math.min(activeItemIndex + 1, total) : 0;
+  return { activeItemIndex, current, total };
+}
+
+function getPromptQueueItemStatus(
+  run: PromptQueueRun,
+  index: number,
+  activeItemIndex: number,
+): PromptQueueUIItemStatus {
+  if (run.index >= 0 && index === activeItemIndex) {
+    return run.waitingForTargetIdle ? "waiting" : "next";
+  }
+  return "queued";
+}
+
+function getPromptQueueUIItemsForRun(run: PromptQueueRun) {
+  const { activeItemIndex, total } = getPromptQueueRunProgress(run);
+  const items: PromptQueueUIItem[] = [];
+  for (const [index, item] of run.items.entries()) {
+    if (index < activeItemIndex || item.dispatched) {
+      continue;
+    }
+    items.push({
+      id: item.id,
+      runId: run.id,
+      prompt: item.prompt,
+      position: index + 1,
+      total,
+      status: getPromptQueueItemStatus(run, index, activeItemIndex),
+      threadIds: getPromptQueueTargetIds(item.target),
+      canEdit: canEditPromptQueueItem(item),
+      canRemove: canRemovePromptQueueItem(item),
+    });
+  }
+  return items;
 }
 
 function syncPromptQueueUI() {
-  if (!promptQueueIsRunning || promptQueueItems.length === 0) {
+  if (promptQueueRuns.size === 0) {
     usePromptQueueUI.setState({
       byThreadId: {},
       current: 0,
@@ -436,81 +702,30 @@ function syncPromptQueueUI() {
     return;
   }
 
-  const activeItemIndex = Math.max(promptQueueIndex, 0);
-  const total = promptQueueItems.length;
-  const current = promptQueueIndex >= 0 ? Math.min(activeItemIndex + 1, total) : 0;
-  const items = promptQueueItems
-    .map((item, index): PromptQueueUIItem | null => {
-      if (index < activeItemIndex || item.dispatched) {
-        return null;
-      }
-      const threadIds = getPromptQueueTargetIds(item.target);
-      const isActive = promptQueueIndex >= 0 && index === activeItemIndex;
-      const status: PromptQueueUIItemStatus = item.dispatched
-        ? "running"
-        : isActive
-          ? promptQueueWaitingForTargetIdle
-            ? "waiting"
-            : "next"
-          : "queued";
-      return {
-        id: item.id,
-        prompt: item.prompt,
-        position: index + 1,
-        total,
-        status,
-        threadIds,
-        canEdit: canEditPromptQueueItem(item),
-        canRemove: canRemovePromptQueueItem(item),
-      };
-    })
-    .filter((item): item is PromptQueueUIItem => Boolean(item));
-  const groups: Array<{
-    ids: Set<string>;
-    current: number;
-    total: number;
-    active: boolean;
-  }> = [];
+  const items: PromptQueueUIItem[] = [];
+  const byThreadId: Record<string, PromptQueueUIEntry> = {};
+  let current = 0;
+  let total = 0;
 
-  for (const [index, item] of promptQueueItems.entries()) {
-    const ids = getPromptQueueTargetIds(item.target);
+  for (const run of promptQueueRuns.values()) {
+    const { current: runCurrent, total: runTotal } =
+      getPromptQueueRunProgress(run);
+    current += runCurrent;
+    total += runTotal;
+    items.push(...getPromptQueueUIItemsForRun(run));
+
+    const ids = getPromptQueueRunTargetIds(run);
     if (ids.length === 0) {
       continue;
     }
-    let group = groups.find((candidate) =>
-      ids.some((id) => candidate.ids.has(id)),
-    );
-    if (!group) {
-      group = {
-        ids: new Set<string>(),
-        current: 0,
-        total: 0,
-        active: false,
-      };
-      groups.push(group);
-    }
-    ids.forEach((id) => group.ids.add(id));
-    group.total += 1;
-    if (promptQueueIndex >= 0 && index <= promptQueueIndex) {
-      group.current += 1;
-    }
-    if (index === activeItemIndex) {
-      group.active = true;
-    }
-  }
-
-  const byThreadId: Record<string, PromptQueueUIEntry> = {};
-  for (const group of groups) {
-    if (!group.active && group.current >= group.total) {
-      continue;
-    }
     const entry = {
-      current: Math.min(group.current, group.total),
-      total: group.total,
+      runId: run.id,
+      current: runCurrent,
+      total: runTotal,
     };
-    group.ids.forEach((id) => {
+    for (const id of ids) {
       byThreadId[id] = entry;
-    });
+    }
   }
 
   usePromptQueueUI.setState({
@@ -527,13 +742,11 @@ function editPromptQueueItem(itemId: string, prompt: string) {
   if (!nextPrompt) {
     return false;
   }
-  const itemIndex = promptQueueItems.findIndex(
-    (candidate) => candidate.id === itemId,
-  );
-  if (itemIndex < 0) {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) {
     return false;
   }
-  const item = promptQueueItems[itemIndex];
+  const { item } = match;
   if (!canEditPromptQueueItem(item)) {
     return false;
   }
@@ -542,48 +755,41 @@ function editPromptQueueItem(itemId: string, prompt: string) {
   return true;
 }
 
-function clearPromptQueueRetryTimer() {
-  if (!promptQueueRetryTimer) {
-    return;
-  }
-  clearTimeout(promptQueueRetryTimer);
-  promptQueueRetryTimer = null;
-}
-
 function removePromptQueueItem(itemId: string) {
-  const itemIndex = promptQueueItems.findIndex((item) => item.id === itemId);
-  if (itemIndex < 0) {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) {
     return false;
   }
-  const item = promptQueueItems[itemIndex];
+  const { run, itemIndex, item } = match;
   if (!canRemovePromptQueueItem(item)) {
     return false;
   }
 
-  const wasActive =
-    promptQueueIndex >= 0 && itemIndex === Math.max(promptQueueIndex, 0);
-  promptQueueItems.splice(itemIndex, 1);
-  if (promptQueueItems.length === 0) {
-    resetPromptQueue();
+  const wasActive = itemIndex === Math.max(run.index, 0);
+  run.items.splice(itemIndex, 1);
+  if (run.items.length === 0) {
+    deletePromptQueueRun(run);
     return true;
   }
 
-  if (itemIndex < promptQueueIndex) {
-    promptQueueIndex -= 1;
+  if (itemIndex < run.index) {
+    run.index -= 1;
   }
-  if (wasActive && promptQueueIndex >= promptQueueItems.length) {
-    resetPromptQueue();
+  if (wasActive && run.index >= run.items.length) {
+    deletePromptQueueRun(run);
     return true;
   }
 
   syncPromptQueueUI();
   if (wasActive) {
-    clearPromptQueueRetryTimer();
-    promptQueueWaitingForTargetIdle = false;
-    promptQueuePrevStoreRunning = false;
-    const next = promptQueueItems[promptQueueIndex];
+    clearPromptQueueRetryTimer(run);
+    if (run.index < 0 || run.waitingForTargetIdle) {
+      return true;
+    }
+    run.prevStoreRunning = false;
+    const next = run.items[run.index];
     if (next) {
-      scheduleQueuedPromptDispatch(next, 50);
+      scheduleQueuedPromptDispatch(run, next, 50);
     }
   }
   return true;
@@ -606,72 +812,91 @@ function isPromptQueueTargetRunning(
   return runningIds.some((threadId) => targetIds.includes(threadId));
 }
 
-function isActivePromptQueueTargetRunning(
+function isPromptQueueRunTargetRunning(
+  run: PromptQueueRun,
   runningByThreadId: Record<string, boolean>,
 ) {
-  const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
+  const activeItem = getActivePromptQueueItem(run);
   if (!activeItem) {
     return false;
   }
   return isPromptQueueTargetRunning(activeItem.target, runningByThreadId);
 }
 
-function advancePromptQueue() {
-  const nextIndex = promptQueueIndex + 1;
-  if (nextIndex >= promptQueueItems.length) {
-    resetPromptQueue();
+function advancePromptQueue(run: PromptQueueRun) {
+  promptQueueActiveRunIds.delete(run.id);
+  const nextIndex = run.index + 1;
+  if (nextIndex >= run.items.length) {
+    deletePromptQueueRun(run);
     return;
   }
-  promptQueueIndex = nextIndex;
+  run.index = nextIndex;
+  run.waitingForTargetIdle = false;
+  run.prevStoreRunning = false;
   syncPromptQueueUI();
-  const next = promptQueueItems[nextIndex];
-  promptQueueWaitingForTargetIdle = false;
-  promptQueuePrevStoreRunning = false;
-  scheduleQueuedPromptDispatch(next, 100);
+  requestPromptQueuePump(100);
 }
 
-function startPromptQueueSubscription() {
-  const wasWaitingForRun = promptQueuePrevStoreRunning;
-  stopPromptQueueSubscription({ resetRunningState: false });
-  promptQueuePrevStoreRunning = wasWaitingForRun;
+function getRunningThreadCount(runningByThreadId: Record<string, boolean>) {
+  return Object.values(runningByThreadId).filter(Boolean).length;
+}
+
+function hasReadyPromptQueueRun() {
+  return Array.from(promptQueueRuns.values()).some(
+    isPromptQueueRunReadyToDispatch,
+  );
+}
+
+function handlePromptQueueRunState(
+  run: PromptQueueRun,
+  runningByThreadId: Record<string, boolean>,
+) {
+  if (!promptQueueRuns.has(run.id)) {
+    return;
+  }
+  const isRunning = isPromptQueueRunTargetRunning(run, runningByThreadId);
+  const wasRunning = run.prevStoreRunning;
+  run.prevStoreRunning = isRunning;
+  if (!wasRunning || isRunning) {
+    return;
+  }
+  if (run.waitingForTargetIdle) {
+    run.waitingForTargetIdle = false;
+    const activeItem = run.items[run.index];
+    if (activeItem) {
+      requestPromptQueuePump(50);
+    }
+    return;
+  }
+  advancePromptQueue(run);
+  requestPromptQueuePump();
+}
+
+function ensurePromptQueueSubscription() {
+  if (promptQueueStoreUnsub) {
+    return;
+  }
   // runningByThreadId tracks the actual thread (not aui.thread()), so detection
   // survives navigation.
+  let previousRunningCount = getRunningThreadCount(
+    useChatRuntimeStore.getState().runningByThreadId,
+  );
+
   promptQueueStoreUnsub = useChatRuntimeStore.subscribe((state) => {
-    if (!promptQueueIsRunning) {
+    if (promptQueueRuns.size === 0) {
       stopPromptQueueSubscription();
       return;
     }
-    const isRunning = isActivePromptQueueTargetRunning(state.runningByThreadId);
-    const wasRunning = promptQueuePrevStoreRunning;
-    promptQueuePrevStoreRunning = isRunning;
-    if (wasRunning && !isRunning) {
-      if (promptQueueWaitingForTargetIdle) {
-        promptQueueWaitingForTargetIdle = false;
-        const activeItem = promptQueueItems[promptQueueIndex];
-        if (activeItem) {
-          scheduleQueuedPromptDispatch(activeItem, 50);
-        }
-        return;
-      }
-      advancePromptQueue();
+    const nextRunningCount = getRunningThreadCount(state.runningByThreadId);
+    for (const run of Array.from(promptQueueRuns.values())) {
+      handlePromptQueueRunState(run, state.runningByThreadId);
     }
-  });
 
-  const isRunningNow = isActivePromptQueueTargetRunning(
-    useChatRuntimeStore.getState().runningByThreadId,
-  );
-  if (promptQueuePrevStoreRunning && !isRunningNow) {
-    promptQueuePrevStoreRunning = false;
-    if (promptQueueWaitingForTargetIdle) {
-      promptQueueWaitingForTargetIdle = false;
-      const activeItem = promptQueueItems[promptQueueIndex];
-      if (activeItem) {
-        scheduleQueuedPromptDispatch(activeItem, 50);
-      }
-      return;
+    if (nextRunningCount < previousRunningCount && hasReadyPromptQueueRun()) {
+      requestPromptQueuePump();
     }
-    advancePromptQueue();
-  }
+    previousRunningCount = nextRunningCount;
+  });
 }
 
 function startPromptQueue(
@@ -684,11 +909,13 @@ function startPromptQueue(
     return;
   }
 
-  if (promptQueueIsRunning) {
-    promptQueueItems.push(
+  const existingRun = findPromptQueueRunByTarget(target);
+  if (existingRun) {
+    existingRun.items.push(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
     syncPromptQueueUI();
+    requestPromptQueuePump();
     return;
   }
 
@@ -696,40 +923,114 @@ function startPromptQueue(
   const shouldWaitForCurrentRun =
     waitForCurrentRun &&
     isPromptQueueTargetRunning(target, runningByThreadId);
-  promptQueueGeneration += 1;
-  promptQueueItems = filtered.map((prompt) =>
-    createQueuedPrompt(prompt, target),
-  );
-  promptQueueIndex = shouldWaitForCurrentRun ? -1 : 0;
-  promptQueueIsRunning = true;
-  promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
+  const run: PromptQueueRun = {
+    id: createPromptQueueRunId(),
+    items: filtered.map((prompt) => createQueuedPrompt(prompt, target)),
+    index: shouldWaitForCurrentRun ? -1 : 0,
+    generation: 0,
+    prevStoreRunning: shouldWaitForCurrentRun,
+    waitingForTargetIdle: false,
+    retryTimer: null,
+  };
+  promptQueueRuns.set(run.id, run);
+  promptQueueRunOrder.push(run.id);
   syncPromptQueueUI();
-  startPromptQueueSubscription();
-  if (!shouldWaitForCurrentRun) {
-    const first = promptQueueItems[0];
-    if (first) {
-      scheduleQueuedPromptDispatch(first, 50);
+  ensurePromptQueueSubscription();
+  if (shouldWaitForCurrentRun) {
+    handlePromptQueueRunState(
+      run,
+      useChatRuntimeStore.getState().runningByThreadId,
+    );
+  } else {
+    requestPromptQueuePump(50);
+  }
+}
+
+function stopPromptQueueRun(threadIds?: string[]) {
+  const runs: PromptQueueRun[] = [];
+  const addRun = (run: PromptQueueRun | null) => {
+    if (run && !runs.includes(run)) {
+      runs.push(run);
+    }
+  };
+  if (threadIds && threadIds.length > 0) {
+    for (const id of compactIds(threadIds)) {
+      addRun(findPromptQueueRunByThreadIds([id]));
+    }
+  } else {
+    runs.push(...promptQueueRuns.values());
+  }
+  for (const run of runs) {
+    const activeItem = getActivePromptQueueItem(run);
+    const activeTarget = activeItem?.target;
+    const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+    deletePromptQueueRun(run);
+    if (!shouldCancelActiveRun) {
+      continue;
+    }
+    try {
+      activeTarget?.cancel();
+    } catch {
+      // The active run may have already ended.
+    }
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function stopPromptQueueRunForThreadIds(threadIds: string[]) {
+  stopPromptQueueRun(threadIds);
+}
+
+function stopAllPromptQueueRuns() {
+  const activeRuns = Array.from(promptQueueRuns.values()).map((run) => ({
+    activeItem: getActivePromptQueueItem(run),
+  }));
+  resetPromptQueues();
+  for (const { activeItem } of activeRuns) {
+    const activeTarget = activeItem?.target;
+    const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+    if (!shouldCancelActiveRun) {
+      continue;
+    }
+    try {
+      activeTarget?.cancel();
+    } catch {
+      // The active run may have already ended.
     }
   }
 }
 
-function stopPromptQueueRun() {
-  const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
-  const activeTarget = activeItem?.target;
-  const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
-  resetPromptQueue();
-  if (!shouldCancelActiveRun) {
-    return;
+function handlePromptQueueRunFailed(threadId?: string | null) {
+  discardQueuedChatRunSettingsForThread(threadId);
+  if (threadId) {
+    const failedRun = findPromptQueueRunByThreadIds([threadId]);
+    if (failedRun && promptQueueActiveRunIds.has(failedRun.id)) {
+      const activeItem = getActivePromptQueueItem(failedRun);
+      if (activeItem?.dispatched) {
+        deletePromptQueueRun(failedRun);
+      }
+    }
   }
-  try {
-    activeTarget.cancel();
-  } catch {
-    // The active run may have already ended.
-  }
+  // A non-queued send can release the only pre-stream reservation too. Pump
+  // every ready queue even when no active queued run matches this event.
+  requestPromptQueuePumpIfReady();
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, () => stopPromptQueueRun());
+  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
+    const { threadIds } =
+      (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
+    if (threadIds && threadIds.length > 0) {
+      stopPromptQueueRunForThreadIds(threadIds);
+      return;
+    }
+    stopAllPromptQueueRuns();
+  });
+  window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, (event) => {
+    const { threadId } =
+      (event as CustomEvent<PromptQueueRunFailedEventDetail>).detail ?? {};
+    handlePromptQueueRunFailed(threadId);
+  });
 }
 
 interface PromptQueueCallbacks {
@@ -1190,11 +1491,12 @@ const ThreadComposerDock: FC<{
     activeThreadId,
   ]);
   const queueVisible = usePromptQueueUI(
-    (s) =>
-      Boolean(findPromptQueueEntry(s, promptQueueThreadIds)) &&
-      s.items.some((item) =>
-        promptQueueItemMatchesThreadIds(item, promptQueueThreadIds),
-      ),
+    (s) => {
+      const entry = findPromptQueueEntry(s, promptQueueThreadIds);
+      return Boolean(
+        entry && s.items.some((item) => item.runId === entry.runId),
+      );
+    },
   );
   const showModelDisclaimer = useChatPreferencesStore(
     (s) => s.showModelDisclaimer,
@@ -1531,12 +1833,7 @@ const Composer: FC<{
   const promptQueueActive = usePromptQueueUI((s) =>
     Boolean(findPromptQueueEntry(s, promptQueueThreadIds)),
   );
-  useEffect(() => {
-    if (threadId != null || activeThreadId != null) {
-      return;
-    }
-    stopPromptQueueRun();
-  }, [activeThreadId, threadId]);
+  const anyPromptQueueRunning = usePromptQueueUI((s) => s.isRunning);
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
   const canQueueCurrentPrompt =
@@ -1622,6 +1919,13 @@ const Composer: FC<{
   // retrieval covers all of them.
   const [indexingActive, setIndexingActive] = useState(false);
   const indexingActiveRef = useRef(false);
+  const promptQueueTargetMountedRef = useRef(true);
+  useEffect(() => {
+    promptQueueTargetMountedRef.current = true;
+    return () => {
+      promptQueueTargetMountedRef.current = false;
+    };
+  }, []);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
@@ -1632,9 +1936,15 @@ const Composer: FC<{
   }, []);
 
   const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
-    const thread = aui.thread();
-    const threadListItem = aui.threadListItem();
-    const initialState = threadListItem.getState();
+    const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
+    const initialState = aui.threadListItem().getState();
+    const chatStateAtQueueStart = useChatRuntimeStore.getState();
+    const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
+    const usesThreadDocumentsAtQueueStart =
+      chatStateAtQueueStart.ragEnabled &&
+      chatStateAtQueueStart.ragSource.type === "thread";
+    const runSettingsAtQueueStart =
+      snapshotQueuedChatRunSettings(chatStateAtQueueStart);
     const initialRunningThreadIds = [
       initialState.id,
       initialState.remoteId,
@@ -1642,29 +1952,88 @@ const Composer: FC<{
     ].filter((id): id is string => Boolean(id));
     const initialDocumentThreadId =
       initialState.remoteId ?? referenceThreadId ?? null;
+    const getThreadListItemState = () => {
+      const runtime =
+        assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return null;
+      }
+      for (const id of initialRunningThreadIds) {
+        try {
+          return runtime.threads.getItemById(id).getState();
+        } catch {
+          // Try the next captured id.
+        }
+      }
+      return null;
+    };
+    const getQueueThreadIds = () => {
+      const state = getThreadListItemState();
+      return compactIds([
+        ...initialRunningThreadIds,
+        state?.id,
+        state?.remoteId,
+      ]);
+    };
+    const getThreadRuntime = () => {
+      const runtime =
+        assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return null;
+      }
+      for (const id of getQueueThreadIds()) {
+        try {
+          const thread = runtime.threads.getById(id);
+          thread.getState();
+          return thread;
+        } catch {
+          // Try the next captured id.
+        }
+      }
+      return null;
+    };
+    const pendingSettingsIds = new Set<number>();
     return {
       getDocumentThreadId: () => {
-        const state = threadListItem.getState();
-        return state.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
+        const state = getThreadListItemState();
+        return state?.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
       },
       getRunningThreadIds: () => {
-        const state = threadListItem.getState();
-        return Array.from(
-          new Set(
-            [
-              ...initialRunningThreadIds,
-              state.id,
-              state.remoteId,
-              referenceThreadId,
-            ].filter((id): id is string => Boolean(id)),
-          ),
-        );
+        return getQueueThreadIds();
       },
       append: (prompt) => {
-        thread.append(appendTextToThread(prompt));
+        const thread = getThreadRuntime();
+        if (!thread) {
+          throw new Error("Prompt queue thread runtime is unavailable");
+        }
+        if (incognitoAtQueueStart) {
+          for (const id of getQueueThreadIds()) {
+            markThreadIncognito(id);
+          }
+        }
+        const settingsId = registerQueuedChatRunSettings(
+          getQueueThreadIds(),
+          runSettingsAtQueueStart,
+        );
+        pendingSettingsIds.add(settingsId);
+        try {
+          thread.append(appendTextToThread(prompt));
+        } catch (error) {
+          pendingSettingsIds.delete(settingsId);
+          discardQueuedChatRunSettings(settingsId);
+          throw error;
+        }
       },
-      cancel: () => thread.cancelRun(),
-      isIndexing: () => indexingActiveRef.current,
+      cancel: () => {
+        for (const settingsId of pendingSettingsIds) {
+          discardQueuedChatRunSettings(settingsId);
+        }
+        pendingSettingsIds.clear();
+        getThreadRuntime()?.cancelRun();
+      },
+      isIndexing: () =>
+        promptQueueTargetMountedRef.current && indexingActiveRef.current,
+      usesThreadDocuments: usesThreadDocumentsAtQueueStart,
     };
   }, [aui, referenceThreadId]);
 
@@ -1699,6 +2068,22 @@ const Composer: FC<{
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
+  const sendReservedComposer = useCallback(() => {
+    try {
+      // The public composer API returns void; async attachment conversion
+      // failures are released by PreStreamAwareAttachmentAdapter.
+      aui.composer().send();
+    } catch (error) {
+      if (getPreStreamRunReservationCount() > 0) {
+        notifyPreStreamRunFailed(referenceThreadId);
+      }
+      toast.error("Could not prepare attachments", {
+        description:
+          error instanceof Error ? error.message : "Please retry the send.",
+      });
+    }
+  }, [aui, referenceThreadId]);
+
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
   const interceptSend = useCallback(
@@ -1726,9 +2111,18 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
-      aui.composer().send();
+      if (!reserveInteractiveRun()) {
+        return;
+      }
+      sendReservedComposer();
     }
-  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+  }, [
+    pendingSend,
+    indexingActive,
+    aui,
+    dismissWaitToast,
+    sendReservedComposer,
+  ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
@@ -1740,13 +2134,22 @@ const Composer: FC<{
   );
 
   const handleSubmit = useCallback(
-    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+    (event: {
+      preventDefault: () => void;
+      stopPropagation?: () => void;
+    }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         return;
       }
 
-      if (threadIsRunning || promptQueueActive) {
+      const promptQueueAtCapacity = !promptQueueHasCapacity();
+      if (
+        threadIsRunning ||
+        promptQueueActive ||
+        anyPromptQueueRunning ||
+        promptQueueAtCapacity
+      ) {
         event.preventDefault();
         // Project new-chat composer: never queue, just ask the user to wait.
         if (disableQueue) {
@@ -1822,6 +2225,15 @@ const Composer: FC<{
         });
         closeOverlay();
       }
+      if (!tryReservePreStreamRun()) {
+        event.preventDefault();
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      if (hasAttachments || hasPendingAudio) {
+        event.preventDefault();
+        sendReservedComposer();
+      }
     },
     [
       aui,
@@ -1835,18 +2247,20 @@ const Composer: FC<{
       hasPendingAudio,
       interceptSend,
       overlay,
+      anyPromptQueueRunning,
       promptQueueActive,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
+      sendReservedComposer,
       shouldBlockSend,
       threadIsRunning,
     ],
   );
 
   const stopQueue = useCallback(() => {
-    stopPromptQueueRun();
-  }, []);
+    stopPromptQueueRunForThreadIds(promptQueueThreadIds);
+  }, [promptQueueThreadIds]);
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = threadIsRunning) => {
@@ -1949,7 +2363,9 @@ const Composer: FC<{
                 });
                 startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
               }}
-              onSendClick={interceptSend}
+              // ComposerPrimitive.Send handles clicks itself rather than
+              // submitting the form, so run the complete queue/capacity path.
+              onSendClick={handleSubmit}
               onStopClick={stopQueue}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
@@ -3216,9 +3632,9 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
   const editInputRef = useRef<HTMLTextAreaElement>(null);
-  const visibleItems = items.filter((item) =>
-    promptQueueItemMatchesThreadIds(item, queueThreadIds),
-  );
+  const visibleItems = queueEntry
+    ? items.filter((item) => item.runId === queueEntry.runId)
+    : [];
   const editingItem = visibleItems.find((item) => item.id === editingItemId);
   const editingItemCanEdit = editingItem?.canEdit ?? false;
   const activeEditingItemId = editingItem ? editingItemId : null;
@@ -3507,6 +3923,9 @@ const MessageError: FC = () => {
           <button
             type="button"
             className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+            onClick={(event) => {
+              reserveInteractiveRun(event);
+            }}
           >
             <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
             Retry
@@ -3989,7 +4408,12 @@ const AssistantActionBar: FC = () => {
         <CopyButton />
         <EditAssistantMessageButton />
         <ActionBarPrimitive.Reload asChild={true}>
-          <TooltipIconButton tooltip="Refresh">
+          <TooltipIconButton
+            tooltip="Refresh"
+            onClick={(event) => {
+              reserveInteractiveRun(event);
+            }}
+          >
             <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
@@ -4148,6 +4572,7 @@ const EditComposer: FC = () => {
       return;
     }
     resendAfterCancelRef.current = false;
+    if (!reserveInteractiveRun()) return;
     aui.composer().send();
   });
 
@@ -4188,6 +4613,7 @@ const EditComposer: FC = () => {
                 aui.thread().cancelRun();
                 return;
               }
+              if (!reserveInteractiveRun(event)) return;
               aui.composer().send();
             }}
           >

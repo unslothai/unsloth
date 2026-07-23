@@ -110,6 +110,15 @@ import {
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
+import {
+  PRE_STREAM_RUN_FAILED_EVENT,
+  getPreStreamRunReservationCount,
+  notifyPreStreamRunFailed,
+  releasePreStreamRunReservation,
+  tryReservePreStreamRun,
+  type PromptQueueRunFailedEventDetail,
+} from "./utils/prompt-queue-boundary";
 import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
@@ -149,8 +158,21 @@ export interface CompareHandle {
   waitForRunEnd: () => Promise<void>;
 }
 
+function compactIds(ids: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
+}
+
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+
+function compareSendAtGlobalCapacity() {
+  const chatState = useChatRuntimeStore.getState();
+  return (
+    Object.values(chatState.runningByThreadId).some(Boolean) ||
+    usePromptQueueUI.getState().isRunning ||
+    getPreStreamRunReservationCount() > 0
+  );
+}
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -342,6 +364,14 @@ export function RegisterCompareHandle({
       return;
     }
     const currentHandles = handlesRef.current;
+    const getCompareThreadIds = () => {
+      try {
+        const item = aui.threadListItem().getState();
+        return compactIds([item.id, item.remoteId]);
+      } catch {
+        return [];
+      }
+    };
     currentHandles[name] = {
       // fixes occasional reorder on reload.
       append: (content) =>
@@ -365,16 +395,57 @@ export function RegisterCompareHandle({
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
-        new Promise<void>((resolve) => {
+        new Promise<void>((resolve, reject) => {
           let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
-              unsub();
+          let settled = false;
+          const isHandleRunning = (
+            runningByThreadId: Record<string, boolean>,
+          ) => {
+            const threadIds = getCompareThreadIds();
+            if (threadIds.length === 0) {
+              return Object.values(runningByThreadId).some(Boolean);
+            }
+            return threadIds.some((threadId) => runningByThreadId[threadId]);
+          };
+          const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            unsub();
+            window.removeEventListener(
+              PRE_STREAM_RUN_FAILED_EVENT,
+              onPreStreamFailure,
+            );
+            if (error) {
+              reject(error);
+            } else {
               resolve();
             }
+          };
+          const onPreStreamFailure = (event: Event) => {
+            const failedThreadId = (
+              event as CustomEvent<PromptQueueRunFailedEventDetail>
+            ).detail?.threadId;
+            if (
+              failedThreadId &&
+              getCompareThreadIds().includes(failedThreadId)
+            ) {
+              finish(new Error("Compare run failed before streaming started"));
+            }
+          };
+          const unsub = useChatRuntimeStore.subscribe((state) => {
+            const running = isHandleRunning(state.runningByThreadId);
+            if (running) wasRunning = true;
+            if (wasRunning && !running) {
+              finish();
+            }
           });
+          window.addEventListener(
+            PRE_STREAM_RUN_FAILED_EVENT,
+            onPreStreamFailure,
+          );
+          if (isHandleRunning(useChatRuntimeStore.getState().runningByThreadId)) {
+            wasRunning = true;
+          }
         }),
     };
     return () => {
@@ -958,6 +1029,30 @@ export function SharedComposer({
     }
     if (content.length === 0) return;
 
+    if (compareSendAtGlobalCapacity()) {
+      if (isQueueRunningRef.current) {
+        isQueueRunningRef.current = false;
+        setIsQueueRunning(false);
+        queueRef.current = [];
+        queueIndexRef.current = 0;
+        setQueueProgress({ current: 0, total: 0 });
+      }
+      toast.error("Wait for the current response to finish", {
+        description:
+          "Compare runs share the same global generation capacity as chat prompts.",
+      });
+      return;
+    }
+
+    let compareReservationPending = false;
+    if (isGeneralizedCompare) {
+      if (!tryReservePreStreamRun()) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      compareReservationPending = true;
+    }
+
     setText("");
     setPendingImages([]);
     setPendingAudio(null);
@@ -1313,10 +1408,19 @@ export function SharedComposer({
           const done = handle1.waitForRunEnd();
           handle1.startRun();
           await done;
+          compareReservationPending = false;
         }
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
+          if (!compareReservationPending) {
+            if (!tryReservePreStreamRun()) {
+              throw new Error(
+                "Generation capacity became busy before Model 2 could start.",
+              );
+            }
+            compareReservationPending = true;
+          }
           const needsLoad =
             model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
             (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
@@ -1336,6 +1440,7 @@ export function SharedComposer({
           const done = handle2.waitForRunEnd();
           handle2.startRun();
           await done;
+          compareReservationPending = false;
         }
 
         compareStepSucceededRef.current = true;
@@ -1353,6 +1458,9 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
+        if (compareReservationPending) {
+          notifyPreStreamRunFailed();
+        }
         setComparing(false);
       }
     } else {
@@ -1609,6 +1717,13 @@ export function SharedComposer({
             toast.error("Pick a model in each pane to compare", {
               description:
                 "Use the model dropdown above each pane, then send your prompt.",
+            });
+            return;
+          }
+          if (compareSendAtGlobalCapacity()) {
+            toast.error("Wait for the current response to finish", {
+              description:
+                "Start the saved-prompt run list again once generation capacity is available.",
             });
             return;
           }

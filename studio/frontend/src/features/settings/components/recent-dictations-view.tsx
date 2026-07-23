@@ -155,6 +155,7 @@ export function RecentDictationsView({
       const item: SidebarItem = {
         type: "single",
         id: dictation.chatId,
+        threadIds: [dictation.chatId],
         title: "",
         createdAt: 0,
         updatedAt: 0,

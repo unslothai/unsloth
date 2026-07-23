@@ -7,6 +7,11 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
+import {
+  notifyPreStreamRunFailed,
+  releasePreStreamRunForThread,
+} from "../utils/prompt-queue-boundary";
+import { consumeQueuedChatRunSettings } from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -2046,6 +2051,11 @@ export function createOpenAIStreamAdapter(
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const queuedRunSettings =
+        consumeQueuedChatRunSettings(resolvedThreadId);
+      if (queuedRunSettings) {
+        runtime = { ...runtime, ...queuedRunSettings };
+      }
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
@@ -2085,6 +2095,13 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
+      const notifyPreStreamRunFinished = () => {
+        // Prompt queues reserve global capacity before adapter validation and
+        // model-load gates run. Release only that failed dispatch; do not pulse
+        // running state, because queues treat a real running on->off transition
+        // as a completed generation and would advance remaining prompts.
+        notifyPreStreamRunFailed(resolvedThreadId ?? null);
+      };
 
       // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
@@ -2093,11 +2110,12 @@ export function createOpenAIStreamAdapter(
           await waitForModelReady(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
+          notifyPreStreamRunFinished();
           throw error;
         }
       }
 
-      if (!useChatRuntimeStore.getState().params.checkpoint) {
+      if (!runtime.params.checkpoint) {
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
@@ -2106,6 +2124,7 @@ export function createOpenAIStreamAdapter(
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
+          notifyPreStreamRunFinished();
           throw error;
         }
         if (!loaded) {
@@ -2120,12 +2139,22 @@ export function createOpenAIStreamAdapter(
             },
           );
           clearSelectedImageEditReference();
+          notifyPreStreamRunFinished();
           throw new Error("Load a model first.");
         }
       }
 
       // Re-read store after auto-load / model-ready wait.
-      runtime = useChatRuntimeStore.getState();
+      const liveRuntime = useChatRuntimeStore.getState();
+      runtime = queuedRunSettings
+        ? queuedRunSettings.params.checkpoint
+          ? {
+            ...liveRuntime,
+            ...queuedRunSettings,
+            params: queuedRunSettings.params,
+          }
+          : liveRuntime
+        : liveRuntime;
       const { params } = runtime;
       const {
         supportsTools,
@@ -2163,6 +2192,7 @@ export function createOpenAIStreamAdapter(
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
         clearSelectedImageEditReference();
+        notifyPreStreamRunFinished();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -2182,6 +2212,7 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and add it again.",
         });
         clearSelectedImageEditReference();
+        notifyPreStreamRunFinished();
         throw new Error("Connection not found.");
       }
       // Local providers and custom Gemini bases allow an empty key.
@@ -2203,6 +2234,7 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and set the API key again.",
         });
         clearSelectedImageEditReference();
+        notifyPreStreamRunFinished();
         throw new Error("Missing connection API key.");
       }
 
@@ -2263,6 +2295,7 @@ export function createOpenAIStreamAdapter(
           description:
             "Select an OpenAI image-generation model, then retry the edit.",
         });
+        notifyPreStreamRunFinished();
         throw new Error("Image generation edit unavailable.");
       }
 
@@ -2298,6 +2331,7 @@ export function createOpenAIStreamAdapter(
             description:
               "The original image reference is missing. Generate the image again, then retry the edit.",
           });
+          notifyPreStreamRunFinished();
           throw new Error("Generated image edit reference missing.");
         }
         let insertAt = outboundMessages.length;
@@ -2477,12 +2511,7 @@ export function createOpenAIStreamAdapter(
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
-          // Flip the per-thread running flag on→off so compare-mode
-          // waitForRunEnd resolves instead of hanging: this gate fires
-          // before the streaming path's setThreadRunning(true).
-          const gatedThreadKey = resolvedThreadId || "__default";
-          runtime.setThreadRunning(gatedThreadKey, true);
-          runtime.setThreadRunning(gatedThreadKey, false);
+          notifyPreStreamRunFinished();
           clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }
@@ -2506,6 +2535,7 @@ export function createOpenAIStreamAdapter(
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const threadKey = resolvedThreadId || "__default";
+        releasePreStreamRunForThread(threadKey);
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -2585,6 +2615,7 @@ export function createOpenAIStreamAdapter(
         if (abortSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
+      releasePreStreamRunForThread(threadKey);
       runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
@@ -3231,13 +3262,11 @@ export function createOpenAIStreamAdapter(
                         },
                       }
                     : {}),
-                  auto_heal_tool_calls:
-                    useChatRuntimeStore.getState().autoHealToolCalls,
-                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
-                  max_tool_calls_per_message:
-                    useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  auto_heal_tool_calls: runtime.autoHealToolCalls,
+                  nudge_tool_calls: runtime.nudgeToolCalls,
+                  max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
-                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    const mins = runtime.toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }

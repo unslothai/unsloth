@@ -55,6 +55,12 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import {
+  getPreStreamRunReservationCount,
+  isPreStreamRunActive,
+  notifyPreStreamRunFailed,
+  registerPreStreamRun,
+} from "./utils/prompt-queue-boundary";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -76,7 +82,6 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
-import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
@@ -875,7 +880,15 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   return {
     ...adapter,
     async *run(options) {
-      await waitForRunStartHistoryAppend(options.messages);
+      registerPreStreamRun(options.unstable_threadId ?? null);
+      try {
+        await waitForRunStartHistoryAppend(options.messages);
+      } catch (error) {
+        // The adapter has not started yet, so it cannot release the capacity
+        // reserved by the composer/prompt queue for this run.
+        notifyPreStreamRunFailed(options.unstable_threadId ?? null);
+        throw error;
+      }
       const result = adapter.run(options);
       if (!result) {
         return;
@@ -887,6 +900,44 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       yield await result;
     },
   };
+}
+
+class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
+  private readonly delegate: AttachmentAdapter;
+
+  constructor(delegate: AttachmentAdapter) {
+    this.delegate = delegate;
+  }
+
+  get accept(): string {
+    return this.delegate.accept;
+  }
+
+  add(state: { file: File }) {
+    return this.delegate.add(state);
+  }
+
+  remove(attachment: Parameters<AttachmentAdapter["remove"]>[0]) {
+    return this.delegate.remove(attachment);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    try {
+      return await this.delegate.send(attachment);
+    } catch (error) {
+      // ComposerRuntime.send() intentionally returns void even though its core
+      // awaits attachment conversion. Release the slot here, at the only
+      // promise boundary that can observe a pre-handleSend conversion failure.
+      if (getPreStreamRunReservationCount() > 0) {
+        notifyPreStreamRunFailed();
+        toast.error("Could not prepare attachments", {
+          description:
+            error instanceof Error ? error.message : "Please retry the send.",
+        });
+      }
+      throw error;
+    }
+  }
 }
 
 function useStudioRuntimeAdapters(
@@ -1140,6 +1191,7 @@ function useStudioRuntimeAdapters(
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
+        const localThreadId = aui.threadListItem().getState().id;
         const initializeThread = aui.threadListItem().initialize();
         trackRunStartReady(message.id, initializeThread.then(() => undefined));
         const write = (async () => {
@@ -1152,7 +1204,12 @@ function useStudioRuntimeAdapters(
           // persisted. Compare panes intentionally don't write global activeThreadId.
           if (modelType === "base" && !pairId) {
             const store = useChatRuntimeStore.getState();
-            if (store.activeThreadId !== remoteId) {
+            const visibleThreadId = aui.threads().getState().mainThreadId;
+            if (
+              (visibleThreadId === localThreadId ||
+                visibleThreadId === remoteId) &&
+              store.activeThreadId !== remoteId
+            ) {
               store.setActiveThreadId(remoteId);
             }
           }
@@ -1162,7 +1219,12 @@ function useStudioRuntimeAdapters(
           }
           if (thread?.modelType === "base" && !thread.pairId) {
             const store = useChatRuntimeStore.getState();
-            if (store.activeThreadId !== remoteId) {
+            const visibleThreadId = aui.threads().getState().mainThreadId;
+            if (
+              (visibleThreadId === localThreadId ||
+                visibleThreadId === remoteId) &&
+              store.activeThreadId !== remoteId
+            ) {
               store.setActiveThreadId(remoteId);
             }
           }
@@ -1208,15 +1270,17 @@ function useStudioRuntimeAdapters(
   );
   const attachments = useMemo(
     () =>
-      new CompositeAttachmentAdapter([
-        new VisionImageAdapter(),
-        new AudioAttachmentAdapter(),
-        new TextAttachmentAdapter(),
-        new HtmlAttachmentAdapter(),
-        new PDFAttachmentAdapter(),
-        new DocxAttachmentAdapter(),
-        new OpenDocumentAttachmentAdapter(),
-      ]),
+      new PreStreamAwareAttachmentAdapter(
+        new CompositeAttachmentAdapter([
+          new VisionImageAdapter(),
+          new AudioAttachmentAdapter(),
+          new TextAttachmentAdapter(),
+          new HtmlAttachmentAdapter(),
+          new PDFAttachmentAdapter(),
+          new DocxAttachmentAdapter(),
+          new OpenDocumentAttachmentAdapter(),
+        ]),
+      ),
     [],
   );
   const adapters = useMemo(
@@ -1248,17 +1312,6 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
-function stopChatRun(threadId: string | null | undefined) {
-  if (!threadId) {
-    return;
-  }
-  try {
-    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
-  } catch {
-    // The run may have ended while navigation was mounting.
-  }
-}
-
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
@@ -1272,10 +1325,6 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
-      if (syncActiveThreadId) {
-        requestPromptQueueStop();
-        stopChatRun(mainThreadId);
-      }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
@@ -1305,16 +1354,11 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const mainThreadIdRef = useRef(mainThreadId);
-  mainThreadIdRef.current = mainThreadId;
 
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    requestPromptQueueStop();
-    stopChatRun(mainThreadIdRef.current);
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
@@ -1343,29 +1387,32 @@ function ActiveThreadSync({
 }
 
 // Exposes the current thread's cancelRun() via the shared store so external
-// surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
-// deleting the thread, mirroring the Stop -> Trash sequence.
+// surfaces can stop an in-flight stream before deleting the thread.
 function CancelRegistrar(): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const isRunning = useChatRuntimeStore((s) =>
-    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
-  );
 
   useEffect(() => {
-    if (!mainThreadId || !isRunning) return;
+    if (!mainThreadId) return;
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const cancel = () => {
       try {
-        aui.thread().cancelRun();
+        runtime?.threads.getById(mainThreadId).cancelRun();
       } catch {
         // Run may have already ended between the caller's read and this call.
       }
     };
     useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
     return () => {
-      useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
+      const store = useChatRuntimeStore.getState();
+      if (
+        !store.runningByThreadId[mainThreadId] &&
+        !isPreStreamRunActive(mainThreadId)
+      ) {
+        store.clearThreadCancel(mainThreadId);
+      }
     };
-  }, [aui, mainThreadId, isRunning]);
+  }, [aui, mainThreadId]);
 
   return null;
 }

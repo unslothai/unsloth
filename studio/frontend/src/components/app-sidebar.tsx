@@ -120,6 +120,7 @@ import {
   usePinnedChatsStore,
   usePinnedProjectsStore,
   useChatPreferencesStore,
+  usePromptQueueUI,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
@@ -336,6 +337,10 @@ function NavItem({
   );
 }
 
+function getSidebarItemThreadIds(item: SidebarItem) {
+  return item.threadIds?.length ? item.threadIds : [item.id];
+}
+
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
@@ -520,21 +525,78 @@ export function AppSidebar() {
     });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
-  const anyChatRunning = useChatRuntimeStore((s) =>
-    Object.values(s.runningByThreadId).some(Boolean),
-  );
+  const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
+  const anyChatRunning = Object.values(runningByThreadId).some(Boolean);
   // The thread currently generating (if any), so "Return to Chat" lands on the
   // live chat rather than an empty new-chat draft left active after New Chat.
-  const runningThreadId = useChatRuntimeStore((s) => {
-    const entry = Object.entries(s.runningByThreadId).find(([, on]) => on);
-    return entry ? entry[0] : null;
-  });
+  const runningThreadId =
+    Object.entries(runningByThreadId).find(([, on]) => on)?.[0] ?? null;
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
       storeThreadId ??
       undefined
     : undefined;
+  const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
+  const [unreadThreadIds, setUnreadThreadIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const previousRunningByThreadIdRef = useRef<Record<string, boolean>>({});
+  const activeVisibleThreadIds = useMemo(() => {
+    if (!activeThreadId) {
+      return [];
+    }
+    const activeItem = allChatItems.find((item) => item.id === activeThreadId);
+    return activeItem ? getSidebarItemThreadIds(activeItem) : [activeThreadId];
+  }, [activeThreadId, allChatItems]);
+  const activeVisibleThreadIdKey = activeVisibleThreadIds.join("\n");
+
+  useEffect(() => {
+    const activeVisibleThreadIdSet = new Set(
+      activeVisibleThreadIdKey ? activeVisibleThreadIdKey.split("\n") : [],
+    );
+    const previousRunningByThreadId = previousRunningByThreadIdRef.current;
+    const completedThreadIds: string[] = [];
+
+    for (const [threadId, wasRunning] of Object.entries(
+      previousRunningByThreadId,
+    )) {
+      if (
+        wasRunning &&
+        !runningByThreadId[threadId] &&
+        !activeVisibleThreadIdSet.has(threadId)
+      ) {
+        completedThreadIds.push(threadId);
+      }
+    }
+
+    if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
+      queueMicrotask(() => {
+        setUnreadThreadIds((current) => {
+          let next: Set<string> | null = null;
+          const mutable = () => {
+            next ??= new Set(current);
+            return next;
+          };
+
+          for (const threadId of completedThreadIds) {
+            if (!current.has(threadId)) {
+              mutable().add(threadId);
+            }
+          }
+
+          for (const threadId of activeVisibleThreadIdSet) {
+            if (current.has(threadId)) {
+              mutable().delete(threadId);
+            }
+          }
+
+          return next ?? current;
+        });
+      });
+    }
+    previousRunningByThreadIdRef.current = runningByThreadId;
+  }, [activeVisibleThreadIdKey, runningByThreadId]);
 
   // Training runs: surfaced as sidebar "Recents" on Train, Recipes, and Export,
   // falling back to chat recents when there are no runs yet.
@@ -890,10 +952,32 @@ export function AppSidebar() {
     }
   }
 
+  function clearChatNotifications(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    setUnreadThreadIds((current) => {
+      if (!threadIds.some((threadId) => current.has(threadId))) {
+        return current;
+      }
+      const next = new Set(current);
+      for (const threadId of threadIds) {
+        next.delete(threadId);
+      }
+      return next;
+    });
+  }
+
   function renderChatSidebarItem(
     item: SidebarItem,
     variant: "project" | "recent",
   ) {
+    const threadIds = getSidebarItemThreadIds(item);
+    const hasQueueActivity = threadIds.some(
+      (threadId) => Boolean(queueByThreadId[threadId]) || Boolean(runningByThreadId[threadId]),
+    );
+    const hasUnreadActivity =
+      !hasQueueActivity &&
+      threadIds.some((threadId) => unreadThreadIds.has(threadId));
+    const hasActivityIndicator = hasQueueActivity || hasUnreadActivity;
     const isPinned = pinnedIdSet.has(item.id);
     const itemClass =
       variant === "project"
@@ -904,12 +988,13 @@ export function AppSidebar() {
         ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       // Pinned chats carry a chat icon, so add the nav-item icon gap.
       isPinned && variant !== "project" && "gap-[8.5px]",
+      hasActivityIndicator ? "pr-7" : "pr-4",
       variant === "project"
         ? // Room for the hover pin quick-action plus the kebab.
           "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
@@ -956,6 +1041,7 @@ export function AppSidebar() {
           isActive={activeThreadId === item.id}
           className={buttonClass}
           onClick={() => {
+            clearChatNotifications(item);
             navigate({
               to: "/chat",
               search:
@@ -979,6 +1065,23 @@ export function AppSidebar() {
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
         </SidebarMenuButton>
+        {hasActivityIndicator ? (
+          <span
+            className={cn(
+              "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+              variant === "project"
+                ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
+                : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+            )}
+            aria-hidden
+          >
+            {hasQueueActivity ? (
+              <Spinner className="size-3" />
+            ) : (
+              <span className="size-2 rounded-full bg-[#d07a5f] dark:bg-[#df8a6f]" />
+            )}
+          </span>
+        ) : null}
         {variant === "project" && (
           <button
             type="button"
