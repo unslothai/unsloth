@@ -6,7 +6,8 @@
 Run in a short-lived subprocess (``python _vulkan_probe.py <bindir>``) so the
 Vulkan instance never lives in the long-running backend process. Loads the
 bundled ggml Vulkan backend from ``<bindir>`` and prints one
-``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>`` line per device to stdout.
+``<idx>\\t<free_bytes>\\t<is_igpu>\\t<total_bytes>\\t<name>`` line per device
+to stdout.
 Indices are ggml's own Vulkan device ordinals, which need not match nvidia-smi
 order. ``is_igpu`` (from ggml's device type) is ``1`` for an integrated GPU
 sharing system RAM. ``total_bytes`` is the device-local heap; the reader uses
@@ -24,15 +25,16 @@ import sys
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
-def _igpu_flags(base, lib, count: int) -> list[bool]:
-    """Per-device integrated-GPU flags via ggml's backend registry.
+def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
+    """Per-device integrated-GPU flags and names via ggml's registry.
 
     The Vulkan reg enumerates devices in the same order as
     ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
-    i``), so reg index == device ordinal. Returns all-False on any failure so
-    the reader never over-caps a discrete card.
+    i``), so reg index == device ordinal. Missing metadata degrades to an
+    all-False flag list and stable ``VulkanN`` names.
     """
     flags = [False] * count
+    names = [f"Vulkan{i}" for i in range(count)]
     try:
         lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
         lib.ggml_backend_vk_reg.argtypes = []
@@ -42,20 +44,25 @@ def _igpu_flags(base, lib, count: int) -> list[bool]:
         base.ggml_backend_reg_dev_get.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         base.ggml_backend_dev_type.restype = ctypes.c_int
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
+        base.ggml_backend_dev_name.restype = ctypes.c_char_p
+        base.ggml_backend_dev_name.argtypes = [ctypes.c_void_p]
 
         reg = lib.ggml_backend_vk_reg()
         if not reg:
-            return flags
+            return flags, names
         dev_count = base.ggml_backend_reg_dev_count(reg)
         for i in range(min(count, dev_count)):
             dev = base.ggml_backend_reg_dev_get(reg, i)
             if dev:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
+                raw_name = base.ggml_backend_dev_name(dev)
+                if raw_name:
+                    name = raw_name.decode("utf-8", errors = "replace")
+                    names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
     except Exception:
-        # Best-effort: any failure degrades to "discrete" so the memory
-        # readings still get through instead of crashing the probe.
+        # Best-effort metadata must never suppress the memory readings.
         pass
-    return flags
+    return flags, names
 
 
 def main() -> int:
@@ -118,12 +125,15 @@ def main() -> int:
     ]
 
     count = lib.ggml_backend_vk_get_device_count()
-    igpu = _igpu_flags(base, lib, count)
+    igpu, names = _device_metadata(base, lib, count)
     rows = []
     for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
         lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
-        rows.append("%d\t%d\t%d\t%d" % (i, free.value, int(igpu[i]), total.value))
+        rows.append(
+            "%d\t%d\t%d\t%d\t%s"
+            % (i, free.value, int(igpu[i]), total.value, names[i])
+        )
     sys.stdout.write("\n".join(rows))
     return 0
 

@@ -3459,18 +3459,14 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
-        """Query free (and total) VRAM per device via the bundled ggml Vulkan backend.
+    def _probe_vulkan_devices(
+        binary: Optional[str] = None,
+    ) -> list[tuple[int, int, bool, int, str]]:
+        """Return raw Vulkan device rows from a short-lived ggml probe.
 
-        Loads ``libggml-vulkan`` in a short-lived subprocess (no Vulkan instance
-        in this process) and returns (device_index, free_mib, total_mib) sorted
-        by index. The index is ggml's compact Vulkan ordinal -- the one the
-        registry names ``Vulkan<index>`` and load_model pins with ``--device``,
-        NOT the raw ``GGML_VK_VISIBLE_DEVICES`` space. A user-set
-        ``GGML_VK_VISIBLE_DEVICES`` is honored by ggml (passed through), so the
-        list already reflects it. iGPUs leave a host-RAM margin (see
-        ``_apply_igpu_host_reserve_mib``) and report total 0; discrete cards pass
-        their real total through. [] when no Vulkan build or device is reachable.
+        Each row is ``(ordinal, free_bytes, is_igpu, total_bytes, name)``.
+        The ordinal is ggml's compact ``VulkanN`` index after any inherited
+        ``GGML_VK_VISIBLE_DEVICES`` filter.
         """
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
@@ -3517,21 +3513,75 @@ class LlamaCppBackend:
             logger.debug(f"vulkan GPU probe failed: {e}")
             return []
 
-        gpus: list[tuple[int, int, int]] = []
+        devices: list[tuple[int, int, bool, int, str]] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            if len(parts) != 4:
+            if len(parts) < 4:
                 continue
             try:
                 idx = int(parts[0])
-                free_mib = int(parts[1]) // (1024 * 1024)
+                free_bytes = int(parts[1])
                 is_igpu = parts[2] == "1"
-                # iGPU "total" is shared RAM, not a VRAM budget -> keep 0 so the
-                # fit stays on free*frac (the host reserve below is its
-                # headroom); a discrete card passes its real total through.
-                total_mib = 0 if is_igpu else int(parts[3]) // (1024 * 1024)
+                total_bytes = int(parts[3])
             except ValueError:
                 continue
+            name = parts[4].strip() if len(parts) >= 5 else ""
+            devices.append((idx, free_bytes, is_igpu, total_bytes, name or f"Vulkan{idx}"))
+        devices.sort(key = lambda row: row[0])
+        return devices
+
+    @staticmethod
+    def _get_vulkan_gpu_info(binary: Optional[str] = None) -> list[dict]:
+        """Vulkan-ordinal device records suitable for ``/api/system``.
+
+        Unlike CUDA/HIP physical IDs, these indices are explicitly tagged
+        ``vulkan`` so the frontend can offer them only to the GGUF picker.
+        """
+        devices = []
+        for idx, free_bytes, is_igpu, total_bytes, name in (
+            LlamaCppBackend._probe_vulkan_devices(binary)
+        ):
+            free_mib = free_bytes // (1024 * 1024)
+            capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
+            total_gb = round(total_bytes / (1024**3), 2) if total_bytes > 0 else 0
+            free_gb = round(capped / 1024, 2)
+            used_gb = (
+                round(max(0, total_bytes - free_bytes) / (1024**3), 2)
+                if total_bytes > 0
+                else None
+            )
+            devices.append(
+                {
+                    "index": idx,
+                    "visible_ordinal": idx,
+                    "index_kind": "vulkan",
+                    "name": name,
+                    "memory_total_gb": total_gb,
+                    "vram_total_gb": total_gb,
+                    "vram_free_gb": free_gb,
+                    "vram_used_gb": used_gb,
+                    "vram_utilization_pct": (
+                        round((used_gb / total_gb) * 100, 1)
+                        if used_gb is not None and total_gb > 0
+                        else None
+                    ),
+                }
+            )
+        return devices
+
+    @staticmethod
+    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
+        """Query free (and total) VRAM via ggml's Vulkan ordinal space.
+
+        iGPUs leave host-RAM headroom and report total 0 to the fit planner,
+        because their reported heap is shared system memory. Discrete cards
+        retain their real total so the planner can reserve absolute headroom.
+        """
+        gpus: list[tuple[int, int, int]] = []
+        for idx, free_bytes, is_igpu, total_bytes, _name in (
+            LlamaCppBackend._probe_vulkan_devices(binary)
+        ):
+            free_mib = free_bytes // (1024 * 1024)
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             if capped < free_mib:
                 logger.info(
@@ -3539,8 +3589,9 @@ class LlamaCppBackend:
                     f"RAM; reserving {free_mib - capped}MiB host headroom "
                     f"({free_mib}->{capped}MiB usable)"
                 )
+            # An iGPU's total is shared RAM, not an independent VRAM budget.
+            total_mib = 0 if is_igpu else total_bytes // (1024 * 1024)
             gpus.append((idx, capped, total_mib))
-        gpus.sort(key = lambda g: g[0])
         if gpus:
             logger.info(
                 "Vulkan GPU memory detected: "

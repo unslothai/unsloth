@@ -97,8 +97,10 @@ def _row(
     free_bytes: int,
     is_igpu: int,
     total_bytes: int = 0,
+    name: str | None = None,
 ) -> str:
-    return f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
+    row = f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
+    return f"{row}\t{name}" if name is not None else row
 
 
 def test_integrated_gpu_leaves_host_margin(tmp_path):
@@ -120,6 +122,31 @@ def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 6 * 1024, 24 * 1024)], gpus
+
+
+def test_vulkan_device_info_exposes_names_and_pinnable_ordinals(tmp_path):
+    binary = _make_vulkan_install(tmp_path)
+    rows = [
+        _row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB, name = "Radeon W7900"),
+        _row(1, 7 * GIB, is_igpu = 0, total_bytes = 8 * GIB, name = "Radeon W7500"),
+    ]
+    with _mock_probe(rows):
+        devices = LlamaCppBackend._get_vulkan_gpu_info(binary)
+
+    assert [(d["index"], d["index_kind"], d["name"]) for d in devices] == [
+        (0, "vulkan", "Radeon W7900"),
+        (1, "vulkan", "Radeon W7500"),
+    ]
+    assert devices[0]["memory_total_gb"] == 24
+    assert devices[0]["vram_free_gb"] == 6
+    assert devices[0]["vram_used_gb"] == 18
+
+
+def test_vulkan_device_info_accepts_legacy_four_column_probe(tmp_path):
+    binary = _make_vulkan_install(tmp_path)
+    with _mock_probe([_row(2, 7 * GIB, is_igpu = 0, total_bytes = 8 * GIB)]):
+        devices = LlamaCppBackend._get_vulkan_gpu_info(binary)
+    assert devices[0]["name"] == "Vulkan2"
 
 
 def test_large_discrete_gpu_is_untouched(tmp_path):

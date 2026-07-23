@@ -256,7 +256,7 @@ function GpuMemorySettings({
   // Multi-GPU only, and only with physical indices (relative ordinals from a
   // CUDA_VISIBLE_DEVICES mask can't be mapped back to pin a device). null = all (auto).
   const showGpuPicker =
-    gpuDevices.length > 1 && gpuDevices.every((d) => d.physicalIndex);
+    gpuDevices.length > 1 && gpuDevices.every((d) => d.pinnable);
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
   const toggleGpu = (index: number) => {
