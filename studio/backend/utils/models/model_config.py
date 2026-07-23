@@ -33,6 +33,7 @@ from typing import List, Tuple
 import hashlib
 import json
 import threading
+import time
 import yaml
 
 
@@ -46,6 +47,9 @@ logger = get_logger(__name__)
 
 
 _OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
+_HF_METADATA_PROBE_TTL_SECONDS = 5.0
+_hf_metadata_probe_lock = threading.Lock()
+_hf_metadata_probe_state: tuple[str, float, bool] | None = None
 
 
 def _env_offline() -> bool:
@@ -54,6 +58,42 @@ def _env_offline() -> bool:
         os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
     )
+
+
+def _hf_metadata_unavailable() -> bool:
+    """Return whether Hub metadata should be served from cache only."""
+    if _env_offline():
+        return True
+    probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    if not probe_enabled:
+        return False
+
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    now = time.monotonic()
+    global _hf_metadata_probe_state
+    with _hf_metadata_probe_lock:
+        cached = _hf_metadata_probe_state
+        if cached is not None:
+            cached_endpoint, expires_at, unavailable = cached
+            if cached_endpoint == endpoint and now < expires_at:
+                return unavailable
+
+        try:
+            from utils.transformers_version import hf_endpoint_unreachable
+            unavailable = hf_endpoint_unreachable(timeout = 1)
+        except Exception:
+            unavailable = False
+        _hf_metadata_probe_state = (
+            endpoint,
+            time.monotonic() + _HF_METADATA_PROBE_TTL_SECONDS,
+            unavailable,
+        )
+        return unavailable
 
 
 # ── Model size extraction ────────────────────────────────────
@@ -997,7 +1037,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000,
 }
 
 
@@ -1804,11 +1844,16 @@ def list_gguf_variants(
     """
     from huggingface_hub import model_info as hf_model_info
 
-    # Offline: skip the API and serve from cache
-    if _env_offline():
+    # Offline / unreachable: skip the API and serve from cache.
+    if _hf_metadata_unavailable():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         if cached is not None:
             return cached
+        logger.debug(
+            "Offline/unreachable HF Hub -- skipping GGUF variant listing for '%s'",
+            repo_id,
+        )
+        return [], False
 
     try:
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
@@ -2010,10 +2055,15 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     import time
     from huggingface_hub import model_info as hf_model_info
 
-    if _env_offline():
+    if _hf_metadata_unavailable():
         cached = _detect_gguf_from_hf_cache(repo_id)
         if cached is not None:
             return cached
+        logger.debug(
+            "Offline/unreachable HF Hub -- skipping remote GGUF detection for '%s'",
+            repo_id,
+        )
+        return None
 
     last_err: Optional[Exception] = None
     for attempt in range(3):
@@ -2045,6 +2095,12 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
             ):
                 logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
                 return None
+            if isinstance(e, (ConnectionError, TimeoutError)) or err_name in (
+                "ConnectError",
+                "ConnectTimeout",
+                "ReadTimeout",
+            ):
+                break
             if attempt < 2:
                 time.sleep(2**attempt)
 
@@ -2124,16 +2180,23 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     if not is_local_path(model_name) and hf_env_offline():
         return _embedding_marker_in_hf_cache(model_name)
 
-    cache_key = (model_name, hf_token)
-    if cache_key in _embedding_detection_cache:
-        return _embedding_detection_cache[cache_key]
-
     # Local paths: check for sentence-transformer marker (modules.json)
+    cache_key = (model_name, hf_token)
     if is_local_path(model_name):
         local_dir = normalize_path(model_name)
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
+
+    if _hf_metadata_unavailable():
+        logger.debug(
+            "Offline/unreachable HF Hub -- using cached embedding marker for %s",
+            model_name,
+        )
+        return _embedding_marker_in_hf_cache(model_name)
+
+    if cache_key in _embedding_detection_cache:
+        return _embedding_detection_cache[cache_key]
 
     try:
         from huggingface_hub import model_info as hf_model_info

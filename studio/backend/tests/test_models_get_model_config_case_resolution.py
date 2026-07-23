@@ -7,7 +7,7 @@ import types
 
 # Keep this test runnable in lightweight environments where optional logging
 # deps are not installed.
-if "structlog" not in sys.modules:
+if "structlog" not in sys.modules or not hasattr(sys.modules["structlog"], "get_logger"):
 
     class _DummyLogger:
         def __getattr__(self, _name):
@@ -106,3 +106,14 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, mon
     assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
     # Absent from every cache -> reported absent.
     assert models_route._repo_in_any_hf_cache("unsloth/not-cached") is False
+
+
+def test_get_model_size_skips_hub_when_metadata_unavailable(monkeypatch):
+    monkeypatch.setattr(models_route, "_hf_metadata_unavailable", lambda: True)
+
+    class _BoomApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("HfApi must not be constructed when metadata is unavailable")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _BoomApi)
+    assert models_route._get_model_size_bytes("unsloth/a") is None

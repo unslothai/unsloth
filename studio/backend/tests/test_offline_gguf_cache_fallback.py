@@ -142,6 +142,7 @@ def clean_offline_env(monkeypatch):
     """Strip ``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE`` for the test."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
 
 
 class TestGgufVariantFileResolution:
@@ -793,9 +794,9 @@ class TestDetectGgufFromCache:
             {"BF16/foo.gguf": 1},
         )
         out = _detect_gguf_from_hf_cache("unsloth/gpt-oss-20b-BF16")
-        assert (
-            out == "BF16/foo.gguf"
-        ), f"subdir-only layout must resolve to relative path, got {out}"
+        assert out == "BF16/foo.gguf", (
+            f"subdir-only layout must resolve to relative path, got {out}"
+        )
 
     def test_subdir_quant_keeps_be_model_name_token(self, hf_cache):
         _build_cache(
@@ -819,6 +820,40 @@ class TestDetectGgufFromCache:
 
 
 class TestDetectGgufModelRemoteOffline:
+    def test_unreachable_endpoint_short_circuits_retries(
+        self, hf_cache, clean_offline_env, monkeypatch
+    ):
+        _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+        monkeypatch.setattr(
+            "utils.transformers_version.hf_endpoint_unreachable",
+            lambda timeout = 3: True,
+        )
+
+        def boom(*args, **kwargs):
+            raise AssertionError("API must not be called when endpoint is unreachable")
+
+        with patch("huggingface_hub.model_info", boom):
+            assert detect_gguf_model_remote("unsloth/a") == "a-Q4_K_M.gguf"
+
+    def test_unreachable_endpoint_lists_cached_variants_without_api(
+        self, hf_cache, clean_offline_env, monkeypatch
+    ):
+        _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+        monkeypatch.setattr(
+            "utils.transformers_version.hf_endpoint_unreachable",
+            lambda timeout = 3: True,
+        )
+
+        def boom(*args, **kwargs):
+            raise AssertionError("API must not be called when endpoint is unreachable")
+
+        with patch("huggingface_hub.model_info", boom):
+            variants, has_vision = list_gguf_variants("unsloth/a")
+        assert [variant.filename for variant in variants] == ["a-Q4_K_M.gguf"]
+        assert has_vision is False
+
     def test_offline_env_short_circuits_retries(self, hf_cache, clean_offline_env, monkeypatch):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")

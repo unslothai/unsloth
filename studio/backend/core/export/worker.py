@@ -172,6 +172,68 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
     activate_transformers_for_subprocess(model_name, hf_token)
 
 
+def _reset_hf_sessions() -> None:
+    try:
+        from huggingface_hub.utils._http import reset_sessions
+    except Exception:
+        try:
+            from huggingface_hub.utils import reset_sessions
+        except Exception:
+            return
+    try:
+        reset_sessions()
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def _force_hf_offline_window():
+    saved_env = {key: os.environ.get(key) for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
+    saved_attrs = []
+    try:
+        import huggingface_hub.constants as hub_constants
+        if hasattr(hub_constants, "HF_HUB_OFFLINE"):
+            saved_attrs.append(
+                (
+                    hub_constants,
+                    "HF_HUB_OFFLINE",
+                    hub_constants.HF_HUB_OFFLINE,
+                )
+            )
+    except Exception:
+        pass
+    try:
+        import transformers.utils.hub as transformers_hub
+        for attr in ("_is_offline_mode", "OFFLINE"):
+            if hasattr(transformers_hub, attr):
+                saved_attrs.append((transformers_hub, attr, getattr(transformers_hub, attr)))
+    except Exception:
+        pass
+
+    try:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        for obj, attr, _ in saved_attrs:
+            try:
+                setattr(obj, attr, True)
+            except Exception:
+                pass
+        _reset_hf_sessions()
+        yield
+    finally:
+        for obj, attr, value in saved_attrs:
+            try:
+                setattr(obj, attr, value)
+            except Exception:
+                pass
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        _reset_hf_sessions()
+
+
 @contextlib.contextmanager
 def _offline_window_if_unreachable(step = "loading"):
     """Force HF offline for a network-touching step (transformers version activation, or the
@@ -187,18 +249,21 @@ def _offline_window_if_unreachable(step = "loading"):
     force_ctx = None
     try:
         from utils.transformers_version import _env_offline, hf_endpoint_unreachable
+
         probe_enabled = os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() not in (
             "0",
             "false",
             "no",
             "off",
         )
-        if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
+        should_force = _env_offline()
+        if not should_force and probe_enabled and hf_endpoint_unreachable():
+            should_force = True
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
-            if "huggingface_hub" in sys.modules:
+        if should_force:
+            if "huggingface_hub" in sys.modules or "transformers" in sys.modules:
                 try:
-                    from unsloth.models.loader_utils import _force_hf_offline
-                    force_ctx = _force_hf_offline()
+                    force_ctx = _force_hf_offline_window()
                     force_ctx.__enter__()  # sets env + in-process flags + resets sessions
                 except Exception:
                     force_ctx = None
@@ -659,7 +724,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Export can trigger hidden Hub metadata calls from tokenizer save paths.
+                with _offline_window_if_unreachable(step = "exporting"):
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)

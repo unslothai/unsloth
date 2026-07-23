@@ -106,6 +106,7 @@ def _clean_env(monkeypatch):
     """Start each test online with an empty detection cache; offline tests opt in."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
     from utils.models import model_config as mc
 
     mc._embedding_detection_cache.clear()
@@ -312,6 +313,53 @@ def test_offline_recomputes_after_cache_materializes(hf_cache, monkeypatch):
 
 
 # ── is_embedding_model: online (bounded + fallback) ──────────────
+
+
+def test_unreachable_endpoint_uses_cached_embedding_marker(hf_cache, monkeypatch):
+    _make_cache(hf_cache, "org/emb", {"modules.json": MODULES_JSON})
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+    monkeypatch.setattr(
+        "utils.transformers_version.hf_endpoint_unreachable",
+        lambda timeout = 3: True,
+    )
+    with _no_network():
+        assert _is_embedding_model("org/emb") is True
+
+
+def test_unreachable_endpoint_ignores_stale_online_embedding_memo(hf_cache, monkeypatch):
+    from utils.models import model_config
+
+    model_config._embedding_detection_cache[("org/uncached-emb", None)] = True
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+    monkeypatch.setattr(model_config, "_hf_metadata_probe_state", None)
+    monkeypatch.setattr(
+        "utils.transformers_version.hf_endpoint_unreachable",
+        lambda timeout = 3: True,
+    )
+    with _no_network():
+        assert _is_embedding_model("org/uncached-emb") is False
+
+
+def test_metadata_reachability_probe_is_coalesced(monkeypatch):
+    from utils.models import model_config
+
+    calls = 0
+
+    def reachable(*, timeout):
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "1")
+    monkeypatch.setattr(model_config, "_hf_metadata_probe_state", None)
+    monkeypatch.setattr(
+        "utils.transformers_version.hf_endpoint_unreachable",
+        reachable,
+    )
+
+    assert model_config._hf_metadata_unavailable() is False
+    assert model_config._hf_metadata_unavailable() is False
+    assert calls == 1
 
 
 def test_online_passes_bounded_timeout(hf_cache):
