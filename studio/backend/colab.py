@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Colab helpers for Unsloth Studio. Uses Colab's built-in proxy.
-"""
+"""Colab helpers for Unsloth Studio. Uses Colab's built-in proxy."""
 
 from pathlib import Path
 import sys
@@ -22,11 +20,9 @@ logger = get_logger(__name__)
 
 
 def get_colab_url(port: int = 8888) -> str:
-    """
-    Get the Colab proxy URL for a port.
+    """Get the Colab proxy URL for a port.
 
-    Retries up to 3 times, validating the result is a real HTTPS Colab URL.
-    Falls back to http://localhost:{port} only when all attempts fail.
+    Retries 3x validating a real HTTPS Colab URL; falls back to localhost on failure.
     """
     import time as _time
 
@@ -74,9 +70,8 @@ def _is_colab_proxy_url(url: str, port: int) -> bool:
 def _is_colab_runtime() -> bool:
     """True on a real Colab notebook kernel (not colabtools-only ``google.colab`` imports).
 
-    ``serve_kernel_port_as_iframe`` only needs a port, so when ``eval_js`` fails and
-    ``get_colab_url()`` falls back to localhost we must still call the helper on real
-    Colab. ``COLAB_RELEASE_TAG`` is set in notebook kernels but not by colabtools alone.
+    ``COLAB_RELEASE_TAG`` is set in notebook kernels but not by colabtools alone, so it
+    marks real Colab where the kernel-port helper works even if eval_js fell back to localhost.
     """
     import os
 
@@ -92,10 +87,9 @@ def _is_colab_runtime() -> bool:
 def _ready_card_html(url: str, port: int) -> str:
     """Branded ready card for the in-notebook Studio view.
 
-    Colab ``*.prod.colab.dev`` proxy URLs are session-scoped and return HTTP 404 when
-    opened as a top-level tab / from another device (browser storage partitioning).
-    Never put those URLs behind ``window.open`` — embed in-cell instead, and point
-    users at ``start(cloudflare=True)`` for a shareable new-window link.
+    Colab ``*.prod.colab.dev`` proxy URLs are session-scoped and 404 when opened as a
+    top-level tab or on another device, so never ``window.open`` them: embed in-cell and
+    point users at ``start(cloudflare=True)`` for a shareable link.
     """
     short_url = _short_colab_url(url, port)
     if _is_colab_runtime() or _is_colab_proxy_url(url, port):
@@ -151,10 +145,9 @@ def _ready_card_html(url: str, port: int) -> str:
 def show_link(port: int = 8888, *, _url: "str | None" = None):
     """Display a styled ready card for the UI.
 
-    For Colab kernel proxy URLs this is informational only (no new-tab open) — those
-    hosts 404 outside the notebook cell. Non-proxy URLs keep a clickable open button.
-
-    *_url* is an optional pre-fetched proxy URL; pass it to avoid a second eval_js round-trip.
+    Colab proxy URLs are informational only (no new-tab open; they 404 outside the cell);
+    non-proxy URLs keep a clickable open button. *_url* is an optional pre-fetched proxy
+    URL to avoid a second eval_js round-trip.
     """
     from IPython.display import display, HTML
 
@@ -166,9 +159,8 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
 def _bootstrap_password_pending() -> bool:
     """True while the default admin still owes a bootstrap-password change.
 
-    While pending, main.py injects that password into same-origin GETs, and a public
-    tunnel GET (no Origin) reads as same-origin, so sharing the link would leak admin
-    access. Fails safe to pending if the state cannot be read.
+    While pending, a public tunnel GET (no Origin) reads as same-origin and gets the
+    injected password, so sharing the link would leak admin access. Fails safe to pending.
     """
     try:
         from auth.storage import requires_password_change, DEFAULT_ADMIN_USERNAME
@@ -181,9 +173,8 @@ def _bootstrap_password_pending() -> bool:
 def start_cloudflare_tunnel(port: int) -> "str | None":
     """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
-    run_server suppresses the tunnel on Colab by design, so we start it directly.
-    Refused while the bootstrap password is pending; any failure collapses to None
-    and the Colab proxy still works.
+    run_server suppresses the tunnel on Colab, so we start it directly. Refused while the
+    bootstrap password is pending; any failure collapses to None (Colab proxy still works).
     """
     if _bootstrap_password_pending():
         logger.warning(
@@ -212,9 +203,9 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
 def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:
     """Publish a directly-started tunnel URL onto app.state so /api/health advertises it.
 
-    run_server only sets this when it opens the tunnel itself, which it skips on Colab,
-    so we set it here. Otherwise the frontend's API examples fall back to an
-    unreachable server_url. Best-effort.
+    run_server sets this only when it opens the tunnel itself (skipped on Colab), so we
+    set it here; otherwise the frontend's API examples fall back to an unreachable
+    server_url. Best-effort.
     """
     if not cloudflare_url:
         return
@@ -243,8 +234,7 @@ def _stop_cloudflare_tunnel() -> None:
 def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
     """True only if Unsloth Studio (not some other app) answers /api/health on *port*.
 
-    The service-marker check stops the reuse path reusing or tunneling a foreign
-    process that merely serves /api/health.
+    The service-marker check stops the reuse path reusing or tunneling a foreign process.
     """
     import json, urllib.request
     try:
@@ -289,10 +279,8 @@ _COLAB_IFRAME_HEIGHT = 900
 def _embed_kernel_port_iframe(port: int) -> bool:
     """Embed Studio via Colab's native kernel-port iframe helper.
 
-    Colab's output sanitizer often strips custom ``<iframe>`` tags from
-    ``IPython.display.HTML`` without raising, which leaves a blank cell even
-    though ``display()`` succeeded. The kernel-port helper is the supported
-    embedding path and registers the proxy correctly.
+    Colab's output sanitizer often strips custom ``<iframe>`` tags without raising,
+    leaving a blank cell; the kernel-port helper is the supported embedding path.
     """
     try:
         from google.colab import output as colab_output
@@ -348,9 +336,8 @@ def _embed_html_iframe(url: str, port: int) -> bool:
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     """Render the Unsloth ready card + iframe for *port*.
 
-    Shows an informational card (no new-tab open for Colab proxy URLs — those
-    404 outside the notebook). Prefer Colab's ``serve_kernel_port_as_iframe``;
-    raw HTML iframe is the fallback. Cloudflare cards stay clickable.
+    Prefer Colab's ``serve_kernel_port_as_iframe``; raw HTML iframe is the fallback.
+    Cloudflare cards stay clickable.
     """
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
@@ -369,8 +356,8 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
         except Exception as e:
             logger.info(f"Could not render Cloudflare link card ({e}).")
 
-    # Real Colab: kernel helper only needs the port (works when eval_js failed).
-    # colabtools can import google.colab without COLAB_RELEASE_TAG — use HTML embed.
+    # Real Colab: kernel helper needs only the port (works when eval_js failed).
+    # colabtools can import google.colab without COLAB_RELEASE_TAG, so use HTML embed.
     if _is_colab_runtime():
         if _embed_kernel_port_iframe(port):
             return
@@ -396,8 +383,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
 
     logger.info("🦥 Starting Unsloth Studio...")
 
-    # Fast path: Unsloth already running (cell re-run). Re-launching would collide on
-    # the port, so just re-show the link and iframe.
+    # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
@@ -417,7 +403,6 @@ def start(port: int = 8888, *, cloudflare: bool = False):
     logger.info("   Loading backend...")
     from run import run_server
 
-    # Auto-detect frontend path
     repo_root = Path(__file__).parent.parent
     frontend_path = repo_root / "frontend" / "dist"
 
@@ -427,8 +412,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
 
     logger.info("   Starting server...")
     try:
-        # cloudflare=False: this helper owns the tunnel (Colab's own
-        # start(cloudflare=...) drives it), so pin it off explicitly.
+        # cloudflare=False: this helper owns the tunnel (via start(cloudflare=...)), so pin it off.
         app = run_server(
             host = "0.0.0.0",
             port = port,
@@ -443,14 +427,12 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         logger.error(f"❌ Unsloth Studio failed to start: {exc}")
         return
 
-    # run_server auto-increments the port if in use; read back the bound port so the
-    # proxy URL and iframe point at the right place.
+    # run_server may auto-increment the port; read back the bound port for the proxy URL/iframe.
     actual_port: int = getattr(getattr(app, "state", None), "server_port", None) or port
 
     logger.info(f"   Server started on port {actual_port}!")
 
-    # Poll health endpoint before showing the link — avoids the race where ready_event
-    # fires but the process hasn't finished binding.
+    # Poll health before showing the link: avoids the race where ready_event fires pre-bind.
     import urllib.request
 
     server_ready = False
@@ -469,8 +451,7 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         )
         return
 
-    # Open the tunnel now the server is healthy, publish its URL for /api/health, and
-    # tear it down on interrupt (try/finally) rather than orphan the process.
+    # Server healthy: open the tunnel, publish its URL for /api/health, tear down on interrupt.
     try:
         cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
         _publish_cloudflare_url(cf_url)
