@@ -232,7 +232,7 @@ function ModelSelectorTrigger({
           </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
-          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
             {currentModel?.name ?? "Select model"}
             {showCloudIndicator ? (
               <HugeiconsIcon
@@ -881,7 +881,7 @@ function ExternalModelPicker({
           ) : (
             grouped.map((group) => (
               <div key={group.providerId}>
-                <div className="flex items-center gap-2 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="flex items-center gap-2 px-2.5 py-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                   <ExternalProviderLogo
                     providerType={group.models[0]?.providerType}
                     className="size-3.5"

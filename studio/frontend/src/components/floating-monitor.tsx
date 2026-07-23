@@ -139,7 +139,7 @@ export function FloatingMonitor() {
               className="space-y-3 overflow-hidden"
             >
               <div className="space-y-1">
-                <div className="flex justify-between text-[11px] font-medium font-mono">
+                <div className="flex justify-between text-ui-11 font-medium font-mono">
                   <span>{t("settings.resources.liveMonitor.ram")}</span>
                   <span
                     className={cn("tabular-nums", usageTextClass(ramPercent))}
@@ -159,7 +159,7 @@ export function FloatingMonitor() {
 
               {hasGpu && (
                 <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] font-medium font-mono">
+                  <div className="flex justify-between text-ui-11 font-medium font-mono">
                     <span className="truncate flex-1 pr-2">
                       {t("settings.resources.liveMonitor.vram")}{" "}
                       {devices.length > 1

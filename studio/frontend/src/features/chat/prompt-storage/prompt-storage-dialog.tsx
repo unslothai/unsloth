@@ -1341,7 +1341,7 @@ function ExportModal({
 
           {/* */}
           <div className="flex flex-col gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Export as
             </p>
             <div className="flex flex-col gap-2">
@@ -1390,7 +1390,7 @@ function ExportModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     ShareGPT format for Unsloth fine-tuning
                   </p>
-                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground/60">
+                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}
                   </code>
                 </div>
@@ -1400,7 +1400,7 @@ function ExportModal({
 
           {/* */}
           <div className="flex flex-col gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Format
             </p>
             <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
@@ -1730,7 +1730,7 @@ function PromptListCard({
     <div className="group rounded-xl border border-border/60 bg-card p-4 flex flex-col gap-2.5 hover:border-border hover:shadow-sm transition-all">
       <div className="flex items-center gap-2">
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
           {entry.items.length}
         </span>
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1779,7 +1779,7 @@ function PromptListCard({
           </p>
         ))}
         {entry.items.length > 3 && (
-          <p className="text-[11px] text-muted-foreground/50 ml-5">
+          <p className="text-ui-11 text-muted-foreground/50 ml-5">
             +{entry.items.length - 3} more
           </p>
         )}

@@ -8,9 +8,10 @@ so it survives ``huggingface-cli delete-cache`` and any other HF-side
 cache lifecycle. Two subdirectories:
 
     <studio cache>/hub-state/
-        manifests/   <key>.json   per-download expected-files manifest
-        cancelled/   <key>.json   per-download cancel marker
+        manifests/cache-<digest>/<key>.json   expected-files manifest
+        cancelled/cache-<digest>/<key>.json   cancel marker
 
+The cache digest isolates state for the same repo across selectable Hub caches.
 The ``<key>`` mirrors HF's cache dir naming while the resulting manifest,
 cancel-marker, and atomic-write temp filenames fit common filesystem basename
 limits. Very long repo IDs use a stable hash in the state key:
@@ -29,6 +30,7 @@ configuration failure.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 from typing import Literal, Optional, get_args
@@ -55,6 +57,7 @@ _STATE_EXTENSION = ".json"
 # _atomic_write_json writes ".<target>.tmp-<8hex>" beside the final file.
 _ATOMIC_WRITE_TMP_OVERHEAD = len(".") + len(".tmp-") + 8
 _MAX_VARIANT_FRAGMENT_LENGTH = 64
+_CACHE_SCOPE_DIGEST_LENGTH = 32
 
 
 def state_root() -> Optional[Path]:
@@ -130,13 +133,32 @@ def _entry_key(repo_type: RepoType, repo_id: str, variant: Optional[str]) -> str
     return f"{variant_filename_prefix(repo_type, repo_id)}{variant_fragment}"
 
 
+def _cache_scope(parent: Path, hub_cache: Optional[str | Path]) -> Optional[Path]:
+    if hub_cache is None:
+        return parent
+    normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:_CACHE_SCOPE_DIGEST_LENGTH]
+    scoped = parent / f"cache-{digest}"
+    try:
+        scoped.mkdir(parents = True, exist_ok = True)
+    except OSError as exc:
+        logger.debug("Could not create cache-scoped Hub state dir %s: %s", scoped, exc)
+        return None
+    return scoped
+
+
 def manifest_path(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> Optional[Path]:
     """Path to the manifest file for this triple. May or may not exist."""
     parent = _subdir(_MANIFESTS_SUBDIR)
+    if parent is None:
+        return None
+    parent = _cache_scope(parent, hub_cache)
     if parent is None:
         return None
     return parent / f"{_entry_key(repo_type, repo_id, variant)}.json"
@@ -146,9 +168,14 @@ def marker_path(
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
 ) -> Optional[Path]:
     """Path to the cancel-marker file for this triple. May or may not exist."""
     parent = _subdir(_CANCELLED_SUBDIR)
+    if parent is None:
+        return None
+    parent = _cache_scope(parent, hub_cache)
     if parent is None:
         return None
     return parent / f"{_entry_key(repo_type, repo_id, variant)}.json"

@@ -338,7 +338,7 @@ function renderNodeBody(
               <Badge
                 key={providerName}
                 variant="secondary"
-                className="corner-squircle font-mono text-[11px]"
+                className="corner-squircle font-mono text-ui-11"
               >
                 {providerName}
               </Badge>
@@ -505,7 +505,7 @@ function RecipeGraphNodeBase({
             <BaseNodeHeaderTitle className="truncate text-sm">
               {data.name}
             </BaseNodeHeaderTitle>
-            <p className="truncate text-[11px] text-muted-foreground">
+            <p className="truncate text-ui-11 text-muted-foreground">
               {data.subtype} · {data.title}
             </p>
           </div>
