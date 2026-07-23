@@ -918,7 +918,8 @@ export function AppSidebar() {
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
           : // Hover room for the kebab only; title keeps one more character.
-            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-6",
+            // Touch rows clear the full always-visible kebab hit area (pr-10).
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
     );
 
     const isRenamingThis =

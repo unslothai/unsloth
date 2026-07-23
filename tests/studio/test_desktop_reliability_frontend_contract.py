@@ -140,7 +140,7 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[
         0
     ]
-    assert "[@media(pointer:coarse)]:pr-6" in block
+    assert "[@media(pointer:coarse)]:pr-10" in block
     assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
     coarse_idx = css_source.index("@media (pointer: coarse)")
