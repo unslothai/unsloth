@@ -231,6 +231,10 @@ UPSTREAM_ASSETS = {
 class TestResolveUpstreamAssetChoice:
     """Verify that the asset selection logic picks the right binary for each platform."""
 
+    # The plain cpu-linux / windows-cpu / macos-arm64 routing cases live in
+    # test_selection_logic.py::TestResolveUpstreamAssetChoice (exact-name pins);
+    # this class keeps the ROCm/NVIDIA-precedence dialect only.
+
     @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_nvidia_linux_gets_cpu_asset(self, mock_assets):
         """NVIDIA host should NOT hit the ROCm path -- gets CPU asset (CUDA handled elsewhere)."""
@@ -247,30 +251,6 @@ class TestResolveUpstreamAssetChoice:
         choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
         assert choice.install_kind == "linux-rocm"
         assert "rocm" in choice.name
-
-    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
-    def test_cpu_linux_gets_cpu_asset(self, mock_assets):
-        """CPU-only Linux host should get CPU asset."""
-        host = cpu_host()
-        choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
-        assert choice.install_kind == "linux-cpu"
-        assert "ubuntu-x64" in choice.name
-
-    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
-    def test_macos_arm64_gets_macos_asset(self, mock_assets):
-        """macOS arm64 host should get macOS asset."""
-        host = macos_host()
-        choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
-        assert choice.install_kind == "macos-arm64"
-        assert "macos-arm64" in choice.name
-
-    @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
-    def test_windows_cpu_gets_cpu_asset(self, mock_assets):
-        """Windows CPU-only host should get Windows CPU asset."""
-        host = windows_host()
-        choice = resolve_upstream_asset_choice(host, LLAMA_TAG)
-        assert choice.install_kind == "windows-cpu"
-        assert "win-cpu" in choice.name
 
     @patch.object(prebuilt_mod, "github_release_assets", return_value = UPSTREAM_ASSETS)
     def test_windows_rocm_gets_hip_asset(self, mock_assets):

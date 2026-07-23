@@ -26,6 +26,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -35,8 +36,9 @@ import time
 import urllib.request
 import uuid
 import wave
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from loggers import get_logger
 
@@ -54,6 +56,9 @@ from core.inference.stt_sidecar import (
     _training_active,
     normalize_whisper_language,
 )
+from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
+from utils.prebuilt.runtime_libs import dedupe_existing_dirs
+from utils.prebuilt.whisper_layout import lookup_marker
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 logger = get_logger(__name__)
@@ -147,24 +152,103 @@ def find_whisper_server_binary() -> Optional[str]:
     env_path = os.environ.get("WHISPER_SERVER_PATH")
     if env_path:
         p = Path(env_path)
-        if p.is_file():
+        if _is_runnable(p):
             return str(p)
 
     custom_dir = os.environ.get("UNSLOTH_WHISPER_CPP_PATH")
     if custom_dir:
         for p in _layout_candidates(Path(custom_dir)):
-            if p.is_file():
+            if _is_runnable(p):
                 return str(p)
 
     for p in _layout_candidates(_managed_whisper_cpp_dir()):
-        if p.is_file():
+        if _is_runnable(p):
             return str(p)
 
     return shutil.which(binary_name)
 
 
+def _is_runnable(p: Path) -> bool:
+    """A real whisper-server is an executable file. On Windows os.access(X_OK) is
+    effectively an existence check; on Unix it rejects a non-executable stub so a
+    half-written or wrong-mode file isn't mistaken for the server."""
+    return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+
+
+def _whisper_install_marker(binary: str) -> Optional[dict]:
+    """The prebuilt install marker above ``binary``, or None (source/custom builds)."""
+    return lookup_marker(binary).marker
+
+
+def slim_runtime_intact(binary: str) -> bool:
+    """True unless the marker says slim and the linked ggml runtime is missing
+    beside the server. New markers record the exact wired filenames
+    (linked_libraries), all of which must be present; legacy markers without the
+    field fall back to the per-OS core ggml name globs. A broken slim install
+    reads as engine-unavailable (reinstall via `unsloth studio update`), never a
+    crash at load."""
+    lookup = lookup_marker(binary)
+    marker = lookup.marker
+    if lookup.invalid or marker is None:
+        return not lookup.slim_collision
+    if not marker or marker.get("install_kind") != "slim":
+        return True
+    if lookup.authoritative:
+        valid = marker.get("component") == "whisper.cpp"
+        valid = valid and isinstance(marker.get("schema_version"), int)
+        valid = valid and all(
+            isinstance(marker.get(key), str) and marker[key]
+            for key in ("release_tag", "backend", "paired_llama_tag")
+        )
+        valid = valid and isinstance(marker.get("linked_libraries"), list)
+        valid = valid and bool(marker.get("linked_libraries"))
+        valid = valid and all(
+            isinstance(name, str) and name and Path(name).name == name
+            for name in marker["linked_libraries"]
+        )
+        if not valid:
+            return False
+    bin_dir = Path(binary).parent
+    linked = marker.get("linked_libraries")
+    if isinstance(linked, list) and linked and all(isinstance(name, str) for name in linked):
+        intact = all((bin_dir / name).is_file() for name in linked)
+    else:
+        if sys.platform == "win32":
+            required = ("ggml.dll", "ggml-base.dll")
+        elif sys.platform == "darwin":
+            required = ("libggml*.dylib", "libggml-base*.dylib")
+        else:
+            required = ("libggml.so*", "libggml-base.so*")
+        intact = all(any(p.is_file() for p in bin_dir.glob(pattern)) for pattern in required)
+    runtime_dirs = marker.get("linked_runtime_directories")
+    if intact and isinstance(runtime_dirs, list) and runtime_dirs:
+        intact = all(
+            isinstance(name, str)
+            and name
+            and (bin_dir / name).is_dir()
+            and any(path.is_file() for path in (bin_dir / name).rglob("*"))
+            for name in runtime_dirs
+        )
+    if intact and marker.get("backend") == "rocm":
+        expected_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        intact = (
+            marker.get("runtime_wiring_version") == 2
+            and isinstance(runtime_dirs, list)
+            and set(runtime_dirs) == expected_runtime_dirs
+        )
+    if not intact:
+        logger.warning(
+            "slim whisper install is missing its linked ggml runtime at "
+            f"{bin_dir}; run `unsloth studio update` to reinstall it"
+        )
+    return intact
+
+
 def is_available() -> bool:
-    if find_whisper_server_binary() is None:
+    binary = find_whisper_server_binary()
+    if binary is None:
+        return False
+    if not slim_runtime_intact(binary):
         return False
     try:
         import av  # noqa: F401
@@ -181,7 +265,68 @@ def ensure_engine_available() -> str:
             "The local transcription runtime is not installed. Run "
             "`unsloth studio update` to install it."
         )
+    if not slim_runtime_intact(binary):
+        raise SttEngineUnavailableError(
+            "The local transcription runtime is missing its paired ggml "
+            "libraries. Run `unsloth studio update` to reinstall it."
+        )
     return binary
+
+
+# ---------------------------------------------------------------------------
+# whisper-server child-process environment
+# ---------------------------------------------------------------------------
+# Build the whisper-server env: prepend the binary dir (co-located libs win, and
+# a backstop where the loader ignores the rpath) and scrub secret-bearing vars the
+# binary never needs. On WSL2 ROCm the system HIP libs go first, since a bundle's
+# bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships libggml-cuda.so but not
+# libcudart/libcublas (paired with the user's PyTorch), so add the
+# CUDA-from-PyTorch runtime dirs the selection gated on, else the backend cannot
+# resolve a runtime that lives only in wheels. Mirrors llama's binary_env(); the
+# scrub/WSL/dedupe helpers live in utils.prebuilt.
+
+# Module-level aliases keep the historical patch points for tests and callers.
+_wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
+_dedupe_existing_dirs = dedupe_existing_dirs
+
+
+def _whisper_server_child_env(binary: str) -> dict[str, str]:
+    """Env for the whisper-server subprocess: secrets scrubbed, home/profile vars
+    repointed at a managed scratch dir (a downloaded binary must not see the real
+    home's token caches), co-located libs on the loader path, WSL system HIP first
+    on WSL2 ROCm."""
+    env = scrub_env(os.environ)
+    isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
+    bin_dir = str(Path(binary).parent)
+    # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas
+    # resolve at launch when they live only in site-packages/nvidia/*/lib. Placed
+    # after bin_dir so co-located libs still win; empty for other bundles.
+    cuda_runtime_dirs: list[str] = []
+    bundle_dir = Path(bin_dir)
+    has_cuda_module = any(
+        path.is_file()
+        for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
+        for path in bundle_dir.glob(pattern)
+    )
+    if has_cuda_module:
+        try:
+            from utils.prebuilt.runtime_libs import python_runtime_dirs
+            cuda_runtime_dirs = python_runtime_dirs()
+        except Exception:
+            cuda_runtime_dirs = []
+    if sys.platform == "win32":
+        var, lead = "PATH", [bin_dir, *cuda_runtime_dirs]
+    elif sys.platform == "darwin":
+        var, lead = "DYLD_LIBRARY_PATH", [bin_dir]
+    else:
+        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs]
+        wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if wsl_rocm:
+            lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+    existing = [p for p in env.get(var, "").split(os.pathsep) if p]
+    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +506,10 @@ class GgmlSttSidecar:
         # is a best-effort fast path.
         self._load_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
+        # Set before the updater waits for _lock, then kept set while it owns
+        # the lock and atomically replaces the managed install tree. New loads
+        # fail fast instead of starting a process from files being swapped.
+        self._update_in_progress = False
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -439,6 +588,31 @@ class GgmlSttSidecar:
         with self._lock:
             self._release_locked()
 
+    def _raise_if_update_in_progress(self) -> None:
+        if self._update_in_progress:
+            raise SttEngineUnavailableError(
+                "The local transcription runtime is being updated. Try dictation again shortly."
+            )
+
+    @contextmanager
+    def update_maintenance(self) -> Iterator[bool]:
+        """Block new loads while the managed whisper.cpp tree is replaced.
+
+        The flag is published before waiting for an existing transcription to
+        release ``_lock``. Holding that lock across the yielded installer phase
+        prevents Windows from relocking the executable and prevents every host
+        from starting a process against a partially swapped tree. The yielded
+        value records whether a warm model had to be unloaded.
+        """
+        self._update_in_progress = True
+        try:
+            with self._lock:
+                model_was_active = self._process_alive()
+                self._release_locked()
+                yield model_was_active
+        finally:
+            self._update_in_progress = False
+
     def cancel_pending_load(self) -> bool:
         # Preempt a starting whisper-server so training does not launch while it
         # binds accelerator memory. load() holds self._lock for the whole startup,
@@ -490,8 +664,10 @@ class GgmlSttSidecar:
 
     def load(self, model: Optional[str] = None) -> None:
         """Start (or switch) whisper-server for the requested curated model."""
+        self._raise_if_update_in_progress()
         model_id = resolve_ggml_model_id(model)
         with self._lock:
+            self._raise_if_update_in_progress()
             binary = ensure_engine_available()
             if self._process_alive() and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
@@ -500,10 +676,16 @@ class GgmlSttSidecar:
             self._release_locked()
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
+            marker = _whisper_install_marker(binary)
             if _training_active():
                 # Keep whisper.cpp off the accelerator during training (like the
                 # Transformers sidecar's CPU choice) so a mid-training dictation
                 # cannot reclaim the VRAM training just freed.
+                command.append("--no-gpu")
+            elif marker is not None and marker.get("backend") == "cpu":
+                # A deliberate CPU install must stay CPU: the slim wiring links
+                # every llama ggml backend (including CUDA/ROCm), so without
+                # this flag a cpu-selected install would still grab the GPU.
                 command.append("--no-gpu")
             logger.info(
                 "Starting whisper-server for STT model %s on 127.0.0.1:%s",
@@ -522,6 +704,9 @@ class GgmlSttSidecar:
                     stdout = subprocess.DEVNULL,
                     stderr = subprocess.DEVNULL,
                     stdin = subprocess.DEVNULL,
+                    # Co-located GPU libs on the loader path (WSL system HIP first),
+                    # secrets scrubbed from the downloaded binary's env.
+                    env = _whisper_server_child_env(binary),
                     # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
                     # never orphans a server holding the model.
                     **child_popen_kwargs(),
@@ -604,6 +789,7 @@ class GgmlSttSidecar:
         Accepts any container PyAV can decode (same validation and caps as the
         Transformers sidecar). Returns {text, language, duration, model}.
         """
+        self._raise_if_update_in_progress()
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
         lang = normalize_whisper_language(language)
