@@ -61,6 +61,12 @@ assert_rc "yes is on" 0 _staged_validation_enabled
 UNSLOTH_LLAMA_STAGED_VALIDATION=on
 assert_rc "on is on" 0 _staged_validation_enabled
 
+UNSLOTH_LLAMA_STAGED_VALIDATION=True
+assert_rc "True is on" 0 _staged_validation_enabled
+
+UNSLOTH_LLAMA_STAGED_VALIDATION='  yes  '
+assert_rc "whitespace yes is on" 0 _staged_validation_enabled
+
 UNSLOTH_LLAMA_STAGED_VALIDATION=maybe
 assert_rc "maybe is off" 1 _staged_validation_enabled
 unset UNSLOTH_LLAMA_STAGED_VALIDATION

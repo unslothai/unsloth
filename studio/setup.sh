@@ -255,8 +255,11 @@ _resolve_cuda_archs() {
 # llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
 # installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
 _staged_validation_enabled() {
-    case "${UNSLOTH_LLAMA_STAGED_VALIDATION:-}" in
-        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
+    # Match install_llama_prebuilt.py staged_validation_enabled(): strip + lowercase.
+    _raw="$(printf '%s' "$_raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    case "$_raw" in
+        1|true|yes|on) return 0 ;;
         *) return 1 ;;
     esac
 }
