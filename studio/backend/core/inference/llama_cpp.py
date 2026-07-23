@@ -3689,17 +3689,15 @@ class LlamaCppBackend:
         ``vulkan`` so the frontend can offer them only to the GGUF picker.
         """
         devices = []
-        for idx, free_bytes, is_igpu, total_bytes, name in (
-            LlamaCppBackend._probe_vulkan_devices(binary)
+        for idx, free_bytes, is_igpu, total_bytes, name in LlamaCppBackend._probe_vulkan_devices(
+            binary
         ):
             free_mib = free_bytes // (1024 * 1024)
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             total_gb = round(total_bytes / (1024**3), 2) if total_bytes > 0 else 0
             free_gb = round(capped / 1024, 2)
             used_gb = (
-                round(max(0, total_bytes - free_bytes) / (1024**3), 2)
-                if total_bytes > 0
-                else None
+                round(max(0, total_bytes - free_bytes) / (1024**3), 2) if total_bytes > 0 else None
             )
             devices.append(
                 {
@@ -3729,8 +3727,8 @@ class LlamaCppBackend:
         retain their real total so the planner can reserve absolute headroom.
         """
         gpus: list[tuple[int, int, int]] = []
-        for idx, free_bytes, is_igpu, total_bytes, _name in (
-            LlamaCppBackend._probe_vulkan_devices(binary)
+        for idx, free_bytes, is_igpu, total_bytes, _name in LlamaCppBackend._probe_vulkan_devices(
+            binary
         ):
             free_mib = free_bytes // (1024 * 1024)
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
@@ -6693,11 +6691,7 @@ class LlamaCppBackend:
                 # ggml Vulkan ordinal cannot be honored. The route rejects models it
                 # can classify before teardown; this covers a remote uncached GGUF
                 # whose architecture is first known after download (#7239).
-                if (
-                    is_vulkan_backend
-                    and gpu_ids
-                    and gpu_ids_are_vulkan_ordinals is not False
-                ):
+                if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is not False:
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
                         "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
@@ -7792,9 +7786,7 @@ class LlamaCppBackend:
                     discrete_ids = [
                         idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 0) > 0
                     ]
-                    gpu_indices = sorted(
-                        discrete_ids or [idx for idx, _free in _detected_gpus]
-                    )
+                    gpu_indices = sorted(discrete_ids or [idx for idx, _free in _detected_gpus])
 
                 # Status reports the explicit subset the launch actually uses,
                 # while reload dedupe compares requested_gpu_ids so repeating a

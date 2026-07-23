@@ -59,10 +59,7 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
                 # name is the selector token (usually VulkanN); description is
                 # the hardware label users need in the picker.
-                raw_name = (
-                    base.ggml_backend_dev_description(dev)
-                    or base.ggml_backend_dev_name(dev)
-                )
+                raw_name = base.ggml_backend_dev_description(dev) or base.ggml_backend_dev_name(dev)
                 if raw_name:
                     name = raw_name.decode("utf-8", errors = "replace")
                     names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
@@ -137,10 +134,7 @@ def main() -> int:
     for i in range(count):
         free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
         lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free), ctypes.byref(total))
-        rows.append(
-            "%d\t%d\t%d\t%d\t%s"
-            % (i, free.value, int(igpu[i]), total.value, names[i])
-        )
+        rows.append("%d\t%d\t%d\t%d\t%s" % (i, free.value, int(igpu[i]), total.value, names[i]))
     sys.stdout.write("\n".join(rows))
     return 0
 
