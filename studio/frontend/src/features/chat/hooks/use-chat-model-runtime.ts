@@ -1362,6 +1362,10 @@ export function useChatModelRuntime() {
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
+                // The rollback restored the previous checkpoint, so a
+                // replacement must unload it before starting its own load.
+                previousWasUnloaded = false;
+                run.previousCheckpointWasUnloaded = false;
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,
                 );
