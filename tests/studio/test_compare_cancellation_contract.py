@@ -32,12 +32,14 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     compare = compare.split("return isLoraCompare ?", 1)[0]
     assert "state.modelRuntimeHydrated" in compare
     assert "state.modelsError" in compare
-    assert "if (!modelRuntimeHydrated && !modelsError) return;" in compare
-    assert ": false)" in compare
+    assert "usedInventoryFallbackRef" in compare
+    assert "if (!modelsError || isLoraCompare !== null) return;" in compare
+    assert "setIsLoraCompare(false);" in compare
+    assert "setIsLoraCompare(detected);" in compare
     assert "const [isLoraCompare, setIsLoraCompare]" in compare
-    assert "getIsLoraCompareFromState(useChatRuntimeStore.getState())" in compare
+    assert "getIsLoraCompareFromState(" in compare
+    assert "useChatRuntimeStore.getState()" in compare
     assert "current ??" in compare
-    assert "? getIsLoraCompareFromState" in compare
     assert 'aria-busy="true"' in compare
 
 
