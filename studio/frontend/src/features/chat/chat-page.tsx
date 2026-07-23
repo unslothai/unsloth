@@ -444,12 +444,12 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
-  });
+function getIsLoraCompareFromState(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+): boolean {
+  const cp = state.params.checkpoint;
+  const selected = cp ? state.loras.find((l) => l.id === cp) : undefined;
+  return selected?.exportType === "lora";
 }
 
 const CompareContent = memo(function CompareContent({
@@ -473,7 +473,37 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const modelRuntimeHydrated = useChatRuntimeStore(
+    (state) => state.modelRuntimeHydrated,
+  );
+  const modelsError = useChatRuntimeStore((state) => state.modelsError);
+  const [isLoraCompare, setIsLoraCompare] = useState<boolean | null>(null);
+  const usedInventoryFallbackRef = useRef(false);
+
+  // Wait for the full LoRA inventory before choosing the layout, then freeze
+  // that choice. Generalized compare temporarily changes the global checkpoint
+  // as it visits each pane; those later changes must never remount the layout.
+  useEffect(() => {
+    if (modelRuntimeHydrated) {
+      const detected = getIsLoraCompareFromState(
+        useChatRuntimeStore.getState(),
+      );
+      if (usedInventoryFallbackRef.current) {
+        usedInventoryFallbackRef.current = false;
+        setIsLoraCompare(detected);
+      } else {
+        setIsLoraCompare((current) => current ?? detected);
+      }
+      return;
+    }
+    if (!modelsError || isLoraCompare !== null) return;
+    usedInventoryFallbackRef.current = true;
+    setIsLoraCompare(false);
+  }, [modelRuntimeHydrated, modelsError, isLoraCompare]);
+
+  if (isLoraCompare === null) {
+    return <div className="min-h-0 flex-1" aria-busy="true" />;
+  }
 
   return isLoraCompare ? (
     <LoraCompareContent
@@ -694,6 +724,8 @@ function GeneralCompareHeader({
   onModelsChange,
   deleteDisabled,
   side,
+  label,
+  labelTone = "muted",
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -709,6 +741,8 @@ function GeneralCompareHeader({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   side: "left" | "right";
+  label?: string;
+  labelTone?: "muted" | "primary";
 }): ReactElement {
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
@@ -741,8 +775,27 @@ function GeneralCompareHeader({
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
+      {label ? (
+        <span
+          className={cn(
+            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 translate-y-[2px] items-center text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground sm:flex",
+            side === "right" && "ml-auto",
+            labelTone === "primary" && "text-primary",
+          )}
+        >
+          {label}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+function getLoraBaseModel(
+  loraModels: LoraModelOption[],
+  model: CompareModelSelection,
+): string | null {
+  if (!model.isLora) return null;
+  return loraModels.find((lora) => lora.id === model.id)?.baseModel ?? null;
 }
 
 /** General path: any two models, sequential load → generate. */
@@ -777,6 +830,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  const [compareSubmitting, setCompareSubmitting] = useState(false);
+  const compareSubmittingRef = useRef(false);
+  const idleThreadRefreshRef = useRef(0);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -786,6 +842,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+  const initialThreadLookupCompleteRef = useRef(false);
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -800,22 +857,47 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     [model1, model2, onModelsChange],
   );
 
+  const lookupCompareThreadIds = useCallback(async () => {
+    const threads = await listStoredChatThreads({ pairId });
+    return {
+      model1ThreadId: threads.find(
+        (t) => t.modelType === "model1" || t.modelType === "base",
+      )?.id,
+      model2ThreadId: threads.find(
+        (t) => t.modelType === "model2" || t.modelType === "lora",
+      )?.id,
+    };
+  }, [pairId]);
+
+  const applyCompareThreadIds = useCallback(
+    (ids: Awaited<ReturnType<typeof lookupCompareThreadIds>>) => {
+      setModel1ThreadId(ids.model1ThreadId);
+      setModel2ThreadId(ids.model2ThreadId);
+    },
+    [],
+  );
+
+  const handleComparingChange = useCallback((submitting: boolean) => {
+    compareSubmittingRef.current = submitting;
+    if (submitting) idleThreadRefreshRef.current += 1;
+    setCompareSubmitting(submitting);
+  }, []);
+
+  // Resolve the persisted pair independently of submission state. A send can
+  // begin before IndexedDB returns; cancelling that first lookup would make the
+  // panes silently create new threads and lose the existing compare context.
   useEffect(() => {
-    if (compareRunning) return;
     let isActive = true;
-    listStoredChatThreads({ pairId })
-      .then((threads) => {
+    initialThreadLookupCompleteRef.current = false;
+    lookupCompareThreadIds()
+      .then((ids) => {
         if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
+        initialThreadLookupCompleteRef.current = true;
+        // A send may start before IndexedDB returns. Do not replace its
+        // temporary pane IDs mid-submission; the idle refresh below will apply
+        // persisted IDs after that run releases ownership.
+        if (compareSubmittingRef.current) return;
+        applyCompareThreadIds(ids);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -825,7 +907,64 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [applyCompareThreadIds, lookupCompareThreadIds]);
+
+  // Once the initial lookup is known, refresh IDs after completed sends so
+  // newly-created compare threads become the next turn's continuation targets.
+  useEffect(() => {
+    if (
+      compareRunning ||
+      compareSubmitting ||
+      !initialThreadLookupCompleteRef.current
+    ) {
+      return;
+    }
+    const requestId = ++idleThreadRefreshRef.current;
+    let isActive = true;
+    void lookupCompareThreadIds()
+      .then((ids) => {
+        if (
+          !isActive ||
+          compareSubmittingRef.current ||
+          idleThreadRefreshRef.current !== requestId
+        ) {
+          return;
+        }
+        applyCompareThreadIds(ids);
+      })
+      .catch((error) => {
+        if (!isExpectedBackgroundChatStorageError(error)) {
+          throw error;
+        }
+      });
+    return () => {
+      isActive = false;
+    };
+  }, [
+    applyCompareThreadIds,
+    compareRunning,
+    compareSubmitting,
+    lookupCompareThreadIds,
+  ]);
+
+  const model1LoraBase = getLoraBaseModel(loraModels, model1);
+  const model2LoraBase = getLoraBaseModel(loraModels, model2);
+  const model1IsFineTunedFromModel2 =
+    Boolean(model1LoraBase) &&
+    normalizeModelRef(model1LoraBase) === normalizeModelRef(model2.id);
+  const model2IsFineTunedFromModel1 =
+    Boolean(model2LoraBase) &&
+    normalizeModelRef(model2LoraBase) === normalizeModelRef(model1.id);
+  const model1Label = model1IsFineTunedFromModel2
+    ? "Fine-tuned"
+    : model2IsFineTunedFromModel1
+      ? "Base Model"
+      : undefined;
+  const model2Label = model2IsFineTunedFromModel1
+    ? "Fine-tuned"
+    : model1IsFineTunedFromModel2
+      ? "Base Model"
+      : undefined;
 
   return (
     <CompareShell
@@ -837,6 +976,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
+            onComparingChange={handleComparingChange}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
           />
@@ -861,6 +1001,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               value={model1.id}
               selectedConfig={model1.config}
               selectedGgufVariant={model1.ggufVariant}
+              label={model1Label}
+              labelTone={model1Label === "Fine-tuned" ? "primary" : "muted"}
               onValueChange={(id, meta) =>
                 setModel1({
                   id,
@@ -891,6 +1033,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               value={model2.id}
               selectedConfig={model2.config}
               selectedGgufVariant={model2.ggufVariant}
+              label={model2Label}
+              labelTone={model2Label === "Fine-tuned" ? "primary" : "muted"}
               onValueChange={(id, meta) =>
                 setModel2({
                   id,
