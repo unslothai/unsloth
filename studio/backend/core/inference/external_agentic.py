@@ -210,6 +210,7 @@ async def stream_external_local_tool_loop(
             tool_choice = tool_choice,
             stream = True,
         )
+
         # Watcher: Stop may fire while the remote is still in prefill and the
         # iterator is blocked awaiting the next SSE line. Close the generator
         # so the `async for` unblocks immediately instead of waiting for a
