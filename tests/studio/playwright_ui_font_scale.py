@@ -38,7 +38,11 @@ def fail(m):
     raise AssertionError(f"[font-scale] FAIL: {m}")
 
 
-def near(a, b, tol = 0.35):
+def near(
+    a,
+    b,
+    tol = 0.35,
+):
     return a is not None and b is not None and abs(a - b) <= tol
 
 
@@ -86,9 +90,7 @@ def open_appearance(page):
         page.wait_for_timeout(700)
     if page.get_by_role("dialog").count() == 0:
         fail("settings dialog did not open")
-    page.get_by_role("dialog").get_by_role("button").filter(
-        has_text = "Appearance"
-    ).first.click()
+    page.get_by_role("dialog").get_by_role("button").filter(has_text = "Appearance").first.click()
     page.wait_for_timeout(600)
 
 
@@ -153,9 +155,7 @@ def main():
         page.wait_for_timeout(400)
 
         step("overflowing select scrolls its Radix viewport")
-        page.get_by_role("dialog").get_by_role("button").filter(
-            has_text = "Voice"
-        ).first.click()
+        page.get_by_role("dialog").get_by_role("button").filter(has_text = "Voice").first.click()
         page.wait_for_timeout(600)
         page.set_viewport_size({"width": 1440, "height": 480})
         page.locator("[aria-label='Dictation language']").click()
@@ -194,9 +194,7 @@ def main():
         page.wait_for_timeout(400)
 
         step("default restores exactly")
-        page.get_by_role("dialog").get_by_role("button").filter(
-            has_text = "Appearance"
-        ).first.click()
+        page.get_by_role("dialog").get_by_role("button").filter(has_text = "Appearance").first.click()
         page.wait_for_timeout(500)
         set_input(page, "UI font size", DEFAULT)
         final = measure(page)
