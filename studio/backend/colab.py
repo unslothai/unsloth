@@ -222,31 +222,55 @@ def _shareable_link_html(cloudflare_url: str) -> str:
     """
 
 
-def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
-    """Render the Unsloth header + iframe for *port*, with a shareable-link card above
-    when *cloudflare_url* is set. Falls back to serve_kernel_port_as_iframe."""
-    url = get_colab_url(port)
-    logger.info(f"🌐 Unsloth Studio URL: {url}")
-    if cloudflare_url:
-        logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
+def _short_colab_url(url: str, port: int) -> str:
+    """Truncate a Colab proxy URL for display; falls back to the full URL."""
+    try:
+        port_prefix = f"{port}-"
+        idx = url.index(port_prefix)
+        next_dash = url.index("-", idx + len(port_prefix))
+        return url[: next_dash + 1] + "..."
+    except (ValueError, IndexError):
+        return url
 
+
+# Height for serve_kernel_port_as_iframe (~82vh on a 1080p screen, clamped).
+_COLAB_IFRAME_HEIGHT = 900
+
+
+def _embed_kernel_port_iframe(port: int) -> bool:
+    """Embed Studio via Colab's native kernel-port iframe helper.
+
+  Colab's output sanitizer often strips custom ``<iframe>`` tags from
+  ``IPython.display.HTML`` without raising, which leaves a blank cell even
+  though ``display()`` succeeded. The kernel-port helper is the supported
+  embedding path and registers the proxy correctly.
+    """
+    try:
+        from google.colab import output as colab_output
+    except ImportError:
+        return False
+    try:
+        colab_output.serve_kernel_port_as_iframe(
+            port,
+            height = _COLAB_IFRAME_HEIGHT,
+            width = "100%",
+        )
+        return True
+    except Exception as e:
+        logger.info(f"serve_kernel_port_as_iframe failed ({e}); trying HTML iframe.")
+        return False
+
+
+def _embed_html_iframe(url: str, port: int) -> bool:
+    """Fallback embed: raw HTML iframe when the Colab helper is unavailable."""
     try:
         from IPython.display import HTML, display
+    except ImportError:
+        return False
 
-        iframe_id = f"unsloth-studio-{port}"
-
-        # Truncated header URL — best-effort, falls back to full URL.
-        try:
-            port_prefix = f"{port}-"
-            idx = url.index(port_prefix)
-            next_dash = url.index("-", idx + len(port_prefix))
-            short_url = url[: next_dash + 1] + "..."
-        except (ValueError, IndexError):
-            short_url = url
-
-        if cloudflare_url:
-            display(HTML(_shareable_link_html(cloudflare_url)))
-
+    short_url = _short_colab_url(url, port)
+    iframe_id = f"unsloth-studio-{port}"
+    try:
         display(
             HTML(f"""
 <div style="font-family:system-ui,-apple-system,sans-serif;margin:8px 0;
@@ -266,13 +290,36 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
 </div>
 """)
         )
-    except Exception:
-        # Fallback: Colab's built-in helper.
+        return True
+    except Exception as e:
+        logger.info(f"HTML iframe embed failed ({e}).")
+        return False
+
+
+def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
+    """Render the Unsloth link card + iframe for *port*.
+
+    Always shows a clickable link card (``show_link``) so the proxy URL is
+    visible even when iframe embedding fails. Uses Colab's
+    ``serve_kernel_port_as_iframe`` first; raw HTML iframe is the fallback.
+    """
+    url = get_colab_url(port)
+    logger.info(f"🌐 Unsloth Studio URL: {url}")
+    if cloudflare_url:
+        logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
+
+    show_link(port, _url = url)
+
+    if cloudflare_url:
         try:
-            from google.colab import output as colab_output
-            colab_output.serve_kernel_port_as_iframe(port, height = 900, width = "100%")
-        except ImportError:
-            pass
+            from IPython.display import HTML, display
+
+            display(HTML(_shareable_link_html(cloudflare_url)))
+        except Exception as e:
+            logger.info(f"Could not render Cloudflare link card ({e}).")
+
+    if not _embed_kernel_port_iframe(port):
+        _embed_html_iframe(url, port)
 
 
 def start(port: int = 8888, *, cloudflare: bool = False):
