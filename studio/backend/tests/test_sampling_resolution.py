@@ -9,7 +9,7 @@ per-model recommendation (load_inference_config) -> static schema default.
 
 import pytest
 
-from utils.inference import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 from utils.inference import inference_config as ic
 
 _SCHEMA_DEFAULTS = {
@@ -92,11 +92,23 @@ def test_unknown_model_falls_back_to_schema_defaults(monkeypatch):
         ("9.0", None),  # above temperature max (2.0)
         ("-1", None),  # below temperature min (0.0)
         ("   ", None),  # blank
+        ("nan", None),  # NaN would pass a naive range check
+        ("inf", None),  # non-finite
+        ("-inf", None),  # non-finite
     ],
 )
 def test_operator_override_parsing(monkeypatch, raw, expected):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", raw)
     assert ic._operator_sampling_override("temperature") == expected
+
+
+def test_out_of_range_recommendation_is_dropped(monkeypatch):
+    # A malformed model recommendation (out of range) is ignored, so the request keeps the
+    # schema default rather than forwarding a bad value to llama-server.
+    _set_recommended(monkeypatch, {"temperature": 5.0, "top_k": 64})
+    eff = resolve_effective_sampling("some/model", _all_omitted())
+    assert eff["temperature"] == 0.6  # 5.0 is outside [0, 2] -> schema default
+    assert eff["top_k"] == 64  # a valid recommendation is still applied
 
 
 def test_operator_override_top_k_int_and_range(monkeypatch):

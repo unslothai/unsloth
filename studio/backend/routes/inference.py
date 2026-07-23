@@ -7390,7 +7390,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
     unless an operator pins it. Fields with neither a recommendation nor a pin keep their
     existing (schema-default) value.
     """
-    from utils.inference import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
     explicit = {
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
@@ -13057,7 +13057,7 @@ async def anthropic_messages(
     # Fill omitted sampling fields with the per-model recommendation (or an operator
     # UNSLOTH_SAMPLING_* pin); an explicit client value wins unless the operator pinned it.
     # Anthropic sampling fields are Optional, so None already marks "client omitted".
-    from utils.inference import resolve_effective_sampling
+    from utils.inference.inference_config import resolve_effective_sampling
 
     _anthropic_sampling = resolve_effective_sampling(
         getattr(llama_backend, "model_identifier", None) or model_name,

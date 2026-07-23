@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from functools import lru_cache
 import json
+import math
 import os
 import yaml
 import structlog
@@ -190,23 +191,39 @@ _SAMPLING_FIELDS = {
 SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
 
 
+def _clean_sampling_value(field: str, val: Any):
+    """Coerce ``val`` to the field's numeric type when it is a finite, in-range number, else None.
+
+    Rejects bool, non-numeric, NaN/inf, and out-of-range values so neither a bad operator env
+    var nor a malformed model recommendation can reach llama-server. NaN matters because
+    ``nan < lo`` and ``nan > hi`` are both False, so a plain range check would let it through.
+    """
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return None
+    if not math.isfinite(val):
+        return None
+    _env, _default, lo, hi, is_int = _SAMPLING_FIELDS[field]
+    val = int(val) if is_int else float(val)
+    if val < lo or val > hi:
+        return None
+    return val
+
+
 def _operator_sampling_override(field: str):
     """Operator-pinned value for a sampling field from UNSLOTH_SAMPLING_*, or None.
 
-    An unparseable or out-of-range value is ignored so a bad env var can never
+    An unparseable, non-finite, or out-of-range value is ignored so a bad env var can never
     reach llama-server; the field then falls back to the client / recommended value.
     """
-    env_var, _default, lo, hi, is_int = _SAMPLING_FIELDS[field]
-    raw = os.environ.get(env_var)
+    _env, _default, _lo, _hi, is_int = _SAMPLING_FIELDS[field]
+    raw = os.environ.get(_env)
     if raw is None or raw.strip() == "":
         return None
     try:
         val = int(raw) if is_int else float(raw)
     except (TypeError, ValueError):
         return None
-    if val < lo or val > hi:
-        return None
-    return val
+    return _clean_sampling_value(field, val)
 
 
 @lru_cache(maxsize = 128)
@@ -240,9 +257,9 @@ def _recommended_sampling(model_id: str) -> Dict[str, Any]:
     recommended: Dict[str, Any] = {}
     for field in _SAMPLING_FIELDS:
         for source in (model_inference, family):
-            val = source.get(field)
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                recommended[field] = val
+            cleaned = _clean_sampling_value(field, source.get(field))
+            if cleaned is not None:
+                recommended[field] = cleaned
                 break
     return recommended
 
