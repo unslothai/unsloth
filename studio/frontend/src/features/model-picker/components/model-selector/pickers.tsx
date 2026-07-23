@@ -840,7 +840,10 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
         isGguf: true,
-        isVision: hasVision,
+        // Repo-level true only proves that some mmproj exists; the loader may
+        // reject it for this quant/model family. Absence is authoritative
+        // text-only evidence, while presence remains unknown until load.
+        isVision: hasVision ? undefined : false,
       });
     },
     [repoId, isLocalPath, onSelect, sourceOverride, nativeContext, hasVision],
@@ -2767,6 +2770,11 @@ export function HubModelPicker({
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
+    const cachedRepo = cachedGguf.find((repo) =>
+      modelIdsMatchForPicker(repo.repo_id, entry.repoId),
+    );
+    const pinnedVisionHint =
+      cachedRepo?.has_vision === false ? false : undefined;
     return (
       <div key={optionKey} className={downloadedRowShellClassName(isSelected)}>
         <button
@@ -2778,6 +2786,8 @@ export function HubModelPicker({
               isLora: false,
               ggufVariant: entry.quant,
               isDownloaded: true,
+              isGguf: true,
+              isVision: pinnedVisionHint,
             })
           }
           className={cn(
