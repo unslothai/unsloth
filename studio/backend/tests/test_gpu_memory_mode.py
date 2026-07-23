@@ -733,14 +733,48 @@ def test_split_pin_without_mask_only_sets_pci_order(monkeypatch):
 
 
 def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
-    # ROCm: the pin must land in HIP_VISIBLE_DEVICES too, and an inherited ROCR
-    # mask is cleared so the mask can't apply twice (ROCR re-indexes, then HIP
-    # would index into the already-reduced set).
+    # ROCm with the mask sourced from HIP: the pin must land in
+    # HIP_VISIBLE_DEVICES too, and an inherited ROCR mask is cleared so the
+    # mask can't apply twice (ROCR re-indexes, then HIP would index into the
+    # already-reduced set).
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    _rocm_torch_stub(monkeypatch)
+    env = {
+        "CUDA_VISIBLE_DEVICES": "3,1",
+        "HIP_VISIBLE_DEVICES": "3,1",
+        "ROCR_VISIBLE_DEVICES": "3,1",
+    }
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
+    assert env["HIP_VISIBLE_DEVICES"] == "1,3"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_split_pin_preserves_inherited_rocr_mask(monkeypatch):
+    # Mask sourced from ROCR alone (e.g. an AMD SDK parent): the pin must
+    # re-emit at the ROCr layer, not swap to HIP -- clearing ROCR re-exposes
+    # every agent to HSA enumeration, which can segfault at startup on an
+    # unsupported GPU the parent mask was hiding (#7272 review). CUDA carries
+    # the post-ROCR ordinals, mirroring the prefer_rocr emission.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1,3"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_split_pin_keeps_hip_on_windows_despite_stray_rocr(monkeypatch):
+    # On Windows the ROCR var is dead (no ROCr layer) and the resolver never
+    # reads it, so a stray value must not flip the pin to the ROCR emission:
+    # the HIP mask is the only effective selector there.
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
     torch_stub = _types.ModuleType("torch")
     torch_stub.version = _types.SimpleNamespace(hip = "6.0")
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "3,1"}
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "9"}
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
     assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
     assert env["HIP_VISIBLE_DEVICES"] == "1,3"

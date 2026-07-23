@@ -3028,7 +3028,21 @@ class LlamaCppBackend:
             logger.debug("Could not read reported GPU order for split pin: %s", e)
         if order is None:
             order = sorted(inherited)
-        LlamaCppBackend._emit_child_gpu_visibility(env, ",".join(str(i) for i in order))
+        # Re-emit at the layer that produced the mapping. A parent masked only
+        # via ROCR_VISIBLE_DEVICES hides agents at the driver layer, and the
+        # default HIP re-emission clears that mask -- HSA then enumerates every
+        # agent again and can segfault at startup on an unsupported GPU the
+        # parent was hiding (the crash prefer_rocr exists to avoid). Linux-only,
+        # mirroring _resolve_visible_physical_ids: on Windows a stray ROCR var
+        # is dead and was not the mapping's source.
+        prefer_rocr = (
+            sys.platform != "win32"
+            and env.get("HIP_VISIBLE_DEVICES") is None
+            and env.get("ROCR_VISIBLE_DEVICES") is not None
+        )
+        LlamaCppBackend._emit_child_gpu_visibility(
+            env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
+        )
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
