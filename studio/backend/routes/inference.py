@@ -6812,10 +6812,7 @@ async def _proxy_to_external_provider(
             payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload)
         )
         # A zero tool-call budget means tools are disabled for this turn.
-        and (
-            payload.max_tool_calls_per_message is None
-            or payload.max_tool_calls_per_message > 0
-        )
+        and (payload.max_tool_calls_per_message is None or payload.max_tool_calls_per_message > 0)
     )
 
     async def _stream_local_tools():
