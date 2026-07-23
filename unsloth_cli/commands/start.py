@@ -1659,8 +1659,8 @@ def _wsl_windows_user_profile(executable: str) -> Path:
     return Path(translated)
 
 
-def _codex_source_home() -> Path:
-    configured = os.environ.get("CODEX_HOME")
+def _codex_source_home(*, ignore_configured: bool = False) -> Path:
+    configured = None if ignore_configured else os.environ.get("CODEX_HOME")
     if configured:
         if _wsl_windows_executable(["codex"]) and _looks_like_path(configured):
             if not configured.startswith("/"):
@@ -1692,15 +1692,27 @@ def _remove_overlay_entry(path: Path) -> None:
 
 def write_codex_parent_overlay(overlay: Path) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
-    source_home = _codex_source_home()
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
 
     manifest_path = overlay / _CODEX_PARENT_OVERLAY_MANIFEST
-    source_key = str(source_home.resolve(strict = False))
     try:
         manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         manifest = None
+    source_home = _codex_source_home()
+    overlay_key = str(overlay.resolve(strict = False))
+    source_key = str(source_home.resolve(strict = False))
+    if source_key == overlay_key:
+        previous_source = manifest.get("source_home") if isinstance(manifest, dict) else None
+        if isinstance(previous_source, str) and previous_source:
+            candidate = Path(previous_source).expanduser()
+            if str(candidate.resolve(strict = False)) != overlay_key:
+                source_home = candidate
+            else:
+                source_home = _codex_source_home(ignore_configured = True)
+        else:
+            source_home = _codex_source_home(ignore_configured = True)
+        source_key = str(source_home.resolve(strict = False))
     same_source = isinstance(manifest, dict) and manifest.get("source_home") == source_key
     if same_source:
         managed_entries = manifest.get("entries", [])

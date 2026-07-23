@@ -690,6 +690,22 @@ def test_write_codex_parent_overlay_refreshes_reused_entries(tmp_path, monkeypat
     assert not (overlay / "old-only.toml").exists()
 
 
+def test_write_codex_parent_overlay_does_not_use_itself_as_source(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"auth": "cloud"}\n')
+    overlay_path = tmp_path / "managed" / "parent"
+    monkeypatch.setenv("CODEX_HOME", str(source))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+
+    monkeypatch.setenv("CODEX_HOME", str(overlay))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+
+    assert (overlay / "auth.json").read_text() == '{"auth": "cloud"}\n'
+    manifest = json.loads((overlay / start._CODEX_PARENT_OVERLAY_MANIFEST).read_text())
+    assert manifest["source_home"] == str(source)
+
+
 def test_write_codex_parent_overlay_refreshes_fallback_copies(tmp_path, monkeypatch):
     source = tmp_path / "user-codex"
     source.mkdir()
