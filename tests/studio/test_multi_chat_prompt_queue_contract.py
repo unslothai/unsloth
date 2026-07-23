@@ -20,6 +20,12 @@ APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "ut
 RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").read_text(
     encoding = "utf-8"
 )
+CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(
+    encoding = "utf-8"
+)
+QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
+    encoding = "utf-8"
+)
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -115,6 +121,18 @@ def test_compare_completion_wait_is_scoped_to_its_own_thread_ids():
     assert "getCompareThreadIds" in compare
     assert "threadIds.some((threadId) => runningByThreadId[threadId])" in compare
     assert "Object.values(runningByThreadId).some(Boolean)" in compare
+
+
+def test_compare_wait_resolves_when_pre_stream_validation_fails():
+    compare = _between(
+        SHARED_COMPOSER,
+        "export function RegisterCompareHandle(",
+        "export function SharedComposer(",
+    )
+    assert "PRE_STREAM_RUN_FAILED_EVENT" in compare
+    assert "getCompareThreadIds().includes(failedThreadId)" in compare
+    assert "notifyPreStreamRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
+    assert "notifyPromptQueueRunFailed(threadId)" in QUEUE_BOUNDARY
 
 
 def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
