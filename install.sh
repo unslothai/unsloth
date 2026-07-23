@@ -257,6 +257,30 @@ run_install_cmd_retry() {
     done
 }
 
+# True when the runtime target is gfx906 (MI50/Radeon VII): the prebuilt AMD
+# bitsandbytes wheel carries no gfx906 kernels, and force-reinstalling it would
+# clobber a user's source-built bnb (the only 4-bit path on this arch) on every
+# `studio update`. So skip the auto-install and leave whatever bnb is present.
+# _gfx906_target is set during torch-index resolution; also honor an explicit
+# UNSLOTH_ROCM_GFX_ARCH so a pinned-index install still skips. The override is
+# normalized (gfx906:sramecc-:xnack- -> gfx906) so a copied HIP gcnArchName counts.
+_is_gfx906_bnb_skip() {
+    [ "${_gfx906_target:-false}" = true ] && return 0
+    _bnb_gfx_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    _bnb_gfx_env=${_bnb_gfx_env%%:*}
+    [ "$_bnb_gfx_env" = "gfx906" ] && return 0
+    # A pinned index (UNSLOTH_TORCH_INDEX_URL/_FAMILY) skips the reroute block that
+    # sets _gfx906_target, so a real gfx906 host with a pinned rocm6.3 index and no
+    # UNSLOTH_ROCM_GFX_ARCH would otherwise clobber a source-built bnb. Probe here
+    # in that gap; skip only when gfx906 is the SOLE distinct arch (mixed hosts
+    # opt in via the env var, mirroring the reroute block's de-dup rule).
+    if [ -z "$_bnb_gfx_env" ] && [ "${_torch_index_pinned:-false}" = true ]; then
+        _bnb_gfx_probe=$(_probe_amd_gfx_arch | awk 'NF && !seen[$0]++')
+        [ "$_bnb_gfx_probe" = "gfx906" ] && return 0
+    fi
+    return 1
+}
+
 # Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
 # wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
 # NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
@@ -3208,10 +3232,20 @@ case "$_torch_index_leaf" in
                     if (n > 0) print vals[idx]
                 }')
         fi
+        # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
+        # MI50 / Radeon VII path and must win over Strix probe-order detection on a
+        # mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set.
+        # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) and
+        # trim whitespace (mirrors the Python .strip()) so the feature-flag suffix or
+        # a stray newline does not defeat the exact gfx906 comparisons below.
+        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        _gfx906_env=${_gfx906_env%%:*}
         _strix_gfx=""
-        case "$_runtime_gfx" in
-            gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
-        esac
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
+            esac
+        fi
         # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
         # arch build (rocm7.13) would be a downgrade rather than a rescue.
         if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
@@ -3238,6 +3272,57 @@ case "$_torch_index_leaf" in
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
+        fi
+        # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
+        # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
+        # dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read for gfx906",
+        # ROCm/TheRock#1844), so a rocm6.4+/7.x index installs a torch that fails
+        # at the first BLAS call. The rocm6.3 index is the last one whose wheels
+        # run on gfx906 (torch 2.7.0 verified on MI50 32GB; up to 2.9 in community
+        # use). Reroute any newer picked index; leave rocm6.0-6.3 alone.
+        #
+        # Target resolution: an explicit UNSLOTH_ROCM_GFX_ARCH wins (lets a host
+        # whose rocminfo/amd-smi emit no gfx token still opt in; _gfx906_env was
+        # lowercased above, before the Strix block it suppresses). Otherwise only
+        # treat gfx906 as the target when it is the SOLE distinct arch present:
+        # _gfx_all is de-duplicated by visible index, which loses per-device
+        # ordinals on a mixed host, so a non-gfx906 selection must never be
+        # downgraded to rocm6.3 -- such hosts set UNSLOTH_ROCM_GFX_ARCH to opt in.
+        _gfx906_target=false
+        if [ -n "$_gfx906_env" ]; then
+            [ "$_gfx906_env" = "gfx906" ] && _gfx906_target=true
+        elif [ -n "$_gfx_all" ]; then
+            _gfx906_uniq=$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++')
+            [ "$_gfx906_uniq" = "gfx906" ] && _gfx906_target=true
+        fi
+        # gfx906 always trains from the PyTorch rocm6.3 wheels, never the Radeon repo
+        # (repo.radeon.com wheels carry no gfx906 BLAS kernels). Clear the Radeon
+        # marketing-name flag as soon as gfx906 is the target -- even when the host
+        # already picks rocm6.0-6.3 and the reroute below is a no-op -- so a Radeon VII
+        # does not divert to the radeon branch on those versions.
+        if [ "$_gfx906_target" = true ]; then
+            _amd_gpu_radeon=false
+        fi
+        if [ "$_gfx906_target" = true ] && ! _rocm_leaf_below "$_torch_index_leaf" 6 4; then
+            echo "" >&2
+            echo "  [WARN] gfx906 (MI50 / Radeon VII / Vega 20) detected -- routing torch to the" >&2
+            echo "  [WARN] rocm6.3 index: it is the last wheel family that runs on gfx906 (newer" >&2
+            echo "  [WARN] rocm wheels ship without gfx906 BLAS kernels and fail at first use)." >&2
+            echo "  [WARN] gfx906 is a community-maintained legacy path: 16-bit LoRA and full" >&2
+            echo "  [WARN] finetuning work out of the box; bitsandbytes 4-bit QLoRA requires a" >&2
+            echo "  [WARN] source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd)." >&2
+            echo "" >&2
+            _amd_gfx906_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+            while [ "${_amd_gfx906_base%/}" != "$_amd_gfx906_base" ]; do
+                _amd_gfx906_base="${_amd_gfx906_base%/}"
+            done
+            TORCH_INDEX_URL="${_amd_gfx906_base}/rocm6.3"
+            # Reset to the default (<2.11) window: a rocm7.2 pick raised the floor
+            # to 2.11 above, which the rocm6.3 index (torch <= 2.9.x) cannot satisfy.
+            TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+            # (_amd_gpu_radeon already cleared above for every gfx906 target.)
         fi
         ;;
 esac
@@ -3504,7 +3589,11 @@ if [ "$_MIGRATED" = true ]; then
     # existing ROCm installs gain the AMD bitsandbytes build without a
     # fresh reinstall.
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
-        _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        if _is_gfx906_bnb_skip; then
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+        else
+            _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        fi
         # Repair ROCm torch if overwritten during migrated install
         _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
         if [ -z "$_has_hip" ]; then
@@ -3701,7 +3790,11 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # host stays in GGUF-only mode rather than pulling in bitsandbytes,
     # which is only useful once torch is present for training.
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
-        _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        if _is_gfx906_bnb_skip; then
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+        else
+            _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        fi
     fi
     # Fresh: Step 2 - install unsloth, preserving the torch Step 1 installed
     tauri_log "STEP" "Installing Unsloth"
