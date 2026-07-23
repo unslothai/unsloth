@@ -3859,15 +3859,16 @@ def _estimate_gguf_required_gb(
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
-        total_bytes = 0
         main = getattr(config, "gguf_file", None)
+        main_bytes = 0
         if main and Path(main).is_file():
-            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
-            f = getattr(config, attr, None)
-            if f and Path(f).is_file():
-                total_bytes += Path(f).stat().st_size
-        if total_bytes > 0:
+            main_bytes = LlamaCppBackend._get_gguf_size_bytes(str(main))
+        if main_bytes > 0:
+            total_bytes = main_bytes
+            for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+                f = getattr(config, attr, None)
+                if f and Path(f).is_file():
+                    total_bytes += Path(f).stat().st_size
             return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
@@ -3884,7 +3885,9 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = bool(has_vision or getattr(config, "has_audio_input", False)),
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -4566,6 +4569,7 @@ async def _load_model_impl(
             _common_load_kwargs = dict(
                 model_identifier = config.identifier,
                 is_vision = config.is_vision,
+                has_audio_input = config.has_audio_input,
                 n_ctx = request.max_seq_length,
                 chat_template_override = effective_chat_template_override,
                 cache_type_kv = request.cache_type_kv,
@@ -4584,6 +4588,7 @@ async def _load_model_impl(
                     hf_repo = config.gguf_hf_repo,
                     hf_variant = config.gguf_variant,
                     hf_token = request.hf_token,
+                    mmproj_path = config.gguf_mmproj_file,
                 )
             else:
                 # Local mode: llama-server loads via -m <path>

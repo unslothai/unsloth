@@ -190,6 +190,9 @@ class TestStripMmprojArgs:
 
 def test_audio_only_projector_is_budgeted_and_passed_to_llama_server():
     source = inspect.getsource(LlamaCppBackend.load_model)
+    assert "(is_vision or has_audio_input)" in source
+    assert "read_mmproj_vision_capability" in source
+    assert "projector_has_vision is not False" in source
     assert "effective_uses_mmproj = effective_is_vision or projector_has_audio" in source
     assert "if effective_uses_mmproj" in source
     assert "if launch_mmproj_path and effective_uses_mmproj:" in source

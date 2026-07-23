@@ -6151,6 +6151,7 @@ class LlamaCppBackend:
         # Common
         model_identifier: str,
         is_vision: bool = False,
+        has_audio_input: bool = False,
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
@@ -6188,6 +6189,7 @@ class LlamaCppBackend:
             "hf_token": hf_token,
             "model_identifier": model_identifier,
             "is_vision": is_vision,
+            "has_audio_input": has_audio_input,
             "n_ctx": n_ctx,
             "chat_template_override": chat_template_override,
             "cache_type_kv": cache_type_kv,
@@ -6293,8 +6295,12 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                    # Auto-download mmproj for vision models unless opted out.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
+                    # Vision and audio-input GGUFs both need their projector.
+                    if (
+                        (is_vision or has_audio_input)
+                        and not mmproj_path
+                        and not extra_args_disable_mmproj(extra_args)
+                    ):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -6540,20 +6546,30 @@ class LlamaCppBackend:
                         mmproj_path = mmproj_path,
                     )
                 projector_has_audio = False
+                projector_has_vision = None
                 if launch_mmproj_path:
                     try:
                         from utils.models.gguf_metadata import (
                             read_mmproj_audio_capability,
+                            read_mmproj_vision_capability,
                         )
                         projector_has_audio = (
                             read_mmproj_audio_capability(launch_mmproj_path) is True
                         )
+                        projector_has_vision = read_mmproj_vision_capability(
+                            launch_mmproj_path
+                        )
                     except Exception as e:
-                        logger.debug(f"mmproj audio-capability read failed: {e}")
+                        logger.debug(f"mmproj capability read failed: {e}")
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
-                # GGUF into vision mode.
-                effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                # GGUF into vision mode. Explicit projector metadata can still
+                # narrow a coarse repo-level vision classification.
+                effective_is_vision = (
+                    bool(launch_mmproj_path)
+                    and bool(is_vision)
+                    and projector_has_vision is not False
+                )
                 effective_uses_mmproj = effective_is_vision or projector_has_audio
                 if is_vision and not effective_is_vision:
                     logger.warning(

@@ -928,6 +928,33 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
 
+    def test_cached_remote_projector_does_not_hide_main_download(self):
+        import tempfile
+        import utils.models.model_config as mc
+
+        with tempfile.TemporaryDirectory() as d:
+            mmproj = Path(d) / "mmproj.gguf"
+            mmproj.write_bytes(b"x" * 1000)
+            cfg = SimpleNamespace(
+                gguf_file = None,
+                gguf_mmproj_file = str(mmproj),
+                gguf_mtp_file = None,
+                gguf_hf_repo = "org/audio-repo",
+                gguf_variant = "Q4_K_M",
+                has_audio_input = True,
+            )
+            variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+            with (
+                patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+                patch.object(
+                    self.route, "_remote_gguf_companion_bytes", return_value = 1000
+                ) as comp,
+            ):
+                gb = self.route._estimate_gguf_required_gb(cfg)
+
+        self.assertAlmostEqual(gb, (10 * 1024**3 + 1000) / (1024**3), places = 9)
+        self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(
