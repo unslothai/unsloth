@@ -401,6 +401,7 @@ def _run_llama_phase(
     pin_release_tag: Optional[str],
     set_progress,
     force_cpu: bool = False,
+    llama_backend: Optional[str] = None,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -452,14 +453,17 @@ def _run_llama_phase(
         # updates. A natural fallback (or a legacy marker without the flag) heals to GPU (#6097).
         if force_cpu:
             cmd.append("--force-cpu")
+        if llama_backend == "vulkan":
+            cmd.extend(["--llama-backend", "vulkan"])
         logger.info("llama update: installing", cmd = " ".join(cmd))
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
         # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm
         # box would otherwise re-route and silently replace the Vulkan build.
-        # Re-assert it via the same env flag setup uses (mirrors
+        # Re-assert it via the same env/CLI flags setup uses (mirrors
         # _rocm_install_args).
-        if asset and "vulkan" in asset.lower():
+        if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
+            env["UNSLOTH_LLAMA_BACKEND"] = "vulkan"
         _flow.stream_installer(
             cmd,
             env,
@@ -566,6 +570,9 @@ def _plan_llama_phase() -> dict:
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
         force_cpu = bool(marker.get("force_cpu"))
+        llama_backend = marker.get("llama_backend")
+        if llama_backend == "vulkan" or (asset and "vulkan" in str(asset).lower()):
+            llama_backend = "vulkan"
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -609,6 +616,7 @@ def _plan_llama_phase() -> dict:
         asset = (res or {}).get("asset")
         # Source builds carry no forced-CPU marker, so nothing to preserve here.
         force_cpu = False
+        llama_backend = None
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -631,6 +639,7 @@ def _plan_llama_phase() -> dict:
             "pin_release_tag": pin_release_tag,
             "from_tag": from_tag,
             "force_cpu": force_cpu,
+            "llama_backend": llama_backend,
         }
     }
 
@@ -683,6 +692,7 @@ def start_update() -> dict:
                         llama_spec["pin_release_tag"],
                         set_progress,
                         force_cpu = llama_spec.get("force_cpu", False),
+                        llama_backend = llama_spec.get("llama_backend"),
                     )
                 )
                 if llama_spec
