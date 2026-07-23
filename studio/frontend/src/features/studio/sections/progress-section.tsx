@@ -258,21 +258,21 @@ export function ProgressSection({
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${phaseColors[data.phase]}`}
+              className={`rounded-full px-2.5 py-1 text-ui-10 font-semibold ${phaseColors[data.phase]}`}
             >
               {t(phaseLabelKeys[data.phase])}
             </span>
             {data.projectName && (
-              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80">
                 {data.projectName}
               </span>
             )}
-            <span className="text-[10px] tabular-nums text-muted-foreground">
+            <span className="text-ui-10 tabular-nums text-muted-foreground">
               {t("studio.progress.epoch", {
                 value: formatNumber(data.currentEpoch, 2),
               })}
             </span>
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+            <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium tabular-nums text-muted-foreground">
               {t("studio.progress.percentComplete", { percent: pct })}
             </span>
           </div>
@@ -394,7 +394,7 @@ function LiveGpuPanel({
             <select
               value={selectedGpu}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -409,7 +409,7 @@ function LiveGpuPanel({
             </select>
           )}
         </div>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-ui-11 text-muted-foreground">
           {t("studio.progress.live")}
         </span>
       </div>
@@ -527,7 +527,7 @@ function ConfigPopoverButton({
           <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                 {group.section}
               </p>
               {group.rows.map(([label, value]) => (
@@ -628,7 +628,7 @@ function MilestoneCallout({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
-            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <p className="text-ui-10 font-medium uppercase tracking-[0.12em] text-muted-foreground">
               {t("studio.training.milestone")}
             </p>
           )}
@@ -644,7 +644,7 @@ function MilestoneCallout({
           </p>
         </div>
         {!showCompletedHint && (
-          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-ui-10 font-medium text-muted-foreground">
             50%+
           </span>
         )}
@@ -674,7 +674,7 @@ function MetricStat({
 }): ReactElement {
   return (
     <div className="min-w-0">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-ui-11 text-muted-foreground">{label}</p>
       <p
         className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
       >

@@ -651,7 +651,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           handleName="base"
           header={
             <div className="shrink-0 px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                 Base Model
               </span>
             </div>
@@ -666,7 +666,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
             <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+              <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
             </div>
@@ -1279,7 +1279,7 @@ function ProjectLanding({
                   className="size-6.5"
                 />
               </span>
-              <h1 className="min-w-0 flex-1 truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
+              <h1 className="min-w-0 flex-1 truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
               <DropdownMenu>
@@ -1349,7 +1349,7 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("chats")}
                 data-active={projectTab === "chats"}
-                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Chats
               </button>
@@ -1357,7 +1357,7 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("sources")}
                 data-active={projectTab === "sources"}
-                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="h-10 rounded-full px-5 text-ui-14 font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
               </button>
@@ -1395,9 +1395,17 @@ function ProjectLanding({
                               setRenameDraft(event.target.value)
                             }
                             onKeyDown={(event) => {
+                              // Ignore keydowns fired mid-IME-composition (CJK)
+                              // so a candidate-confirming Enter or candidate-
+                              // cancelling Escape does not commit/cancel the
+                              // rename. Guard before the key branch so Escape is
+                              // covered too (isComposing on WebKit, 229 on Chromium).
+                              if (
+                                event.nativeEvent.isComposing ||
+                                event.keyCode === 229
+                              )
+                                return;
                               if (event.key === "Enter") {
-                                if (event.nativeEvent.isComposing || event.keyCode === 229)
-                                  return;
                                 event.preventDefault();
                                 skipRenameBlurRef.current = true;
                                 void commitRename(item);
@@ -1417,7 +1425,7 @@ function ProjectLanding({
                             onFocus={(event) => event.currentTarget.select()}
                             maxLength={120}
                             aria-label="Rename chat"
-                            className="w-full border-0 bg-transparent text-[15px] font-semibold leading-5 text-foreground outline-none"
+                            className="w-full border-0 bg-transparent text-ui-15 font-semibold leading-5 text-foreground outline-none"
                           />
                         </div>
                       </div>
@@ -1442,11 +1450,11 @@ function ProjectLanding({
                         className="flex min-h-[58px] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                          <div className="truncate text-ui-15 font-semibold leading-5 text-foreground">
                             {displayTitle}
                           </div>
                         </div>
-                        <span className="shrink-0 text-[14px] text-muted-foreground transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
+                        <span className="shrink-0 text-ui-14 text-muted-foreground transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
                           {preview?.date ??
                             formatProjectChatDate(item.createdAt)}
                         </span>
@@ -2268,9 +2276,9 @@ export function ChatPage({
                 "It'll be ready to load once the current model finishes.",
             });
           } else if (outcome === "conflict") {
-            toast.info("Resume this download from the Hub", {
+            toast.info("Resume this download from Models", {
               description:
-                "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
+                "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
             });
           } else if (outcome === "busy") {
             toast.info("Download already in progress", {
@@ -2389,9 +2397,9 @@ export function ChatPage({
         // the conflict just recorded by requestStart (which the toast points the
         // user to); resolving it from the Hub completes the download and this
         // surface's onComplete auto-loads, mirroring the "started" branch.
-        toast.info("Resume this download from the Hub", {
+        toast.info("Resume this download from Models", {
           description:
-            "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
+            "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
         });
         return;
       }
@@ -3141,7 +3149,7 @@ export function ChatPage({
               />
             )}
             {incognito && view.mode === "single" && (
-              <div className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
+              <div className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-ui-13 text-primary">
                 <HugeiconsIcon
                   icon={BubbleChatTemporaryIcon}
                   strokeWidth={2}
@@ -3153,7 +3161,7 @@ export function ChatPage({
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
-                className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-1.5 self-center text-[13.5px] tracking-nav text-muted-foreground"
+                className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-1.5 self-center text-ui-13p5 tracking-nav text-muted-foreground"
               >
                 <ProjectSwitcher
                   currentProject={currentProject}

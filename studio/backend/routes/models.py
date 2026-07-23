@@ -224,11 +224,8 @@ def derive_model_type(
 
 def _resolve_hf_cache_dir() -> Path:
     """Resolve local HF cache root used by hub downloads."""
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        return Path(HF_HUB_CACHE)
-    except Exception:
-        return Path.home() / ".cache" / "huggingface" / "hub"
+    from utils.hf_cache_settings import get_hf_cache_paths
+    return get_hf_cache_paths().hub_cache
 
 
 def _is_model_directory(d: Path) -> bool:
@@ -370,9 +367,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     return found
 
 
-def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
+def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
+
+    from hub.utils import inventory_scan as hf_cache_scan
 
     found: List[LocalModelInfo] = []
     for repo_dir in cache_dir.glob("models--*"):
@@ -389,13 +388,21 @@ def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
         except OSError:
             updated_at = None
 
+        partial = hf_cache_scan.is_snapshot_partial("model", model_id, repo_dir)
+        partial = partial or hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
+
+        load_id = model_id
+        if not active_cache:
+            load_id = _resolve_hf_cache_realpath(repo_dir) or str(repo_dir.resolve())
         found.append(
             LocalModelInfo(
-                id = model_id,
+                id = load_id,
                 model_id = model_id,
                 display_name = model_id.split("/")[-1],
-                path = str(repo_dir),
+                path = load_id if not active_cache else str(repo_dir),
                 source = "hf_cache",
+                active_cache = active_cache,
+                partial = partial,
                 updated_at = updated_at,
             ),
         )
@@ -776,26 +783,34 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         legacy_hf_cache_dir,
         lmstudio_model_dirs,
     )
+    from utils.hf_cache_settings import known_hf_hub_caches
 
     hf_cache_dir = _resolve_hf_cache_dir()
     legacy_hf = legacy_hf_cache_dir()
     hf_default = hf_default_cache_dir()
     lm_dirs = lmstudio_model_dirs()
 
-    local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
-
-    # Resolve once; an inaccessible aux cache must skip that scan, not 500.
-    hf_cache_real = _safe_resolve(hf_cache_dir)
-    legacy_real = _safe_resolve(legacy_hf)
-    default_real = _safe_resolve(hf_default)
-
-    # Scan legacy Unsloth HF cache for backward compatibility.
-    if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
-        local_models += _scan_hf_cache(legacy_hf)
-
-    # Scan HF system default cache (may differ under env overrides).
-    if _safe_is_dir(hf_default) and default_real != hf_cache_real and default_real != legacy_real:
-        local_models += _scan_hf_cache(hf_default)
+    local_models = _scan_models_dir(models_root)
+    active_cache_real = _safe_resolve(hf_cache_dir)
+    active_cache_key = os.path.normcase(active_cache_real) if active_cache_real else None
+    seen_hf: set[str] = set()
+    for cache_dir in (
+        hf_cache_dir,
+        *known_hf_hub_caches(),
+        legacy_hf,
+        hf_default,
+    ):
+        cache_real = _safe_resolve(cache_dir)
+        if cache_real is None:
+            continue
+        cache_key = os.path.normcase(str(cache_real))
+        if cache_key in seen_hf:
+            continue
+        seen_hf.add(cache_key)
+        local_models += _scan_hf_cache(
+            cache_dir,
+            active_cache = cache_key == active_cache_key,
+        )
 
     # Scan LM Studio directories.
     for lm_dir in lm_dirs:
@@ -817,7 +832,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                 m
                 for m in (
                     _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + _scan_hf_cache(folder_path)
+                    + _scan_hf_cache(folder_path, active_cache = False)
                     + _scan_lmstudio_dir(folder_path)
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -838,8 +853,18 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     # even when the model is also in the HF cache.
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
-        key = f"{model.id}\x00custom" if model.source == "custom" else model.id
-        if key not in deduped:
+        semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
+        key = f"{semantic_id}\x00custom" if model.source == "custom" else semantic_id
+        existing = deduped.get(key)
+        prefer_model = existing is None
+        if existing is not None and model.source == existing.source == "hf_cache":
+            if model.partial != existing.partial:
+                prefer_model = not model.partial
+            elif bool(model.active_cache) != bool(existing.active_cache):
+                prefer_model = bool(model.active_cache)
+            else:
+                prefer_model = (model.updated_at or 0) > (existing.updated_at or 0)
+        if prefer_model:
             deduped[key] = model
 
     models = sorted(
@@ -1202,10 +1227,7 @@ def _build_browse_allowlist(
         legacy_hf_cache_dir,
         well_known_model_dirs,
     )
-    from utils.paths.external_media import (
-        linux_run_media_mount_roots,
-        windows_drive_roots,
-    )
+    from utils.paths import external_media
     from storage.studio_db import list_scan_folders
 
     candidates: list[Path] = []
@@ -1222,9 +1244,12 @@ def _build_browse_allowlist(
 
     _add(Path.home())
     if media_roots is None:
-        media_roots = linux_run_media_mount_roots()
+        media_roots = [
+            *external_media.linux_run_media_mount_roots(),
+            *external_media.macos_volume_roots(),
+        ]
     if drive_roots is None:
-        drive_roots = windows_drive_roots()
+        drive_roots = external_media.windows_drive_roots()
     for p in media_roots:
         _add(p)
     for p in drive_roots:
@@ -1502,10 +1527,7 @@ def browse_folders(
     then hidden (if ``show_hidden=true``).
     """
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
-    from utils.paths.external_media import (
-        linux_run_media_mount_roots,
-        windows_drive_roots,
-    )
+    from utils.paths import external_media
     from storage.studio_db import (
         contains_sensitive_path_component,
         is_denied_system_path,
@@ -1514,8 +1536,11 @@ def browse_folders(
 
     # Probe removable-media and Windows drive roots once; the allowlist and
     # chips reuse the result so a disconnected mapped drive isn't scanned twice.
-    media_roots = linux_run_media_mount_roots()
-    drive_roots = windows_drive_roots()
+    media_roots = [
+        *external_media.linux_run_media_mount_roots(),
+        *external_media.macos_volume_roots(),
+    ]
+    drive_roots = external_media.windows_drive_roots()
     # Build once; the sandbox check and suggestion chips share it.
     allowed_roots = _build_browse_allowlist(media_roots, drive_roots)
 
@@ -2034,19 +2059,19 @@ async def discard_remote_code_download(
 
     # Never delete a model that is loaded for inference.
     try:
+        from hub.services.models.deletion import _loaded_id_matches_repo
         from routes.inference import get_llama_cpp_backend
+
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded = llama_backend.model_identifier.lower()
-            if loaded == model_name.lower() or loaded.startswith(model_name.lower()):
+            if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
                 return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
     try:
         inference_backend = get_inference_backend()
         if inference_backend.active_model_name:
-            active = inference_backend.active_model_name.lower()
-            if active == model_name.lower() or active.startswith(model_name.lower()):
+            if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
                 return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
@@ -2588,13 +2613,10 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
         if is_local:
             roots = [Path(repo_id)]
         else:
-            from huggingface_hub import constants as hf_constants
-
+            from hub.utils.hf_cache_state import iter_repo_cache_dirs
             if not _is_valid_repo_id(repo_id):
                 return None
-            cache_dir = Path(hf_constants.HF_HUB_CACHE)
-            target = f"models--{repo_id.replace('/', '--')}".lower()
-            roots = [e for e in cache_dir.iterdir() if e.name.lower() == target]
+            roots = list(iter_repo_cache_dirs("model", repo_id))
 
         for root in roots:
             for f in _iter_gguf_paths(root):
@@ -2623,18 +2645,15 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
         if is_local:
             roots = [Path(repo_id)]
         else:
-            from huggingface_hub import constants as hf_constants
+            from hub.utils.hf_cache_state import iter_repo_cache_dirs
 
             if not _is_valid_repo_id(repo_id):
                 return None, 0
-            cache_dir = Path(hf_constants.HF_HUB_CACHE)
-            target = f"models--{repo_id.replace('/', '--')}".lower()
             roots = []
-            for entry in cache_dir.iterdir():
-                if entry.name.lower() == target:
-                    snaps = entry / "snapshots"
-                    if snaps.is_dir():
-                        roots.extend(s for s in snaps.iterdir() if s.is_dir())
+            for entry in iter_repo_cache_dirs("model", repo_id):
+                snaps = entry / "snapshots"
+                if snaps.is_dir():
+                    roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
         want = _normalized_quant_label(quant)
         best_total = 0
@@ -2734,6 +2753,8 @@ async def get_gguf_variants(
     repo_id: str = Query(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
+    prefer_local_cache: bool = False,
+    local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -2745,9 +2766,16 @@ async def get_gguf_variants(
 
         response = await hub_gguf_variants.get_gguf_variants_response(
             repo_id,
+            prefer_local_cache = prefer_local_cache,
+            local_path = local_path,
             hf_token = hf_token,
         )
-        local = is_local_path(repo_id)
+        context_model = (
+            local_path
+            if prefer_local_cache and local_path and is_local_path(local_path)
+            else repo_id
+        )
+        local = is_local_path(context_model)
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -2769,7 +2797,7 @@ async def get_gguf_variants(
             # The header walk reads tokenizer arrays on dense models (tens of
             # ms per uncached file); keep it off the event loop.
             context_length = await asyncio.to_thread(
-                _read_native_context_length, repo_id, is_local = local
+                _read_native_context_length, context_model, is_local = local
             ),
         )
     except HTTPException:
@@ -2787,69 +2815,17 @@ async def get_gguf_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (e.g. UD-TQ1_0)"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Download progress from cached GGUF files for a specific variant.
-
-    Tracks completed shards in snapshots and in-progress (.incomplete)
-    downloads in the blobs directory.
-    """
-    try:
-        if not _is_valid_repo_id(repo_id):
-            return {
-                "downloaded_bytes": 0,
-                "expected_bytes": expected_bytes,
-                "progress": 0,
-            }
-
-        from huggingface_hub import constants as hf_constants
-
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        target = f"models--{repo_id.replace('/', '--')}".lower()
-        variant_lower = variant.lower().replace("-", "").replace("_", "")
-        downloaded_bytes = 0
-        in_progress_bytes = 0
-        for entry in cache_dir.iterdir():
-            if entry.name.lower() == target:
-                # Completed .gguf files for this variant in snapshots.
-                # Exclude mmproj so a vision adapter can't satisfy a same-label
-                # main variant (e.g. mmproj-F16 vs an F16 weight).
-                for f in _iter_gguf_paths(entry):
-                    if _is_mmproj_filename(f.name):
-                        continue
-                    rel = f.relative_to(entry).as_posix()
-                    quant = _extract_quant_label(rel)
-                    if _is_big_endian_gguf_path(rel, quant):
-                        continue
-                    rel_key = rel.lower().replace("-", "").replace("_", "")
-                    if not variant_lower or variant_lower in rel_key:
-                        try:
-                            downloaded_bytes += f.stat().st_size
-                        except OSError:
-                            continue  # broken symlink / unreadable: skip
-                # In-progress (.incomplete) downloads in blobs.
-                blobs_dir = entry / "blobs"
-                if blobs_dir.is_dir():
-                    for f in blobs_dir.iterdir():
-                        if f.is_file() and f.name.endswith(".incomplete"):
-                            try:
-                                in_progress_bytes += f.stat().st_size
-                            except OSError:
-                                continue
-                break
-
-        total_progress_bytes = downloaded_bytes + in_progress_bytes
-        progress = min(total_progress_bytes / expected_bytes, 0.99) if expected_bytes > 0 else 0
-        # Report 1.0 only when all bytes are in completed files.
-        if expected_bytes > 0 and downloaded_bytes >= expected_bytes:
-            progress = 1.0
-        return {
-            "downloaded_bytes": total_progress_bytes,
-            "expected_bytes": expected_bytes,
-            "progress": round(progress, 3),
-        }
-    except Exception:
-        return {"downloaded_bytes": 0, "expected_bytes": expected_bytes, "progress": 0}
+    """Compatibility route backed by the shared multi-cache progress service."""
+    from hub.services.models import downloads
+    return await downloads.get_gguf_download_progress_response(
+        repo_id,
+        variant = variant,
+        expected_bytes = expected_bytes,
+        hf_token = hf_token,
+    )
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
@@ -2874,98 +2850,12 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Return download progress for any HuggingFace model repo.
-
-    Checks the local HF cache for completed blobs and in-progress
-    (.incomplete) downloads. Gets the expected total size from the HF API
-    on the first call, then caches it for later polls. Also returns
-    ``cache_path``: the realpath of the snapshot dir (or cache repo root
-    if no snapshot yet) so the UI can show where weights live on disk.
-    """
-    _empty = {
-        "downloaded_bytes": 0,
-        "expected_bytes": 0,
-        "progress": 0,
-        "cache_path": None,
-    }
-    try:
-        if not _is_valid_repo_id(repo_id):
-            return _empty
-
-        from huggingface_hub import constants as hf_constants
-
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        target = f"models--{repo_id.replace('/', '--')}".lower()
-        completed_bytes = 0
-        in_progress_bytes = 0
-        cache_path: Optional[str] = None
-
-        for entry in cache_dir.iterdir():
-            if entry.name.lower() != target:
-                continue
-            cache_path = _resolve_hf_cache_realpath(entry)
-            blobs_dir = entry / "blobs"
-            if not blobs_dir.is_dir():
-                break
-            for f in blobs_dir.iterdir():
-                if not f.is_file():
-                    continue
-                if f.name.endswith(".incomplete"):
-                    in_progress_bytes += f.stat().st_size
-                else:
-                    completed_bytes += f.stat().st_size
-            break
-
-        downloaded_bytes = completed_bytes + in_progress_bytes
-        if downloaded_bytes == 0:
-            return {**_empty, "cache_path": cache_path}
-
-        expected_bytes = _get_repo_size_cached(repo_id)
-        if expected_bytes <= 0:
-            # Total unknown; report bytes only, no percentage.
-            return {
-                "downloaded_bytes": downloaded_bytes,
-                "expected_bytes": 0,
-                "progress": 0,
-                "cache_path": cache_path,
-            }
-
-        # 95% threshold (blob dedup can skew completed_bytes). Do NOT
-        # treat "no .incomplete files" as done: HF downloads sequentially,
-        # so none exist between files even when far from finished.
-        if completed_bytes >= expected_bytes * 0.95:
-            progress = 1.0
-        else:
-            progress = min(downloaded_bytes / expected_bytes, 0.99)
-        return {
-            "downloaded_bytes": downloaded_bytes,
-            "expected_bytes": expected_bytes,
-            "progress": round(progress, 3),
-            "cache_path": cache_path,
-        }
-    except Exception as e:
-        logger.warning(f"Error checking download progress for {repo_id}: {e}")
-        return _empty
-
-
-_repo_size_cache: dict[str, int] = {}
-
-
-def _get_repo_size_cached(repo_id: str) -> int:
-    if repo_id in _repo_size_cache:
-        return _repo_size_cache[repo_id]
-    try:
-        from huggingface_hub import model_info as hf_model_info
-
-        info = hf_model_info(repo_id, token = None, files_metadata = True)
-        total = sum(s.size for s in info.siblings if s.size)
-        _repo_size_cache[repo_id] = total
-        return total
-    except Exception as e:
-        logger.warning(f"Failed to get repo size for {repo_id}: {e}")
-        return 0
+    """Compatibility route backed by the shared multi-cache progress service."""
+    from hub.services.models import downloads
+    return await downloads.get_download_progress_response(repo_id, hf_token = hf_token)
 
 
 def _repo_in_any_hf_cache(model_name: str) -> bool:
@@ -2978,25 +2868,13 @@ def _repo_in_any_hf_cache(model_name: str) -> bool:
     would delete a model they did not download via the scan. Mirrors the cache set in
     ``_all_hf_cache_scans`` but only probes for the one repo dir (cheap, no full scan).
     """
-    from utils.paths import (
-        hf_default_cache_dir,
-        legacy_hf_cache_dir,
-        resolve_cached_repo_id_case,
-    )
+    from utils.paths import resolve_cached_repo_id_case
 
     dirname = f"models--{resolve_cached_repo_id_case(model_name).replace('/', '--')}"
     dirname_lower = dirname.lower()
-    candidates = []
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-        candidates.append(Path(HF_HUB_CACHE))
-    except Exception:
-        pass
-    for fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-        try:
-            candidates.append(fn())
-        except Exception:
-            continue
+    from hub.utils.hf_cache_state import hf_cache_roots
+
+    candidates = hf_cache_roots()
     # resolve_cached_repo_id_case only normalizes the ACTIVE cache, but discard deletes
     # case-insensitively across all caches, so detect case-insensitively too -- else a
     # pre-existing case-variant repo is misreported as scan-created and deleted on decline.
@@ -3020,38 +2898,8 @@ def _all_hf_cache_scans():
     broken symlink, OS-redirected ~/.cache) is skipped, not fatal, so the
     Downloaded list never blanks out and downloads never leak into Recommended.
     """
-    from huggingface_hub import scan_cache_dir
-    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
-
-    scans = []
-    # Guard the active cache too: degrade to "no downloads" instead of raising.
-    try:
-        scans.append(scan_cache_dir())
-    except Exception as exc:
-        logger.warning("Could not scan active HF cache: %s", exc)
-
-    seen: set[str] = set()
-    try:
-        # Resolve the active cache dir for dedup.
-        from huggingface_hub.constants import HF_HUB_CACHE
-        seen.add(str(Path(HF_HUB_CACHE).resolve()))
-    except Exception:
-        pass
-
-    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-        try:
-            extra = extra_fn()
-            # is_dir()/resolve() can raise on an inaccessible path; skip it.
-            if not extra.is_dir():
-                continue
-            resolved = str(extra.resolve())
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            scans.append(scan_cache_dir(cache_dir = str(extra)))
-        except Exception as exc:
-            logger.warning("Could not scan HF cache %s: %s", extra_fn.__name__, exc)
-    return scans
+    from hub.utils.inventory_scan import all_hf_cache_scans
+    return all_hf_cache_scans()
 
 
 def _is_gguf_filename(name: str) -> bool:
@@ -3297,124 +3145,13 @@ async def list_cached_models(
 async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    cache_path: Optional[str] = Body(None),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
-
-    With *variant*, only GGUF files matching that quant label are removed
-    (e.g. ``UD-Q4_K_XL``); otherwise the whole repo is deleted. Refuses
-    if the model is currently loaded for inference.
-    """
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-
-    # Refuse if the model is currently loaded.
-    try:
-        from routes.inference import get_llama_cpp_backend
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded_id = llama_backend.model_identifier.lower()
-            if loaded_id == repo_id.lower() or loaded_id.startswith(repo_id.lower()):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
-                )
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-
-    try:
-        inference_backend = get_inference_backend()
-        if inference_backend.active_model_name:
-            active = inference_backend.active_model_name.lower()
-            if active == repo_id.lower() or active.startswith(repo_id.lower()):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
-                )
-    except HTTPException:
-        raise
-    except Exception:
-        pass
-
-    try:
-        cache_scans = _all_hf_cache_scans()
-
-        target_repo = None
-        for hf_cache in cache_scans:
-            for repo_info in hf_cache.repos:
-                if repo_info.repo_type != "model":
-                    continue
-                if repo_info.repo_id.lower() == repo_id.lower():
-                    target_repo = repo_info
-                    break
-            if target_repo is not None:
-                break
-
-        if target_repo is None:
-            raise HTTPException(status_code = 404, detail = "Model not found in cache")
-
-        # ── Per-variant GGUF deletion ────────────────────────────
-        if variant:
-            deleted_bytes = 0
-            deleted_count = 0
-            for rev in target_repo.revisions:
-                for f in rev.files:
-                    if not _is_gguf_filename(f.file_name):
-                        continue
-                    quant = _extract_quant_label(f.file_name)
-                    if quant.lower() != variant.lower():
-                        continue
-                    # Delete the blob (data) and the snapshot symlink.
-                    try:
-                        blob = Path(f.blob_path)
-                        snap = Path(f.file_path)
-                        size = blob.stat().st_size if blob.exists() else 0
-                        if snap.exists() or snap.is_symlink():
-                            snap.unlink()
-                        if blob.exists():
-                            blob.unlink()
-                        deleted_bytes += size
-                        deleted_count += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to delete {f.file_name}: {e}")
-
-            if deleted_count == 0:
-                raise HTTPException(
-                    status_code = 404,
-                    detail = f"Variant {variant} not found in cache for {repo_id}",
-                )
-
-            freed_mb = deleted_bytes / (1024 * 1024)
-            logger.info(
-                f"Deleted {deleted_count} file(s) for {repo_id} variant {variant}: "
-                f"{freed_mb:.1f} MB freed"
-            )
-            return {"status": "deleted", "repo_id": repo_id, "variant": variant}
-
-        # ── Full repo deletion ───────────────────────────────────
-        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
-        if not revision_hashes:
-            raise HTTPException(status_code = 404, detail = "No revisions found for model")
-
-        delete_strategy = hf_cache.delete_revisions(*revision_hashes)
-        logger.info(
-            f"Deleting cached model {repo_id}: "
-            f"{delete_strategy.expected_freed_size_str} will be freed"
-        )
-        delete_strategy.execute()
-
-        return {"status": "deleted", "repo_id": repo_id}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting cached model {repo_id}: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = "Failed to delete cached model",
-        )
+    """Compatibility route backed by the shared multi-cache deletion service."""
+    from hub.services.models import deletion
+    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:

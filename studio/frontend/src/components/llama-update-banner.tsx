@@ -180,7 +180,7 @@ export function LlamaUpdateBanner({
                 {status?.latest_tag ?? ""}
               </span>
             </p>
-            <p className="mt-1 text-[11px] text-muted-foreground/70">
+            <p className="mt-1 text-ui-11 text-muted-foreground/70">
               {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
               after update
             </p>
@@ -211,7 +211,7 @@ export function LlamaUpdateBanner({
             <Button
               size="sm"
               variant="ghost"
-              className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+              className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
               onClick={snooze}
               data-testid="llama-update-snooze-button"
             >
@@ -220,7 +220,7 @@ export function LlamaUpdateBanner({
             <Button
               size="sm"
               // Align pill edge with card padding.
-              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
               onClick={handleUpdate}
               data-testid="llama-update-button"
             >

@@ -53,19 +53,41 @@ def _expand_path(raw: str) -> Path:
 
 
 def _hf_cache_roots() -> list:
-    """The one cache root the loader resolves to, by its own precedence (it picks ONE
-    cache_folder, no fall-through): SENTENCE_TRANSFORMERS_HOME, else HF_HUB_CACHE, else
-    HF_HOME/hub, else ~/.cache/huggingface/hub. Expanded, read from env, one-element list."""
-    st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-    if st_home:
-        return [_expand_path(st_home)]
-    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
-    if hub:
-        return [_expand_path(hub)]
-    hf_home = os.environ.get("HF_HOME")
-    if hf_home:
-        return [_expand_path(hf_home) / "hub"]
-    return [Path.home() / ".cache" / "huggingface" / "hub"]
+    """Cache roots to search for a model's local snapshot, most-authoritative first.
+
+    The app's selected hub cache (set via /settings) is searched first: after a
+    no-restart cache switch the process env is stale, yet the loader reads the
+    selected cache via ``cache_folder=active_hf_hub_cache()``, so the snapshot
+    and offline security lookups must match where it actually loads. The env
+    precedence (SENTENCE_TRANSFORMERS_HOME, HF_HUB_CACHE, HF_HOME/hub,
+    ~/.cache/huggingface/hub) follows so a copy still in a previous cache resolves."""
+    roots: list = []
+    seen: set = set()
+
+    def _add(path) -> None:
+        if path is None:
+            return
+        expanded = _expand_path(str(path))
+        key = str(expanded)
+        if key not in seen:
+            seen.add(key)
+            roots.append(expanded)
+
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        _add(get_hf_cache_paths().hub_cache)
+    except Exception:
+        pass
+
+    if st_home := os.environ.get("SENTENCE_TRANSFORMERS_HOME"):
+        _add(st_home)
+    if hub := (os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")):
+        _add(hub)
+    if hf_home := os.environ.get("HF_HOME"):
+        _add(_expand_path(hf_home) / "hub")
+    if not roots:
+        _add(Path.home() / ".cache" / "huggingface" / "hub")
+    return roots
 
 
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:

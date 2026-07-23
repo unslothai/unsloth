@@ -111,7 +111,7 @@ const MODEL_LOAD_TOAST_CLASSNAMES = {
   title: "leading-5",
   description: "mt-0 w-full",
   cancelButton:
-    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-[11px] !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
+    "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
 } as const;
 
 const MODEL_LOADED_TOAST_CLASSNAMES = {

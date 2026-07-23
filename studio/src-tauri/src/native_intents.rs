@@ -16,6 +16,25 @@ use tauri_plugin_dialog::DialogExt;
 
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 
+fn normalize_windows_verbatim_path(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(&path).to_string()
+}
+
+fn portable_path_string(path: &Path) -> String {
+    let value = path.to_string_lossy().to_string();
+    #[cfg(windows)]
+    {
+        return normalize_windows_verbatim_path(value);
+    }
+    #[cfg(not(windows))]
+    {
+        value
+    }
+}
+
 #[derive(Clone, Debug)]
 struct NativePathEntry {
     token: String,
@@ -312,6 +331,34 @@ pub async fn pick_native_model(
 }
 
 #[tauri::command]
+pub async fn pick_hugging_face_cache_dir(
+    window: WebviewWindow,
+    app: AppHandle,
+) -> Result<Option<String>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose model download location")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("Could not use the selected folder: {e}"))?;
+    if !canonical.is_dir() {
+        return Err("The selected location is not a folder.".to_string());
+    }
+    Ok(Some(portable_path_string(&canonical)))
+}
+
+#[tauri::command]
 pub fn consume_native_path_token(
     window: WebviewWindow,
     state: tauri::State<'_, NativeIntakeState>,
@@ -449,6 +496,18 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("changed"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn windows_verbatim_paths_are_portable() {
+        assert_eq!(
+            normalize_windows_verbatim_path(r"\\?\C:\models\cache".to_string()),
+            r"C:\models\cache"
+        );
+        assert_eq!(
+            normalize_windows_verbatim_path(r"\\?\UNC\server\share\cache".to_string()),
+            r"\\server\share\cache"
+        );
     }
 
     #[cfg(unix)]

@@ -23,6 +23,11 @@ export async function pickNativeModel(): Promise<NativeIntent | null> {
   return invokeNative<NativeIntent | null>("pick_native_model");
 }
 
+export async function pickHuggingFaceCacheDir(): Promise<string | null> {
+  if (!isTauri) return null;
+  return invokeNative<string | null>("pick_hugging_face_cache_dir");
+}
+
 export async function registerNativeModelPath(path: string): Promise<NativeIntent> {
   return invokeNative<NativeIntent>("register_native_model_path", { path });
 }

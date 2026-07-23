@@ -2,9 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import { openModelsDir } from "@/features/native-intents";
+import { FolderBrowser } from "@/features/model-picker";
+import {
+  openModelsDir,
+  pickHuggingFaceCacheDir,
+} from "@/features/native-intents";
 import { useSystemInfo, type GpuDevice } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -12,11 +17,15 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
-import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
+import {
+  type HuggingFaceCacheSettings,
+  loadHuggingFaceCacheSettings,
+  updateHuggingFaceCacheSettings,
+} from "../api/hugging-face-cache";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
-import { LayersIcon } from "lucide-react";
+import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -45,6 +54,12 @@ function formatGb(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
   return `${safe.toFixed(digits)} GB`;
+}
+
+function formatBytes(value: number | null): string | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const gib = value / 1024 ** 3;
+  return `${gib >= 10 ? gib.toFixed(1) : gib.toFixed(2)} GiB`;
 }
 
 // RAM/VRAM come from the backend in binary units (bytes / 1024**3), matching
@@ -99,7 +114,7 @@ function MetricTile({
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
         </span>
         <span
@@ -165,20 +180,22 @@ export function ResourcesTab() {
     enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
-  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
-  const [modelsFolderLoaded, setModelsFolderLoaded] = useState(false);
+  const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
+  const [hfCacheLoaded, setHfCacheLoaded] = useState(false);
+  const [cacheBrowserOpen, setCacheBrowserOpen] = useState(false);
+  const [cacheSaving, setCacheSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void loadModelsFolder()
-      .then((folder) => {
+    void loadHuggingFaceCacheSettings()
+      .then((settings) => {
         if (cancelled) return;
-        setModelsFolder(folder);
-        setModelsFolderLoaded(true);
+        setHfCache(settings);
+        setHfCacheLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
-        setModelsFolderLoaded(true);
+        setHfCacheLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -237,12 +254,11 @@ export function ResourcesTab() {
     };
   }, [systemInfo]);
 
-  const handleModelsFolder = async () => {
-    const folder = modelsFolder;
-    if (!folder) return;
+  const handleCacheFolder = async () => {
+    if (!hfCache) return;
     if (isTauri) {
       try {
-        await openModelsDir(folder.path);
+        await openModelsDir(hfCache.cacheHome);
       } catch (error) {
         toast.error(t("settings.resources.storage.openError"), {
           description: error instanceof Error ? error.message : undefined,
@@ -250,10 +266,40 @@ export function ResourcesTab() {
       }
       return;
     }
-    if (await copyToClipboard(folder.path)) {
+    if (await copyToClipboard(hfCache.cacheHome)) {
       toast.success(t("settings.resources.storage.copied"));
     } else {
       toast.error(t("settings.resources.storage.copyError"));
+    }
+  };
+
+  const saveCacheFolder = async (path: string | null) => {
+    setCacheSaving(true);
+    try {
+      const settings = await updateHuggingFaceCacheSettings(path);
+      setHfCache(settings);
+      toast.success(t("settings.resources.storage.cacheSaved"));
+    } catch (error) {
+      toast.error(t("settings.resources.storage.cacheSaveError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setCacheSaving(false);
+    }
+  };
+
+  const changeCacheFolder = async () => {
+    if (!isTauri) {
+      setCacheBrowserOpen(true);
+      return;
+    }
+    try {
+      const path = await pickHuggingFaceCacheDir();
+      if (path) await saveCacheFolder(path);
+    } catch (error) {
+      toast.error(t("settings.resources.storage.cachePickerError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
     }
   };
 
@@ -270,11 +316,27 @@ export function ResourcesTab() {
   const backendLabel = (
     systemInfo.gpu?.backend ?? systemInfo.device_backend ?? "cpu"
   ).toUpperCase();
-  const modelsFolderPath = modelsFolder
-    ? modelsFolder.path
-    : modelsFolderLoaded
+  const modelsFolderPath = hfCache
+    ? hfCache.cacheHome
+    : hfCacheLoaded
       ? t("settings.resources.environment.unknown")
       : t("common.loading");
+  const cacheLocationDetail = hfCache
+    ? hfCache.source === "environment"
+      ? t("settings.resources.storage.environmentManaged", {
+          variable: hfCache.environmentVariable ?? "HF_HOME",
+        })
+      : [
+          t("settings.resources.storage.futureDownloads"),
+          hfCache.freeBytes !== null
+            ? t("settings.resources.storage.locationFree", {
+                free: formatBytes(hfCache.freeBytes) ?? "",
+              })
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+    : null;
   const unknownLabel = t("settings.resources.environment.unknown");
 
   return (
@@ -467,28 +529,85 @@ export function ResourcesTab() {
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
-          className="max-sm:flex-col max-sm:items-start max-sm:gap-2"
+          className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
-          <div className="flex min-w-0 items-center gap-2 max-sm:max-w-[calc(100vw-5rem)]">
-            <span
-              title={modelsFolder?.path}
-              className="min-w-0 max-w-[280px] truncate font-mono text-xs text-muted-foreground max-sm:max-w-[180px]"
-            >
-              {modelsFolderPath}
-            </span>
+          <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+            <div className="relative min-w-0">
+              <Input
+                readOnly
+                aria-label={t("settings.resources.storage.modelsFolder")}
+                value={modelsFolderPath}
+                title={hfCache?.cacheHome}
+                className="h-8 w-full pr-7 font-mono text-xs"
+              />
+              <button
+                type="button"
+                disabled={!hfCache}
+                onClick={() => void handleCacheFolder()}
+                aria-label={
+                  isTauri
+                    ? t("settings.resources.storage.openAction")
+                    : t("settings.resources.storage.copyAction")
+                }
+                title={
+                  isTauri
+                    ? t("settings.resources.storage.openAction")
+                    : t("settings.resources.storage.copyAction")
+                }
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+              >
+                {isTauri ? (
+                  <FolderOpenIcon className="size-3.5" />
+                ) : (
+                  <CopyIcon className="size-3.5" />
+                )}
+              </button>
+            </div>
             <Button
               variant="outline"
               size="sm"
-              disabled={!modelsFolder}
-              onClick={() => void handleModelsFolder()}
+              className="h-8"
+              disabled={!hfCache?.editable || cacheSaving}
+              onClick={() => void changeCacheFolder()}
             >
-              {isTauri
-                ? t("settings.resources.storage.openAction")
-                : t("settings.resources.storage.copyAction")}
+              {t("settings.resources.storage.changeAction")}
             </Button>
+            {cacheLocationDetail || hfCache?.isCustom ? (
+              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                {cacheLocationDetail ? (
+                  <span
+                    title={cacheLocationDetail}
+                    className="min-w-0 truncate"
+                  >
+                    {cacheLocationDetail}
+                  </span>
+                ) : null}
+                {hfCache?.isCustom ? (
+                  <Button
+                    variant="link"
+                    size="xs"
+                    className="h-auto px-0 text-xs"
+                    disabled={cacheSaving}
+                    onClick={() => void saveCacheFolder(null)}
+                  >
+                    {t("settings.resources.storage.resetAction")}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </SettingsRow>
       </SettingsSection>
+
+      <FolderBrowser
+        open={!isTauri && cacheBrowserOpen}
+        onOpenChange={setCacheBrowserOpen}
+        onSelect={(path) => void saveCacheFolder(path)}
+        initialPath={hfCache?.cacheHome}
+        title={t("settings.resources.storage.chooseTitle")}
+        confirmLabel={t("settings.resources.storage.chooseAction")}
+        showModelHints={false}
+      />
 
       <SettingsSection title={t("settings.resources.environment.title")}>
         <InfoRow

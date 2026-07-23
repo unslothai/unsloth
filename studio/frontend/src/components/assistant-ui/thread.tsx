@@ -1154,7 +1154,7 @@ const GeneratedImageViewportOverlay: FC<{
               Generated image
             </p>
             {overlay.metadata ? (
-              <p className="truncate text-[11px] font-medium text-muted-foreground">
+              <p className="truncate text-ui-11 font-medium text-muted-foreground">
                 {overlay.metadata}
               </p>
             ) : null}
@@ -3577,14 +3577,14 @@ const DiffusionCanvas: FC = () => {
     canvas.total > 0 ? `step ${canvas.step + 1}/${canvas.total}` : "denoising";
   return (
     <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03]">
-      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary/80">
+      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-ui-11 font-medium text-primary/80">
         <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
         <span>Denoising</span>
         <span className="opacity-60">
           block {canvas.block + 1} - {stepLabel}
         </span>
       </div>
-      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[12.5px] leading-relaxed text-foreground/90">
+      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
         {canvas.text}
       </pre>
     </div>
@@ -3658,7 +3658,7 @@ const AssistantMessage: FC = () => {
 
   return (
     <MessagePrimitive.Root
-      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
+      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
@@ -3771,7 +3771,7 @@ const ForkCountBadge: FC = () => {
   if (count <= 0) return null;
   return (
     <span
-      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
       title={`${count} fork${count === 1 ? "" : "s"} from this message`}
     >
       <GitBranchIcon strokeWidth={1.75} className="size-3" />
@@ -4096,7 +4096,7 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
@@ -4207,7 +4207,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch={true}
       className={cn(
-        "aui-branch-picker-root inline-flex items-center text-chat-icon-fg text-[13px]",
+        "aui-branch-picker-root inline-flex items-center text-chat-icon-fg text-ui-13",
         className,
       )}
       {...rest}
@@ -4221,7 +4221,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-mono text-[13px] tabular-nums">
+      <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
         <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>

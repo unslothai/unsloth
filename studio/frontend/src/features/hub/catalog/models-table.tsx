@@ -140,7 +140,7 @@ export function InventorySortControl({
       title={selected?.label}
       // Capped and shrinkable so a long label truncates instead of wrapping
       // the "On device" heading beside these pills in the narrow split pane.
-      className="h-8 min-w-[72px] max-w-[124px] shrink text-[11.5px]"
+      className="h-8 min-w-[72px] max-w-[124px] shrink text-ui-11p5"
       triggerContent={
         <span className="flex min-w-0 items-center gap-1">
           <HugeiconsIcon
@@ -176,7 +176,7 @@ export function InventoryTypeFilterControl({
       title={selected?.label}
       // Capped and shrinkable so a long label ("Speech to text") truncates
       // instead of wrapping the "On device" heading beside these pills.
-      className="h-8 min-w-[72px] max-w-[124px] shrink text-[11.5px]"
+      className="h-8 min-w-[72px] max-w-[124px] shrink text-ui-11p5"
     />
   );
 }
@@ -230,11 +230,11 @@ export function HubListHeader({
         <div className="min-w-0 space-y-0.5">
           {/* truncate keeps the heading on one line and clips a long search
               query with an ellipsis instead of overflowing the pills. */}
-          <h2 className="truncate text-[18px] font-semibold tracking-[-0.02em] text-foreground">
+          <h2 className="truncate text-ui-18 font-semibold tracking-[-0.02em] text-foreground">
             {title}
           </h2>
           {subtitle && (
-            <p className="text-[12.5px] leading-tight text-muted-foreground">
+            <p className="text-ui-12p5 leading-tight text-muted-foreground">
               {subtitle}
             </p>
           )}
@@ -309,7 +309,7 @@ export function HubListHeader({
 
 export function ResultListHeader({ isDataset }: { isDataset: boolean }) {
   return (
-    <div className="flex w-full items-center gap-3 px-4 pb-2 text-[11px] font-medium text-muted-foreground/55">
+    <div className="flex w-full items-center gap-3 px-4 pb-2 text-ui-11 font-medium text-muted-foreground/55">
       <span className={LIST_COLS.model}>{isDataset ? "Dataset" : "Model"}</span>
       <span className={isDataset ? LIST_COLS.caps : LIST_COLS.capsModel}>
         {isDataset ? "Details" : "Capabilities"}
@@ -445,7 +445,7 @@ function CapabilitiesCell({
           ))}
           {extra > 0 && <span className="hub-chip shrink-0">+{extra}</span>}
           {shown.length === 0 && taskLabel && (
-            <span className="truncate text-[12px] text-muted-foreground/75">
+            <span className="truncate text-ui-12 text-muted-foreground/75">
               {taskLabel}
             </span>
           )}
@@ -454,7 +454,7 @@ function CapabilitiesCell({
       <TooltipContent side="top" align="start" className="tooltip-compact">
         <div className="flex flex-col items-start gap-1">
           {taskLabel && (
-            <span className="text-[11px] font-medium text-muted-foreground">
+            <span className="text-ui-11 font-medium text-muted-foreground">
               {taskLabel}
             </span>
           )}
@@ -642,12 +642,12 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[52px] shrink-0 rounded-[16px] text-[16px] ring-1 ring-black/5 dark:ring-white/10"
+        className="size-[52px] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-black/5 dark:ring-white/10"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-[15px] font-semibold leading-[18px] text-foreground">
+          <span className="truncate text-ui-15 font-semibold leading-ui-18 text-foreground">
             {row.repo}
           </span>
           <TitleMarkers
@@ -659,10 +659,10 @@ export const ResultCard = memo(function ResultCard({
             onDevice={onDevice}
           />
         </div>
-        <span className="flex min-w-0 items-center gap-1 text-[12.5px] leading-[16px] text-muted-foreground/80">
+        <span className="flex min-w-0 items-center gap-1 text-ui-12p5 leading-ui-16 text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
         </span>
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden text-[11.5px] leading-[16px] tabular-nums text-muted-foreground/65">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-11p5 leading-ui-16 tabular-nums text-muted-foreground/65">
           {textParts.map((part, index) => (
             <Fragment key={part.key}>
               {index > 0 && (
@@ -761,12 +761,12 @@ export const ResultGridRow = memo(function ResultGridRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={row.repo}
-            className="size-9 shrink-0 rounded-[12px] text-[13px] ring-1 ring-black/5 dark:ring-white/10"
+            className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-black/5 dark:ring-white/10"
             remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
+              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
                 {row.repo}
               </span>
               <TitleMarkers
@@ -778,7 +778,7 @@ export const ResultGridRow = memo(function ResultGridRow({
                 onDevice={onDevice}
               />
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
               <VerifiedOwner owner={row.owner} />
             </span>
           </div>
@@ -786,7 +786,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div className={isDataset ? LIST_COLS.caps : LIST_COLS.capsModel}>
           {isDataset ? (
             row.summary ? (
-              <span className="truncate text-[12px] text-muted-foreground/75">
+              <span className="truncate text-ui-12 text-muted-foreground/75">
                 {row.summary}
               </span>
             ) : null
@@ -801,7 +801,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.size,
-            "truncate text-[12px] tabular-nums text-muted-foreground",
+            "truncate text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           {sizeDisplay ?? "—"}
@@ -809,7 +809,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.updated,
-            "truncate text-[12px] tabular-nums text-muted-foreground",
+            "truncate text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           {formatRelativeShort(row.result.updatedAt)}
@@ -817,7 +817,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.downloads,
-            "text-[12px] tabular-nums text-muted-foreground",
+            "text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           <StatItem
@@ -828,7 +828,7 @@ export const ResultGridRow = memo(function ResultGridRow({
         <div
           className={cn(
             LIST_COLS.likes,
-            "text-[12px] tabular-nums text-muted-foreground",
+            "text-ui-12 tabular-nums text-muted-foreground",
           )}
         >
           <StatItem
@@ -883,12 +883,12 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-8 shrink-0 rounded-[9px] text-[12px]"
+        className="size-8 shrink-0 rounded-[9px] text-ui-12"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+          <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
             {row.repo}
           </span>
           <TitleMarkers
@@ -900,11 +900,11 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             onDevice={onDevice}
           />
         </div>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10.5px] leading-[14px] text-muted-foreground/80">
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-10p5 leading-ui-14 text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
         </span>
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-0.5 text-[10.5px] tabular-nums text-muted-foreground/70">
+      <div className="flex shrink-0 flex-col items-end gap-0.5 text-ui-10p5 tabular-nums text-muted-foreground/70">
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center gap-1">
             <HugeiconsIcon

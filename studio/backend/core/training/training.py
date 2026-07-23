@@ -932,16 +932,21 @@ class TrainingBackend:
                 config["resolved_gpu_ids"] = resolved_gpu_ids
                 config["gpu_selection"] = gpu_selection
 
-            from .worker import run_training_process
+            from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
+
+            cache_env = get_hf_cache_paths().child_env({})
 
             try:
-                with native_path_secret_removed_for_child_start():
+                with (
+                    child_environment_for_spawn(cache_env),
+                    native_path_secret_removed_for_child_start(),
+                ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
 
                     proc = _CTX.Process(
                         target = run_without_native_path_secret,
-                        args = (run_training_process,),
+                        args = ("core.training.worker", "run_training_process", cache_env),
                         kwargs = {
                             "event_queue": event_queue,
                             "stop_queue": stop_queue,
@@ -994,6 +999,7 @@ class TrainingBackend:
             self._db_started_at = datetime.now(timezone.utc).isoformat()
             # Start each job Xet-first; keep config so a stall can respawn over HTTP.
             self._last_full_config = config
+            self._last_hf_cache_env = cache_env
             self._in_model_load = False
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
@@ -1403,7 +1409,11 @@ class TrainingBackend:
         self._last_full_config = config
         logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
 
-        from .worker import run_training_process
+        cache_env = getattr(self, "_last_hf_cache_env", None)
+        if not cache_env:
+            from utils.hf_cache_settings import get_hf_cache_paths
+            cache_env = get_hf_cache_paths().child_env({})
+        from utils.hf_cache_settings import child_environment_for_spawn
 
         # This run is active, so an install request 409s rather than proceeds: a reservation seen here
         # is transient (an aborting install or short lazy repair). Wait it out instead of stranding the
@@ -1435,12 +1445,15 @@ class TrainingBackend:
         # crashed respawn cannot wedge is_training_active until restart.
         try:
             try:
-                with native_path_secret_removed_for_child_start():
+                with (
+                    child_environment_for_spawn(cache_env),
+                    native_path_secret_removed_for_child_start(),
+                ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
                     new_proc = _CTX.Process(
                         target = run_without_native_path_secret,
-                        args = (run_training_process,),
+                        args = ("core.training.worker", "run_training_process", cache_env),
                         kwargs = {
                             "event_queue": event_queue,
                             "stop_queue": stop_queue,

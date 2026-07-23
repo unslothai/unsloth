@@ -1103,8 +1103,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
             '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
@@ -1360,9 +1359,14 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        # AMD was detected but gfx resolution failed; tell the installer ROCm is
-        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+    elif [ "$_setup_amd_detected" = true ] && \
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ] || \
+           ls /opt/rocm-*/bin/hipcc >/dev/null 2>&1; }; then
+        # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
+        # hipcc can actually build llama.cpp (incl. a versioned /opt/rocm-*/bin, the
+        # same paths the source build uses). With no gfx the prebuilt resolver finds
+        # no ROCm bundle and the source build would fail, so without hipcc fall
+        # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
     # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
