@@ -1865,12 +1865,10 @@ def run(
         else not tool_call_healing
     )
     os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "1" if _healing_disabled else "0"
-    _nudging_on = (
-        os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "1") != "0"
-        if tool_call_nudging is None
-        else tool_call_nudging
-    )
-    os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if _nudging_on else "0"
+    if tool_call_nudging is not None:
+        os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if tool_call_nudging else "0"
+    elif "UNSLOTH_TOOL_CALL_NUDGE" not in os.environ:
+        os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
 
     # Set before any re-exec so the in-venv server inherits it via the env.
     # `run --verbose` used to pass through to llama-server (its own -v); keep
