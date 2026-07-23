@@ -15,9 +15,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "studio/frontend/src"
 INDEX_CSS = (SRC / "index.css").read_text(encoding = "utf-8")
-STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
-    encoding = "utf-8"
-)
+STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(encoding = "utf-8")
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 
 # Raw numeric fontSize props are only allowed where a scaled stylesheet rule
@@ -70,9 +68,7 @@ def test_ui_token_families_exist():
 
 
 def test_explicit_code_font_size_is_never_multiplied():
-    match = re.search(
-        r"html\[data-code-font-size\][^{]*\{([^}]*)\}", INDEX_CSS
-    )
+    match = re.search(r"html\[data-code-font-size\][^{]*\{([^}]*)\}", INDEX_CSS)
     assert match is not None
     body = match.group(1)
     assert "var(--custom-code-font-size)" in body
@@ -83,7 +79,9 @@ def test_radix_select_viewport_owns_the_scroll_state():
     viewport = SELECT[SELECT.index("SelectPrimitive.Viewport") :]
     assert "overflow-y-auto" in viewport.split("</SelectPrimitive.Viewport>")[0]
     # The rounded surface itself must not scroll (WebKit squares its corners).
-    content_cls = re.search(r"SelectPrimitive\.Content[\s\S]*?className=\{cn\(\s*\"([^\"]+)\"", SELECT)
+    content_cls = re.search(
+        r"SelectPrimitive\.Content[\s\S]*?className=\{cn\(\s*\"([^\"]+)\"", SELECT
+    )
     assert content_cls is not None
     assert "overflow-hidden" in content_cls.group(1)
     assert "overflow-y-auto" not in content_cls.group(1)
