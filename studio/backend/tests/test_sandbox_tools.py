@@ -64,6 +64,26 @@ def _blocked(code: str, *, expect_phrase: str):
             "im = partial(__import__, 'yaml')\n"
             "im().unsafe_load('a: 1')"
         ),
+        (
+            "import yaml\n"
+            "from functools import partial\n"
+            "partial(yaml.SafeLoader.add_constructor, "
+            "'!x', lambda loader, node: None)()\n"
+            "yaml.safe_load('!x value')"
+        ),
+        (
+            "[__import__][0]('yaml').unsafe_load('a: 1')"
+        ),
+        (
+            "import pkgutil\n"
+            "[pkgutil.resolve_name][0]('yaml:unsafe_load')('a: 1')"
+        ),
+        (
+            "import yaml\n"
+            "super(yaml.SafeLoader, yaml.SafeLoader).add_constructor("
+            "'!x', lambda loader, node: None)\n"
+            "yaml.safe_load('!x value')"
+        ),
     ],
 )
 def test_pyyaml_reflective_and_loop_carried_bypasses_are_blocked(code):

@@ -745,6 +745,22 @@ def _subscript_key(node) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _literal_container_item(node):
+    """Return the statically selected item from a literal list/tuple."""
+    if not (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, (ast.List, ast.Tuple))
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, int)
+    ):
+        return None
+    index = node.slice.value
+    try:
+        return node.value.elts[index]
+    except IndexError:
+        return None
+
+
 def _is_dynamic_import_callable(
     node,
     dynamic_import_aliases: set[str],
@@ -759,6 +775,11 @@ def _is_dynamic_import_callable(
             )
         return node.attr in {"import_module", "__import__"}
     if isinstance(node, ast.Subscript):
+        contained = _literal_container_item(node)
+        if contained is not None:
+            return _is_dynamic_import_callable(
+                contained, dynamic_import_aliases, dynamic_namespace_aliases
+            )
         return _is_dynamic_namespace(node.value, dynamic_namespace_aliases) and _subscript_key(
             node.slice
         ) in {"import_module", "__import__"}
@@ -873,20 +894,18 @@ def _pyyaml_resolver_target(node, resolver_aliases: set[str]) -> str | None:
 
 def _is_pyyaml_resolver_call(node, resolver_aliases: set[str]) -> bool:
     """Whether ``node`` calls a stdlib string-to-object resolver."""
-    reflected = _reflected_member(node.func) if isinstance(node, ast.Call) else None
     return bool(
         isinstance(node, ast.Call)
         and node.args
-        and (
-            (isinstance(node.func, ast.Attribute) and node.func.attr in {"locate", "resolve_name"})
-            or (isinstance(node.func, ast.Name) and node.func.id in resolver_aliases)
-            or (reflected is not None and reflected[1] in {"locate", "resolve_name"})
-        )
+        and _is_pyyaml_resolver_reference(node.func, resolver_aliases)
     )
 
 
 def _is_pyyaml_resolver_reference(node, resolver_aliases: set[str]) -> bool:
     """Whether ``node`` is a pydoc/pkgutil string resolver callable."""
+    contained = _literal_container_item(node)
+    if contained is not None:
+        return _is_pyyaml_resolver_reference(contained, resolver_aliases)
     if isinstance(node, ast.Name):
         return node.id in resolver_aliases
     reflected = _reflected_member(node)
@@ -966,6 +985,22 @@ def _pyyaml_loader_is_safe(
 ) -> bool:
     if isinstance(node, ast.Name):
         return node.id in safe_loader_aliases
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "super"
+        and node.args
+    ):
+        return any(
+            _pyyaml_loader_is_safe(
+                argument,
+                yaml_aliases,
+                safe_loader_aliases,
+                dynamic_import_aliases,
+                dynamic_namespace_aliases,
+            )
+            for argument in node.args[:2]
+        )
     if not isinstance(node, ast.Attribute) or node.attr not in _PYYAML_SAFE_LOADERS:
         return False
     parent_path = _pyyaml_attribute_path(
@@ -1055,6 +1090,21 @@ def _pyyaml_safe_loader_mutator_reference(
     dynamic_namespace_aliases: set[str] = frozenset(),
 ) -> bool:
     """Whether ``node`` is a bound SafeLoader registry mutator."""
+    if (
+        isinstance(node, ast.Call)
+        and node.args
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "partial")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "partial")
+        )
+    ):
+        return _pyyaml_safe_loader_mutator_reference(
+            node.args[0],
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
     if isinstance(node, ast.Subscript):
         return _pyyaml_safe_loader_mutator_reference(
             node.value,
@@ -1185,6 +1235,14 @@ def _pyyaml_safe_loader_mutation_call(
         "__ior__",
     }
     func = call.func
+    if _pyyaml_safe_loader_mutator_reference(
+        func,
+        yaml_aliases,
+        safe_loader_aliases,
+        dynamic_import_aliases,
+        dynamic_namespace_aliases,
+    ):
+        return True
     if (
         isinstance(func, ast.Call)
         and isinstance(func.func, ast.Name)
