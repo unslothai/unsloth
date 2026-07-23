@@ -233,6 +233,16 @@ def _short_colab_url(url: str, port: int) -> str:
         return url
 
 
+def _is_colab_proxy_url(url: str, port: int) -> bool:
+    """True when *url* looks like a real Colab kernel proxy, not a localhost fallback."""
+    return bool(
+        url
+        and isinstance(url, str)
+        and url.startswith("https://")
+        and str(port) in url
+    )
+
+
 # Height for serve_kernel_port_as_iframe (~82vh on a 1080p screen, clamped).
 _COLAB_IFRAME_HEIGHT = 900
 
@@ -308,7 +318,10 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     if cloudflare_url:
         logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
 
-    show_link(port, _url = url)
+    try:
+        show_link(port, _url = url)
+    except Exception as e:
+        logger.info(f"Could not render Unsloth link card ({e}).")
 
     if cloudflare_url:
         try:
@@ -317,8 +330,12 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
         except Exception as e:
             logger.info(f"Could not render Cloudflare link card ({e}).")
 
-    if not _embed_kernel_port_iframe(port):
-        _embed_html_iframe(url, port)
+    # Only trust Colab's kernel-port helper when we have a real proxy URL.
+    # colabtools outside Colab can import google.colab and queue JS without
+    # appending an iframe; localhost HTML embed is the better fallback there.
+    if _is_colab_proxy_url(url, port) and _embed_kernel_port_iframe(port):
+        return
+    _embed_html_iframe(url, port)
 
 
 def start(port: int = 8888, *, cloudflare: bool = False):
