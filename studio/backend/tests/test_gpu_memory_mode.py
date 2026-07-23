@@ -563,13 +563,13 @@ def test_manual_allows_tensor_parallel_via_split_mode():
     assert "if tp_tensor_split and len(tp_tensor_split) > 1:" in src
 
 
-def test_fit_sets_target_margin():
-    # Manual + Auto (auto_fit) tightens the per-device VRAM margin to 512 MiB.
+def test_fit_keeps_upstream_target_margin():
+    # Manual + Auto must keep llama.cpp's default fit target. Reducing its
+    # headroom is especially risky on integrated GPUs that share system RAM.
     caps = {"supports_fit_target": True}
     flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, caps)
-    assert flags[flags.index("--fit-target") + 1] == "512"
-    # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins
-    # native there, so the tighter margin must not ride along.
+    assert "--fit-target" not in flags
+    # Not emitted on the legacy auto path (fit on but not auto_fit).
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
     # Not emitted when fit is off.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
