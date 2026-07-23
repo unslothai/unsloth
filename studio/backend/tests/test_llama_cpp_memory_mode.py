@@ -360,6 +360,52 @@ def test_torchless_vulkan_populated_probe_uses_identity_ordinals(tmp_path):
     assert "--device" in cmd and cmd[cmd.index("--device") + 1] == "Vulkan1"
 
 
+def test_vulkan_fit_keeps_discrete_device_selected(tmp_path):
+    """Crossing into --fit must not make an integrated GPU eligible again.
+
+    A mixed iGPU/discrete host can fit a small context on the discrete card but
+    require CPU offload at a larger context. The latter still needs an explicit
+    Vulkan device pin even when the user did not use the GPU picker.
+    """
+    backend, gguf = _fit_fallback_backend(
+        tmp_path,
+        # total=0 is the Vulkan probe's integrated-GPU marker.
+        gpu_memory = [(0, 30000, 0), (1, 14000, 16000)],
+        vulkan = True,
+    )
+    backend._select_gpus = lambda *a, **k: (None, True)
+
+    captured = {}
+
+    def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
+        class _FakePopen:
+            pid = 322
+
+            def __init__(self, cmd, **kwargs):
+                captured["cmd"] = list(cmd)
+
+            def poll(self):
+                return None
+
+        return _FakePopen(cmd, **kwargs)
+
+    with (
+        patch.object(subprocess, "Popen", side_effect = _make_fake_popen),
+        patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []),
+    ):
+        assert backend.load_model(
+            gguf_path = str(gguf),
+            model_identifier = "test",
+        )
+
+    cmd = captured["cmd"]
+    assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
+    assert "--device" in cmd and cmd[cmd.index("--device") + 1] == "Vulkan1"
+
+
 def test_vulkan_rejects_duplicate_gpu_ids(tmp_path):
     """The CUDA resolver's duplicate check is skipped for the Vulkan path, so the branch
     must reject duplicates itself rather than let set() silently collapse them (#7188)."""
