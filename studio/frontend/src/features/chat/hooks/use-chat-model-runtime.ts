@@ -838,15 +838,23 @@ export function useChatModelRuntime() {
                 // model loads at Auto/native, not the previous model's pin.
                 customContextLength: null,
               });
-              loadSpeculativeType = persistedSpeculativeType;
-              loadSpecDraftNMax = null;
+              loadSpeculativeType =
+                pendingLoadConfig?.speculativeType != null
+                  ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
+                  : persistedSpeculativeType;
+              loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               // Keep the click-time snapshot in lock-step with the store reset so
               // the load below sizes against the cleared per-model knobs, not the
               // previous model's (gpuMemoryMode is standing, so left as captured).
-              loadCustomContextLength = null;
-              loadSelectedGpuIds = null;
-              loadGpuLayers = GPU_LAYERS_AUTO;
-              loadNCpuMoe = 0;
+              // An explicit staged config from run-settings still wins.
+              loadCustomContextLength =
+                pendingLoadConfig?.customContextLength ?? null;
+              loadSelectedGpuIds =
+                pendingLoadConfig?.selectedGpuIds !== undefined
+                  ? reconcilePersistedGpuIds(pendingLoadConfig.selectedGpuIds)
+                  : null;
+              loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
+              loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
               loadSplitRatio = null;
             }
 
