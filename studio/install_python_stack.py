@@ -842,15 +842,43 @@ def _wsl_rocm_runtime_present() -> bool:
     )
 
 
+def _linux_amd_display_device_present() -> bool:
+    """Any AMD (vendor 0x1002) PCI display-class (0x03*) device in sysfs.
+    /proc/cpuinfo leaks the HOST CPU model into VMs/containers that received no
+    AMD GPU, so the CPU-model text alone is not GPU evidence; this is the
+    device-level check (mirrors install.sh _amd_gpu_present_via_pci)."""
+    try:
+        for dev in Path("/sys/bus/pci/devices").iterdir():
+            try:
+                if (dev / "vendor").read_text().strip() != "0x1002":
+                    continue
+                if (dev / "class").read_text().strip().startswith("0x03"):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return False
+
+
 def _infer_linux_amd_gfx_arch() -> "str | None":
     """Infer gfx when ROCm runtime is absent but the host is a known AMD arch (unslothai#7301)."""
     override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
     if override:
         return override
-    # cpuinfo/lspci see the host APU even on a WSL box whose ROCDXG runtime was
-    # never bootstrapped; inferring there would install per-arch ROCm wheels into
-    # an env that still can't expose the GPU. Skip unless that runtime is present.
-    if _is_wsl() and not _wsl_rocm_runtime_present():
+    if _is_wsl():
+        # cpuinfo/lspci see the host APU even on a WSL box whose ROCDXG runtime
+        # was never bootstrapped; inferring there would install per-arch ROCm
+        # wheels into an env that still can't expose the GPU. Skip unless that
+        # runtime is present -- WSL enumerates no PCI display device, so
+        # /dev/dxg + librocdxg IS the GPU evidence there.
+        if not _wsl_rocm_runtime_present():
+            return None
+    elif not _linux_amd_display_device_present():
+        # Native Linux: a VM/container on a Strix host still shows the host CPU
+        # model in /proc/cpuinfo while receiving no AMD GPU, so require an AMD
+        # display device before trusting the CPU-model inference. The lspci
+        # fallback reads the same PCI space and would find nothing here either.
         return None
     cpu_gfx = _linux_amd_gfx_from_cpuinfo()
     if cpu_gfx:
@@ -1826,7 +1854,16 @@ def _ensure_rocm_torch() -> None:
     # Gated on the runtime NOT enumerating a GPU: when it can, the runtime-visible
     # arch (Strix override / generic below) decides, not cpuinfo -- a mixed Strix
     # APU + dGPU box with HIP_VISIBLE_DEVICES on the dGPU must not get APU wheels.
-    if _inferred_linux_gfx and not has_hip_torch and _rocm_pin is None and not _has_rocm_gpu():
+    # An explicit UNSLOTH_ROCM_GFX_ARCH is exempt from that runtime gate (mirrors
+    # install.sh): a visible GPU with an unreadable/unsupported ROCm version must
+    # not silently discard the user's named arch and leave CPU torch in place.
+    _gfx_override_env = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    if (
+        _inferred_linux_gfx
+        and not has_hip_torch
+        and _rocm_pin is None
+        and (_gfx_override_env or not _has_rocm_gpu())
+    ):
         index_url = _amd_arch_index_url(_inferred_linux_gfx)
         if index_url is not None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(

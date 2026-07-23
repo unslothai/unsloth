@@ -655,6 +655,32 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = [])
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = None)
+    def test_gfx_override_installs_despite_visible_rocm(
+        self, mock_ver, mock_gfx, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """#7305 review: an explicit UNSLOTH_ROCM_GFX_ARCH is exempt from the
+        not-_has_rocm_gpu() gate (mirrors install.sh). A visible GPU with an
+        unreadable ROCm version must not silently discard the user's named arch
+        and leave CPU torch in place -- the per-arch install runs."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"|2.10.0+cpu\n"
+        with patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}):
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        assert mock_pip.call_count == 1, mock_pip.call_args_list
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "download.pytorch.org" not in torch_call
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 1))
     def test_cuda_torch_on_amd_host_reinstalls(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
@@ -3299,6 +3325,8 @@ class TestStrixRocm71Override:
         with (
             patch.object(m, "_linux_amd_gfx_from_cpuinfo", return_value = "gfx1151"),
             patch.object(m, "_linux_amd_gfx_from_lspci", return_value = None),
+            # PCI evidence present (the WSL branch never consults it anyway).
+            patch.object(m, "_linux_amd_display_device_present", return_value = True),
             patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}),
         ):
             # WSL + no runtime -> inference suppressed (CPU torch stays).
@@ -3326,6 +3354,48 @@ class TestStrixRocm71Override:
             patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "gfx1151"}),
         ):
             assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+
+    def test_infer_gfx_requires_amd_display_device_on_native_linux(self):
+        """A VM/container on a Strix host still shows the host CPU model in
+        /proc/cpuinfo while receiving no AMD GPU, so on native Linux the
+        CPU-model inference must require an AMD PCI display device (#7305
+        review). WSL is exempt (no PCI enumeration there; the librocdxg gate is
+        the evidence) and the explicit override stays authoritative."""
+        m = stack_mod
+        with (
+            patch.object(m, "_linux_amd_gfx_from_cpuinfo", return_value = "gfx1151"),
+            patch.object(m, "_linux_amd_gfx_from_lspci", return_value = None),
+            patch.object(m, "_is_wsl", return_value = False),
+            patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": ""}),
+        ):
+            # No AMD display device -> the CPU-model text alone must not infer.
+            with patch.object(m, "_linux_amd_display_device_present", return_value = False):
+                assert m._infer_linux_amd_gfx_arch() is None
+            # Device present -> inference unchanged.
+            with patch.object(m, "_linux_amd_display_device_present", return_value = True):
+                assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+        # Explicit override needs no device evidence (headless/cross-install).
+        with (
+            patch.object(m, "_is_wsl", return_value = False),
+            patch.object(m, "_linux_amd_display_device_present", return_value = False),
+            patch.dict(os.environ, {"UNSLOTH_ROCM_GFX_ARCH": "GFX1151"}),
+        ):
+            assert m._infer_linux_amd_gfx_arch() == "gfx1151"
+
+    def test_install_sh_cpuinfo_inference_requires_pci_evidence(self):
+        """install.sh mirror of the VM/container guard: both cpuinfo greps must be
+        gated on _gpu_evidence (AMD PCI display device via _amd_gpu_present_via_pci,
+        or the WSL librocdxg gate), and the gate must sit before the first grep."""
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        body = _extract_sh_function_body(source, "_infer_linux_amd_gfx_arch")
+        assert body, "could not extract _infer_linux_amd_gfx_arch"
+        pci = body.find("_amd_gpu_present_via_pci")
+        infer = body.find("grep -qiE 'Ryzen AI Max")
+        assert pci >= 0 and infer >= 0
+        assert pci < infer, "the PCI evidence check must run before the cpuinfo inference"
+        assert (
+            body.count('[ -n "$_gpu_evidence" ] && grep -qiE') == 2
+        ), "both cpuinfo greps (gfx1151 and gfx1150) must be gated on _gpu_evidence"
 
     def test_lspci_scan_covers_all_display_controllers(self):
         """The lspci fallback must scan every display-class line, not just the

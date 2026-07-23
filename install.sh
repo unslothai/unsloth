@@ -2186,17 +2186,27 @@ _infer_linux_amd_gfx_arch() {
     # ROCDXG bridge (librocdxg over /dev/dxg) the AMD wheels can't reach the GPU;
     # keep the CPU fallback there unless that runtime is present (the explicit
     # override above still wins). Mirrors install_python_stack.py.
+    _gpu_evidence=""
     if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
         for _d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
             { [ -e "$_d/librocdxg.so" ] || [ -e "$_d/librocdxg.so.1" ]; } && _rocdxg=1 && break
         done
         [ -n "${_rocdxg:-}" ] || return 1
+        # WSL enumerates no PCI display device; /dev/dxg + librocdxg IS the
+        # GPU evidence there.
+        _gpu_evidence=1
+    elif _amd_gpu_present_via_pci; then
+        _gpu_evidence=1
     fi
-    if grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null; then
+    # /proc/cpuinfo leaks the HOST CPU model into VMs/containers that received
+    # no AMD GPU, so the CPU-model text alone is not GPU evidence: require an
+    # AMD display device (PCI vendor 0x1002, class 0x03*) before trusting it.
+    # The lspci fallback below needs no gate; an AMD display line IS evidence.
+    if [ -n "$_gpu_evidence" ] && grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null; then
         echo gfx1151
         return 0
     fi
-    if grep -qiE '890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
+    if [ -n "$_gpu_evidence" ] && grep -qiE '890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
         echo gfx1150
         return 0
     fi
