@@ -152,6 +152,13 @@ $_roots_from_conf"
     _stop_owned_sd_cpp_processes TERM
     sleep 0.5
     _stop_owned_sd_cpp_processes KILL
+
+    # Tauri desktop app: its WebView helpers re-create the runtime caches
+    # removed below. -x is an exact match on the binary name, so the "unsloth"
+    # CLI shim is never touched.
+    pkill -TERM -x unsloth-studio 2>/dev/null || true
+    sleep 0.5
+    pkill -KILL -x unsloth-studio 2>/dev/null || true
 }
 
 _remove_path() {
@@ -390,6 +397,25 @@ _unsloth_uninstall_main() {
             if [ -x "$_lsr" ]; then
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
+            # WKWebView runtime data, keyed by bundle id and created at first
+            # app launch rather than by install.sh, so it outlived every
+            # uninstall and served a stale frontend to the next install.
+            _bid="ai.unsloth.studio"
+            echo "Removing WebView caches and app data ($_bid)..."
+            _remove_path "$HOME/Library/Caches/$_bid"
+            _remove_path "$HOME/Library/WebKit/$_bid"
+            _remove_path "$HOME/Library/Application Support/$_bid"
+            _remove_path "$HOME/Library/HTTPStorages/$_bid"
+            _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
+            _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
+            _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
+            # defaults, not rm: cfprefsd owns the plist and rewrites it from its
+            # in-memory cache after a bare rm. ByHost is a separate domain.
+            if command -v defaults >/dev/null 2>&1; then
+                defaults delete "$_bid" >/dev/null 2>&1 || true
+                defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
+            fi
+            _remove_path "$HOME/Library/Preferences/$_bid.plist"
             ;;
         Linux)
             if [ "$_is_wsl" = "1" ]; then
@@ -532,6 +558,15 @@ _unsloth_uninstall_main() {
                     echo "          sudo rm -rf /opt/rocm /opt/rocm-* && sudo ldconfig"
                 fi
             fi
+            # webkit2gtk runtime data, keyed by bundle id. Tauri points the
+            # WebView at LocalData/<bundle id>, so the caches live under
+            # XDG_DATA_HOME; the other three are removed as app data.
+            _bid="ai.unsloth.studio"
+            echo "Removing WebView caches and app data ($_bid)..."
+            _remove_path "${XDG_DATA_HOME:-$HOME/.local/share}/$_bid"
+            _remove_path "${XDG_CACHE_HOME:-$HOME/.cache}/$_bid"
+            _remove_path "${XDG_CONFIG_HOME:-$HOME/.config}/$_bid"
+            _remove_path "${XDG_STATE_HOME:-$HOME/.local/state}/$_bid"
             echo "Removing Linux .desktop entry..."
             _remove_path "$HOME/.local/share/applications/unsloth-studio.desktop"
             if command -v update-desktop-database >/dev/null 2>&1; then
@@ -542,6 +577,8 @@ _unsloth_uninstall_main() {
 
     echo ""
     echo "Unsloth Studio uninstalled."
+    echo "Note: this also removed the app's WebView data, so the signed-in session,"
+    echo "      saved provider API keys and local chat history are gone."
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can
