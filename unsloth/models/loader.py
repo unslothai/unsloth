@@ -364,11 +364,61 @@ class FastLanguageModel(FastLlamaModel):
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         unsloth_tiled_mlp = False,
         text_only = False,  # Skip vision/audio towers and load only the text decoder
+        load_in_exl3 = False,  # EXL3 (exllamav3) quantization: True / bpw / Exl3Config
+        exl3_calibrate = None,  # EXL3: run calibrated (True) vs data-free (False) quant; None=default (calibrated)
         *args,
         **kwargs,
     ):
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
+        # Route EXL3 requests (load_in_exl3, an Exl3Config, or an on-disk EXL3
+        # checkpoint) through FastModel. Full finetuning is never EXL3 (its base
+        # weights train in full precision).
+        from ..exllama import should_use_exl3
+
+        if (not full_finetuning) and should_use_exl3(
+            model_name,
+            load_in_exl3 = load_in_exl3,
+            quantization_config = quantization_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+        ):
+            token = hf_login(token)
+            # Preserve an explicit request; default route signals True.
+            _effective_exl3 = load_in_exl3 if load_in_exl3 else True
+            return FastModel.from_pretrained(
+                model_name = model_name,
+                max_seq_length = max_seq_length,
+                dtype = dtype,
+                load_in_4bit = False,
+                load_in_8bit = False,
+                load_in_16bit = load_in_16bit,
+                full_finetuning = full_finetuning,
+                token = token,
+                device_map = device_map,
+                rope_scaling = rope_scaling,
+                fix_tokenizer = fix_tokenizer,
+                trust_remote_code = trust_remote_code,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                resize_model_vocab = resize_model_vocab,
+                revision = revision,
+                use_exact_model_name = use_exact_model_name,
+                offload_embedding = offload_embedding,
+                float32_mixed_precision = float32_mixed_precision,
+                fast_inference = fast_inference,
+                gpu_memory_utilization = gpu_memory_utilization,
+                float8_kv_cache = float8_kv_cache,
+                random_state = random_state,
+                max_lora_rank = max_lora_rank,
+                disable_log_stats = disable_log_stats,
+                load_in_fp8 = False,
+                unsloth_tiled_mlp = unsloth_tiled_mlp,
+                text_only = text_only,
+                load_in_exl3 = _effective_exl3,
+                exl3_calibrate = exl3_calibrate,
+                *args,
+                **kwargs,
+            )
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
                 q_load_in_4bit = quantization_config.get("load_in_4bit", False)
@@ -1053,12 +1103,72 @@ class FastModel(FastBaseModel):
         unsloth_tiled_mlp = False,
         target_parameters = None,  # For MoE expert parameters
         text_only = False,  # Skip vision/audio towers and load only the text decoder
+        load_in_exl3 = False,  # EXL3 (exllamav3) quantization: True / bpw / Exl3Config
+        exl3_calibrate = None,  # EXL3: calibrated (True) vs data-free (False) quant; None=default
         *args,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
+
+        # ------------------------------------------------------------------
+        # EXL3 (ExLlamaV3) backend - Unsloth's default quantization path.
+        # Resolve/quantize to a local EXL3 checkpoint, then load it via the
+        # transformers auto path (bnb disabled). See unsloth/exllama/.
+        # ------------------------------------------------------------------
+        from ..exllama import should_use_exl3 as _should_use_exl3
+
+        _exl3_plan = None
+        # Full finetuning is incompatible with EXL3's frozen quantized weights;
+        # never route it through EXL3.
+        if (not full_finetuning) and _should_use_exl3(
+            model_name,
+            load_in_exl3 = load_in_exl3,
+            quantization_config = quantization_config,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
+        ):
+            from ..exllama import (
+                require_exllama as _require_exllama,
+                prepare_exl3_checkpoint as _prepare_exl3_checkpoint,
+            )
+
+            _require_exllama()
+            token = hf_login(token)
+            _exl3_compute_dtype = dtype if isinstance(dtype, torch.dtype) else None
+            _exl3_plan = _prepare_exl3_checkpoint(
+                model_name,
+                load_in_exl3 = load_in_exl3 or True,
+                quantization_config = quantization_config,
+                compute_dtype = _exl3_compute_dtype,
+                token = token,
+                revision = revision,
+                trust_remote_code = trust_remote_code,
+                local_files_only = kwargs.get("local_files_only", False),
+                devices = (os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() or "0"),
+                calibrate = exl3_calibrate,
+                # True intent (before the `or True`): lets prepare fall back to
+                # bnb for an unsupported-arch Hub id on the default route.
+                is_explicit = bool(load_in_exl3)
+                or str(getattr(quantization_config, "quant_method", "")).lower() == "exl3",
+            )
+        # A None plan means EXL3 was only the default backend but the arch is
+        # unsupported - fall back to the normal bnb / 16-bit path.
+        if _exl3_plan is not None:
+            # Load the prepared EXL3 checkpoint directly (bnb disabled).
+            model_name = _exl3_plan.checkpoint_dir
+            use_exact_model_name = True
+            load_in_4bit = False
+            load_in_8bit = False
+            load_in_fp8 = False
+            quantization_config = None
+            kwargs.pop("quantization_config", None)
+            # Disable grouped-GEMM MoE fusion so each expert stays an individual
+            # quantized layer. Restored after the load (try/finally below).
+            _exl3_prev_moe_grouped = os.environ.get("UNSLOTH_MOE_GROUPED")
+            os.environ["UNSLOTH_MOE_GROUPED"] = "0"
+
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
                 q_load_in_4bit = quantization_config.get("load_in_4bit", False)
@@ -1734,40 +1844,70 @@ class FastModel(FastBaseModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 
-        model, tokenizer = FastBaseModel.from_pretrained(
-            model_name = model_name,
-            max_seq_length = max_seq_length,
-            dtype = _get_dtype(dtype),
-            load_in_4bit = load_in_4bit_kwargs,
-            load_in_8bit = load_in_8bit_kwargs,
-            load_in_16bit = load_in_16bit,
-            full_finetuning = full_finetuning,
-            token = token,
-            device_map = device_map,
-            trust_remote_code = trust_remote_code,
-            revision = revision if not is_peft else None,
-            model_types = model_types,
-            tokenizer_name = tokenizer_name,
-            auto_model = auto_model,
-            use_gradient_checkpointing = use_gradient_checkpointing,
-            supports_sdpa = supports_sdpa,
-            whisper_language = whisper_language,
-            whisper_task = whisper_task,
-            auto_config = model_config,
-            offload_embedding = offload_embedding,
-            float32_mixed_precision = float32_mixed_precision,
-            # Pass vLLM/inference parameters
-            fast_inference = fast_inference,
-            gpu_memory_utilization = gpu_memory_utilization,
-            float8_kv_cache = float8_kv_cache,
-            random_state = random_state,
-            max_lora_rank = max_lora_rank,
-            disable_log_stats = disable_log_stats,
-            load_in_fp8 = load_in_fp8,
-            text_only = load_text_only,
-            *args,
-            **kwargs,
-        )
+        try:
+            model, tokenizer = FastBaseModel.from_pretrained(
+                model_name = model_name,
+                max_seq_length = max_seq_length,
+                dtype = _get_dtype(dtype),
+                load_in_4bit = load_in_4bit_kwargs,
+                load_in_8bit = load_in_8bit_kwargs,
+                load_in_16bit = load_in_16bit,
+                full_finetuning = full_finetuning,
+                token = token,
+                device_map = device_map,
+                trust_remote_code = trust_remote_code,
+                revision = revision if not is_peft else None,
+                model_types = model_types,
+                tokenizer_name = tokenizer_name,
+                auto_model = auto_model,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                supports_sdpa = supports_sdpa,
+                whisper_language = whisper_language,
+                whisper_task = whisper_task,
+                auto_config = model_config,
+                offload_embedding = offload_embedding,
+                float32_mixed_precision = float32_mixed_precision,
+                # Pass vLLM/inference parameters
+                fast_inference = fast_inference,
+                gpu_memory_utilization = gpu_memory_utilization,
+                float8_kv_cache = float8_kv_cache,
+                random_state = random_state,
+                max_lora_rank = max_lora_rank,
+                disable_log_stats = disable_log_stats,
+                load_in_fp8 = load_in_fp8,
+                text_only = load_text_only,
+                *args,
+                **kwargs,
+            )
+        finally:
+            # Always restore UNSLOTH_MOE_GROUPED, even if the load raised.
+            if _exl3_plan is not None:
+                if _exl3_prev_moe_grouped is None:
+                    os.environ.pop("UNSLOTH_MOE_GROUPED", None)
+                else:
+                    os.environ["UNSLOTH_MOE_GROUPED"] = _exl3_prev_moe_grouped
+
+        # Stamp EXL3 quant states onto the freshly loaded layers so Unsloth's
+        # LoRA kernels recognize them as quantized and reconstruct via the
+        # trellis kernel. No-op for non-EXL3 loads.
+        if _exl3_plan is not None:
+            from ..exllama import finalize_exl3_model, finalize_exl3_experts
+
+            # Rebuild fused MoE experts before stamping quant states.
+            _n_experts = finalize_exl3_experts(
+                model,
+                _exl3_plan.checkpoint_dir,
+                compute_dtype = _get_dtype(dtype),
+            )
+            _n_exl3 = finalize_exl3_model(
+                model,
+                compute_dtype = _get_dtype(dtype),
+            )
+            _moe_note = f", rebuilt {_n_experts} MoE expert matrix(es)" if _n_experts else ""
+            print(
+                f"Unsloth: Loaded EXL3 model ({_exl3_plan.config.label()}) - "
+                f"stamped {_n_exl3} quantized layer(s){_moe_note}."
+            )
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

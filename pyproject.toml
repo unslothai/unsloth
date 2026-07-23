@@ -73,6 +73,10 @@ triton = [
     "triton-windows ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 
+exllama = [
+    "exllamav3>=0.0.5",
+]
+
 huggingfacenotorch = [
     "unsloth_zoo>=2026.7.4",
     "wheel>=0.42.0",
