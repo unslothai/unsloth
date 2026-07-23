@@ -120,7 +120,9 @@ def _runtime_target_is_gfx906() -> bool:
     on a mixed host, so a non-gfx906 selection is never mis-identified as gfx906
     (and downgraded to rocm6.3). Mixed gfx906+dGPU hosts opt in with the env var.
     """
-    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) so the
+    # feature-flag suffix does not defeat the exact comparison (mirrors device_type.py).
+    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
     if override:
         return override == "gfx906"
     return set(_detect_amd_gfx_codes()) == {"gfx906"}
@@ -1926,7 +1928,7 @@ def _ensure_rocm_torch() -> None:
     # Strix override is skipped when it is set.
     _gfx906_arch_override = (
         os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or ""
-    ).strip().lower() == "gfx906"
+    ).strip().lower().split(":")[0] == "gfx906"
 
     # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
     # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
@@ -1976,13 +1978,12 @@ def _ensure_rocm_torch() -> None:
                 )
 
     # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
-    # the generic bitsandbytes wheel (no gfx906 kernels) even when the index is
-    # pinned. An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 is authoritative and needs no
-    # probe; otherwise only probe when no explicit torch-index pin is set -- a pin
-    # means "don't second-guess me" (and gfx probing is asserted-off there).
-    _runtime_is_gfx906 = _gfx906_arch_override or (
-        _explicit_rocm_torch_index_url() is None and _runtime_target_is_gfx906()
-    )
+    # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
+    # an explicit torch-index pin: a gfx906 host that pins rocm6.3 (without also
+    # setting UNSLOTH_ROCM_GFX_ARCH) would otherwise reinstall the prebuilt bnb wheel
+    # over the user's source-built gfx906 bnb. So a pin suppresses only the torch
+    # reroute (_gfx906_override below), NOT the gfx906 detection for the bnb skip.
+    _runtime_is_gfx906 = _gfx906_arch_override or _runtime_target_is_gfx906()
     # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
     # host ROCm version would otherwise pick a newer, kernel-less index -- and never
     # over an explicit pin or an active Strix reroute (the pin/Strix path installs

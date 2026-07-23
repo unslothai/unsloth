@@ -262,10 +262,22 @@ run_install_cmd_retry() {
 # clobber a user's source-built bnb (the only 4-bit path on this arch) on every
 # `studio update`. So skip the auto-install and leave whatever bnb is present.
 # _gfx906_target is set during torch-index resolution; also honor an explicit
-# UNSLOTH_ROCM_GFX_ARCH so a pinned-index install still skips.
+# UNSLOTH_ROCM_GFX_ARCH so a pinned-index install still skips. The override is
+# normalized (gfx906:sramecc-:xnack- -> gfx906) so a copied HIP gcnArchName counts.
 _is_gfx906_bnb_skip() {
     [ "${_gfx906_target:-false}" = true ] && return 0
-    [ "$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')" = "gfx906" ] && return 0
+    _bnb_gfx_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    _bnb_gfx_env=${_bnb_gfx_env%%:*}
+    [ "$_bnb_gfx_env" = "gfx906" ] && return 0
+    # A pinned index (UNSLOTH_TORCH_INDEX_URL/_FAMILY) skips the reroute block that
+    # sets _gfx906_target, so a real gfx906 host with a pinned rocm6.3 index and no
+    # UNSLOTH_ROCM_GFX_ARCH would otherwise clobber a source-built bnb. Probe here
+    # in that gap; skip only when gfx906 is the SOLE distinct arch (mixed hosts
+    # opt in via the env var, mirroring the reroute block's de-dup rule).
+    if [ -z "$_bnb_gfx_env" ] && [ "${_torch_index_pinned:-false}" = true ]; then
+        _bnb_gfx_probe=$(_probe_amd_gfx_arch | awk 'NF && !seen[$0]++')
+        [ "$_bnb_gfx_probe" = "gfx906" ] && return 0
+    fi
     return 1
 }
 
@@ -3223,7 +3235,10 @@ case "$_torch_index_leaf" in
         # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
         # MI50 / Radeon VII path and must win over Strix probe-order detection on a
         # mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set.
+        # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) so the
+        # feature-flag suffix does not defeat the exact gfx906 comparisons below.
         _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        _gfx906_env=${_gfx906_env%%:*}
         _strix_gfx=""
         if [ "$_gfx906_env" != "gfx906" ]; then
             case "$_runtime_gfx" in
@@ -3279,6 +3294,14 @@ case "$_torch_index_leaf" in
             _gfx906_uniq=$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++')
             [ "$_gfx906_uniq" = "gfx906" ] && _gfx906_target=true
         fi
+        # gfx906 always trains from the PyTorch rocm6.3 wheels, never the Radeon repo
+        # (repo.radeon.com wheels carry no gfx906 BLAS kernels). Clear the Radeon
+        # marketing-name flag as soon as gfx906 is the target -- even when the host
+        # already picks rocm6.0-6.3 and the reroute below is a no-op -- so a Radeon VII
+        # does not divert to the radeon branch on those versions.
+        if [ "$_gfx906_target" = true ]; then
+            _amd_gpu_radeon=false
+        fi
         if [ "$_gfx906_target" = true ] && ! _rocm_leaf_below "$_torch_index_leaf" 6 4; then
             echo "" >&2
             echo "  [WARN] gfx906 (MI50 / Radeon VII / Vega 20) detected -- routing torch to the" >&2
@@ -3298,7 +3321,7 @@ case "$_torch_index_leaf" in
             TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
             TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
-            _amd_gpu_radeon=false
+            # (_amd_gpu_radeon already cleared above for every gfx906 target.)
         fi
         ;;
 esac

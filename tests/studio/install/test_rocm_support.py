@@ -826,8 +826,10 @@ class TestEnsureRocmTorch:
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
         """An explicit gfx wheel-index pin is authoritative: install from it verbatim
-        with torch 2.11, and never re-probe gfx codes to second-guess it (host ROCm 6.4
-        would otherwise pick the rocm6.4 wheel / trigger the Strix re-route)."""
+        with torch 2.11, and the pin must not be second-guessed (host ROCm 6.4 would
+        otherwise pick the rocm6.4 wheel / trigger the Strix re-route). The gfx probe
+        may run for the bnb-skip flag, but returning a Strix arch must not reroute the
+        pinned torch index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"  # cpu torch -> reinstall
@@ -836,9 +838,8 @@ class TestEnsureRocmTorch:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
-                    # Would raise if the Strix block ran (it is skipped on an explicit pin).
                     with patch.object(
-                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]
                     ):
                         _ensure_rocm_torch()
         assert mock_pip.call_count == 1
@@ -931,7 +932,8 @@ class TestEnsureRocmTorch:
     def test_gfx_pin_over_installed_pre211_rocm_reinstalls(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
-        """A gfx* pin (2.11 line) over an installed pre-2.11 +rocm6.4 build reinstalls."""
+        """A gfx* pin (2.11 line) over an installed pre-2.11 +rocm6.4 build reinstalls.
+        The gfx probe may run for the bnb-skip flag but must not alter the pinned index."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"6.4.12345|2.10.0+rocm6.4\n"
@@ -941,7 +943,7 @@ class TestEnsureRocmTorch:
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
                     with patch.object(
-                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]
                     ):
                         _ensure_rocm_torch()
         torch_call = str(mock_pip.call_args_list[0])
@@ -1027,8 +1029,10 @@ class TestEnsureRocmTorch:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
+                    # The gfx probe may run for the bnb-skip flag; returning a Strix
+                    # arch must not reroute the pinned torch index.
                     with patch.object(
-                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1151"]
                     ):
                         _ensure_rocm_torch()
         torch_call = str(mock_pip.call_args_list[0])
@@ -1197,6 +1201,11 @@ class TestGfx906LegacyReroute:
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1100")
         with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"]):
             assert stack_mod._runtime_target_is_gfx906() is False
+        # A copied HIP gcnArchName (gfx906:sramecc-:xnack-) normalizes to gfx906
+        # (Codex #4: the feature-flag suffix must not defeat the exact comparison).
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906:sramecc-:xnack-")
+        with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = []):
+            assert stack_mod._runtime_target_is_gfx906() is True
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
@@ -1383,10 +1392,69 @@ class TestGfx906LegacyReroute:
         # gfx906 target -> generic bnb wheel skipped.
         assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
 
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    @patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx906"])
+    def test_gfx906_bnb_skipped_on_pinned_index_without_env_override(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, monkeypatch
+    ):
+        """Codex #2: a real gfx906 host that pins the ROCm index but does NOT set
+        UNSLOTH_ROCM_GFX_ARCH must still skip the prebuilt bnb wheel -- the pin
+        suppresses only the torch reroute, not the probe-driven gfx906 detection
+        used for the bnb skip (otherwise `studio update` clobbers source-built bnb)."""
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"\n"  # cpu torch -> reinstall from the pinned index
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = mock_probe):
+                _ensure_rocm_torch()
+        # torch is (re)installed from the pinned rocm6.3 index...
+        assert any("rocm6.3" in str(c) for c in mock_pip.call_args_list)
+        # ...but the prebuilt bnb wheel is never installed (probe saw sole gfx906).
+        assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
+
     def test_install_sh_gfx906_env_suppresses_strix(self):
         """install.sh must skip the Strix reroute when UNSLOTH_ROCM_GFX_ARCH=gfx906."""
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         assert 'if [ "$_gfx906_env" != "gfx906" ]; then' in source
+
+    def test_install_sh_gfx906_normalizes_override_and_clears_radeon(self):
+        """install.sh must (Codex #4) strip a gfx906:… feature suffix before the exact
+        comparison, and (Codex #3) clear the Radeon marketing flag for every gfx906
+        target -- not only when the >=6.4 reroute fires -- so a Radeon VII already on
+        rocm6.3 does not divert to the repo.radeon.com branch."""
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        # Override normalization (both the reroute block and the bnb-skip helper).
+        assert "_gfx906_env=${_gfx906_env%%:*}" in source
+        assert "_bnb_gfx_env=${_bnb_gfx_env%%:*}" in source
+        # Radeon flag cleared as soon as gfx906 is the target, before the leaf gate.
+        block_start = source.find("MI50 / Radeon VII (gfx906")
+        assert block_start >= 0
+        block = source[block_start : block_start + 3200]
+        clear_pos = block.find("_amd_gpu_radeon=false")
+        leaf_gate_pos = block.find("_rocm_leaf_below")
+        assert clear_pos >= 0 and leaf_gate_pos >= 0
+        # the unconditional clear must precede the >=6.4 leaf-gated reroute.
+        assert clear_pos < leaf_gate_pos
+
+    def test_install_sh_bnb_skip_probes_under_pin(self):
+        """install.sh _is_gfx906_bnb_skip must probe gfx906 when the index is pinned
+        (Codex #1): a pin skips the reroute block that sets _gfx906_target, so the
+        helper falls back to _probe_amd_gfx_arch to catch a real gfx906 host."""
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        start = source.find("_is_gfx906_bnb_skip() {")
+        assert start >= 0
+        body = source[start : start + 900]
+        assert "_torch_index_pinned" in body
+        assert "_probe_amd_gfx_arch" in body
 
     def test_install_sh_has_gfx906_reroute(self):
         """install.sh must mirror the Python reroute: honor UNSLOTH_ROCM_GFX_ARCH,
@@ -1395,7 +1463,7 @@ class TestGfx906LegacyReroute:
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         block_start = source.find("MI50 / Radeon VII (gfx906")
         assert block_start >= 0
-        block = source[block_start : block_start + 3200]
+        block = source[block_start : block_start + 3800]
         assert "_gfx906_target=" in block
         assert "UNSLOTH_ROCM_GFX_ARCH" in block
         assert "/rocm6.3" in block
