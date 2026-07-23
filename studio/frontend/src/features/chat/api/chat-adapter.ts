@@ -1563,7 +1563,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        ? reconcilePersistedGpuIds(
+            config.selectedGpuIds,
+            config.selectedGpuIndexKind ?? null,
+          )
         : null;
     const effectiveMemoryMode = config.ggufMemoryMode ?? null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context

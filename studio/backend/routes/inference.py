@@ -4443,6 +4443,7 @@ async def _load_model_impl(
                     n_layers = llama_backend.n_layers,
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
+                    requested_gpu_ids = llama_backend.requested_gpu_ids,
                     gguf_memory_mode = llama_backend.requested_memory_mode,
                 )
         else:
@@ -4513,6 +4514,10 @@ async def _load_model_impl(
 
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+        # Provenance for the backend's post-download DiffusionGemma guard.
+        # None keeps direct-call safety; the route sets the exact namespace when
+        # it validates an explicit pin below.
+        _gpu_ids_are_vulkan_ordinals: Optional[bool] = None
 
         # GGUF supports gpu_ids: validate the pick up front (before the training
         # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
@@ -4588,6 +4593,7 @@ async def _load_model_impl(
             if get_device() == DeviceType.CUDA and (
                 not _gguf_vulkan_build or _gguf_confirmed_diffusion
             ):
+                _gpu_ids_are_vulkan_ordinals = False
                 # The CUDA resolver only validates the physical-ID mask; it can't tell the
                 # llama.cpp build is CPU-only. A CPU-only build ignores CUDA_VISIBLE_DEVICES,
                 # so the pin would silently run on CPU while /load reports gpu_ids active --
@@ -4611,6 +4617,9 @@ async def _load_model_impl(
                 except ValueError as exc:
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
             else:
+                _gpu_ids_are_vulkan_ordinals = bool(
+                    _gguf_vulkan_build and not _gguf_confirmed_diffusion
+                )
                 # Non-CUDA GGUF host or a Vulkan build on any host: the CUDA resolver can't
                 # enumerate llama.cpp's devices, so gate on the backend probe and reject
                 # before teardown (#7188). A torch-less Vulkan host reports CPU but its
@@ -4754,6 +4763,7 @@ async def _load_model_impl(
                 n_cpu_moe = request.n_cpu_moe,
                 tensor_split = request.tensor_split,
                 gpu_ids = effective_gpu_ids,
+                gpu_ids_are_vulkan_ordinals = _gpu_ids_are_vulkan_ordinals,
                 memory_mode = request.gguf_memory_mode,
                 n_parallel = _n_parallel,
             )
@@ -4929,6 +4939,7 @@ async def _load_model_impl(
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
+                requested_gpu_ids = llama_backend.requested_gpu_ids,
                 gguf_memory_mode = llama_backend.requested_memory_mode,
             )
 
@@ -6147,6 +6158,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
+                requested_gpu_ids = llama_backend.requested_gpu_ids,
                 gguf_memory_mode = llama_backend.requested_memory_mode,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,

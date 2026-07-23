@@ -1254,6 +1254,52 @@ def test_remote_diffusion_load_rejects_vulkan_ordinal_after_download(tmp_path):
         )
 
 
+def test_confirmed_diffusion_allows_physical_gpu_id_on_vulkan_build(tmp_path):
+    """The route validates known DiffusionGemma pins as CUDA physical IDs. A
+    Vulkan llama.cpp build does not change the diffusion runner's index space."""
+    gguf = tmp_path / "diffusion.gguf"
+    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    captured = {}
+    backend._start_diffusion_server = lambda **kwargs: captured.update(kwargs) or True
+
+    assert backend.load_model(
+        gguf_path = str(gguf),
+        model_identifier = "diffusion/model",
+        speculative_type = "off",
+        gpu_ids = [1],
+        gpu_ids_are_vulkan_ordinals = False,
+    )
+    assert captured["gpu_ids"] == [1]
+
+
+def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
+    gguf = tmp_path / "renamed.gguf"
+    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._download_gguf = lambda **_kwargs: str(gguf)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    backend._start_diffusion_server = lambda **_kwargs: pytest.fail(
+        "unsupported memory mode reached the diffusion runner"
+    )
+
+    with pytest.raises(ValueError, match = "host-memory modes are not supported"):
+        backend.load_model(
+            hf_repo = "renamed/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "renamed/model",
+            speculative_type = "off",
+            memory_mode = "resident",
+        )
+
+
 @pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])
 def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
     """auto/blank/None is the allowed no-op default for diffusion. A successful load

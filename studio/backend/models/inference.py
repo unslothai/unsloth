@@ -531,7 +531,14 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU indices requested by the user before fit-time narrowing, or "
+            "None for automatic selection."
+        ),
     )
     gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
         None,
@@ -699,7 +706,14 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU indices requested by the user before fit-time narrowing, or "
+            "None for automatic selection."
+        ),
     )
     gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
         None,

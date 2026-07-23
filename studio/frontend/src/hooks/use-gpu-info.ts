@@ -17,6 +17,7 @@ export interface GpuInfo {
 
 export interface SystemGpuDevice {
   index: number;
+  indexKind: GpuIndexKind | null;
   name: string;
   memoryTotalGb: number;
   /** Free VRAM at fetch time. Degrades to the total when the utilization
@@ -26,6 +27,8 @@ export interface SystemGpuDevice {
    *  physical IDs and ggml Vulkan ordinals, but not unresolved relative IDs. */
   pinnable: boolean;
 }
+
+export type GpuIndexKind = "physical" | "vulkan";
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
@@ -90,6 +93,10 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
       index: d.index as number,
+      indexKind:
+        d.index_kind === "physical" || d.index_kind === "vulkan"
+          ? d.index_kind
+          : null,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
@@ -165,4 +172,18 @@ export function cachedPinnableGpuIndices(): number[] | null {
   const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
   // Mirrors the sheet's showGpuPicker gate: only a 2+ pinnable-GPU host can pin.
   return pinnable.length > 1 ? pinnable.map((d) => d.index) : [];
+}
+
+/** Index namespace for persisted gpu_ids. Undefined means the cache is cold;
+ * null means the current host has no single pinnable namespace. */
+export function cachedPinnableGpuIndexKind():
+  | GpuIndexKind
+  | null
+  | undefined {
+  if (!cachedSystem) return undefined;
+  const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
+  const kinds = new Set(pinnable.map((d) => d.indexKind).filter((k) => k));
+  return pinnable.length > 1 && kinds.size === 1
+    ? ([...kinds][0] as GpuIndexKind)
+    : null;
 }

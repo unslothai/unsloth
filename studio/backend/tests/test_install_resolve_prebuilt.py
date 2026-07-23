@@ -410,6 +410,7 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
         (" VULKAN ", None, True),
         ("auto", "1", True),
         (None, "true", True),
+        (None, "on", True),
         ("auto", None, False),
         ("cpu", "0", False),
     ],
@@ -426,6 +427,26 @@ def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
         else:
             monkeypatch.setenv(name, value)
     assert ilp.force_vulkan_requested() is expected
+
+
+def test_forced_vulkan_filters_cpu_fallback_before_validation():
+    vulkan = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = "llama-b9925-bin-ubuntu-vulkan-x64.tar.gz",
+        url = "https://example/vulkan",
+        source_label = "upstream",
+        install_kind = "linux-vulkan",
+    )
+    cpu = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = "llama-b9925-bin-ubuntu-x64.tar.gz",
+        url = "https://example/cpu",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+    )
+    assert ilp._vulkan_only_attempts([vulkan, cpu]) == [vulkan]
 
 
 def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():

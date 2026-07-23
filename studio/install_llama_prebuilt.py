@@ -5994,6 +5994,7 @@ def force_vulkan_requested() -> bool:
         "1",
         "true",
         "yes",
+        "on",
     )
 
 
@@ -6012,6 +6013,18 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
         has_rocm = False,
         has_intel_gpu = True,
     )
+
+
+def _vulkan_only_attempts(attempts: Iterable[AssetChoice]) -> list[AssetChoice]:
+    """Remove generic CPU fallbacks from an explicit Vulkan install."""
+    filtered = [
+        attempt
+        for attempt in attempts
+        if attempt.install_kind in ("linux-vulkan", "windows-vulkan")
+    ]
+    if not filtered:
+        raise PrebuiltFallback("no Vulkan prebuilt bundle attempts were available")
+    return filtered
 
 
 def _route_to_vulkan_prebuilt(
@@ -6115,6 +6128,7 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
+    strict_vulkan = force_vulkan_requested() and not force_cpu and not host.is_macos
     host, published_repo, published_release_tag = _route_to_vulkan_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
@@ -6146,6 +6160,16 @@ def install_prebuilt(
                 published_repo,
                 published_release_tag,
             )
+            if strict_vulkan:
+                # Upstream plans append CPU as a generic fallback. An explicit
+                # Vulkan selection must fail instead of silently installing it.
+                release_plans = [
+                    dataclasses_replace(
+                        plan,
+                        attempts = _vulkan_only_attempts(plan.attempts),
+                    )
+                    for plan in release_plans
+                ]
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):

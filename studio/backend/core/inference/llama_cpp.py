@@ -6488,6 +6488,7 @@ class LlamaCppBackend:
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
+        gpu_ids_are_vulkan_ordinals: Optional[bool] = None,
         memory_mode: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
@@ -6544,6 +6545,7 @@ class LlamaCppBackend:
             "n_cpu_moe": n_cpu_moe,
             "tensor_split": list(tensor_split) if tensor_split is not None else None,
             "gpu_ids": list(gpu_ids) if gpu_ids is not None else None,
+            "gpu_ids_are_vulkan_ordinals": gpu_ids_are_vulkan_ordinals,
             "memory_mode": memory_mode,
             "n_threads": n_threads,
             "n_gpu_layers": n_gpu_layers,
@@ -6682,11 +6684,20 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
+                if self._canonical_memory_mode(memory_mode) is not None:
+                    raise ValueError(
+                        "GGUF host-memory modes are not supported for "
+                        "DiffusionGemma models. Use Auto."
+                    )
                 # The diffusion runner pins its child by CUDA visibility mask, so a
                 # ggml Vulkan ordinal cannot be honored. The route rejects models it
                 # can classify before teardown; this covers a remote uncached GGUF
                 # whose architecture is first known after download (#7239).
-                if is_vulkan_backend and gpu_ids:
+                if (
+                    is_vulkan_backend
+                    and gpu_ids
+                    and gpu_ids_are_vulkan_ordinals is not False
+                ):
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
                         "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "

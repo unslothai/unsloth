@@ -190,7 +190,10 @@ export interface LoadModelResponse {
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU set before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
   /** GGUF host-memory placement mode the load was invoked with. */
   gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }
@@ -244,7 +247,10 @@ export interface InferenceStatusResponse {
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
    * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
   requested_context_length?: number | null;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU set before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
   /** Active GGUF host-memory placement mode (from /status). */
   gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
   n_layers?: number | null;

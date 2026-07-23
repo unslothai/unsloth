@@ -1057,7 +1057,10 @@ export function SharedComposer({
           ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
-            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
+            ? reconcilePersistedGpuIds(
+                ownConfig.selectedGpuIds,
+                ownConfig.selectedGpuIndexKind ?? null,
+              )
             : compareLoadKnobs.selectedGpuIds;
         const effectiveMemoryMode = ownConfig.ggufMemoryMode ?? null;
         // A pane's context comes from its own config only: a saved pin, or null
