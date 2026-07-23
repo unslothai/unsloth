@@ -124,9 +124,9 @@ def test_superseded_replacement_keeps_the_working_model_config():
 
 def test_throwing_callers_learn_when_their_selection_is_superseded():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    assert runtime.count(
-        'throw new Error("Model selection was superseded by a newer choice.");'
-    ) >= 2
+    assert (
+        runtime.count('throw new Error("Model selection was superseded by a newer choice.");') >= 2
+    )
 
 
 def test_shared_loading_pick_stays_visible_until_cancel_settles():
