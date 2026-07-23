@@ -7,8 +7,8 @@
 # at first app launch, not at install time, so the uninstaller used to miss it
 # and a leftover cache served a stale frontend to the next install. Runs the
 # full script against a fixture HOME (pkill/defaults stubbed via PATH, OS
-# branch picked by a stubbed uname) and asserts bundle-id paths are removed
-# while unrelated app data survives.
+# branch picked by a stubbed uname, /proc/version WSL probe force-failed) and
+# asserts bundle-id paths are removed while unrelated app data survives.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,6 +28,29 @@ assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PAS
 STUB_BIN="$_TMP_ROOT/stubbin"
 mkdir -p "$STUB_BIN"
 for _tool in pkill defaults; do
+    printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_tool"
+    chmod +x "$STUB_BIN/$_tool"
+done
+# Force the non-WSL path: with uname stubbed to Linux on a WSL host, the
+# script's `grep -qi microsoft /proc/version` probe would still fire and the
+# real WSL cleanup would touch the host's /mnt/* shortcuts and /etc profile.
+# Fail that one probe; delegate every other grep call to the real grep.
+# REAL_GREP must be an absolute path: a bare "grep" (e.g. from an alias-shaped
+# `command -v` result) would resolve back to this stub and self-exec forever.
+REAL_GREP=$(command -v grep)
+case "$REAL_GREP" in /*) ;; *) REAL_GREP=/usr/bin/grep ;; esac
+cat > "$STUB_BIN/grep" <<EOF
+#!/bin/sh
+for _a in "\$@"; do
+    [ "\$_a" = "/proc/version" ] && exit 1
+done
+exec "$REAL_GREP" "\$@"
+EOF
+chmod +x "$STUB_BIN/grep"
+# Belt and braces should the WSL branch ever be entered anyway: powershell.exe
+# exiting 0 makes its no-op path taken (and skips the /mnt/* drvfs fallback);
+# sudo exiting 0 without running its argv keeps /etc untouched.
+for _tool in powershell.exe sudo; do
     printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_tool"
     chmod +x "$STUB_BIN/$_tool"
 done
