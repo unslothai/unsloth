@@ -13,10 +13,10 @@ import {
 type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZES: Record<AvatarSize, string> = {
-  xs: "size-5 rounded-[8px] text-[9px]",
-  sm: "size-7 rounded-[10px] text-[11px]",
-  md: "size-9 rounded-[12px] text-[13px]",
-  lg: "size-12 rounded-[15px] text-[16px]",
+  xs: "size-5 rounded-[8px] text-[0.5625rem]",
+  sm: "size-7 rounded-[10px] text-[0.6875rem]",
+  md: "size-9 rounded-[12px] text-[0.8125rem]",
+  lg: "size-12 rounded-[15px] text-[1rem]",
 };
 
 const AVATAR_IMAGE_RETRY_BASE_MS = 60_000;

@@ -51,7 +51,7 @@ export function S3ConfigForm() {
         <p className="text-xs font-medium text-foreground">
           {t("studio.dataset.s3.title")}
         </p>
-        <p className="text-[10px] text-muted-foreground/80">
+        <p className="text-[0.625rem] text-muted-foreground/80">
           {t("studio.dataset.s3.description")}
         </p>
       </div>

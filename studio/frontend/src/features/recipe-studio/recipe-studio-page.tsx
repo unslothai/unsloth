@@ -670,7 +670,7 @@ export function RecipeStudioPage({
                 />
               </div>
               <div className="mt-4 space-y-2">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">
+                <p className="text-[0.6875rem] font-semibold uppercase tracking-wide text-primary">
                   Best place to start
                 </p>
                 <p className="text-sm font-semibold text-foreground">

@@ -513,7 +513,7 @@ export function UploadedFilesView() {
                 title={
                   row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
                 }
-                className="group/name flex min-w-0 flex-1 basis-[calc(100%-5rem)] items-center gap-2.5 overflow-hidden text-left sm:basis-auto"
+                className="group/name flex min-w-0 flex-1 basis-[calc(100%-80px)] items-center gap-2.5 overflow-hidden text-left sm:basis-auto"
               >
                 <span className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-border/50 bg-muted/40">
                   {row.thumb}
@@ -522,11 +522,11 @@ export function UploadedFilesView() {
                   <span className="flex min-w-0 items-center gap-2">
                     {/* Floor keeps the name visible when the chip and fixed
                       columns squeeze the cell at narrow widths. */}
-                    <span className="min-w-[3.5rem] truncate underline-offset-2 group-hover/name:underline">
+                    <span className="min-w-[56px] truncate underline-offset-2 group-hover/name:underline">
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[0.5625rem] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
                         {row.typeLabel}
                       </span>
                     ) : null}

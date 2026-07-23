@@ -126,13 +126,13 @@ export function ChatTemplateEditorDialog({
             setError(null);
           }}
           readOnly={readOnly}
-          className="min-h-[20rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
+          className="min-h-[320px] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
           rows={14}
           spellCheck={false}
           placeholder={defaultLoading ? "Loading model default..." : ""}
         />
         {readOnly ? null : (
-          <div className="flex items-center justify-between gap-3 px-0.5 text-[11px]">
+          <div className="flex items-center justify-between gap-3 px-0.5 text-[0.6875rem]">
             <span
               className={overLimit ? "text-amber-500" : "text-muted-foreground"}
             >

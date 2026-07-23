@@ -85,7 +85,7 @@ export function PillTabs({
           className={cn(
             "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
             fit ? "shrink-0" : "min-w-0 flex-1",
-            compact ? "h-7 px-2.5 text-[11px]" : "h-9 px-3 text-[12.5px]",
+            compact ? "h-7 px-2.5 text-[0.6875rem]" : "h-9 px-3 text-[0.78125rem]",
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
