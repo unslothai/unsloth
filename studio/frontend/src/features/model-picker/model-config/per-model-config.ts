@@ -67,7 +67,9 @@ export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-const STORAGE_SCHEMA_VERSION = 1;
+// v2 adds visionProjectorEnabled. Older clients must reject rather than
+// rewrite the record and silently drop its load-affecting projector intent.
+const STORAGE_SCHEMA_VERSION = 2;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
@@ -410,7 +412,10 @@ function writeMap(map: StoredMap): boolean {
   }
 }
 
-function warnDroppedFields(raw: Record<string, unknown>, version: number): void {
+function warnDroppedFields(
+  raw: Record<string, unknown>,
+  version: number,
+): void {
   if (!import.meta.env?.DEV) {
     return;
   }
@@ -430,7 +435,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     typeof partial.speculativeType === "string"
       ? canonicalizeSpeculativeType(partial.speculativeType)
       : null;
-  const speculativeType = rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
+  const speculativeType =
+    rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
   const specDraftNMax =
     speculativeType != null &&
     MTP_SPECULATIVE_TYPES.has(speculativeType) &&

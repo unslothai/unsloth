@@ -8741,9 +8741,12 @@ class LlamaCppBackend:
             return False
         if self._requested_n_ctx != int(n_ctx):
             return False
-        requested_load_mmproj = bool(load_mmproj and not extra_args_disable_mmproj(extra_args))
-        if bool(getattr(self, "_load_mmproj", True)) != requested_load_mmproj:
-            return False
+        if not self._is_diffusion:
+            requested_load_mmproj = bool(
+                load_mmproj and not extra_args_disable_mmproj(extra_args)
+            )
+            if bool(getattr(self, "_load_mmproj", True)) != requested_load_mmproj:
+                return False
 
         def _norm(value):
             if value is None:
