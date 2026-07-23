@@ -157,32 +157,61 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
       : {}),
     ...(snapshot.gpuLayers != null && snapshot.gpuLayers >= 0
       ? { gpuLayers: snapshot.gpuLayers }
-      : snapshot.gpuLayers != null && snapshot.gpuLayers < 0
+      : snapshot.gpuMemoryMode === "manual"
         ? { gpuLayers: GPU_LAYERS_AUTO }
         : {}),
     ...(snapshot.nCpuMoe != null && snapshot.nCpuMoe > 0
       ? { nCpuMoe: snapshot.nCpuMoe }
       : {}),
   };
-  return hasPresetLoadConfig(captured) ? captured : undefined;
+  return hasPresetLoadConfig(coalesceDefaultLoadKnobs(captured))
+    ? coalesceDefaultLoadKnobs(captured)
+    : undefined;
+}
+
+function coalesceDefaultLoadKnobs(
+  captured: PresetLoadConfig,
+): PresetLoadConfig {
+  const result: PresetLoadConfig = { ...captured };
+  if (normalizeMaxSeqLength(result.maxSeqLength) === DEFAULT_MAX_SEQ_LENGTH) {
+    result.maxSeqLength = null;
+  }
+  const speculativeType = normalizeSpeculativeType(result.speculativeType);
+  if (speculativeType == null || speculativeType === "auto") {
+    result.speculativeType = null;
+  }
+  if (
+    (result.gpuLayers == null || result.gpuLayers < 0) &&
+    result.gpuMemoryMode !== "manual"
+  ) {
+    delete result.gpuLayers;
+  }
+  if ((result.nCpuMoe ?? 0) === 0) {
+    delete result.nCpuMoe;
+  }
+  return result;
 }
 
 export function applyPresetLoadConfig(
   config?: PresetLoadConfig | null,
 ): void {
+  if (config == null) {
+    return;
+  }
+  const store = useChatRuntimeStore.getState();
   applyPerModelConfigToRuntime({
     ...DEFAULT_PER_MODEL_CONFIG,
-    maxSeqLength: normalizeMaxSeqLength(config?.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
-    customContextLength: config?.customContextLength ?? null,
-    kvCacheDtype: config?.kvCacheDtype ?? null,
-    speculativeType: config?.speculativeType ?? null,
-    specDraftNMax: config?.specDraftNMax ?? null,
-    tensorParallel: config?.tensorParallel ?? false,
+    maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
+    customContextLength: config.customContextLength ?? null,
+    kvCacheDtype: config.kvCacheDtype ?? null,
+    speculativeType: config.speculativeType ?? null,
+    specDraftNMax: config.specDraftNMax ?? null,
+    tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: null,
-    gpuMemoryMode: config?.gpuMemoryMode,
-    gpuLayers: config?.gpuLayers,
-    nCpuMoe: config?.nCpuMoe,
-    selectedGpuIds: null,
+    gpuMemoryMode: config.gpuMemoryMode,
+    gpuLayers: config.gpuLayers,
+    nCpuMoe: config.nCpuMoe,
+    selectedGpuIds: store.selectedGpuIds,
   });
 }
 

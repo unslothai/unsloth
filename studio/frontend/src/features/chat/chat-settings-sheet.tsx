@@ -600,7 +600,9 @@ export function ChatSettingsPanel({
       onParamsChange({
         ...applyPresetParams(params, p.params),
       });
-      applyPresetLoadConfig(p.loadConfig);
+      if (p.loadConfig) {
+        applyPresetLoadConfig(p.loadConfig);
+      }
       setActivePreset(name);
       setActivePresetSource(getPresetSource(name));
       if (p.loadConfig && params.checkpoint) {
@@ -658,9 +660,11 @@ export function ChatSettingsPanel({
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange({
-          ...applyPresetParams(params, fallbackPreset.params),
+          ...        applyPresetParams(params, fallbackPreset.params),
         });
-        applyPresetLoadConfig(fallbackPreset.loadConfig);
+        if (fallbackPreset.loadConfig) {
+          applyPresetLoadConfig(fallbackPreset.loadConfig);
+        }
         setActivePreset(fallbackPreset.name);
         setActivePresetSource("builtin-default");
       }

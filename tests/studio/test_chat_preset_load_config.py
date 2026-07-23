@@ -28,6 +28,7 @@ def test_preset_save_captures_load_config():
 
 def test_preset_apply_restores_load_config():
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
+    assert "if (p.loadConfig)" in sheet
     assert "applyPresetLoadConfig(p.loadConfig)" in sheet
 
 
@@ -42,6 +43,25 @@ def test_capture_reads_gguf_loaded_context():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
     assert "store.ggufContextLength" in source
     assert "effectiveContextLength" in source
+
+
+def test_apply_skips_missing_load_config():
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    assert "if (config == null)" in source
+    assert "selectedGpuIds: store.selectedGpuIds" in source
+    sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
+    assert "if (p.loadConfig)" in sheet
+
+
+def test_hydration_does_not_replay_preset_load_config():
+    store = _read("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
+    assert "applyPresetLoadConfig(activeDefinition.loadConfig)" not in store
+
+
+def test_capture_coalesces_default_load_knobs():
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    assert "coalesceDefaultLoadKnobs" in source
+    assert "DEFAULT_MAX_SEQ_LENGTH" in source
 
 
 def test_backend_chat_preset_accepts_load_config():
