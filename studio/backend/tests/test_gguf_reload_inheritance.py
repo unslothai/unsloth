@@ -260,6 +260,28 @@ def test_already_in_target_state_compares_effective_mmproj_state():
     )
 
 
+def test_diffusion_target_state_ignores_projector_default():
+    backend = _loaded_backend(
+        _is_diffusion = True,
+        _load_mmproj = False,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            load_mmproj = True,
+        )
+        is True
+    )
+
+
 def test_extra_args_source_default_is_none():
     backend = LlamaCppBackend()
     assert backend.extra_args_source is None
