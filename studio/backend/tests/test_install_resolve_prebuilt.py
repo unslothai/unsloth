@@ -403,6 +403,31 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
     assert ["libggml-cpu-*.so*"] not in groups
 
 
+@pytest.mark.parametrize(
+    "backend, legacy, expected",
+    [
+        ("vulkan", None, True),
+        (" VULKAN ", None, True),
+        ("auto", "1", True),
+        (None, "true", True),
+        ("auto", None, False),
+        ("cpu", "0", False),
+    ],
+)
+def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
+    monkeypatch, backend, legacy, expected
+):
+    for name, value in (
+        ("UNSLOTH_LLAMA_CPP_BACKEND", backend),
+        ("UNSLOTH_FORCE_VULKAN", legacy),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising = False)
+        else:
+            monkeypatch.setenv(name, value)
+    assert ilp.force_vulkan_requested() is expected
+
+
 def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():
     # Routing fork -> upstream also drops the fork release pin, which is in a
     # different tag namespace and would make the upstream resolver miss.
