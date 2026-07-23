@@ -166,11 +166,12 @@ function HighlightedCode({ code: source, language }: { code: string; language: s
           {markdown}
         </Streamdown>
       ) : (
-        // Same p-3 padding as the highlighted code block so there is no layout
-        // jump when shiki swaps in.
-        <pre className="m-0 whitespace-pre-wrap break-words p-3 font-mono text-xs text-muted-foreground">
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would override a
+        // <pre>'s padding and shift the content by p-3 when shiki swaps in. This
+        // keeps the same p-3 the highlighted code block gets, so there is no jump.
+        <div className="whitespace-pre-wrap break-words p-3 font-mono text-xs text-muted-foreground">
           {display}
-        </pre>
+        </div>
       )}
     </div>
   );
