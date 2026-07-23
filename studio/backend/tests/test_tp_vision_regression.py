@@ -663,6 +663,25 @@ def test_tensor_off_echo_preserves_multi_gpu_fallback():
     )
 
 
+def test_diffusion_dedupe_ignores_projector_request_default():
+    """Diffusion never uses an mmproj, so LoadRequest's true default must not
+    restart an otherwise identical diffusion runner."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    backend._is_diffusion = True
+    backend._load_mmproj = False
+
+    assert (
+        inference_routes._request_matches_loaded_settings(
+            LoadRequest(model_path = "owner/repo"),
+            backend,
+        )
+        is True
+    )
+
+
 def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
     """Tensor intent can be dropped via extras too: an explicit --split-mode layer
     matches the stored fallback extras but must still reload (reviewer.py P1, #6659)."""

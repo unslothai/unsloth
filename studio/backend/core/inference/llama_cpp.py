@@ -1379,6 +1379,7 @@ def _with_gguf_load_marker(load: Callable):
                 kwargs.get("hf_variant"),
                 require_mmproj = bool(
                     kwargs.get("is_vision")
+                    and kwargs.get("load_mmproj", True)
                     and not extra_args_disable_mmproj(kwargs.get("extra_args"))
                 ),
                 hf_token = kwargs.get("hf_token"),
@@ -5022,6 +5023,7 @@ class LlamaCppBackend:
         self._gguf_path = model_path
         self._hf_repo = hf_repo
         self._is_vision = False
+        self._load_mmproj = False
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
@@ -9524,6 +9526,7 @@ class LlamaCppBackend:
             self._effective_context_length,
             getattr(self, "_cache_type_kv", None),
             self.effective_parallel_slots,
+            bool(self.load_mmproj),
         )
 
     def _gguf_file_identity(self, path) -> Optional[tuple]:

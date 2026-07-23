@@ -658,6 +658,14 @@ def test_start_diffusion_server_resets_tensor_parallel():
     assert "self._tensor_parallel = False" in src
 
 
+def test_start_diffusion_server_resets_projector_state():
+    # Diffusion never launches an mmproj. A previous text-only vision load can
+    # leave the flag false, while LoadRequest defaults true; startup must publish
+    # the diffusion runner's canonical false state so identical loads dedupe.
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
+    assert "self._load_mmproj = False" in src
+
+
 def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
     # The route-level reload dedupe mirrors the backend: for a loaded diffusion
     # model it compares the request against the single recorded device, not the

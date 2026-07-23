@@ -3231,7 +3231,10 @@ def _request_matches_loaded_settings(
         request.load_mmproj,
         effective_extra,
     )
-    if requested_load_mmproj != bool(llama_backend.load_mmproj):
+    if (
+        not llama_backend.is_diffusion
+        and requested_load_mmproj != bool(llama_backend.load_mmproj)
+    ):
         return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
@@ -3627,11 +3630,12 @@ async def _maybe_auto_switch_model(
             if auto_switch_on and not reload_only
             else None
         )
+        last = get_last_unloaded_model()
+        stashed_load_mmproj: Optional[bool] = None
         if resolved is None:
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
-            last = get_last_unloaded_model()
             # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
             # leaves the GGUF slot empty but is the live model, so don't resurrect
             # the stale GGUF over it (that load would tear the active model down).
@@ -3642,19 +3646,33 @@ async def _maybe_auto_switch_model(
             ):
                 return
             if len(last) >= 4:
-                target_id, variant, override_id, load_mmproj = last[:4]
+                target_id, variant, override_id, stashed_load_mmproj = last[:4]
             elif len(last) == 3:
                 target_id, variant, override_id = last
-                load_mmproj = True
+                stashed_load_mmproj = True
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
-                load_mmproj = True
+                stashed_load_mmproj = True
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
             # advertised repo id, the launch-override key and the public model id.
             target_id, variant, override_id = resolved
+            # A named request normally resolves even when it is restoring the
+            # model just freed by idle-unload. Preserve the effective projector
+            # state for that exact path/quant rather than silently re-enabling it.
+            if last and len(last) >= 4:
+                last_target, last_variant, last_override, last_load_mmproj = last[:4]
+                target_matches = (
+                    str(target_id).casefold() == str(last_target).casefold()
+                    or str(override_id).casefold() == str(last_override).casefold()
+                )
+                variant_matches = str(variant or "").casefold() == str(
+                    last_variant or ""
+                ).casefold()
+                if target_matches and variant_matches:
+                    stashed_load_mmproj = bool(last_load_mmproj)
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
@@ -3735,8 +3753,8 @@ async def _maybe_auto_switch_model(
                         # Apply this model's saved launch flags so the swap honors the config.
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        if resolved is None:
-                            load_kwargs["load_mmproj"] = load_mmproj
+                        if stashed_load_mmproj is not None:
+                            load_kwargs["load_mmproj"] = stashed_load_mmproj
                         if override.get("llama_extra_args") is not None:
                             load_kwargs["llama_extra_args"] = override["llama_extra_args"]
                         if override.get("max_seq_length") is not None:
