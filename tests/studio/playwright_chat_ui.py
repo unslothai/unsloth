@@ -988,7 +988,12 @@ with sync_playwright() as p:
             opt_out,
         )
 
-    def assert_chat_typography(label, typography, *, opt_out = False):
+    def assert_chat_typography(
+        label,
+        typography,
+        *,
+        opt_out = False,
+    ):
         if typography.get("error"):
             fail(typography["error"])
         if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
