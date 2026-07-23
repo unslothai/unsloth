@@ -830,6 +830,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+  const initialThreadLookupCompleteRef = useRef(false);
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -844,22 +845,28 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     [model1, model2, onModelsChange],
   );
 
+  const refreshCompareThreadIds = useCallback(async () => {
+    const threads = await listStoredChatThreads({ pairId });
+    setModel1ThreadId(
+      threads.find((t) => t.modelType === "model1" || t.modelType === "base")
+        ?.id,
+    );
+    setModel2ThreadId(
+      threads.find((t) => t.modelType === "model2" || t.modelType === "lora")
+        ?.id,
+    );
+  }, [pairId]);
+
+  // Resolve the persisted pair independently of submission state. A send can
+  // begin before IndexedDB returns; cancelling that first lookup would make the
+  // panes silently create new threads and lose the existing compare context.
   useEffect(() => {
-    if (compareRunning || compareSubmitting) return;
     let isActive = true;
-    listStoredChatThreads({ pairId })
-      .then((threads) => {
+    initialThreadLookupCompleteRef.current = false;
+    refreshCompareThreadIds()
+      .then(() => {
         if (!isActive) return;
-        setModel1ThreadId(
-          threads.find(
-            (t) => t.modelType === "model1" || t.modelType === "base",
-          )?.id,
-        );
-        setModel2ThreadId(
-          threads.find(
-            (t) => t.modelType === "model2" || t.modelType === "lora",
-          )?.id,
-        );
+        initialThreadLookupCompleteRef.current = true;
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -869,7 +876,24 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning, compareSubmitting]);
+  }, [refreshCompareThreadIds]);
+
+  // Once the initial lookup is known, refresh IDs after completed sends so
+  // newly-created compare threads become the next turn's continuation targets.
+  useEffect(() => {
+    if (
+      compareRunning ||
+      compareSubmitting ||
+      !initialThreadLookupCompleteRef.current
+    ) {
+      return;
+    }
+    void refreshCompareThreadIds().catch((error) => {
+      if (!isExpectedBackgroundChatStorageError(error)) {
+        throw error;
+      }
+    });
+  }, [compareRunning, compareSubmitting, refreshCompareThreadIds]);
 
   const model1LoraBase = getLoraBaseModel(loraModels, model1);
   const model2LoraBase = getLoraBaseModel(loraModels, model2);
