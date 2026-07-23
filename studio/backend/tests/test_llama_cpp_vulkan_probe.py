@@ -221,9 +221,7 @@ def test_validate_vulkan_gpu_ids(tmp_path, monkeypatch):
     # and --device Vulkan<i> pins: in-range picks pass, out-of-range / dup /
     # unverifiable (empty probe) picks raise.
     binary = _make_vulkan_install(tmp_path)
-    monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
     rows = [
         _row(0, 15 * GIB, is_igpu = 0, total_bytes = 16 * GIB, name = "RX 9070 XT"),
         _row(1, 7 * GIB, is_igpu = 0, total_bytes = 8 * GIB, name = "RX 480"),

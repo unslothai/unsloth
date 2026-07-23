@@ -108,9 +108,7 @@ def test_vulkan_build_with_failed_probe_keeps_picks_unsupported(main_module, mon
     assert info["gguf_gpu_ids_supported"] is False
 
 
-def test_vulkan_inventory_survives_gpu_cache_refreshes_without_reprobing(
-    main_module, monkeypatch
-):
+def test_vulkan_inventory_survives_gpu_cache_refreshes_without_reprobing(main_module, monkeypatch):
     # /api/system pollers (floating monitor, Resources tab) expire the 10s GPU
     # cache continuously; the Vulkan inventory spawns a probe subprocess, so it
     # rides its own longer TTL instead of re-probing on every refresh.

@@ -3416,9 +3416,7 @@ class LlamaCppBackend:
         devices, since an unverifiable pick could land on the wrong card.
         """
         if len(set(gpu_ids)) != len(gpu_ids):
-            raise ValueError(
-                f"Invalid gpu_ids {gpu_ids}: duplicate GPU IDs are not allowed."
-            )
+            raise ValueError(f"Invalid gpu_ids {gpu_ids}: duplicate GPU IDs are not allowed.")
         rows = LlamaCppBackend._run_vulkan_probe()
         valid = {row["index"] for row in rows}
         if not valid:

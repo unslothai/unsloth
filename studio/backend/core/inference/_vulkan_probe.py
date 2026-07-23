@@ -60,7 +60,12 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
                 desc = base.ggml_backend_dev_description(dev)
                 if desc:
                     # Tabs/newlines would corrupt the line protocol; spaces are safe.
-                    names[i] = desc.decode("utf-8", errors = "replace").replace("\t", " ").replace("\n", " ").strip()
+                    names[i] = (
+                        desc.decode("utf-8", errors = "replace")
+                        .replace("\t", " ")
+                        .replace("\n", " ")
+                        .strip()
+                    )
     except Exception:
         # Best-effort: any failure degrades to "discrete"/"unnamed" so the
         # memory readings still get through instead of crashing the probe.
