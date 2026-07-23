@@ -20,9 +20,7 @@ APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "ut
 RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").read_text(
     encoding = "utf-8"
 )
-CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(
-    encoding = "utf-8"
-)
+CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
