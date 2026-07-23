@@ -24,6 +24,7 @@ const initialState: TrainingRuntimeState = {
   startError: null,
   startModelName: null,
   startDatasetName: null,
+  startHfToken: null,
   startProjectName: null,
   startFromResume: false,
   sseConnected: false,
@@ -131,7 +132,15 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
     startDatasetName,
     startFromResume = false,
     startProjectName = null,
-  ) => set({ startModelName, startDatasetName, startProjectName, startFromResume }),
+    startHfToken = null,
+  ) =>
+    set({
+      startModelName,
+      startDatasetName,
+      startHfToken,
+      startProjectName,
+      startFromResume,
+    }),
   setSseConnected: (value) => set({ sseConnected: value }),
   setLastEventId: (value) => set({ lastEventId: value }),
 

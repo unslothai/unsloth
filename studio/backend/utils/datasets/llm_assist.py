@@ -17,6 +17,7 @@ import time
 from itertools import islice
 from typing import Any, Optional
 
+from hub.utils.hf_tokens import hf_token_arg
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -387,7 +388,7 @@ def fetch_hf_dataset_card(
     try:
         from huggingface_hub import DatasetCard
 
-        card = DatasetCard.load(dataset_name, token = hf_token)
+        card = DatasetCard.load(dataset_name, token = hf_token_arg(hf_token))
         readme = card.text or ""
 
         # Truncate at sentence boundary

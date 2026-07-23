@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ from fastapi import HTTPException
 
 from hub.schemas.datasets import CheckFormatRequest, LocalDatasetItem
 from hub.services.datasets import cache_inventory, downloads, formatting, local
-from hub.utils import download_manifest, download_registry, state_dir
+from hub.utils import download_manifest, download_registry, llm_assist, state_dir
 
 
 class _Upload:
@@ -259,6 +260,78 @@ def test_check_format_rejects_invalid_path_as_400():
         formatting.check_format_response(CheckFormatRequest(dataset_name = "../../etc/passwd"))
 
     assert exc_info.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "expected_token"),
+    ((None, False), ("request-token", "request-token")),
+)
+def test_check_format_remote_preview_uses_only_request_hf_token(
+    monkeypatch, tmp_path, hf_token, expected_token
+):
+    api_tokens = []
+    load_tokens = []
+
+    class _Api:
+        def list_repo_files(self, *_args, **kwargs):
+            api_tokens.append(kwargs.get("token"))
+            return ["train.jsonl"]
+
+    class _Dataset(list):
+        @classmethod
+        def from_list(cls, rows):
+            return cls(rows)
+
+    def _load_dataset(**kwargs):
+        load_tokens.append(kwargs.get("token"))
+        return _Dataset([{"text": "hello"}])
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setattr(formatting, "resolve_dataset_path", lambda _name: tmp_path / "missing")
+    monkeypatch.setattr(
+        formatting,
+        "check_dataset_format",
+        lambda *_args, **_kwargs: {
+            "requires_manual_mapping": True,
+            "detected_format": "text",
+            "columns": ["text"],
+        },
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = _Api))
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(Dataset = _Dataset, load_dataset = _load_dataset),
+    )
+
+    formatting.check_format_response(
+        CheckFormatRequest(dataset_name = "Org/Data"),
+        hf_token,
+    )
+
+    assert api_tokens == [expected_token]
+    assert load_tokens == [expected_token]
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "expected_token"),
+    ((None, False), ("request-token", "request-token")),
+)
+def test_dataset_card_uses_only_request_hf_token(monkeypatch, hf_token, expected_token):
+    tokens = []
+
+    class _DatasetCard:
+        @classmethod
+        def load(cls, *_args, **kwargs):
+            tokens.append(kwargs.get("token"))
+            return SimpleNamespace(text = "", data = None)
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(DatasetCard = _DatasetCard))
+
+    llm_assist._fetch_hf_dataset_card("Org/Data", hf_token)
+
+    assert tokens == [expected_token]
 
 
 def test_dataset_download_status_preserves_idle_shape():

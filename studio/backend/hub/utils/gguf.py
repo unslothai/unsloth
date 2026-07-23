@@ -13,6 +13,8 @@ from typing import Optional
 
 from loggers import get_logger
 
+from hub.utils.hf_tokens import hf_token_arg
+
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
 
@@ -447,7 +449,7 @@ def list_gguf_variants(
             return (*cached, None)
 
     try:
-        info = HfApi(token = hf_token).model_info(
+        info = HfApi(token = hf_token_arg(hf_token)).model_info(
             repo_id,
             files_metadata = True,
             timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
