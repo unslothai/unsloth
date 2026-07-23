@@ -21,7 +21,10 @@ import {
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
 import { clearComposerDraft } from "../utils/composer-draft";
-import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
+import {
+  isPreStreamRunActive,
+  requestPromptQueueStop,
+} from "../utils/prompt-queue-boundary";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -168,7 +171,13 @@ export function useChatSidebarItems(options?: {
 function cancelIfRunning(threadId: string): void {
   const { runningByThreadId, cancelByThreadId } =
     useChatRuntimeStore.getState();
-  if (!runningByThreadId[threadId]) return;
+  if (
+    !runningByThreadId[threadId] &&
+    !isPreStreamRunActive(threadId) &&
+    !(threadId in cancelByThreadId)
+  ) {
+    return;
+  }
   cancelByThreadId[threadId]?.();
 }
 

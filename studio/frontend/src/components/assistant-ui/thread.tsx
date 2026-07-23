@@ -993,18 +993,17 @@ function stopAllPromptQueueRuns() {
 }
 
 function handlePromptQueueRunFailed(threadId?: string | null) {
-  if (!threadId) {
-    return;
+  if (threadId) {
+    const failedRun = findPromptQueueRunByThreadIds([threadId]);
+    if (failedRun && promptQueueActiveRunIds.has(failedRun.id)) {
+      const activeItem = getActivePromptQueueItem(failedRun);
+      if (activeItem?.dispatched) {
+        deletePromptQueueRun(failedRun);
+      }
+    }
   }
-  const failedRun = findPromptQueueRunByThreadIds([threadId]);
-  if (!failedRun || !promptQueueActiveRunIds.has(failedRun.id)) {
-    return;
-  }
-  const activeItem = getActivePromptQueueItem(failedRun);
-  if (!activeItem?.dispatched) {
-    return;
-  }
-  deletePromptQueueRun(failedRun);
+  // A non-queued send can release the only pre-stream reservation too. Pump
+  // every ready queue even when no active queued run matches this event.
   requestPromptQueuePumpIfReady();
 }
 

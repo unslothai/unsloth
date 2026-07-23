@@ -9,7 +9,7 @@ import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import {
   notifyPreStreamRunFailed,
-  releasePreStreamRunReservation,
+  releasePreStreamRunForThread,
 } from "../utils/prompt-queue-boundary";
 import { consumeQueuedChatRunSettings } from "../utils/queued-chat-run-settings";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
@@ -2535,7 +2535,7 @@ export function createOpenAIStreamAdapter(
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const threadKey = resolvedThreadId || "__default";
-        releasePreStreamRunReservation();
+        releasePreStreamRunForThread(threadKey);
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -2615,7 +2615,7 @@ export function createOpenAIStreamAdapter(
         if (abortSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      releasePreStreamRunReservation();
+      releasePreStreamRunForThread(threadKey);
       runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
