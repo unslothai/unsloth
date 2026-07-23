@@ -16,11 +16,10 @@ def _read(relative: str) -> str:
 
 def test_unload_is_awaited_and_failure_blocks_replacement():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    assert "await unloadModel({ model_path: model.id });" in runtime
-    assert "await unloadModel({ model_path: model.id }).catch" not in runtime
+    assert "await unloadModel({ model_path: backendLoadModelId });" in runtime
     cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
     cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
-    assert cancel.index("await unloadModel({ model_path: model.id });") < cancel.index(
+    assert cancel.index("await unloadModel({ model_path: backendLoadModelId });") < cancel.index(
         "await run.completionPromise;"
     )
     assert "const stopped = await cancelLoadRun(activeRun, true);" in runtime
@@ -75,7 +74,7 @@ def test_external_selection_invalidates_older_local_intent():
     assert external.index("invalidatePendingModelSelection()") < external.index(
         "store.setCheckpoint(value, null);"
     )
-    assert external.index("await cancelLoading();") < external.index(
+    assert external.index("await cancelLoading(true);") < external.index(
         "store.setCheckpoint(value, null);"
     )
     assert "isModelSelectionIntentCurrent(selectionIntentId)" in external
@@ -97,7 +96,9 @@ def test_cancelled_preflight_does_not_open_late_owned_dialogs():
     assert runtime.count("signal: abortCtrl.signal") >= 3
     assert "if (signal?.aborted)" in remote_code
     assert "if (options.signal?.aborted)" in hf_token
-    assert hf_token.index("await validateHfToken(normalized)") < hf_token.index(
+    assert hf_token.index(
+        "await validateHfToken(normalized, options.signal)"
+    ) < hf_token.index(
         "if (options.signal?.aborted)"
     )
     assert remote_code.index("await getRemoteCodeScan") < remote_code.index("if (signal?.aborted)")
@@ -107,7 +108,10 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "let sharedModelLoadHandle: SharedModelLoadHandle | null = null;" in runtime
     assert "sharedModelLoadHandle = {" in runtime
-    assert "return shared ? shared.cancel() : Promise.resolve(false);" in runtime
+    assert (
+        "return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);"
+        in runtime
+    )
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
     assert "const stopped = await shared.cancel(true);" in runtime
     assert "shared.run.previousCheckpointWasUnloaded" in runtime
@@ -157,8 +161,26 @@ def test_successful_rollback_requires_the_replacement_to_unload_it():
 
 def test_abort_signal_reaches_validation_and_scan_cleanup():
     api = _read("features/chat/api/chat-api.ts")
+    hf_api = _read("features/hf-auth/api.ts")
+    hf_token = _read("features/hf-auth/confirm-token.ts")
+    remote_api = _read("features/security/api/remote-code-api.ts")
     remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
     assert api.count("signal: options?.signal") >= 2
+    assert "validateHfToken(normalized, options.signal)" in hf_token
+    assert "signal?: AbortSignal" in hf_api
+    assert "signal," in hf_api
+    assert "getRemoteCodeScan(modelName, hfToken, signal)" in remote_code
+    assert "signal?: AbortSignal" in remote_api
+    assert "signal," in remote_api
     assert "const discardScanDownloads = () =>" in remote_code
     aborted = remote_code.split("if (signal?.aborted)", 1)[1].split("// No custom code", 1)[0]
     assert "discardScanDownloads();" in aborted
+
+
+def test_cancellation_targets_an_inflight_rollback_load():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "backendLoadModelId: string | null;" in runtime
+    assert "const backendLoadModelId = run.backendLoadModelId ?? model.id;" in runtime
+    assert "run.backendLoadModelId = modelId;" in runtime
+    rollback = runtime.split("const rollbackResponse = await loadModel(", 1)[0]
+    assert "run.backendLoadModelId = previousCheckpoint;" in rollback

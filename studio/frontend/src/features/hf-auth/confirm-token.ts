@@ -38,8 +38,11 @@ export async function prepareHfTokenForUse(
 
   let validation;
   try {
-    validation = await validateHfToken(normalized);
+    validation = await validateHfToken(normalized, options.signal);
   } catch {
+    if (options.signal?.aborted) {
+      return { proceed: false, token: normalized };
+    }
     // Validation is advisory. Let the real operation retain its own error.
     return { proceed: true, token: normalized };
   }

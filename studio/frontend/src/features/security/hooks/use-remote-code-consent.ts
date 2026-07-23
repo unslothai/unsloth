@@ -31,7 +31,7 @@ export async function confirmRemoteCodeIfNeeded({
 }: ConfirmArgs): Promise<boolean> {
   let scan: RemoteCodeScan;
   try {
-    scan = await getRemoteCodeScan(modelName, hfToken);
+    scan = await getRemoteCodeScan(modelName, hfToken, signal);
   } catch {
     scan = {
       requiresTrustRemoteCode: Boolean(requiresTrustRemoteCode),
