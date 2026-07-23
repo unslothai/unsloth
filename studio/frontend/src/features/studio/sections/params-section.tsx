@@ -36,6 +36,7 @@ import {
   CONTEXT_LENGTHS,
   CPT_TARGET_MODULES,
   LR_SCHEDULER_OPTIONS,
+  MLX_OPTIMIZER_OPTIONS,
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
@@ -203,6 +204,42 @@ export function ParamsSection(): ReactElement {
   useEffect(() => {
     setCtxInput(String(store.contextLength));
   }, [store.contextLength]);
+
+  // On Apple Silicon the MLX trainer supports a different optimizer set than
+  // the CUDA/bitsandbytes list, so offer the MLX names there.
+  const isMac = platformDeviceType === "mac";
+  const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
+
+  // On Mac, the MLX backend normalizes every CUDA/bitsandbytes optimizer in
+  // OPTIMIZER_OPTIONS (including the shared default) to plain AdamW, so show
+  // AdamW for those to keep the control truthful and non-blank. Any other
+  // value -- an MLX optimizer the user picked, or an unrecognized/non-canonical
+  // imported one -- is shown as-is rather than mislabeled as AdamW, since the
+  // backend would run or reject it on its own terms. Non-Mac display unchanged.
+  const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
+    (o) => o.value === store.optimizerType,
+  );
+  const selectedOptimizer =
+    isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
+
+  // LoftQ is not supported on MLX (the backend rejects it), so clear a stale
+  // selection to lora on Apple Silicon -- whether persisted, applied from a
+  // model default, or imported -- so the backend never receives it.
+  const setLoraVariant = store.setLoraVariant;
+  useEffect(() => {
+    if (isMac && store.loraVariant === "loftq") {
+      setLoraVariant("lora");
+    }
+  }, [isMac, store.loraVariant, setLoraVariant]);
+
+  // Packing is not supported on MLX (the backend forces it off), so clear it on
+  // Apple Silicon -- the checkbox is disabled and the flag is never sent.
+  const setPacking = store.setPacking;
+  useEffect(() => {
+    if (isMac && store.packing) {
+      setPacking(false);
+    }
+  }, [isMac, store.packing, setPacking]);
 
   const trySetContextLength = (input: string): number | null => {
     const n = Number(input);
@@ -706,8 +743,9 @@ export function ParamsSection(): ReactElement {
                       <button
                         key={opt.value}
                         type="button"
+                        disabled={isMac && opt.value === "loftq"}
                         onClick={() => store.setLoraVariant(opt.value)}
-                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
                           store.loraVariant === opt.value
                             ? "border-ring-strong bg-primary/5"
                             : "border-border hover:border-foreground/20"
@@ -715,7 +753,9 @@ export function ParamsSection(): ReactElement {
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
                         <p className="text-ui-10 text-muted-foreground">
-                          {opt.desc}
+                          {isMac && opt.value === "loftq"
+                            ? "Not supported on Apple Silicon"
+                            : opt.desc}
                         </p>
                       </button>
                     ))}
@@ -765,7 +805,11 @@ export function ParamsSection(): ReactElement {
                     label={t("studio.params.optimizer")}
                     tooltip={
                       <>
-                        {t("studio.params.optimizerTooltip")}{" "}
+                        {t(
+                          isMac
+                            ? "studio.params.optimizerTooltipMlx"
+                            : "studio.params.optimizerTooltip",
+                        )}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
@@ -778,14 +822,14 @@ export function ParamsSection(): ReactElement {
                     }
                   >
                     <Select
-                      value={store.optimizerType}
+                      value={selectedOptimizer}
                       onValueChange={(v) => store.setOptimizerType(v)}
                     >
                       <SelectTrigger className="w-48">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {OPTIMIZER_OPTIONS.map((opt) => (
+                        {optimizerOptions.map((opt) => (
                           <SelectItem key={opt.value} value={opt.value}>
                             {formatOptimizerLabel(opt.value, opt.label, t)}
                           </SelectItem>
@@ -1105,14 +1149,37 @@ export function ParamsSection(): ReactElement {
                       <Checkbox
                         id="packing"
                         checked={store.packing}
+                        disabled={isMac}
                         onCheckedChange={(v) => store.setPacking(!!v)}
                       />
                       <label
                         htmlFor="packing"
-                        className="text-xs cursor-pointer text-muted-foreground"
+                        className={`text-xs text-muted-foreground ${
+                          isMac
+                            ? "cursor-not-allowed opacity-60"
+                            : "cursor-pointer"
+                        }`}
                       >
                         {t("studio.params.enablePacking")}
                       </label>
+                      {isMac && (
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <button
+                              type="button"
+                              className="text-foreground/70 hover:text-foreground"
+                            >
+                              <HugeiconsIcon
+                                icon={InformationCircleIcon}
+                                className="size-3"
+                              />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Packing is not supported on Apple Silicon (MLX).
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </div>
                   )}
                   {!store.isEmbeddingModel && !isCpt && !isRawText && (
