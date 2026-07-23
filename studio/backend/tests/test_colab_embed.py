@@ -24,6 +24,22 @@ def test_is_colab_proxy_url_requires_https_proxy():
     assert colab._is_colab_proxy_url("http://127.0.0.1:8888", 8888) is False
 
 
+def test_ready_card_html_does_not_open_colab_proxy_in_new_tab():
+    """Colab proxy hosts 404 as top-level tabs (#7349 reporter); never window.open them."""
+    html = colab._ready_card_html("https://8888-test.prod.colab.dev/", 8888)
+    assert "window.open" not in html
+    assert 'href="https://8888-test.prod.colab.dev/"' not in html
+    assert "start(cloudflare=True)" in html
+    assert "Scroll down" in html
+
+
+def test_ready_card_html_keeps_open_button_for_localhost():
+    html = colab._ready_card_html("http://localhost:8888", 8888)
+    assert "window.open" in html
+    assert 'href="http://localhost:8888"' in html
+    assert "Open Unsloth Studio" in html
+
+
 def test_embed_kernel_port_iframe_uses_colab_helper():
     colab_output = MagicMock()
     google_colab = SimpleNamespace(output = colab_output)

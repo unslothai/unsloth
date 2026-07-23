@@ -55,28 +55,56 @@ def get_colab_url(port: int = 8888) -> str:
     return fallback
 
 
-def show_link(port: int = 8888, *, _url: "str | None" = None):
-    """Display a styled clickable link to the UI.
-
-    *_url* is an optional pre-fetched proxy URL; pass it to avoid a second eval_js round-trip.
-    """
-    from IPython.display import display, HTML
-
-    url = _url if _url is not None else get_colab_url(port)
-
-    # Truncated display URL; try/except so an odd URL shape still renders the link.
+def _short_colab_url(url: str, port: int) -> str:
+    """Truncated display form of a Colab proxy URL; falls back to the full URL."""
     try:
         port_prefix = f"{port}-"
         idx = url.index(port_prefix)
         next_dash = url.index("-", idx + len(port_prefix))
-        short_url = url[: next_dash + 1] + "..."
+        return url[: next_dash + 1] + "..."
     except (ValueError, IndexError):
-        short_url = url
+        return url
 
-    # Plain-text line so the URL shows even if HTML display fails.
-    logger.info(f"🌐 Unsloth Studio URL: {url}")
 
-    html = f"""
+def _is_colab_proxy_url(url: str, port: int) -> bool:
+    """True when *url* looks like a real Colab kernel proxy, not a localhost fallback."""
+    return bool(url and isinstance(url, str) and url.startswith("https://") and str(port) in url)
+
+
+def _ready_card_html(url: str, port: int) -> str:
+    """Branded ready card for the in-notebook Studio view.
+
+    Colab ``*.prod.colab.dev`` proxy URLs are session-scoped and return HTTP 404 when
+    opened as a top-level tab / from another device (browser storage partitioning).
+    Never put those URLs behind ``window.open`` — embed in-cell instead, and point
+    users at ``start(cloudflare=True)`` for a shareable new-window link.
+    """
+    short_url = _short_colab_url(url, port)
+    if _is_colab_proxy_url(url, port):
+        return f"""
+    <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
+                border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
+        <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
+                   display: flex; align-items: center; gap: 12px;">
+            <img src="https://github.com/unslothai/unsloth/raw/main/studio/frontend/public/unsloth-gem.png"
+                 height="48" style="display:block;">
+            Unsloth Studio is Ready!
+        </h2>
+        <p style="color: #333333; margin: 0 0 8px 0; font-size: 15px; font-weight: bold;">
+            Scroll down to use Studio in this Colab cell. Colab proxy links cannot be opened
+            in a new tab or on another device (they 404 outside this notebook session).
+        </p>
+        <p style="color: #333333; margin: 0; font-size: 14px; font-weight: bold;">
+            Need a real shareable / new-window URL? Re-run with
+            <code style="background:#f3f3f3;padding:2px 6px;border-radius:4px;">start(cloudflare=True)</code>.
+        </p>
+        <p style="color: #666666; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
+            {short_url}
+        </p>
+    </div>
+    """
+
+    return f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
         <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 26px; font-weight: 800;
@@ -100,7 +128,21 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
         </p>
     </div>
     """
-    display(HTML(html))
+
+
+def show_link(port: int = 8888, *, _url: "str | None" = None):
+    """Display a styled ready card for the UI.
+
+    For Colab kernel proxy URLs this is informational only (no new-tab open) — those
+    hosts 404 outside the notebook cell. Non-proxy URLs keep a clickable open button.
+
+    *_url* is an optional pre-fetched proxy URL; pass it to avoid a second eval_js round-trip.
+    """
+    from IPython.display import display, HTML
+
+    url = _url if _url is not None else get_colab_url(port)
+    logger.info(f"🌐 Unsloth Studio URL: {url}")
+    display(HTML(_ready_card_html(url, port)))
 
 
 def _bootstrap_password_pending() -> bool:
@@ -222,22 +264,6 @@ def _shareable_link_html(cloudflare_url: str) -> str:
     """
 
 
-def _short_colab_url(url: str, port: int) -> str:
-    """Truncate a Colab proxy URL for display; falls back to the full URL."""
-    try:
-        port_prefix = f"{port}-"
-        idx = url.index(port_prefix)
-        next_dash = url.index("-", idx + len(port_prefix))
-        return url[: next_dash + 1] + "..."
-    except (ValueError, IndexError):
-        return url
-
-
-def _is_colab_proxy_url(url: str, port: int) -> bool:
-    """True when *url* looks like a real Colab kernel proxy, not a localhost fallback."""
-    return bool(url and isinstance(url, str) and url.startswith("https://") and str(port) in url)
-
-
 # Height for serve_kernel_port_as_iframe (~82vh on a 1080p screen, clamped).
 _COLAB_IFRAME_HEIGHT = 900
 
@@ -302,11 +328,11 @@ def _embed_html_iframe(url: str, port: int) -> bool:
 
 
 def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
-    """Render the Unsloth link card + iframe for *port*.
+    """Render the Unsloth ready card + iframe for *port*.
 
-    Always shows a clickable link card (``show_link``) so the proxy URL is
-    visible even when iframe embedding fails. Uses Colab's
-    ``serve_kernel_port_as_iframe`` first; raw HTML iframe is the fallback.
+    Shows an informational card (no new-tab open for Colab proxy URLs — those
+    404 outside the notebook). Prefer Colab's ``serve_kernel_port_as_iframe``;
+    raw HTML iframe is the fallback. Cloudflare cards stay clickable.
     """
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
