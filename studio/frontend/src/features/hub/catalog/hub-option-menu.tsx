@@ -173,7 +173,7 @@ export function HubOptionMenu<T extends string>({
           aria-label={ariaLabel}
           title={title}
           className={cn(
-            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2.5 rounded-full pl-3 pr-2.5 text-[12.5px] transition-colors",
+            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2.5 rounded-full pl-3 pr-2.5 text-[0.78125rem] transition-colors",
             "focus-visible:border-border focus-visible:ring-0 focus-visible:ring-offset-0",
             className,
           )}
@@ -205,7 +205,7 @@ export function HubOptionMenu<T extends string>({
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[14px] p-1 ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-16px))] rounded-[14px] p-1 ring-0",
           contentClassName,
         )}
       >

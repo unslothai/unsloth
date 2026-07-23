@@ -1556,7 +1556,7 @@ export function ChatProvidersSettings({
         </div>
         <p
           id="chat-connections-description"
-          className="max-w-md text-[11px] leading-snug text-muted-foreground/65 sm:text-right"
+          className="max-w-md text-[0.6875rem] leading-snug text-muted-foreground/65 sm:text-right"
         >
           When off, all connections are disabled.
         </p>
@@ -1616,7 +1616,7 @@ export function ChatProvidersSettings({
                           <span className="truncate text-sm font-medium text-foreground">
                             {provider.name}
                           </span>
-                          <span className="shrink-0 rounded-[6px] border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-[10px] leading-none text-control-accent">
+                          <span className="shrink-0 rounded-[6px] border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-[0.625rem] leading-none text-control-accent">
                             {provider.models.length}{" "}
                             {provider.models.length === 1 ? "model" : "models"}
                           </span>
@@ -1631,7 +1631,7 @@ export function ChatProvidersSettings({
                           ) : null}
                         </div>
                         <div
-                          className="mt-1 truncate text-[11px] leading-4 text-muted-foreground/80"
+                          className="mt-1 truncate text-[0.6875rem] leading-4 text-muted-foreground/80"
                           title={provider.models.join(", ")}
                         >
                           {modelSummary}
@@ -1702,7 +1702,7 @@ export function ChatProvidersDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         overlayClassName="bg-black/50 backdrop-blur-sm"
-        className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[44rem]"
+        className="flex max-h-[90dvh] w-[96vw] flex-col gap-0 overflow-y-auto p-8 sm:max-w-none md:max-w-[704px]"
       >
         <DialogHeader className="sr-only">
           <DialogTitle>Connections</DialogTitle>

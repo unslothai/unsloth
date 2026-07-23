@@ -135,11 +135,11 @@ function McpServerCard({
                   <p className="truncate text-sm font-semibold text-foreground">
                     {summaryTitle}
                   </p>
-                  <Badge variant="outline" className="rounded-full text-[10px] uppercase">
+                  <Badge variant="outline" className="rounded-full text-[0.625rem] uppercase">
                     {transportLabel}
                   </Badge>
                   {toolsLabel ? (
-                    <Badge variant="secondary" className="rounded-full text-[10px]">
+                    <Badge variant="secondary" className="rounded-full text-[0.625rem]">
                       {toolsLabel}
                     </Badge>
                   ) : null}
@@ -680,7 +680,7 @@ export function ToolProfileDialog({
                     <p className="text-xs font-semibold uppercase text-muted-foreground">
                       {providerName}
                     </p>
-                    <Badge variant="outline" className="rounded-full text-[10px]">
+                    <Badge variant="outline" className="rounded-full text-[0.625rem]">
                       {toolNames.length}
                     </Badge>
                   </div>

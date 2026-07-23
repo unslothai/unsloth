@@ -112,8 +112,8 @@ export function WindowTitlebar({
   const { pinned, togglePinned } = useSidebarPin();
   const sidebarWidth = showSidebarSurface
     ? pinned
-      ? "var(--studio-sidebar-expanded-width,17.5rem)"
-      : "var(--studio-sidebar-collapsed-width,3rem)"
+      ? "var(--studio-sidebar-expanded-width,280px)"
+      : "var(--studio-sidebar-collapsed-width,48px)"
     : "0px";
   const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
 
@@ -273,7 +273,7 @@ export function WindowTitlebar({
                     draggable={false}
                     className="size-5 shrink-0 rounded-[6px] object-cover"
                   />
-                  <span className="min-w-0 truncate text-[13px] font-semibold leading-none tracking-[0.01em] text-nav-fg">
+                  <span className="min-w-0 truncate text-[0.8125rem] font-semibold leading-none tracking-[0.01em] text-nav-fg">
                     Unsloth Studio
                   </span>
                 </div>
@@ -325,7 +325,7 @@ export function WindowTitlebar({
           className="pointer-events-auto absolute top-0 h-full"
           style={{
             left: sidebarWidth,
-            right: "calc(var(--studio-window-control-inset,112px) + 0.5rem)",
+            right: "calc(var(--studio-window-control-inset,112px) + 8px)",
           }}
           onMouseDown={handleDragMouseDown}
           onDoubleClick={handleDragDoubleClick}

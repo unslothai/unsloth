@@ -207,7 +207,7 @@ function DetailRow({
 }) {
   if (value == null || value === "") return null;
   return (
-    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-[13px]">
+    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-[0.8125rem]">
       <span className="text-muted-foreground">{label}</span>
       <span
         className={cn(
@@ -336,7 +336,7 @@ export const MessageResponseDetailsSheet: FC<{
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
+        className="w-[min(448px,100vw)] p-0 sm:max-w-[448px]"
       >
         <SheetHeader className="border-b p-4">
           <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">

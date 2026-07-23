@@ -102,7 +102,7 @@ export function FloatingMonitor() {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
-            className="settings-surface fixed bottom-4 right-4 w-64 max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm pointer-events-auto cursor-default select-none"
+            className="settings-surface fixed bottom-4 right-4 w-64 max-w-[calc(100vw-32px)] resize overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm pointer-events-auto cursor-default select-none"
           >
             <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
               <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
@@ -139,7 +139,7 @@ export function FloatingMonitor() {
               className="space-y-3 overflow-hidden"
             >
               <div className="space-y-1">
-                <div className="flex justify-between text-[11px] font-medium font-mono">
+                <div className="flex justify-between text-[0.6875rem] font-medium font-mono">
                   <span>{t("settings.resources.liveMonitor.ram")}</span>
                   <span
                     className={cn("tabular-nums", usageTextClass(ramPercent))}
@@ -159,7 +159,7 @@ export function FloatingMonitor() {
 
               {hasGpu && (
                 <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] font-medium font-mono">
+                  <div className="flex justify-between text-[0.6875rem] font-medium font-mono">
                     <span className="truncate flex-1 pr-2">
                       {t("settings.resources.liveMonitor.vram")}{" "}
                       {devices.length > 1

@@ -186,7 +186,7 @@ export function OnDeviceFoldersDialog({
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
           <DialogHeader className="border-b border-border/60 px-5 py-4">
-            <DialogTitle className="text-[15px]">
+            <DialogTitle className="text-[0.9375rem]">
               On-device locations
             </DialogTitle>
             <DialogDescription className="sr-only">
@@ -197,7 +197,7 @@ export function OnDeviceFoldersDialog({
 
           <div className="space-y-4 px-5 py-4">
             <div className="rounded-[14px] border border-border/70 bg-muted/20 p-3">
-              <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-foreground">
+              <div className="mb-2 flex items-center gap-2 text-[0.75rem] font-medium text-foreground">
                 <HugeiconsIcon
                   icon={FolderAddIcon}
                   strokeWidth={1.75}
@@ -222,7 +222,7 @@ export function OnDeviceFoldersDialog({
                       void handleAdd(path);
                     }}
                     placeholder="Paste model folder or file path"
-                    className="field-soft h-9 rounded-full pl-9 pr-3 font-mono text-[12px] placeholder:font-sans"
+                    className="field-soft h-9 rounded-full pl-9 pr-3 font-mono text-[0.75rem] placeholder:font-sans"
                   />
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -252,7 +252,7 @@ export function OnDeviceFoldersDialog({
                     size="sm"
                     onClick={() => void handleAdd(path)}
                     disabled={!path.trim() || pending !== null}
-                    className="h-9 rounded-full px-3 text-[12.5px]"
+                    className="h-9 rounded-full px-3 text-[0.78125rem]"
                   >
                     {pending === "add" ? (
                       <Spinner className="size-3.5" />
@@ -271,14 +271,14 @@ export function OnDeviceFoldersDialog({
             </div>
 
             {error ? (
-              <div className="rounded-[10px] border border-destructive/20 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">
+              <div className="rounded-[10px] border border-destructive/20 bg-destructive/5 px-3 py-2 text-[0.75rem] text-destructive">
                 {error}
               </div>
             ) : null}
 
             <div className="overflow-hidden rounded-[14px] border border-border/70">
               <div className="flex h-10 items-center justify-between border-b border-border/60 px-3">
-                <span className="text-[12px] font-medium text-foreground">
+                <span className="text-[0.75rem] font-medium text-foreground">
                   Indexed locations
                 </span>
                 <Tooltip>
@@ -305,12 +305,12 @@ export function OnDeviceFoldersDialog({
 
               <div className="max-h-64 overflow-y-auto">
                 {loading ? (
-                  <div className="flex h-24 items-center justify-center gap-2 text-[12px] text-muted-foreground">
+                  <div className="flex h-24 items-center justify-center gap-2 text-[0.75rem] text-muted-foreground">
                     <Spinner className="size-3.5" />
                     Loading locations...
                   </div>
                 ) : sortedFolders.length === 0 ? (
-                  <div className="flex h-28 flex-col items-center justify-center gap-2 px-4 text-center text-[12px] text-muted-foreground">
+                  <div className="flex h-28 flex-col items-center justify-center gap-2 px-4 text-center text-[0.75rem] text-muted-foreground">
                     <HugeiconsIcon
                       icon={FolderOpenIcon}
                       strokeWidth={1.75}
@@ -327,8 +327,8 @@ export function OnDeviceFoldersDialog({
                         className={cn(
                           "grid min-h-12 w-full items-center gap-3 border-b border-border/50 px-3 py-2 last:border-b-0",
                           isTauri
-                            ? "grid-cols-[2rem_minmax(0,1fr)_2rem_2rem]"
-                            : "grid-cols-[2rem_minmax(0,1fr)_2rem]",
+                            ? "grid-cols-[2rem_minmax(0,1fr)_2rem_32px]"
+                            : "grid-cols-[2rem_minmax(0,1fr)_32px]",
                         )}
                       >
                         <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">
@@ -340,14 +340,14 @@ export function OnDeviceFoldersDialog({
                         </div>
                         <div className="min-w-0 overflow-hidden">
                           <p
-                            className="block w-full truncate text-[12.5px] font-medium text-foreground"
+                            className="block w-full truncate text-[0.78125rem] font-medium text-foreground"
                             title={pathTail(folder.path)}
                           >
                             {pathTail(folder.path)}
                           </p>
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <p className="block w-full truncate font-mono text-[10.5px] text-muted-foreground">
+                              <p className="block w-full truncate font-mono text-[0.65625rem] text-muted-foreground">
                                 {folder.path}
                               </p>
                             </TooltipTrigger>

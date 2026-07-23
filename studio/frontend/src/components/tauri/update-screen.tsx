@@ -72,7 +72,7 @@ function LogViewer({ logs }: { logs: string[] }) {
   return (
     <div
       ref={scrollRef}
-      className="mt-4 h-[180px] w-full max-w-xl overflow-y-auto rounded-lg border border-border/40 bg-muted/30 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground"
+      className="mt-4 h-[180px] w-full max-w-xl overflow-y-auto rounded-lg border border-border/40 bg-muted/30 p-3 font-mono text-[0.6875rem] leading-relaxed text-muted-foreground"
     >
       {logs.map((line, i) => (
         <div key={i} className="whitespace-pre-wrap break-all">
@@ -197,7 +197,7 @@ export function UpdateScreen({
             readOnly
             value={manualReport}
             onFocus={(event) => event.currentTarget.select()}
-            className="mt-2 h-32 w-full max-w-xl resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+            className="mt-2 h-32 w-full max-w-xl resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[0.625rem] text-muted-foreground"
           />
         )}
 

@@ -77,7 +77,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
             />
           </span>
           <div className="space-y-1">
-            <p className="text-[15px] font-semibold text-foreground">
+            <p className="text-[0.9375rem] font-semibold text-foreground">
               Give this project context
             </p>
             <p className="max-w-sm text-sm text-muted-foreground">
@@ -94,7 +94,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           >
             Add sources
           </Button>
-          <p className="text-[11px] text-muted-foreground">Or drop files here</p>
+          <p className="text-[0.6875rem] text-muted-foreground">Or drop files here</p>
         </div>
       ) : (
         <div className="flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5">
