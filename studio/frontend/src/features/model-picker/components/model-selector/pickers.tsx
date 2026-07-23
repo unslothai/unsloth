@@ -828,6 +828,10 @@ function GgufVariantExpander({
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
     repoId,
   );
+  // Repo-level true only proves that some mmproj exists; the loader may reject
+  // it for this quant/model family. Absence is authoritative text-only
+  // evidence, while presence remains unknown until load.
+  const variantVisionHint = hasVision ? undefined : false;
 
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
@@ -840,9 +844,17 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
         isGguf: true,
+        isVision: variantVisionHint,
       });
     },
-    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
+    [
+      repoId,
+      isLocalPath,
+      onSelect,
+      sourceOverride,
+      nativeContext,
+      variantVisionHint,
+    ],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -1062,6 +1074,7 @@ function GgufVariantExpander({
                     expectedBytes,
                     contextLength: nativeContext,
                     isGguf: true,
+                    isVision: variantVisionHint,
                   })
                 }
               />
@@ -2098,7 +2111,8 @@ export function HubModelPicker({
   const [pinnedQuantValidation, setPinnedQuantValidation] = useState<{
     validated: boolean;
     downloaded: ReadonlySet<string>;
-  }>({ validated: false, downloaded: new Set() });
+    visionByRepo: ReadonlyMap<string, boolean>;
+  }>({ validated: false, downloaded: new Set(), visionByRepo: new Map() });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
       const key = pinKey(repoId, quant);
@@ -2127,20 +2141,32 @@ export function HubModelPicker({
             hfToken || undefined,
             { preferLocalCache: true },
           );
-          return normalizeGgufVariantsResponse(response)
-            .variants.filter((variant) => variant.downloaded === true)
-            .map((variant) => pinKey(repoId, variant.quant));
+          const normalized = normalizeGgufVariantsResponse(response);
+          return {
+            repoId,
+            hasVision: normalized.hasVision,
+            downloaded: normalized.variants
+              .filter((variant) => variant.downloaded === true)
+              .map((variant) => pinKey(repoId, variant.quant)),
+          };
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row
           // is safer than claiming a missing file is downloaded.
-          return [];
+          return { repoId, hasVision: undefined, downloaded: [] };
         }
       }),
     ).then((groups) => {
       if (!cancelled) {
         setPinnedQuantValidation({
           validated: true,
-          downloaded: new Set(groups.flat()),
+          downloaded: new Set(groups.flatMap((group) => group.downloaded)),
+          visionByRepo: new Map(
+            groups.flatMap((group) =>
+              group.hasVision === undefined
+                ? []
+                : [[group.repoId, group.hasVision] as const],
+            ),
+          ),
         });
       }
     });
@@ -2765,6 +2791,10 @@ export function HubModelPicker({
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
+    const validatedHasVision =
+      pinnedQuantValidation.visionByRepo.get(entry.repoId);
+    const pinnedVisionHint =
+      validatedHasVision === false ? false : undefined;
     return (
       <div key={optionKey} className={downloadedRowShellClassName(isSelected)}>
         <button
@@ -2776,6 +2806,8 @@ export function HubModelPicker({
               isLora: false,
               ggufVariant: entry.quant,
               isDownloaded: true,
+              isGguf: true,
+              isVision: pinnedVisionHint,
             })
           }
           className={cn(
@@ -2816,6 +2848,7 @@ export function HubModelPicker({
                   ggufVariant: entry.quant,
                   isDownloaded: true,
                   isGguf: true,
+                  isVision: pinnedVisionHint,
                 })
               }
             />

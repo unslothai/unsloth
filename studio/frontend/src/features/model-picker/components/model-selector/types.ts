@@ -37,6 +37,8 @@ export interface ModelSelectorChangeMeta {
   /** Direct local .gguf file picked without a variant (custom folder / LM
    *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
+  /** Known model vision capability. Undefined means unknown, not text-only. */
+  isVision?: boolean;
   config?: PerModelConfig;
   forceReload?: boolean;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
