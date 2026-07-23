@@ -346,7 +346,25 @@ class TestSandboxEnvIsolation:
         # A git-suffixed but unresolved (user-writable) dir is NOT trusted.
         assert str(fake_git) not in parts
 
-    def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
+    def test_git_cmd_shim_extension_added_to_pathext(self, monkeypatch, tmp_path):
+        """A host git resolved as a .cmd shim stays resolvable under the
+        restricted PATHEXT (cwd lookup is disabled separately)."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        shim_dir = tmp_path / "scoop" / "shims"
+        shim_dir.mkdir(parents = True)
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(shim_dir / "git.cmd")
+        )
+        env = _build_safe_env(str(tmp_path))
+        assert str(shim_dir) in env["PATH"].split(os.pathsep)
+        assert env["PATHEXT"] == ".EXE;.COM;.CMD"
+
+    def test_no_default_current_directory_in_exe_path_set_on_windows(
+        self, monkeypatch, tmp_path
+    ):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
         import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env

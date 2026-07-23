@@ -2530,12 +2530,15 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows Git installs live outside System32; inherit only the dir of the
     # git the HOST shell resolves (never a name-matched, possibly user-writable
     # dir) so bare `git` resolves without weakening the sandbox PATH (#7317).
+    git_ext = ""
     if sys.platform == "win32":
         git_exe = shutil.which("git")
         if git_exe:
             git_dir = os.path.dirname(git_exe)
             if os.path.isabs(git_dir):
                 path_entries.append(git_dir)
+                # A .cmd/.bat git shim needs its extension in PATHEXT below.
+                git_ext = os.path.splitext(git_exe)[1].upper()
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
@@ -2557,7 +2560,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
-        env["PATHEXT"] = ".EXE;.COM"
+        pathext = ".EXE;.COM"
+        if git_ext and git_ext not in (".EXE", ".COM"):
+            # Keep the host git launcher (e.g. a .CMD shim) resolvable.
+            pathext += ";" + git_ext
+        env["PATHEXT"] = pathext
         # cmd/CreateProcess search cwd before PATH for bare names; disable so
         # a workdir rg.exe/git.exe cannot shadow auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
