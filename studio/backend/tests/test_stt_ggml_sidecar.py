@@ -67,7 +67,6 @@ def test_custom_repo_ids_are_rejected():
 
 def test_curated_ids_mirror_transformers_sidecar():
     from core.inference.stt_sidecar import STT_MODELS
-
     assert list(GGML_STT_MODELS.keys()) == list(STT_MODELS.keys())
 
 
@@ -190,7 +189,7 @@ def test_slim_guard_flags_missing_ggml_links(monkeypatch, tmp_path):
 
 def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
     names = ["libggml.so.0", "libggml-base.so.0"]
-    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
+    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
     assert ggml_module.slim_runtime_intact(binary) is True
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
     assert ggml_module.ensure_engine_available() == binary
@@ -434,6 +433,36 @@ def test_unloaded_sidecar_reports_nothing_resident():
     sidecar.unload()  # no-op, must not raise
 
 
+def test_update_maintenance_unloads_and_blocks_new_loads(monkeypatch):
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self):
+            self.running = True
+
+        def poll(self):
+            return None if self.running else 0
+
+        def terminate(self):
+            self.running = False
+
+        def wait(self, timeout = None):
+            return 0
+
+    monkeypatch.setattr(ggml_module, "forget_pid", lambda _pid: None)
+    sidecar = GgmlSttSidecar()
+    sidecar._process = FakeProcess()
+    sidecar._model_id = "small"
+
+    with sidecar.update_maintenance() as model_was_active:
+        assert model_was_active is True
+        assert sidecar.loaded_model is None
+        with pytest.raises(SttEngineUnavailableError, match = "being updated"):
+            sidecar.load("small")
+
+    assert sidecar._update_in_progress is False
+
+
 def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
     # The spawned server must be adopted for the terminate_all backstop and
     # forgotten once this sidecar has reaped it.
@@ -519,7 +548,7 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
 
 def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatch, tmp_path):
     names = ["libggml.so.0", "libggml-base.so.0"]
-    binary = _slim_install(tmp_path, with_ggml=True, linked_libraries=names)
+    binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
     (Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(
         json.dumps({"backend": "slim"})
     )
@@ -539,7 +568,7 @@ def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatc
         def terminate(self):
             pass
 
-        def wait(self, timeout=None):
+        def wait(self, timeout = None):
             return 0
 
     monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
@@ -549,7 +578,7 @@ def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatc
     monkeypatch.setattr(
         GgmlSttSidecar,
         "_wait_for_server",
-        staticmethod(lambda process, port, cancel_event=None: None),
+        staticmethod(lambda process, port, cancel_event = None: None),
     )
 
     sidecar = GgmlSttSidecar()

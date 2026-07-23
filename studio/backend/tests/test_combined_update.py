@@ -254,6 +254,7 @@ def test_status_payload_is_exact_superset_of_legacy_fields(monkeypatch, tmp_path
     assert st["llama_update_available"] is True
     assert st["whisper"]["update_available"] is True
     assert st["whisper"]["latest_tag"] == "v1.9.2-unsloth.1"
+    assert st["update_component"] == "llama"
 
 
 def test_status_union_whisper_only_surfaces_update(monkeypatch, tmp_path):
@@ -264,6 +265,11 @@ def test_status_union_whisper_only_surfaces_update(monkeypatch, tmp_path):
     assert st["llama_update_available"] is False
     assert st["whisper"]["update_available"] is True
     assert st["update_available"] is True
+    assert st["update_component"] == "whisper"
+    assert st["installed_tag"] == "b9518"
+    assert st["latest_tag"] == "b9518"
+    assert st["whisper"]["installed_tag"] == "v1.9.1-unsloth.1"
+    assert st["whisper"]["latest_tag"] == "v1.9.2-unsloth.1"
 
 
 def test_status_whisper_current_does_not_flip_union(monkeypatch, tmp_path):
@@ -272,6 +278,7 @@ def test_status_whisper_current_does_not_flip_union(monkeypatch, tmp_path):
     st = upd.get_update_status(force_refresh = True)
     assert st["update_available"] is False
     assert st["whisper"]["skip_reason"] == "up_to_date"
+    assert st["update_component"] is None
 
 
 def test_status_survives_whisper_probe_failure(monkeypatch, tmp_path):
@@ -312,7 +319,7 @@ def test_whisper_plan_skips_source_build(monkeypatch, tmp_path):
 def test_whisper_update_targets_canonical_root_when_inner_marker_exists(tmp_path):
     install_dir = tmp_path / "whisper.cpp"
     binary = install_dir / "build" / "bin" / "whisper-server"
-    binary.parent.mkdir(parents=True)
+    binary.parent.mkdir(parents = True)
     binary.write_text("stub")
     (install_dir / WHISPER_MARKER).write_text("{}")
     (binary.parent / WHISPER_MARKER).write_text("{}")
@@ -371,11 +378,10 @@ def test_whisper_phase_pins_installer_to_checked_release(monkeypatch, tmp_path):
 
 
 def test_whisper_phase_exit_2_degrades_to_kept_runtime(monkeypatch, tmp_path):
-    # Installer exit 2 (no usable prebuilt for this host, e.g. an impossible
-    # macOS pairing window) must not fail the combined job; the existing
-    # runtime stays and the phase reports it.
+    # Installer exit 2 is reserved for a valid release that cannot pair with
+    # this host. It must not fail the combined job; the existing runtime stays.
     def _raise_exit_2(cmd, env, **kw):
-        raise wupd._flow.InstallerExit(2, "installer exited 2: no bundle")
+        raise wupd._flow.InstallerExit(2, "installer exited 2: incompatible release")
 
     monkeypatch.setattr(wupd._flow, "stream_installer", _raise_exit_2)
     install_dir = tmp_path / "whisper.cpp"
@@ -394,6 +400,28 @@ def test_whisper_phase_exit_2_degrades_to_kept_runtime(monkeypatch, tmp_path):
     )
     assert result["to_tag"] is None
     assert "kept the existing runtime" in result["message"]
+
+
+def test_whisper_phase_integrity_failure_is_not_swallowed(monkeypatch, tmp_path):
+    def _raise_exit_1(cmd, env, **kw):
+        raise wupd._flow.InstallerExit(1, "installer exited 1: checksum mismatch")
+
+    monkeypatch.setattr(wupd._flow, "stream_installer", _raise_exit_1)
+    install_dir = tmp_path / "whisper.cpp"
+    binary = _write_whisper_install(install_dir, "v1")
+    monkeypatch.setattr(wupd, "_find_binary", lambda: binary)
+    with pytest.raises(wupd._flow.InstallerExit, match = "checksum mismatch"):
+        wupd.run_chained_phase(
+            {
+                "install_dir": install_dir,
+                "repo": "unslothai/whisper.cpp",
+                "asset": None,
+                "backend": "cpu",
+                "script": tmp_path / "install_whisper_prebuilt.py",
+                "pin_release_tag": None,
+            },
+            lambda f: None,
+        )
 
 
 # --- apply: the chained job ---

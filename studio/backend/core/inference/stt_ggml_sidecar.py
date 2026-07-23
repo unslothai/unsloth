@@ -37,8 +37,9 @@ import time
 import urllib.request
 import uuid
 import wave
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from loggers import get_logger
 
@@ -500,6 +501,10 @@ class GgmlSttSidecar:
         # and terminating the process is a best-effort fast path.
         self._load_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
+        # Set before the updater waits for _lock, then kept set while it owns
+        # the lock and atomically replaces the managed install tree. New loads
+        # fail fast instead of starting a process from files being swapped.
+        self._update_in_progress = False
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -579,6 +584,31 @@ class GgmlSttSidecar:
         with self._lock:
             self._release_locked()
 
+    def _raise_if_update_in_progress(self) -> None:
+        if self._update_in_progress:
+            raise SttEngineUnavailableError(
+                "The local transcription runtime is being updated. Try dictation again shortly."
+            )
+
+    @contextmanager
+    def update_maintenance(self) -> Iterator[bool]:
+        """Block new loads while the managed whisper.cpp tree is replaced.
+
+        The flag is published before waiting for an existing transcription to
+        release ``_lock``. Holding that lock across the yielded installer phase
+        prevents Windows from relocking the executable and prevents every host
+        from starting a process against a partially swapped tree. The yielded
+        value records whether a warm model had to be unloaded.
+        """
+        self._update_in_progress = True
+        try:
+            with self._lock:
+                model_was_active = self._process_alive()
+                self._release_locked()
+                yield model_was_active
+        finally:
+            self._update_in_progress = False
+
     def cancel_pending_load(self) -> bool:
         # Preempt a whisper-server still in startup so training does not launch
         # while it is binding accelerator memory. load() holds self._lock for the
@@ -623,8 +653,10 @@ class GgmlSttSidecar:
 
     def load(self, model: Optional[str] = None) -> None:
         """Start (or switch) whisper-server for the requested curated model."""
+        self._raise_if_update_in_progress()
         model_id = resolve_ggml_model_id(model)
         with self._lock:
+            self._raise_if_update_in_progress()
             binary = ensure_engine_available()
             if self._process_alive() and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
@@ -723,6 +755,7 @@ class GgmlSttSidecar:
         Accepts any container PyAV can decode (same validation and caps as the
         Transformers sidecar). Returns {text, language, duration, model}.
         """
+        self._raise_if_update_in_progress()
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
         lang = normalize_whisper_language(language)

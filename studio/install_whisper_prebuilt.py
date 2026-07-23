@@ -45,7 +45,7 @@ with the fat bundles; the one legacy shape still honored is the published fat CP
 bundle of an explicitly pinned pre-slim release.
 
 Mirrors ``install_node_prebuilt.py`` / ``install_llama_prebuilt.py``. Exit codes:
-0 success (or already current), 1 error, 2 prebuilt unavailable, 3 busy. A re-run
+0 success (or already current), 1 error, 2 incompatible paired release, 3 busy. A re-run
 that already matches logs "already matches" and returns 0 without downloading
 (the scripts grep it).
 """
@@ -106,13 +106,17 @@ _OPS = core.ModuleOps(globals())
 _LOG_TO_STDOUT = False
 
 
+class ReleaseCompatibilityError(PrebuiltFallback):
+    """A valid slim release cannot pair with this host's installed runtime."""
+
+
 def log(message: str) -> None:
     print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 EXIT_SUCCESS = 0
 EXIT_ERROR = 1
-EXIT_FALLBACK = 2  # prebuilt unavailable (whisper never source-builds)
+EXIT_INCOMPATIBLE = 2
 EXIT_BUSY = 3
 
 COMPONENT = "whisper.cpp"
@@ -133,8 +137,8 @@ SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 
 # Fallback the core applies on a GPU-selection miss: retry with cpu so the slim
 # bundle can pair via the llama cpu modules, or -- on a pinned pre-slim release --
-# the published fat CPU bundle installs. A miss after that is "prebuilt
-# unavailable" (exit 2), never a source build.
+# the published fat CPU bundle installs. A miss is an install error unless the
+# valid slim release specifically requires a different paired llama release.
 FALLBACK_BACKEND = "cpu"
 
 # Backends whose slim (ggml-less) whisper bundle can ride the installed llama.cpp
@@ -418,7 +422,57 @@ def select_artifact(
 def select_artifact_with_cpu_fallback(
     manifest: dict[str, Any], host: HostInfo, backend: str
 ) -> tuple[dict[str, Any], str, bool]:
-    return core.select_artifact_with_fallback(_OPS, manifest, host, backend)
+    try:
+        return core.select_artifact_with_fallback(_OPS, manifest, host, backend)
+    except PrebuiltFallback as exc:
+        reason = _slim_release_incompatibility(manifest, host)
+        if reason is not None:
+            raise ReleaseCompatibilityError(reason) from exc
+        raise
+
+
+def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> str | None:
+    """Explain a valid platform slim release that this runtime cannot pair.
+
+    This intentionally excludes missing files, malformed manifests, checksum
+    failures, and unsupported platforms. Those are operational errors and must
+    never be converted into the update path's kept-existing-runtime success.
+    """
+    os_token, arch_token = host_platform_tokens(host)
+    candidates = [
+        artifact
+        for artifact in manifest.get("artifacts", [])
+        if artifact.get("os") == os_token
+        and artifact.get("arch") == arch_token
+        and artifact.get("backend") == "slim"
+        and artifact.get("install_kind") == "slim"
+    ]
+    if not candidates:
+        return None
+    os_compatible = [
+        artifact
+        for artifact in candidates
+        if not host.is_macos or _macos_min_os_ok(host, artifact.get("min_os"))
+    ]
+    if not os_compatible:
+        required = candidates[0].get("min_os")
+        return f"slim bundle requires macOS {required}; this host is older"
+    runtime = installed_llama_runtime()
+    if runtime is None:
+        return None
+    installed_tag = runtime[1]
+    required_tags = {
+        artifact.get("requires_llama_tag")
+        for artifact in os_compatible
+        if isinstance(artifact.get("requires_llama_tag"), str)
+    }
+    if required_tags and installed_tag not in required_tags:
+        required_tag = sorted(required_tags)[0]
+        return (
+            f"slim bundle requires llama.cpp {required_tag}; "
+            f"installed llama.cpp is {installed_tag}"
+        )
+    return None
 
 
 def select_artifact_with_fallback(
@@ -584,7 +638,7 @@ def _elf_needed(path: Path) -> set[str] | None:
     for command in commands:
         try:
             result = subprocess.run(
-                [*command, str(path)], capture_output=True, text=True, timeout=10
+                [*command, str(path)], capture_output = True, text = True, timeout = 10
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -609,6 +663,16 @@ def _runtime_library_sources(llama_bin_dir: Path, backend: str | None) -> list[P
         path for pattern in patterns for path in llama_bin_dir.glob(pattern) if path.is_file()
     }
     if backend == "rocm":
+        # Windows llama HIP/ROCm prebuilts use a flat *.dll runtime overlay.
+        # Mirror that complete no-SDK closure, not only filenames containing
+        # ggml, hip, or roc: transitive runtime DLLs can have unrelated names.
+        windows_dlls = {path for path in llama_bin_dir.glob("*.dll") if path.is_file()}
+        if windows_dlls:
+            sources.update(windows_dlls)
+            return sorted(sources)
+
+        # Linux can inspect DT_NEEDED and copy the exact packaged closure. Fall
+        # back to the ROCm globs only when standard ELF tools are unavailable.
         by_name = {path.name: path for path in llama_bin_dir.iterdir() if path.is_file()}
         pending = list(sources)
         inspected_hip = False
@@ -644,7 +708,7 @@ def _runtime_library_sources(llama_bin_dir: Path, backend: str | None) -> list[P
 
 
 def _link_or_copy(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     if destination.exists() or destination.is_symlink():
         destination.unlink()
     try:
@@ -654,7 +718,10 @@ def _link_or_copy(source: Path, destination: Path) -> None:
 
 
 def link_ggml_runtime(
-    llama_bin_dir: Path, whisper_bin_dir: Path, *, backend: str | None = None
+    llama_bin_dir: Path,
+    whisper_bin_dir: Path,
+    *,
+    backend: str | None = None,
 ) -> list[str]:
     """Hardlink every ggml library from the llama runtime into the whisper bin
     dir; returns the wired filenames (sorted) for the marker / sidecar launch guard.
@@ -707,14 +774,14 @@ def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -
         return None
     source = Path(selection.linked_from)
     destination = runtime_bin_dir(staged_root, host)
-    linked = link_ggml_runtime(source, destination, backend=selection.backend)
-    linked_dirs = link_runtime_directories(source, destination, backend=selection.backend)
+    linked = link_ggml_runtime(source, destination, backend = selection.backend)
+    linked_dirs = link_runtime_directories(source, destination, backend = selection.backend)
     log(f"slim install: hardlinked {len(linked)} ggml libraries from {selection.linked_from}")
     return replace(
         selection,
-        linked_libraries=tuple(linked),
-        runtime_wiring_version=SLIM_RUNTIME_WIRING_VERSION,
-        linked_runtime_directories=tuple(linked_dirs),
+        linked_libraries = tuple(linked),
+        runtime_wiring_version = SLIM_RUNTIME_WIRING_VERSION,
+        linked_runtime_directories = tuple(linked_dirs),
     )
 
 
@@ -1054,9 +1121,12 @@ def main(argv: list[str] | None = None) -> int:
     except BusyInstallConflict as exc:
         log(str(exc))
         return EXIT_BUSY
+    except ReleaseCompatibilityError as exc:
+        log(f"incompatible release: {exc}")
+        return EXIT_INCOMPATIBLE
     except PrebuiltFallback as exc:
-        log(f"prebuilt unavailable: {exc}")
-        return EXIT_FALLBACK
+        log(f"prebuilt install failed: {exc}")
+        return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001
         log(f"unexpected error: {exc}")
         return EXIT_ERROR

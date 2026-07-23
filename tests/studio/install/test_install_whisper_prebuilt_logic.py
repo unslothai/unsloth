@@ -28,6 +28,7 @@ SPEC.loader.exec_module(M)
 
 HostInfo = M.HostInfo
 PrebuiltFallback = M.PrebuiltFallback
+ReleaseCompatibilityError = M.ReleaseCompatibilityError
 BusyInstallConflict = M.BusyInstallConflict
 
 RELEASE_TAG = "v1.9.1-unsloth.1"
@@ -415,13 +416,22 @@ def test_resolve_mode_keeps_stdout_json_only(tmp_path, monkeypatch, capsys):
     assert "slim_selection:" in captured.err  # diagnostics routed to stderr
 
 
-def test_main_maps_prebuilt_fallback_to_exit_fallback(tmp_path, monkeypatch):
+def test_main_maps_prebuilt_fallback_to_exit_error(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise PrebuiltFallback("no prebuilt")
 
     monkeypatch.setattr(M, "install_prebuilt", boom)
     rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
-    assert rc == M.EXIT_FALLBACK
+    assert rc == M.EXIT_ERROR
+
+
+def test_main_reserves_exit_2_for_release_incompatibility(tmp_path, monkeypatch):
+    def boom(*a, **kw):
+        raise ReleaseCompatibilityError("slim bundle requires llama.cpp b2; installed b1")
+
+    monkeypatch.setattr(M, "install_prebuilt", boom)
+    rc = M.main(["--install-dir", str(tmp_path / "whisper.cpp"), "--backend", "cpu"])
+    assert rc == M.EXIT_INCOMPATIBLE
 
 
 def test_main_maps_unexpected_error_to_exit_error(tmp_path, monkeypatch):
@@ -747,9 +757,8 @@ def test_slim_metal_requires_the_metal_module(tmp_path, monkeypatch):
 
 
 def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
-    # A slim-only release with no llama install: nothing selects, the resolver
-    # falls to PrebuiltFallback (exit 2, prebuilt unavailable), and the log
-    # names the fix before the fallback fires.
+    # A slim-only release with no llama install is an operational failure, not
+    # the narrowly handled installed-version skew.
     lines: list[str] = []
     monkeypatch.setattr(M, "log", lines.append)
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: None)
@@ -761,6 +770,18 @@ def test_slim_only_release_pairing_failure_is_actionable(tmp_path, monkeypatch):
         "install or update llama.cpp first" in line
         for line in lines
     )
+
+
+def test_slim_release_tag_skew_has_distinct_compatibility_error(tmp_path, monkeypatch):
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda: (bin_dir, "b10068-mix-old", "cuda13-newer"),
+    )
+    manifest = M.parse_manifest(_manifest([_slim_artifact()]))
+    with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
+        M.select_artifact_with_fallback(manifest, _cuda_host(), "cuda")
 
 
 def test_link_ggml_runtime_hardlinks_every_ggml_library(tmp_path):
@@ -834,6 +855,33 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
     assert not (whisper_bin / "llama.dll").exists()
 
 
+def test_rocm_runtime_wires_complete_windows_dll_overlay(tmp_path):
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    dlls = {
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-hip.dll",
+        "amdhip64.dll",
+        "rocblas.dll",
+        "hipblaslt.dll",
+        "hsa-runtime64.dll",
+        # The llama Windows ROCm archive can carry transitive DLLs whose names
+        # do not contain hip/roc/amd. Its installer overlays every DLL.
+        "runtime-support.dll",
+    }
+    for name in dlls:
+        (bin_dir / name).write_bytes(name.encode())
+    (bin_dir / "not-a-runtime.txt").write_text("ignored")
+
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin, backend = "rocm")
+
+    assert set(linked) == dlls
+    assert all((whisper_bin / name).is_file() for name in dlls)
+    assert not (whisper_bin / "not-a-runtime.txt").exists()
+
+
 def test_assemble_does_not_copy_packaging_marker_beside_server(tmp_path):
     host = _host("linux", "x64")
     bundle = tmp_path / "bundle"
@@ -846,12 +894,12 @@ def test_assemble_does_not_copy_packaging_marker_beside_server(tmp_path):
 
 
 def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, monkeypatch):
-    llama_bin = _fake_llama_bin(tmp_path, backend_module="libggml-hip.so")
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     for name in ("libamdhip64.so.6", "libhipblas.so.2", "libcustomrocm.so.1"):
         (llama_bin / name).write_bytes(name.encode())
     for directory in M.SLIM_ROCM_RUNTIME_DIRS:
         catalog = llama_bin / directory / "library" / "gfx1100"
-        catalog.mkdir(parents=True)
+        catalog.mkdir(parents = True)
         (catalog / "kernel.dat").write_bytes(directory.encode())
 
     dependencies = {
@@ -860,8 +908,8 @@ def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, m
     }
     monkeypatch.setattr(M, "_elf_needed", lambda path: dependencies.get(path.name, set()))
     whisper_bin = tmp_path / "whisper-bin"
-    linked = M.link_ggml_runtime(llama_bin, whisper_bin, backend="rocm")
-    linked_dirs = M.link_runtime_directories(llama_bin, whisper_bin, backend="rocm")
+    linked = M.link_ggml_runtime(llama_bin, whisper_bin, backend = "rocm")
+    linked_dirs = M.link_runtime_directories(llama_bin, whisper_bin, backend = "rocm")
 
     assert "libcustomrocm.so.1" in linked
     assert "libhipblas.so.2" in linked
@@ -873,22 +921,22 @@ def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, m
 
 
 def test_rocm_runtime_requires_both_kernel_catalogs(tmp_path):
-    llama_bin = _fake_llama_bin(tmp_path, backend_module="libggml-hip.so")
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     (llama_bin / "hipblaslt").mkdir()
     (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
-    with pytest.raises(PrebuiltFallback, match="rocblas"):
-        M.link_runtime_directories(llama_bin, tmp_path / "whisper-bin", backend="rocm")
+    with pytest.raises(PrebuiltFallback, match = "rocblas"):
+        M.link_runtime_directories(llama_bin, tmp_path / "whisper-bin", backend = "rocm")
 
 
 def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
-    llama_bin = _fake_llama_bin(tmp_path, backend_module="libggml-hip.so")
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     for directory in M.SLIM_ROCM_RUNTIME_DIRS:
         catalog = llama_bin / directory
         catalog.mkdir()
         (catalog / "kernel.dat").write_bytes(directory.encode())
     monkeypatch.setattr(M.os, "link", lambda *args: (_ for _ in ()).throw(OSError("xdev")))
     whisper_bin = tmp_path / "whisper-bin"
-    M.link_runtime_directories(llama_bin, whisper_bin, backend="rocm")
+    M.link_runtime_directories(llama_bin, whisper_bin, backend = "rocm")
     for directory in M.SLIM_ROCM_RUNTIME_DIRS:
         assert (whisper_bin / directory / "kernel.dat").read_bytes() == directory.encode()
 

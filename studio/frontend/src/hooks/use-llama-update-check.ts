@@ -30,6 +30,7 @@ export interface LlamaUpdateJob {
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
+  component: "llama.cpp" | "whisper.cpp";
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
@@ -55,13 +56,30 @@ function parseJob(value: unknown): LlamaUpdateJob {
 function parseStatus(value: unknown): LlamaUpdateStatus | null {
   if (!value || typeof value !== "object") return null;
   const s = value as Record<string, unknown>;
+  const component =
+    s.update_component === "whisper" ? "whisper.cpp" : "llama.cpp";
+  const whisper =
+    s.whisper && typeof s.whisper === "object"
+      ? (s.whisper as Record<string, unknown>)
+      : null;
+  // Legacy top-level version fields intentionally retain their llama meaning.
+  // A whisper-only update must display the nested whisper release instead of
+  // presenting equal llama tags as a new llama update.
+  const details = component === "whisper.cpp" && whisper ? whisper : s;
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
-    installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
-    latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    component,
+    installed_tag:
+      typeof details.installed_tag === "string"
+        ? details.installed_tag
+        : null,
+    latest_tag:
+      typeof details.latest_tag === "string" ? details.latest_tag : null,
     update_size_bytes:
-      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
+      typeof details.update_size_bytes === "number"
+        ? details.update_size_bytes
+        : null,
     job: parseJob(s.job),
   };
 }

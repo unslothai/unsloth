@@ -279,22 +279,43 @@ def _install_latest(
     set_progress,
     pin_release_tag: Optional[str] = None,
 ) -> dict:
-    """Unload the warm whisper sidecar, run the installer for the latest prebuilt,
-    then refresh caches so the next load uses the new build. Runs as the whisper
-    phase of the chained llama+whisper update. Returns
-    {to_tag, reload_required, message}; raises on failure."""
-    # Free the binary while the installer swaps it. whisper.cpp is served by a
-    # single sidecar subprocess (not a multi-backend registry like llama), so one
-    # unload is enough; reload_required reflects whether a model was loaded before.
-    model_was_active = False
+    """Replace whisper.cpp while the sidecar blocks every new load."""
     try:
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
-
         sidecar = get_ggml_stt_sidecar()
-        model_was_active = bool(sidecar.loaded_model)
-        sidecar.unload()
     except Exception as exc:
-        logger.debug("whisper update: sidecar unload failed", error = str(exc))
+        # Replacing the tree without the singleton's maintenance barrier would
+        # reopen the Windows executable-lock and stale-process races. Fail closed.
+        raise RuntimeError("could not coordinate the whisper.cpp sidecar update") from exc
+
+    # update_maintenance publishes its guard before waiting for an existing
+    # transcription, unloads the warm server, and holds the sidecar lock across
+    # the complete atomic install. No new process can relock or outlive the tree.
+    with sidecar.update_maintenance() as model_was_active:
+        return _install_latest_while_blocked(
+            install_dir,
+            repo,
+            asset,
+            backend,
+            script,
+            set_progress,
+            pin_release_tag = pin_release_tag,
+            model_was_active = model_was_active,
+        )
+
+
+def _install_latest_while_blocked(
+    install_dir: Path,
+    repo: str,
+    asset: Optional[str],
+    backend: Optional[str],
+    script: Path,
+    set_progress,
+    *,
+    pin_release_tag: Optional[str],
+    model_was_active: bool,
+) -> dict:
+    """Run the installer with the sidecar already in update maintenance."""
 
     cmd = [
         sys.executable,
@@ -327,15 +348,14 @@ def _install_latest(
     except _flow.InstallerExit as exc:
         if exc.returncode != 2:
             raise
-        # Exit 2 = no usable prebuilt for this host right now (e.g. the newest
-        # slim release needs a llama tag this host cannot run yet, common on
-        # older macOS). The existing runtime stays installed; retry next round
-        # rather than failing the combined job.
-        logger.info("whisper update: prebuilt unavailable, keeping existing runtime")
+        # Exit 2 is reserved by the whisper installer for a valid release that
+        # cannot pair with this host's installed llama runtime. Integrity,
+        # archive, and operational failures exit 1 and propagate as job errors.
+        logger.info("whisper update: incompatible release, keeping existing runtime")
         return {
             "to_tag": None,
             "reload_required": model_was_active,
-            "message": "whisper.cpp prebuilt unavailable; kept the existing runtime.",
+            "message": "whisper.cpp release is incompatible; kept the existing runtime.",
         }
 
     # Drop stale caches so the banner re-checks the swapped marker. If GitHub is

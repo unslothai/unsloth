@@ -280,6 +280,7 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
     plan = _whisper_chain_status(force_refresh = force_refresh)
     if plan is None:
         status["whisper"] = None
+        status["update_component"] = "llama" if status["llama_update_available"] else None
         return status
     sub = plan.get("status") or {}
     status["whisper"] = {
@@ -289,8 +290,16 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
         "update_size_bytes": sub.get("update_size_bytes"),
         "skip_reason": plan.get("skip_reason"),
     }
-    if plan.get("update_available"):
+    whisper_update_available = bool(plan.get("update_available"))
+    if whisper_update_available:
         status["update_available"] = True
+    status["update_component"] = (
+        "llama"
+        if status["llama_update_available"]
+        else "whisper"
+        if whisper_update_available
+        else None
+    )
     return status
 
 
