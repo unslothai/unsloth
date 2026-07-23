@@ -1884,8 +1884,11 @@ def _compatible_cached_mmproj(repo_id: str, gguf_file: str) -> Optional[str]:
     """Find a projector from another cached snapshot with positive identity.
 
     Same-snapshot companions are handled by ``detect_mmproj_file``. Crossing a
-    revision boundary requires either matching GGUF metadata or recognized,
-    equal filename families; an anonymous ``mmproj.gguf`` is not enough.
+    revision boundary requires a projector snapshot at least as new as the
+    selected weight snapshot plus either matching GGUF metadata or recognized,
+    equal filename families. This permits a projector fetched on demand into a
+    newer snapshot without reviving a projector removed by a newer weight
+    revision. An anonymous ``mmproj.gguf`` is not enough.
     """
     weight_meta = read_gguf_general_metadata(gguf_file)
     weight_family = _detect_family_token(Path(gguf_file).name)
@@ -1894,9 +1897,19 @@ def _compatible_cached_mmproj(repo_id: str, gguf_file: str) -> Optional[str]:
         (parent for parent in Path(gguf_file).parents if parent.parent.name == "snapshots"),
         None,
     )
+    try:
+        gguf_snapshot_mtime = gguf_snapshot.stat().st_mtime if gguf_snapshot else None
+    except OSError:
+        gguf_snapshot_mtime = None
     for snapshot in _iter_hf_cache_snapshots(repo_id):
         if gguf_snapshot is not None and snapshot == gguf_snapshot:
             continue
+        if gguf_snapshot_mtime is not None:
+            try:
+                if snapshot.stat().st_mtime < gguf_snapshot_mtime:
+                    continue
+            except OSError:
+                continue
         for candidate in _iter_gguf_files(snapshot, recursive = True):
             metadata = read_gguf_general_metadata(str(candidate))
             metadata_kind = is_mmproj_by_metadata(metadata)
@@ -1933,11 +1946,21 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
     would shadow those real variants, so keep scanning older snapshots for
     actual variants and carry the vision flag across snapshots.
     """
-    any_vision = False
+    newest_projector_mtime: Optional[float] = None
+    newest_variant_mtime: Optional[float] = None
     complete_variants: list[GgufVariantInfo] = []
     seen_quants: set[str] = set()
     for snap in _iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snap))
+        try:
+            snapshot_mtime = snap.stat().st_mtime
+        except OSError:
+            continue
+        if has_vision:
+            newest_projector_mtime = max(
+                newest_projector_mtime or snapshot_mtime,
+                snapshot_mtime,
+            )
         contributed = False
         for variant in variants:
             if variant.quant in seen_quants:
@@ -1964,10 +1987,17 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
             complete_variants.append(variant)
             seen_quants.add(variant.quant)
             contributed = True
-        any_vision = any_vision or (has_vision and contributed)
-    if complete_variants:
+        if contributed:
+            newest_variant_mtime = max(
+                newest_variant_mtime or snapshot_mtime,
+                snapshot_mtime,
+            )
+    has_vision = newest_projector_mtime is not None and (
+        newest_variant_mtime is None or newest_projector_mtime >= newest_variant_mtime
+    )
+    if complete_variants or has_vision:
         complete_variants.sort(key = lambda variant: -variant.size_bytes)
-        return complete_variants, any_vision
+        return complete_variants, has_vision
     return None
 
 

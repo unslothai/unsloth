@@ -86,6 +86,7 @@ from core.inference.llama_cpp import (
     _resolve_repo_id_casing,
 )
 from utils.models.model_config import (
+    _compatible_cached_mmproj,
     _detect_gguf_from_hf_cache,
     _extract_quant_label,
     _iter_hf_cache_snapshots,
@@ -724,6 +725,73 @@ class TestResolveRepoIdCasing:
         variants, has_vision = out
         assert variants == []
         assert has_vision is True
+
+    def test_older_projector_does_not_mark_newer_weights_as_vision(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        out = _list_gguf_variants_from_hf_cache("unsloth/qwen-GGUF")
+        assert out is not None
+        variants, has_vision = out
+        assert [v.quant for v in variants] == ["Q4_K_M"]
+        assert has_vision is False
+
+    def test_cross_snapshot_projector_must_not_predate_weights(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert (
+            _compatible_cached_mmproj(
+                "unsloth/qwen-GGUF",
+                str(new / "qwen-Q4_K_M.gguf"),
+            )
+            is None
+        )
+
+    def test_newer_matching_projector_can_pair_with_cached_weights(self, hf_cache):
+        old = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"qwen-Q4_K_M.gguf": 100},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(
+            hf_cache,
+            "unsloth/qwen-GGUF",
+            {"mmproj-qwen-F16.gguf": 10},
+            snapshot_sha = "b" * 40,
+        )
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+
+        assert _compatible_cached_mmproj(
+            "unsloth/qwen-GGUF",
+            str(old / "qwen-Q4_K_M.gguf"),
+        ) == str(new / "mmproj-qwen-F16.gguf")
 
 
 class TestListGgufVariantsOffline:
