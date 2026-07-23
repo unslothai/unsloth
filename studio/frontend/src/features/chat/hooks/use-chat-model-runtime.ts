@@ -321,6 +321,13 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsDiffusion: false,
       });
     }
+    // Compare mode may now safely freeze its base/LoRA layout only when this
+    // refresh actually included the LoRA catalog. Keep false on the fast
+    // status-only refresh, failures, and cancellation so the deferred full
+    // inventory refresh can still recover a direct LoRA deep link.
+    if (includeLoras) {
+      useChatRuntimeStore.getState().setModelRuntimeHydrated(true);
+    }
   } catch (error) {
     if (signal?.aborted) return;
     const message =

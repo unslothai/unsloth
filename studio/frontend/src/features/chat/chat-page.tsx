@@ -444,12 +444,12 @@ function modelMatchesDeleted(
  * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
  * compare that uses the fast simultaneous adapter-toggle path.
  */
-function useIsLoraCompare(): boolean {
-  return useChatRuntimeStore((s) => {
-    const cp = s.params.checkpoint;
-    const selected = cp ? s.loras.find((l) => l.id === cp) : undefined;
-    return selected?.exportType === "lora";
-  });
+function getIsLoraCompareFromState(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+): boolean {
+  const cp = state.params.checkpoint;
+  const selected = cp ? state.loras.find((l) => l.id === cp) : undefined;
+  return selected?.exportType === "lora";
 }
 
 const CompareContent = memo(function CompareContent({
@@ -473,7 +473,27 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const isLoraCompare = useIsLoraCompare();
+  const modelRuntimeHydrated = useChatRuntimeStore(
+    (state) => state.modelRuntimeHydrated,
+  );
+  const liveIsLoraCompare = useChatRuntimeStore(getIsLoraCompareFromState);
+  // Freeze the layout only after a successful status + LoRA refresh. Model
+  // switches during generalized compare mutate the global checkpoint and must
+  // not remount model1/model2 as base/lora halfway through a submission.
+  const [frozenIsLoraCompare, setFrozenIsLoraCompare] = useState<boolean | null>(
+    () =>
+      useChatRuntimeStore.getState().modelRuntimeHydrated
+        ? getIsLoraCompareFromState(useChatRuntimeStore.getState())
+        : null,
+  );
+  useEffect(() => {
+    if (frozenIsLoraCompare !== null || !modelRuntimeHydrated) return;
+    const timeoutId = window.setTimeout(() => {
+      setFrozenIsLoraCompare(liveIsLoraCompare);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [frozenIsLoraCompare, liveIsLoraCompare, modelRuntimeHydrated]);
+  const isLoraCompare = frozenIsLoraCompare ?? liveIsLoraCompare;
 
   return isLoraCompare ? (
     <LoraCompareContent
@@ -694,6 +714,8 @@ function GeneralCompareHeader({
   onModelsChange,
   deleteDisabled,
   side,
+  label,
+  labelTone = "muted",
 }: {
   models: ModelOption[];
   loraModels: LoraModelOption[];
@@ -709,6 +731,8 @@ function GeneralCompareHeader({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   side: "left" | "right";
+  label?: string;
+  labelTone?: "muted" | "primary";
 }): ReactElement {
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
@@ -741,8 +765,27 @@ function GeneralCompareHeader({
         open={active && selectorOpen}
         onOpenChange={(open) => setSelectorOpen(active && open)}
       />
+      {label ? (
+        <span
+          className={cn(
+            "pointer-events-none hidden h-[var(--studio-chat-control-height,34px)] shrink-0 translate-y-[2px] items-center text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground sm:flex",
+            side === "right" && "ml-auto",
+            labelTone === "primary" && "text-primary",
+          )}
+        >
+          {label}
+        </span>
+      ) : null}
     </div>
   );
+}
+
+function getLoraBaseModel(
+  loraModels: LoraModelOption[],
+  model: CompareModelSelection,
+): string | null {
+  if (!model.isLora) return null;
+  return loraModels.find((lora) => lora.id === model.id)?.baseModel ?? null;
 }
 
 /** General path: any two models, sequential load → generate. */
@@ -777,6 +820,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
+  const [compareSubmitting, setCompareSubmitting] = useState(false);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -801,7 +845,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
-    if (compareRunning) return;
+    if (compareRunning || compareSubmitting) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -825,7 +869,26 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId, compareRunning]);
+  }, [pairId, compareRunning, compareSubmitting]);
+
+  const model1LoraBase = getLoraBaseModel(loraModels, model1);
+  const model2LoraBase = getLoraBaseModel(loraModels, model2);
+  const model1IsFineTunedFromModel2 =
+    Boolean(model1LoraBase) &&
+    normalizeModelRef(model1LoraBase) === normalizeModelRef(model2.id);
+  const model2IsFineTunedFromModel1 =
+    Boolean(model2LoraBase) &&
+    normalizeModelRef(model2LoraBase) === normalizeModelRef(model1.id);
+  const model1Label = model1IsFineTunedFromModel2
+    ? "Fine-tuned"
+    : model2IsFineTunedFromModel1
+      ? "Base Model"
+      : undefined;
+  const model2Label = model2IsFineTunedFromModel1
+    ? "Fine-tuned"
+    : model1IsFineTunedFromModel2
+      ? "Base Model"
+      : undefined;
 
   return (
     <CompareShell
@@ -837,6 +900,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
             model1={model1}
             model2={model2}
             onExitCompare={onExitCompare}
+            onComparingChange={setCompareSubmitting}
             model1ThreadId={model1ThreadId}
             model2ThreadId={model2ThreadId}
           />
@@ -861,6 +925,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               value={model1.id}
               selectedConfig={model1.config}
               selectedGgufVariant={model1.ggufVariant}
+              label={model1Label}
+              labelTone={model1Label === "Fine-tuned" ? "primary" : "muted"}
               onValueChange={(id, meta) =>
                 setModel1({
                   id,
@@ -891,6 +957,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               value={model2.id}
               selectedConfig={model2.config}
               selectedGgufVariant={model2.ggufVariant}
+              label={model2Label}
+              labelTone={model2Label === "Fine-tuned" ? "primary" : "muted"}
               onValueChange={(id, meta) =>
                 setModel2({
                   id,
