@@ -409,6 +409,35 @@ class TestPyYamlDeserialization:
                 "yaml.load(payload, Loader=yaml.SafeLoader)"
             ),
             (
+                "import yaml\n"
+                "constructors = yaml.SafeLoader.yaml_constructors\n"
+                "constructors['!run'] = run\n"
+                "yaml.load('!run x', Loader=yaml.SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "add = yaml.add_constructor\n"
+                "add('!run', run, Loader=yaml.SafeLoader)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "from yaml import add_constructor as add, SafeLoader, safe_load\n"
+                "add('!run', run, Loader=SafeLoader)\n"
+                "safe_load('!run x')"
+            ),
+            (
+                "import operator, yaml\n"
+                "operator.setitem(yaml.SafeLoader.yaml_constructors, '!run', run)\n"
+                "yaml.load('!run x', Loader=yaml.SafeLoader)"
+            ),
+            (
+                "from operator import setitem\n"
+                "import yaml\n"
+                "constructors = yaml.SafeLoader.yaml_constructors\n"
+                "setitem(constructors, '!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
                 "from yaml import load\n"
                 "try:\n"
                 "    1 / 0\n"
@@ -488,6 +517,12 @@ class TestPyYamlDeserialization:
                 "Loader = object()\n"
                 "Loader = yaml.SafeLoader\n"
                 "yaml.load('a: 1', Loader=Loader)"
+            ),
+            "SafeLoader = object()\nprint(SafeLoader)",
+            (
+                "import yaml\n"
+                "SafeLoader = yaml.SafeLoader\n"
+                "yaml.load('a: 1', Loader=SafeLoader)"
             ),
             (
                 "from yaml import load\n"

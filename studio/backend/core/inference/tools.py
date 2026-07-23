@@ -720,6 +720,14 @@ _PYYAML_SAFE_LOADER_MUTATORS = frozenset(
         "add_path_resolver",
     }
 )
+_PYYAML_SAFE_LOADER_REGISTRIES = frozenset(
+    {
+        "yaml_constructors",
+        "yaml_multi_constructors",
+        "yaml_implicit_resolvers",
+        "yaml_path_resolvers",
+    }
+)
 
 
 def _subscript_key(node) -> str | None:
@@ -917,16 +925,79 @@ def _pyyaml_loader_is_safe(
     return parent_path is not None and all(part in _PYYAML_SUBMODULE_NAMES for part in parent_path)
 
 
+def _pyyaml_safe_loader_registry_reference(
+    node,
+    yaml_aliases: set[str],
+    safe_loader_aliases: set[str],
+    registry_aliases: set[str] = frozenset(),
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+    dynamic_namespace_aliases: set[str] = frozenset(),
+) -> bool:
+    """Whether ``node`` resolves to a mutable SafeLoader registry mapping."""
+    if isinstance(node, ast.Name):
+        return node.id in registry_aliases
+    reflected = _reflected_member(node)
+    if reflected is not None:
+        base, member = reflected
+        return member in _PYYAML_SAFE_LOADER_REGISTRIES and _pyyaml_loader_is_safe(
+            base,
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr in _PYYAML_SAFE_LOADER_REGISTRIES
+        and _pyyaml_loader_is_safe(
+            node.value,
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
+    )
+
+
+def _pyyaml_module_mutator_reference(
+    node,
+    yaml_aliases: set[str],
+    mutator_aliases: set[str] = frozenset(),
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+    dynamic_namespace_aliases: set[str] = frozenset(),
+) -> bool:
+    """Whether ``node`` resolves to a module-level PyYAML registry mutator."""
+    if isinstance(node, ast.Name):
+        return node.id in mutator_aliases
+    path = _pyyaml_attribute_path(
+        node,
+        yaml_aliases,
+        dynamic_import_aliases,
+        dynamic_namespace_aliases,
+    )
+    return path is not None and len(path) == 1 and path[0] in _PYYAML_SAFE_LOADER_MUTATORS
+
+
 def _pyyaml_safe_loader_registry_mutation(
     node,
     yaml_aliases: set[str],
     safe_loader_aliases: set[str],
+    registry_aliases: set[str] = frozenset(),
     dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
     dynamic_namespace_aliases: set[str] = frozenset(),
 ) -> bool:
     """Whether an assignment/call can mutate a known safe loader class registry."""
     current = node
     while isinstance(current, (ast.Attribute, ast.Subscript)):
+        if _pyyaml_safe_loader_registry_reference(
+            current,
+            yaml_aliases,
+            safe_loader_aliases,
+            registry_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        ):
+            return True
         if _pyyaml_loader_is_safe(
             current,
             yaml_aliases,
@@ -947,7 +1018,14 @@ def _pyyaml_safe_loader_registry_mutation(
             current = current.value
         else:
             current = current.value
-    return _pyyaml_loader_is_safe(
+    return _pyyaml_safe_loader_registry_reference(
+        current,
+        yaml_aliases,
+        safe_loader_aliases,
+        registry_aliases,
+        dynamic_import_aliases,
+        dynamic_namespace_aliases,
+    ) or _pyyaml_loader_is_safe(
         current,
         yaml_aliases,
         safe_loader_aliases,
@@ -960,11 +1038,12 @@ def _pyyaml_safe_loader_mutation_call(
     call,
     yaml_aliases: set[str],
     safe_loader_aliases: set[str],
+    registry_aliases: set[str] = frozenset(),
     dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
     dynamic_namespace_aliases: set[str] = frozenset(),
 ) -> bool:
     """Whether a bound, reflected, or unbound call mutates SafeLoader state."""
-    mapping_mutators = {"update", "setdefault", "pop", "clear", "__setitem__"}
+    mapping_mutators = {"update", "setdefault", "pop", "clear", "setitem", "__setitem__"}
     func = call.func
     if isinstance(func, ast.Attribute):
         if func.attr in (
@@ -973,6 +1052,7 @@ def _pyyaml_safe_loader_mutation_call(
             func.value,
             yaml_aliases,
             safe_loader_aliases,
+            registry_aliases,
             dynamic_import_aliases,
             dynamic_namespace_aliases,
         ):
@@ -986,11 +1066,39 @@ def _pyyaml_safe_loader_mutation_call(
                 call.args[0],
                 yaml_aliases,
                 safe_loader_aliases,
+                registry_aliases,
                 dynamic_import_aliases,
                 dynamic_namespace_aliases,
             )
         ):
             return True
+        if (
+            func.attr in mapping_mutators
+            and call.args
+            and _pyyaml_safe_loader_registry_mutation(
+                call.args[0],
+                yaml_aliases,
+                safe_loader_aliases,
+                registry_aliases,
+                dynamic_import_aliases,
+                dynamic_namespace_aliases,
+            )
+        ):
+            return True
+    elif (
+        isinstance(func, ast.Name)
+        and func.id in mapping_mutators
+        and call.args
+        and _pyyaml_safe_loader_registry_mutation(
+            call.args[0],
+            yaml_aliases,
+            safe_loader_aliases,
+            registry_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
+    ):
+        return True
 
     reflected = _reflected_member(func)
     if reflected is None:
@@ -1008,6 +1116,7 @@ def _pyyaml_safe_loader_mutation_call(
         base,
         yaml_aliases,
         safe_loader_aliases,
+        registry_aliases,
         dynamic_import_aliases,
         dynamic_namespace_aliases,
     ):
@@ -1021,6 +1130,7 @@ def _pyyaml_safe_loader_mutation_call(
             call.args[0],
             yaml_aliases,
             safe_loader_aliases,
+            registry_aliases,
             dynamic_import_aliases,
             dynamic_namespace_aliases,
         )
@@ -4948,7 +5058,9 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_load_aliases: set[str] = set()
             self.yaml_unsafe_load_aliases: set[str] = set()
             self.yaml_unsafe_loader_aliases: set[str] = set()
-            self.yaml_safe_loader_aliases = set(_PYYAML_SAFE_LOADERS)
+            self.yaml_safe_loader_aliases: set[str] = set()
+            self.yaml_safe_loader_registry_aliases: set[str] = set()
+            self.yaml_module_mutator_aliases: set[str] = set()
             self.dynamic_import_aliases = {"__import__", "import_module"}
             self.dynamic_import_module_aliases = {"builtins", "importlib"}
             self.dynamic_namespace_aliases: set[str] = set()
@@ -5023,6 +5135,9 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_unsafe_load_aliases.update(_PYYAML_UNSAFE_LOAD_NAMES)
                         self.yaml_unsafe_loader_aliases.update(_PYYAML_UNSAFE_LOADERS)
                         self.yaml_safe_loader_aliases.update(_PYYAML_SAFE_LOADERS)
+                        self.yaml_module_mutator_aliases.update(
+                            _PYYAML_SAFE_LOADER_MUTATORS
+                        )
                     elif alias.name in _PYYAML_SUBMODULE_NAMES:
                         self.yaml_aliases.add(bound)
                     elif alias.name in _PYYAML_LOAD_NAMES:
@@ -5033,6 +5148,8 @@ def _check_signal_escape_patterns(code: str):
                         self.yaml_unsafe_loader_aliases.add(bound)
                     elif alias.name in _PYYAML_SAFE_LOADERS:
                         self.yaml_safe_loader_aliases.add(bound)
+                    elif alias.name in _PYYAML_SAFE_LOADER_MUTATORS:
+                        self.yaml_module_mutator_aliases.add(bound)
             elif node.module in {"importlib", "builtins"}:
                 for alias in node.names:
                     if alias.name in {"import_module", "__import__"}:
@@ -5069,6 +5186,7 @@ def _check_signal_escape_patterns(code: str):
                     target,
                     self.yaml_aliases,
                     self.yaml_safe_loader_aliases,
+                    self.yaml_safe_loader_registry_aliases,
                     self.dynamic_import_aliases,
                     self.dynamic_namespace_aliases,
                 ):
@@ -5104,6 +5222,7 @@ def _check_signal_escape_patterns(code: str):
                     node.target,
                     self.yaml_aliases,
                     self.yaml_safe_loader_aliases,
+                    self.yaml_safe_loader_registry_aliases,
                     self.dynamic_import_aliases,
                     self.dynamic_namespace_aliases,
                 ):
@@ -5120,6 +5239,7 @@ def _check_signal_escape_patterns(code: str):
                 node.target,
                 self.yaml_aliases,
                 self.yaml_safe_loader_aliases,
+                self.yaml_safe_loader_registry_aliases,
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
             ):
@@ -5151,6 +5271,21 @@ def _check_signal_escape_patterns(code: str):
                 value,
                 self.yaml_aliases,
                 self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            )
+            safe_loader_registry = value is not None and _pyyaml_safe_loader_registry_reference(
+                value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.yaml_safe_loader_registry_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            )
+            module_mutator = value is not None and _pyyaml_module_mutator_reference(
+                value,
+                self.yaml_aliases,
+                self.yaml_module_mutator_aliases,
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
             )
@@ -5204,12 +5339,18 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_unsafe_load_aliases.difference_update(names)
             self.yaml_unsafe_loader_aliases.difference_update(names)
             self.yaml_safe_loader_aliases.difference_update(names)
+            self.yaml_safe_loader_registry_aliases.difference_update(names)
+            self.yaml_module_mutator_aliases.difference_update(names)
             self.dynamic_import_aliases.difference_update(names)
             self.dynamic_import_module_aliases.difference_update(names)
             self.dynamic_namespace_aliases.difference_update(names)
 
             if safe_loader:
                 self.yaml_safe_loader_aliases.update(names)
+            if safe_loader_registry:
+                self.yaml_safe_loader_registry_aliases.update(names)
+            if module_mutator:
+                self.yaml_module_mutator_aliases.update(names)
             if yaml_alias:
                 self.yaml_aliases.update(names)
             if reference_kind in _PYYAML_LOAD_NAMES:
@@ -5236,6 +5377,8 @@ def _check_signal_escape_patterns(code: str):
                 self.yaml_unsafe_load_aliases.copy(),
                 self.yaml_unsafe_loader_aliases.copy(),
                 self.yaml_safe_loader_aliases.copy(),
+                self.yaml_safe_loader_registry_aliases.copy(),
+                self.yaml_module_mutator_aliases.copy(),
                 self.dynamic_import_aliases.copy(),
                 self.dynamic_import_module_aliases.copy(),
                 self.dynamic_namespace_aliases.copy(),
@@ -5248,6 +5391,8 @@ def _check_signal_escape_patterns(code: str):
                 self.yaml_unsafe_load_aliases,
                 self.yaml_unsafe_loader_aliases,
                 self.yaml_safe_loader_aliases,
+                self.yaml_safe_loader_registry_aliases,
+                self.yaml_module_mutator_aliases,
                 self.dynamic_import_aliases,
                 self.dynamic_import_module_aliases,
                 self.dynamic_namespace_aliases,
@@ -5261,9 +5406,13 @@ def _check_signal_escape_patterns(code: str):
             self.yaml_unsafe_load_aliases = set().union(*(state[2] for state in states))
             self.yaml_unsafe_loader_aliases = set().union(*(state[3] for state in states))
             self.yaml_safe_loader_aliases = set.intersection(*(state[4] for state in states))
-            self.dynamic_import_aliases = set().union(*(state[5] for state in states))
-            self.dynamic_import_module_aliases = set().union(*(state[6] for state in states))
-            self.dynamic_namespace_aliases = set().union(*(state[7] for state in states))
+            self.yaml_safe_loader_registry_aliases = set().union(
+                *(state[5] for state in states)
+            )
+            self.yaml_module_mutator_aliases = set().union(*(state[6] for state in states))
+            self.dynamic_import_aliases = set().union(*(state[7] for state in states))
+            self.dynamic_import_module_aliases = set().union(*(state[8] for state in states))
+            self.dynamic_namespace_aliases = set().union(*(state[9] for state in states))
 
         def visit_If(self, node):
             self.visit(node.test)
@@ -5718,12 +5867,21 @@ def _check_signal_escape_patterns(code: str):
                 node,
                 self.yaml_aliases,
                 self.yaml_safe_loader_aliases,
+                self.yaml_safe_loader_registry_aliases,
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
             ):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization via SafeLoader registry mutation",
+                )
+            if (
+                isinstance(func, ast.Name)
+                and func.id in self.yaml_module_mutator_aliases
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization via module-level loader registry mutation",
                 )
             if (
                 isinstance(func, ast.Attribute)
@@ -5749,6 +5907,7 @@ def _check_signal_escape_patterns(code: str):
                     node.args[0],
                     self.yaml_aliases,
                     self.yaml_safe_loader_aliases,
+                    self.yaml_safe_loader_registry_aliases,
                     self.dynamic_import_aliases,
                     self.dynamic_namespace_aliases,
                 )
