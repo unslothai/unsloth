@@ -688,6 +688,16 @@ html[data-chat-font] .aui-root {
 
 @theme inline {
 	/* Pin container widths to px so they ignore the UI font size rem base. */
+	/* Numeric leading is typographic: keep it on the rem base (leading-N
+	   would otherwise pin to px through --spacing). Same values at 16px. */
+	--leading-3: 0.75rem;
+	--leading-4: 1rem;
+	--leading-5: 1.25rem;
+	--leading-6: 1.5rem;
+	--leading-7: 1.75rem;
+	--leading-8: 2rem;
+	--leading-9: 2.25rem;
+	--leading-10: 2.5rem;
 	--container-3xs: 256px;
 	--container-2xs: 288px;
 	--container-xs: 320px;
@@ -2702,6 +2712,14 @@ html[data-chat-font] .aui-root {
 .react-flow__attribution.react-flow__attribution {
 	font-size: 0.625rem;
 }
+/* Radix hides the select viewport scrollbar; restore the app's thin one.
+   Doubled attribute beats the runtime-injected [data-radix-select-viewport]
+   rules on specificity. */
+[data-slot="select-content"] [data-radix-select-viewport]::-webkit-scrollbar {
+	display: block !important;
+	width: 8px;
+}
+
 .react-flow__node-input.react-flow__node-input,
 .react-flow__node-default.react-flow__node-default,
 .react-flow__node-output.react-flow__node-output,

@@ -135,23 +135,23 @@ function SelectContent({
         {...props}
       >
         <SelectScrollUpButton />
-        {/* Scroll an inner wrapper, not the rounded surface: a scrollbar on
-            the surface squares its corners in WebKit. The surface padding
-            insets the scrollbar clear of the curve. */}
-        <div
-          data-slot="select-viewport-scroll"
-          className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+        {/* The Radix viewport is the scroller (not the rounded surface, whose
+            scrollbar would square its corners in WebKit; not a wrapper, which
+            would blind Radix's scroll handling). The surface padding insets
+            the scrollbar clear of the curve. */}
+        <SelectPrimitive.Viewport
+          data-position={position}
+          // Inline: Radix injects a scrollbar-width:none stylesheet rule that
+          // Firefox lets win over author !important.
+          style={{ scrollbarWidth: "thin" }}
+          className={cn(
+            "min-h-0 flex-1 overflow-x-hidden overflow-y-auto",
+            "data-[position=popper]:w-full data-[position=popper]:min-w-[var(--radix-select-trigger-width)]",
+            position === "popper" && "",
+          )}
         >
-          <SelectPrimitive.Viewport
-            data-position={position}
-            className={cn(
-              "data-[position=popper]:w-full data-[position=popper]:min-w-[var(--radix-select-trigger-width)]",
-              position === "popper" && "",
-            )}
-          >
-            {children}
-          </SelectPrimitive.Viewport>
-        </div>
+          {children}
+        </SelectPrimitive.Viewport>
         <SelectScrollDownButton />
       </SelectPrimitive.Content>
     </SelectPrimitive.Portal>

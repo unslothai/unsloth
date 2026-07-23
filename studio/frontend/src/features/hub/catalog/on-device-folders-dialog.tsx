@@ -327,8 +327,8 @@ export function OnDeviceFoldersDialog({
                         className={cn(
                           "grid min-h-12 w-full items-center gap-3 border-b border-border/50 px-3 py-2 last:border-b-0",
                           isTauri
-                            ? "grid-cols-[2rem_minmax(0,1fr)_2rem_32px]"
-                            : "grid-cols-[2rem_minmax(0,1fr)_32px]",
+                            ? "grid-cols-[32px_minmax(0,1fr)_32px_32px]"
+                            : "grid-cols-[32px_minmax(0,1fr)_32px]",
                         )}
                       >
                         <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">

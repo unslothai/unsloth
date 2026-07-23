@@ -207,7 +207,7 @@ function DetailRow({
 }) {
   if (value == null || value === "") return null;
   return (
-    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-[0.8125rem]">
+    <div className="grid grid-cols-[136px_minmax(0,1fr)] items-start gap-3 text-[0.8125rem]">
       <span className="text-muted-foreground">{label}</span>
       <span
         className={cn(
