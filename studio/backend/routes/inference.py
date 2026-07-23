@@ -6789,9 +6789,8 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
-    # OAI-compat Connections (ollama / llama.cpp / vLLM / custom) can drive
-    # Unsloth's local tool runtime against the remote model (#7282). Hosted
-    # providers stay on the pure-proxy + supportsBuiltin* path.
+    # OAI-compat Connections (ollama / llama.cpp / vLLM / custom) drive Unsloth's local tool
+    # runtime against the remote model (#7282); hosted providers stay on the pure-proxy path.
     from core.inference.external_agentic import (
         provider_supports_local_tool_runtime,
         stream_external_local_tool_loop,
@@ -6806,8 +6805,7 @@ async def _proxy_to_external_provider(
         and payload.stream
         and (_tools_on_ext or _mcp_allowed_ext)
         and not payload.tools  # client-supplied tools stay on passthrough
-        # Callers opting out via tool_choice="none" skip the loop, mirroring
-        # the local GGUF routing gate.
+        # tool_choice="none" opts out, mirroring the local GGUF routing gate.
         and not (
             payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload)
         )
@@ -6820,13 +6818,12 @@ async def _proxy_to_external_provider(
             payload, tools_on = bool(_tools_on_ext), mcp_allowed = _mcp_allowed_ext
         )
         if not tools_to_use:
-            # Nothing to run — reuse the plain proxy stream (incl. client.close).
+            # Nothing to run: reuse the plain proxy stream (incl. client.close).
             async for line in _stream():
                 yield line
             return
 
-        # Inject the same tool-action nudge local GGUF turns get so small
-        # remote models know when to call tools.
+        # Inject the same tool-action nudge local GGUF turns get so small remote models know when to call tools.
         _nudge = _build_tool_action_nudge(tools = tools_to_use, model_name = model)
         _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
         loop_messages = list(chat_messages)
@@ -7208,9 +7205,8 @@ async def openai_chat_completions(
 
         untrack_current_request(request.scope)
 
-        # Resolve provider type early so OAI-compat Connections (ollama /
-        # llama.cpp / vLLM / custom) can use Unsloth's local tool runtime
-        # (#7282) instead of being rejected on confirm_tool_calls.
+        # Resolve provider type early so OAI-compat Connections (ollama / llama.cpp / vLLM /
+        # custom) can use the local tool runtime (#7282) instead of being rejected on confirm_tool_calls.
         _ext_provider_type = payload.provider_type
         if payload.provider_id and not _ext_provider_type:
             _cfg = providers_db.get_provider(payload.provider_id)

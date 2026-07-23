@@ -160,11 +160,10 @@ function _inferProviderFromOpenrouterId(
 }
 
 /**
- * OAI-compat Connections (Ollama / llama.cpp / vLLM / Custom) on a remote
- * endpoint that can still drive Unsloth's *local* tool runtime (web_search /
- * python / terminal / MCP) on the Studio host. Unlike `providerSupportsBuiltin*`
- * (server-side hosted tools), these get `supportsTools=true` and the backend
- * runs the local tool loop against the model's function calls (#7282).
+ * OAI-compat Connections (Ollama / llama.cpp / vLLM / Custom) on a remote endpoint that
+ * can drive Unsloth's *local* tool runtime (web_search / python / terminal / MCP) on the
+ * Studio host. Unlike `providerSupportsBuiltin*` (server-side), these get `supportsTools=true`
+ * and the backend runs the local tool loop against the model (#7282).
  */
 const LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = new Set([
   "ollama",

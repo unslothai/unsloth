@@ -2232,8 +2232,7 @@ export function createOpenAIStreamAdapter(
             externalProvider.baseUrl,
           ),
       );
-      // OAI-compat Connections (ollama / llama.cpp / vLLM / custom) drive
-      // Unsloth's local tool runtime against the remote model (#7282).
+      // OAI-compat Connections drive Unsloth's local tool runtime against the remote model (#7282).
       const localToolRuntimeForThisTurn = Boolean(
         externalProvider &&
           providerSupportsLocalToolRuntime(externalProvider.providerType),
@@ -3056,10 +3055,8 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Hosted providers: enabled_tools maps to server-side builtins.
-              // OAI-compat Connections: enable Unsloth's local tool runtime
-              // (web_search / python / terminal / MCP) against the remote
-              // model (#7282).
+              // Hosted providers: enabled_tools maps to server-side builtins. OAI-compat
+              // Connections: enable the local tool runtime (web_search / python / terminal / MCP) (#7282).
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||

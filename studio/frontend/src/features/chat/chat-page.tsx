@@ -2079,10 +2079,8 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // Hosted providers have no local tool runtime, so supportsTools stays
-      // false and supportsBuiltin* carries server-side capability. OAI-compat
-      // Connections (ollama / llama.cpp / vLLM / custom) can drive Unsloth's
-      // local Search/Code/MCP tools against the remote model (#7282).
+      // Hosted providers have no local tool runtime (supportsTools false; supportsBuiltin*
+      // carries server-side capability). OAI-compat Connections drive local Search/Code/MCP (#7282).
       supportsTools: supportsLocalToolRuntime,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -2608,8 +2606,7 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // Hosted providers → supportsTools false + supportsBuiltin*.
-          // OAI-compat Connections can drive local Search/Code/MCP (#7282).
+          // Hosted providers: supportsTools false + supportsBuiltin*. OAI-compat Connections drive local Search/Code/MCP (#7282).
           supportsTools: supportsLocalToolRuntime,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,

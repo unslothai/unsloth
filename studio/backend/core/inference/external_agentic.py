@@ -176,14 +176,11 @@ async def stream_external_local_tool_loop(
     created = int(time.time())
     cancel_event = cancel_event or threading.Event()
 
-    # 9999 is the "no limit" sentinel; pass None so execute_tool never times out
-    # (mirrors the local GGUF loop).
+    # 9999 = "no limit" sentinel: pass None so execute_tool never times out (mirrors local GGUF loop).
     effective_tool_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-    # Total tool calls executed across all rounds must not exceed the caller's
-    # per-message budget, even when a single completion returns parallel calls.
+    # Cap total tool calls across all rounds at the caller's per-message budget, even with parallel calls.
     calls_remaining = max_tool_iterations
-    # A forced tool_choice must only apply to the first round; after a tool
-    # runs, later rounds are freed to synthesize the answer.
+    # A forced tool_choice applies only to the first round; later rounds are freed to answer.
     active_tool_choice = tool_choice
 
     enabled_names = {
@@ -217,12 +214,10 @@ async def stream_external_local_tool_loop(
             stream = True,
         )
 
-        # Stop may fire while the remote is still in prefill and the read is
-        # blocked awaiting the next SSE line. Drive the generator one item at a
-        # time via a cancellable task raced against the cancel event, so Stop
-        # abandons the in-flight read immediately (calling aclose() on a
-        # generator that is mid-await raises RuntimeError, so it cannot be used
-        # to interrupt from another task).
+        # Stop may fire while the remote read is blocked awaiting the next SSE line. Drive
+        # the generator one item at a time via a cancellable task raced against the cancel
+        # event so Stop abandons the read immediately (aclose() on a mid-await generator
+        # raises RuntimeError, so it can't interrupt from another task).
         async def _wait_cancel() -> None:
             while not cancel_event.is_set():
                 await asyncio.sleep(0.1)
@@ -320,7 +315,7 @@ async def stream_external_local_tool_loop(
         ordered_calls = [tc for tc in ordered_calls if (tc.get("function") or {}).get("name")]
 
         if not ordered_calls or finish_reason not in (None, "tool_calls", "stop"):
-            # No tool calls — emit a terminal finish if we streamed content.
+            # No tool calls: emit a terminal finish if we streamed content.
             if saw_content or finish_reason:
                 yield _openai_content_chunk_line(
                     completion_id = completion_id,
@@ -356,8 +351,7 @@ async def stream_external_local_tool_loop(
         conversation.append(
             {
                 "role": "assistant",
-                # Retain any streamed explanation so the follow-up round keeps
-                # the model's own context for interpreting tool results.
+                # Retain streamed explanation so the follow-up round keeps the model's context.
                 "content": assistant_content or None,
                 "tool_calls": assistant_tool_calls,
             }
@@ -373,8 +367,7 @@ async def stream_external_local_tool_loop(
             tool_call_id = tc["id"]
 
             _prov = tool_event_provenance()
-            # Later rounds must be free to answer; a forced choice only applies
-            # to the first round.
+            # Later rounds must be free to answer; a forced choice applies only to the first round.
             active_tool_choice = "auto"
 
             # Skip tools the caller did not enable (defense in depth).
@@ -465,7 +458,7 @@ async def stream_external_local_tool_loop(
 
         continue
 
-    # Budget exhausted after tool rounds — one final synthesis pass without tools.
+    # Budget exhausted after tool rounds: one final synthesis pass without tools.
     final_finish_reason = None
     if not cancel_event.is_set():
         if max_tool_iterations > 0:
