@@ -367,7 +367,7 @@ export function ProjectsPage() {
         }}
       />
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+        <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           Projects
         </h1>
         <div className="flex items-center gap-3">
@@ -419,7 +419,7 @@ export function ProjectsPage() {
                 <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -430,7 +430,7 @@ export function ProjectsPage() {
                   </DropdownMenuGroup>
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Per chat
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -445,7 +445,7 @@ export function ProjectsPage() {
                 <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -456,7 +456,7 @@ export function ProjectsPage() {
                   </DropdownMenuGroup>
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Per chat
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -482,7 +482,7 @@ export function ProjectsPage() {
 
       {!hasLoaded ? (
         <div className="mt-16">
-          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -526,7 +526,7 @@ export function ProjectsPage() {
         <div className="mt-16">
           {/* Column header. Name starts at the folder icon's left edge; the
               right-anchored columns keep Modified over its values. */}
-          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -571,7 +571,7 @@ export function ProjectsPage() {
                   className="size-5"
                 />
               </span>
-              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-foreground">
+              <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
                 {project.name}
               </span>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">

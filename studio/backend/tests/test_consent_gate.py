@@ -873,6 +873,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             if fn == "config.json":
                 import json
@@ -899,6 +900,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -932,6 +934,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -972,6 +975,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1008,6 +1012,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1037,6 +1042,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1079,6 +1085,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1120,6 +1127,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
@@ -1182,6 +1190,7 @@ class TestScannerCoversAllExecutableCode:
             repo,
             fn,
             token = None,
+            cache_dir = None,
         ):
             import json
             import tempfile
