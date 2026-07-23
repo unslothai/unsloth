@@ -2538,7 +2538,46 @@ def _windows_program_roots() -> list[str]:
     if not roots:
         drive = os.environ.get("SystemDrive", "C:")
         roots = [drive + r"\Program Files", drive + r"\Program Files (x86)"]
+    # A 32-bit process on 64-bit Windows only sees the x86 root (the X64
+    # known-folder id is unsupported there), so derive the native sibling by
+    # stripping the " (x86)" suffix. Derived from a trusted root, not env.
+    for root in list(roots):
+        base = root.rstrip("\\/")
+        if base.lower().endswith(" (x86)"):
+            native = base[: -len(" (x86)")]
+            if native and native not in roots:
+                roots.append(native)
     return roots
+
+
+def _resolve_trusted_windows_git() -> tuple[str, str]:
+    """Find a git launcher in a TRUSTED Program Files dir. Returns
+    ``(canonical_dir, ext)`` or ``("", "")``.
+
+    ``shutil.which`` returns only the first PATH match, which may be an
+    untrusted user shim; scan the remaining PATH entries for a later trusted
+    Git so bare ``git`` still resolves (#7317).
+    """
+    exts = [
+        e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)
+    ]
+    candidates: list[str] = []
+    primary = shutil.which("git")
+    if primary:
+        candidates.append(primary)
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        for ext in exts:
+            cand = os.path.join(entry, "git" + ext)
+            if os.path.isfile(cand):
+                candidates.append(cand)
+    for git_exe in candidates:
+        git_dir = os.path.dirname(git_exe)
+        if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
+            return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
+    return "", ""
 
 
 def _is_trusted_windows_program_dir(path: str) -> bool:
@@ -2600,16 +2639,12 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # have an auto-approved bare command execute it (#7317).
     git_ext = ""
     if sys.platform == "win32":
-        git_exe = shutil.which("git")
-        if git_exe:
-            git_dir = os.path.dirname(git_exe)
-            if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
-                # Append the CANONICAL (realpath) dir used for the trust
-                # decision, not the raw entry: a junction that passed the check
-                # cannot then be retargeted to a writable dir before use.
-                path_entries.append(os.path.realpath(git_dir))
-                # A .cmd/.bat git shim needs its extension in PATHEXT below.
-                git_ext = os.path.splitext(git_exe)[1].upper()
+        # Append the CANONICAL (realpath) trusted git dir, scanning past any
+        # untrusted user shim that sorts first on PATH; the canonical path
+        # cannot be retargeted via a junction after the trust check.
+        _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if _trusted_git_dir:
+            path_entries.append(_trusted_git_dir)
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))

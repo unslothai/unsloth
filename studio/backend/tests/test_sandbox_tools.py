@@ -464,6 +464,45 @@ class TestSandboxEnvIsolation:
         parts = [os.path.normcase(os.path.realpath(p)) for p in env["PATH"].split(os.pathsep)]
         assert os.path.normcase(str(real_prog / "Git" / "cmd")) in parts
 
+    def test_scan_past_untrusted_git_shim(self, monkeypatch, tmp_path):
+        """When an untrusted shim sorts first on PATH, the scan still finds a
+        later trusted Program Files git."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        prog = tmp_path / "Program Files"
+        trusted_git = prog / "Git" / "cmd"
+        trusted_git.mkdir(parents = True)
+        (trusted_git / "git.EXE").write_text("")  # match PATHEXT case on this FS
+        shim = tmp_path / "scoop" / "shims"
+        shim.mkdir(parents = True)
+        (shim / "git.EXE").write_text("")
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
+        # shutil.which returns the untrusted shim first.
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim / "git.EXE"))
+        monkeypatch.setenv(
+            "PATH", os.pathsep.join([str(shim), str(trusted_git)])
+        )
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(trusted_git) in parts
+        assert str(shim) not in parts
+
+    def test_program_roots_derive_native_from_x86(self, monkeypatch):
+        """A 32-bit process seeing only the x86 root must still trust the
+        derived native C:\\Program Files."""
+        import core.inference.tools as tools_mod
+
+        # Force the API-empty path so the env fallback + derivation runs, with
+        # only an x86 root available.
+        monkeypatch.delenv("ProgramFiles", raising = False)
+        monkeypatch.delenv("ProgramW6432", raising = False)
+        monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        roots = [r.lower() for r in tools_mod._windows_program_roots()]
+        assert any(r.endswith(r"\program files") for r in roots)
+
     def test_program_roots_include_native_root(self, monkeypatch):
         """FOLDERID_ProgramFilesX64 is queried so a 32-bit process still trusts
         the native C:\\Program Files (both other ids map to x86 there)."""
