@@ -391,9 +391,7 @@ class TestSandboxEnvIsolation:
         monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
         temp_git = tmp_path / "Windows" / "Temp" / "Git" / "cmd"
         temp_git.mkdir(parents = True)
-        monkeypatch.setattr(
-            tools_mod.shutil, "which", lambda name: str(temp_git / "git.exe")
-        )
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(temp_git / "git.exe"))
         env = _build_safe_env(str(tmp_path))
         assert str(temp_git) not in env["PATH"].split(os.pathsep)
 
@@ -413,16 +411,12 @@ class TestSandboxEnvIsolation:
             pytest.skip("symlink unsupported in this environment")
         monkeypatch.setenv("ProgramFiles", str(real_prog))
         git_via_alias = alias / "Git" / "cmd" / "git.exe"
-        monkeypatch.setattr(
-            tools_mod.shutil, "which", lambda name: str(git_via_alias)
-        )
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_via_alias))
         env = _build_safe_env(str(tmp_path))
         parts = [os.path.normcase(os.path.realpath(p)) for p in env["PATH"].split(os.pathsep)]
         assert os.path.normcase(str(real_prog / "Git" / "cmd")) in parts
 
-    def test_no_default_current_directory_in_exe_path_set_on_windows(
-        self, monkeypatch, tmp_path
-    ):
+    def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
         import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
