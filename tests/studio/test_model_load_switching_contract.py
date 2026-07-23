@@ -110,6 +110,9 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
     assert "const stopped = await shared.cancel(true);" in runtime
     assert "shared.run.previousCheckpointWasUnloaded" in runtime
+    assert "supersedeOwnerIntent: () => void;" in runtime
+    assert "shared.supersedeOwnerIntent();" in runtime
+    assert "loadIntentRef.current += 1;" in runtime
 
 
 def test_superseded_replacement_keeps_the_working_model_config():
