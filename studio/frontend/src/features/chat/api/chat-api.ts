@@ -116,12 +116,16 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
 
 export async function loadModel(
   payload: LoadModelRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<LoadModelResponse> {
+  options?.signal?.throwIfAborted();
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  options?.signal?.throwIfAborted();
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify({
       ...payload,
       hf_token: preparedToken.token,
@@ -134,12 +138,16 @@ export async function loadModel(
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
+  options?.signal?.throwIfAborted();
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
+  options?.signal?.throwIfAborted();
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
@@ -207,10 +215,14 @@ export async function fetchGgufStagedMetadata(payload: {
   };
 }
 
-export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
+export async function unloadModel(
+  payload: UnloadModelRequest,
+  options?: { signal?: AbortSignal },
+): Promise<void> {
   const response = await authFetch("/api/inference/unload", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify(payload),
   });
   await parseJsonOrThrow<unknown>(response);
