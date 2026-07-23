@@ -537,11 +537,13 @@ if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
 fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
-# for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
-# A markerless source build stays strict since this runs right before an rm -rf.
+# for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
+# by our installers. Mirrors the setup.ps1 Node guard. A markerless source build
+# stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {
@@ -1101,8 +1103,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
             '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
@@ -1358,9 +1359,14 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        # AMD was detected but gfx resolution failed; tell the installer ROCm is
-        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+    elif [ "$_setup_amd_detected" = true ] && \
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ] || \
+           ls /opt/rocm-*/bin/hipcc >/dev/null 2>&1; }; then
+        # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
+        # hipcc can actually build llama.cpp (incl. a versioned /opt/rocm-*/bin, the
+        # same paths the source build uses). With no gfx the prebuilt resolver finds
+        # no ROCm bundle and the source build would fail, so without hipcc fall
+        # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
     # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
@@ -1959,6 +1965,99 @@ if [ ! -L "$LLAMA_CPP_DIR" ] && {
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
+# ── whisper.cpp (local speech-to-text dictation engine) ──
+# Optional runtime for local dictation. Fail-open: any failure leaves the
+# Transformers STT engine and browser dictation working, so it never aborts
+# setup (unlike llama.cpp). Runs in 'unsloth studio update' too so the runtime
+# installs/refreshes without a compiler. Installs beside llama.cpp under the
+# same managed home the sidecar's _managed_whisper_cpp_dir() resolves.
+WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
+if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
+    verbose_substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
+    verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+else
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    fi
+    _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
+    if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
+        _WHISPER_CMD+=(--published-release-tag "$UNSLOTH_WHISPER_RELEASE_TAG")
+    fi
+    if [ -n "${_setup_gfx:-}" ]; then
+        _WHISPER_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        _WHISPER_CMD+=(--has-rocm)
+    fi
+    _WHISPER_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+        _WHISPER_STATUS=${PIPESTATUS[0]}
+    else
+        "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
+        _WHISPER_STATUS=$?
+    fi
+    set -e
+    if [ "$_WHISPER_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_WHISPER_LOG"; then
+            step "whisper.cpp" "prebuilt up to date"
+        else
+            step "whisper.cpp" "prebuilt installed"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+            : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+        rm -f "$_WHISPER_LOG"
+    elif [ "$_WHISPER_STATUS" -eq 3 ]; then
+        # A warm dictation server holds the binary; keep the old install.
+        step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
+        rm -f "$_WHISPER_LOG"
+    else
+        # A source build is opt-in. Keep the installer log until fallback has
+        # finished so setup can distinguish release skew from an operational
+        # installer failure and report the exact pairing when available.
+        _WHISPER_RECOVERED=false
+        _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
+        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
+                && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            # The source build overwrites whisper-server in the managed dir but
+            # knows nothing about the prebuilt marker; a stale marker would make
+            # a later setup run report "already matches" and skip repairing the
+            # prebuilt over the source binary. Drop it before building.
+            rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+                _WHISPER_RECOVERED=true
+                step "whisper.cpp" "source build installed"
+                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                    : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+                fi
+            else
+                :
+            fi
+        fi
+        if [ "$_WHISPER_RECOVERED" != true ]; then
+            if [ "$_WHISPER_STATUS" -eq 2 ]; then
+                _WHISPER_REQUIRED_TAG="$(sed -n 's/.*slim bundle requires llama\.cpp \([^; ]*\).*/\1/p' "$_WHISPER_LOG" | tail -n 1)"
+                _WHISPER_INSTALLED_TAG="$(python - "$UNSLOTH_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("release_tag", ""))
+except Exception:
+    pass
+PY
+)"
+                _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
+                step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
+            else
+                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
+            fi
+        fi
+        rm -f "$_WHISPER_LOG"
+    fi
 fi
 
 # ── Footer ──

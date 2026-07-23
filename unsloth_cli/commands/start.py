@@ -24,6 +24,7 @@ from urllib.parse import urlencode, urlparse
 
 import click
 import typer
+from typer.core import TyperCommand
 
 from unsloth_cli._inference import (
     _USER_AGENT,
@@ -91,6 +92,26 @@ _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+class _PassthroughCommand(TyperCommand):
+    """Preserve the option separator when forwarding arguments to an agent."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        raw_args = list(args)
+        try:
+            separator = raw_args.index("--")
+        except ValueError:
+            return super().parse_args(ctx, args)
+        trailing_count = len(raw_args) - separator - 1
+        remaining = super().parse_args(ctx, args)
+        insert_at = max(0, len(remaining) - trailing_count)
+        if insert_at >= len(remaining) or remaining[insert_at] != "--":
+            remaining.insert(insert_at, "--")
+            ctx.args = remaining
+        return remaining
+
+
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -2566,7 +2587,7 @@ def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> No
     )
 
 
-@start_app.command("claude", context_settings = _PASSTHROUGH)
+@start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2667,7 +2688,7 @@ def claude(
     )
 
 
-@start_app.command("codex", context_settings = _PASSTHROUGH)
+@start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def codex(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2742,7 +2763,7 @@ def codex(
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
 
 
-@start_app.command("openclaw", context_settings = _PASSTHROUGH)
+@start_app.command("openclaw", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def openclaw(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2806,7 +2827,7 @@ def openclaw(
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
-@start_app.command("opencode", context_settings = _PASSTHROUGH)
+@start_app.command("opencode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def opencode(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2950,7 +2971,7 @@ def opencode(
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
 
 
-@start_app.command("hermes", context_settings = _PASSTHROUGH)
+@start_app.command("hermes", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def hermes(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2990,7 +3011,7 @@ def hermes(
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
-@start_app.command("pi", context_settings = _PASSTHROUGH)
+@start_app.command("pi", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def pi(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,

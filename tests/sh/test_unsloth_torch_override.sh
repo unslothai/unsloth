@@ -75,11 +75,22 @@ assert_true "overrides temp file is removed after the unsloth installs" "$?"
 grep -q 'for _ov_file in \${UV_OVERRIDE:-}' "$INSTALL_SH"
 assert_true "UV_OVERRIDE env files are merged into the overrides file" "$?"
 
-# 6. The EXIT trap also removes the overrides file, so a failed Step 2 (set -e
-#    fires before the normal-path rm) cannot leak it.
-sed -n '/_on_install_exit() {/,/^}/p' "$INSTALL_SH" \
+# 6. Exit and signal traps share cleanup, so a failed or interrupted Step 2
+#    cannot leak the overrides file.
+sed -n '/_on_install_exit() {/,/^}/p' "$INSTALL_SH" | grep -q '_cleanup_install_temporaries'
+_exit_cleanup_rc=$?
+sed -n '/_on_install_signal() {/,/^}/p' "$INSTALL_SH" | grep -q '_cleanup_install_temporaries'
+_signal_cleanup_rc=$?
+sed -n '/_cleanup_install_temporaries() {/,/^}/p' "$INSTALL_SH" \
     | grep -q 'rm -f "\$_UNSLOTH_TORCH_OVERRIDES"'
-assert_true "EXIT trap removes the overrides temp file on failure" "$?"
+_cleanup_body_rc=$?
+if [ "$_exit_cleanup_rc" -eq 0 ] && [ "$_signal_cleanup_rc" -eq 0 ] \
+   && [ "$_cleanup_body_rc" -eq 0 ]; then
+    _rc=0
+else
+    _rc=1
+fi
+assert_true "exit and signal traps remove the overrides temp file" "$_rc"
 
 # 7. The UV_OVERRIDE fold filters inherited files instead of cat-ing them (run
 #    the extracted awk program on sample files): (a) inherited torch-trio lines
