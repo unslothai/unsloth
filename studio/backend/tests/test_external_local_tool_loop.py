@@ -611,7 +611,11 @@ def test_proxy_openai_enable_tools_stays_on_passthrough(monkeypatch):
     assert seen["enabled_tools"] == ["web_search"]
 
 
-def _one_call_stream(tool_id, name = "web_search", args = '{"query":"q"}'):
+def _one_call_stream(
+    tool_id,
+    name = "web_search",
+    args = '{"query":"q"}',
+):
     return [
         _sse_chunk(
             tool_calls = [
@@ -675,7 +679,9 @@ def test_no_limit_timeout_sentinel_passed_as_none(monkeypatch):
         return "ok"
 
     monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute)
-    client = _FakeClient([_one_call_stream("c1"), [_sse_chunk(content = "x", finish_reason = "stop"), "data: [DONE]"]])
+    client = _FakeClient(
+        [_one_call_stream("c1"), [_sse_chunk(content = "x", finish_reason = "stop"), "data: [DONE]"]]
+    )
 
     async def _run():
         async for _ in stream_external_local_tool_loop(
@@ -696,8 +702,18 @@ def test_parallel_calls_respect_per_message_budget(monkeypatch):
     stream = [
         _sse_chunk(
             tool_calls = [
-                {"index": 0, "id": "c1", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"a"}'}},
-                {"index": 1, "id": "c2", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"b"}'}},
+                {
+                    "index": 0,
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"a"}'},
+                },
+                {
+                    "index": 1,
+                    "id": "c2",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"b"}'},
+                },
             ],
             finish_reason = "tool_calls",
         ),
