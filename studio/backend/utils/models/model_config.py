@@ -1625,7 +1625,7 @@ def _extract_quant_label(filename: str) -> str:
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
         r"|TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
-        r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
+        r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"  # Standard/Packed: Q8_0, PQ2_0, Q2_0_g64
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
         # Optional bits-per-weight modifier so repos that ship multiple
