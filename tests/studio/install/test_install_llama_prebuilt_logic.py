@@ -22,7 +22,6 @@ sys.modules[SPEC.name] = INSTALL_LLAMA_PREBUILT
 SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
-extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
 scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
@@ -105,105 +104,10 @@ def approved_checksums_for(
     )
 
 
-def test_extract_archive_allows_safe_tar_symlink_chain(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-    payload = b"shared-object"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        versioned = tarfile.TarInfo("libllama.so.0.0.1")
-        versioned.size = len(payload)
-        archive.addfile(versioned, io_bytes(payload))
-
-        soname = tarfile.TarInfo("libllama.so.0")
-        soname.type = tarfile.SYMTYPE
-        soname.linkname = "libllama.so.0.0.1"
-        archive.addfile(soname)
-
-        linker_name = tarfile.TarInfo("libllama.so")
-        linker_name.type = tarfile.SYMTYPE
-        linker_name.linkname = "libllama.so.0"
-        archive.addfile(linker_name)
-
-    destination = tmp_path / "extract"
-    extract_archive(archive_path, destination)
-
-    assert (destination / "libllama.so.0.0.1").read_bytes() == payload
-    assert (destination / "libllama.so.0").is_symlink()
-    assert (destination / "libllama.so").is_symlink()
-    assert (destination / "libllama.so").resolve().read_bytes() == payload
-
-
-def test_extract_archive_allows_safe_tar_hardlink(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-    payload = b"quantize"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        target = tarfile.TarInfo("llama-quantize")
-        target.size = len(payload)
-        archive.addfile(target, io_bytes(payload))
-
-        hardlink = tarfile.TarInfo("llama-quantize-copy")
-        hardlink.type = tarfile.LNKTYPE
-        hardlink.linkname = "llama-quantize"
-        archive.addfile(hardlink)
-
-    destination = tmp_path / "extract"
-    extract_archive(archive_path, destination)
-
-    assert (destination / "llama-quantize-copy").read_bytes() == payload
-    assert not (destination / "llama-quantize-copy").is_symlink()
-
-
-def test_extract_archive_rejects_absolute_tar_symlink_target(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        entry = tarfile.TarInfo("libllama.so")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "/tmp/libllama.so.0"
-        archive.addfile(entry)
-
-    with pytest.raises(PrebuiltFallback, match = "archive link used an absolute target"):
-        extract_archive(archive_path, tmp_path / "extract")
-
-
-def test_extract_archive_rejects_escaping_tar_symlink_target(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        entry = tarfile.TarInfo("libllama.so")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "../outside/libllama.so.0"
-        archive.addfile(entry)
-
-    with pytest.raises(PrebuiltFallback, match = "archive link escaped destination"):
-        extract_archive(archive_path, tmp_path / "extract")
-
-
-def test_extract_archive_rejects_unresolved_tar_symlink_target(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        entry = tarfile.TarInfo("libllama.so")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "libllama.so.0"
-        archive.addfile(entry)
-
-    with pytest.raises(PrebuiltFallback, match = "unresolved link entries"):
-        extract_archive(archive_path, tmp_path / "extract")
-
-
-def test_extract_archive_rejects_zip_symlink_entry(tmp_path: Path):
-    archive_path = tmp_path / "bundle.zip"
-
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        info = zipfile.ZipInfo("libllama.so")
-        info.create_system = 3
-        info.external_attr = 0o120777 << 16
-        archive.writestr(info, "libllama.so.0")
-
-    with pytest.raises(PrebuiltFallback, match = "zip archive contained a symlink entry"):
-        extract_archive(archive_path, tmp_path / "extract")
+# The extract_archive guard tests (safe symlink chain / hardlink, absolute or
+# escaping or unresolved symlink targets, zip symlink entries) moved verbatim
+# to tests/studio/install/test_prebuilt_core.py: extract_archive is the shared
+# prebuilt_core implementation, re-exported by this installer.
 
 
 def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
@@ -1348,6 +1252,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         approved_checksums,
         initial_fallback_used = False,
         existing_install_dir = None,
+        force_cpu = False,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -2551,6 +2456,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         approved_checksums,
         initial_fallback_used = False,
         existing_install_dir = None,
+        force_cpu = False,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -2698,6 +2604,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         approved_checksums,
         prebuilt_fallback_used,
         quantized_path,
+        force_cpu = False,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -2824,6 +2731,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         approved_checksums,
         initial_fallback_used = False,
         existing_install_dir = None,
+        force_cpu = False,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":

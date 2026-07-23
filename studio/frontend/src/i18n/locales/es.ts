@@ -39,7 +39,7 @@ export const es = {
       returnToChat: "Volver al chat",
       compare: "Comparar",
       search: "Buscar",
-      hub: "Hub",
+      hub: "Modelos",
       train: "Entrenar",
       recipes: "Recetas",
       export: "Exportar",
@@ -112,10 +112,10 @@ export const es = {
         "Se usa para cargar modelos restringidos y subir artefactos.",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
-      tokenSaved: "Token guardado",
+      tokenValidated: "Token validado",
       password: "Contraseña",
       passwordDescription:
-        "Cambia la contraseña de esta cuenta de Studio.",
+        "Cambia la contraseña de esta cuenta de Unsloth.",
       passwordDialog: {
         trigger: "Cambiar contraseña",
         title: "Cambiar contraseña",
@@ -157,7 +157,7 @@ export const es = {
           "Cuando una solicitud compatible con OpenAI nombra un GGUF descargado distinto, se carga antes de responder. Desactivado por defecto; los nombres desconocidos siguen usando el modelo cargado.",
         idleUnload: "Descarga automática por inactividad",
         idleUnloadDescription:
-          "Descarga el modelo tras este número de segundos inactivo para liberar VRAM; la siguiente solicitud lo recarga. 0 lo mantiene cargado.",
+          "Descarga el modelo tras este número de segundos inactivo para liberar VRAM; la siguiente solicitud lo recarga. 0 lo mantiene cargado. Mínimo 60 segundos.",
         idleNeedsEnable:
           "Activa Cambiar de modelo según la solicitud para que un modelo descargado se recargue en el próximo uso.",
         idleActiveViaEnv:
@@ -166,7 +166,7 @@ export const es = {
           "No se pudo cargar la configuración de cambio automático de modelo.",
         saveError:
           "No se pudo guardar la configuración de cambio automático de modelo.",
-        idleError: "Introduce un número entero de segundos (0 o más).",
+        idleError: "Introduce 0 para mantener el modelo cargado, o al menos 60 segundos.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",
@@ -294,7 +294,7 @@ export const es = {
     resources: {
       title: "Sistema",
       description:
-        "Monitorea el hardware y el almacenamiento de este servidor de Studio.",
+        "Monitorea el hardware y el almacenamiento de este servidor de Unsloth.",
       liveUpdates: "Actualizaciones en vivo",
       floatingWindow: "Ventana flotante",
       disableOverlay: "Desactivar superposición",

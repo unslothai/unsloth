@@ -72,7 +72,7 @@ function DiagnosticsCopyActions({
           readOnly
           value={manualReport}
           onFocus={(event) => event.currentTarget.select()}
-          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[10px] text-muted-foreground"
+          className="h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
         />
       )}
     </div>

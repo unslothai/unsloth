@@ -230,16 +230,20 @@ class ExportOrchestrator:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        from .worker import run_export_process
+        cache_env = get_hf_cache_paths().child_env({})
 
-        with native_path_secret_removed_for_child_start():
+        with (
+            child_environment_for_spawn(cache_env),
+            native_path_secret_removed_for_child_start(),
+        ):
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = (run_export_process,),
+                args = ("core.export.worker", "run_export_process", cache_env),
                 kwargs = {
                     "cmd_queue": self._cmd_queue,
                     "resp_queue": self._resp_queue,
@@ -377,9 +381,10 @@ class ExportOrchestrator:
 
             if rtype == "status":
                 message = resp.get("message", "")
-                logger.info("Export subprocess status: %s", message)
-                # Surface status in the live log panel for high-level progress.
+                # One structured export_progress line per phase (consolidated in the
+                # server log, like training/download progress); also shown live.
                 if message:
+                    logger.info("export_progress", phase = message)
                     self._append_log(
                         {
                             "stream": "status",

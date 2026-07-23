@@ -90,7 +90,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
             // Pin the close button inside the toast's top-right corner.
             // Sonner defaults to the left/outside edge, so keep the horizontal
             // override here and the top offset in index.css.
-            "--toast-close-button-start": "unset",
+            "--toast-close-button-start": "auto",
             "--toast-close-button-end": "8px",
             "--toast-close-button-transform": "none",
           } as React.CSSProperties

@@ -39,7 +39,7 @@ export const ptBR = {
       returnToChat: "Retornar ao Chat",
       compare: "Comparar",
       search: "Buscar",
-      hub: "Hub",
+      hub: "Modelos",
       train: "Treinar",
       recipes: "Receitas",
       export: "Exportar",
@@ -103,6 +103,7 @@ export const ptBR = {
       connections: "Conexões",
       apiKeys: "API",
       about: "Sobre",
+      voice: "Voz",
     },
     general: {
       title: "Geral",
@@ -111,7 +112,7 @@ export const ptBR = {
       huggingFaceToken: "Token do Hugging Face",
       huggingFaceTokenDescription:
         "Usado para carregar modelos restritos e enviar artefatos.",
-      tokenSaved: "Token salvo",
+      tokenValidated: "Token validado",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
       password: "Senha",
@@ -156,14 +157,14 @@ export const ptBR = {
           "Quando uma requisição compatível com OpenAI nomear um GGUF baixado diferente, carrega-o antes de responder. Desativado por padrão; nomes desconhecidos continuam usando o modelo carregado.",
         idleUnload: "Descarregamento automático por inatividade",
         idleUnloadDescription:
-          "Descarrega o modelo após esta quantidade de segundos de inatividade para liberar VRAM; a próxima requisição o recarrega. 0 mantém o modelo carregado.",
+          "Descarrega o modelo após esta quantidade de segundos de inatividade para liberar VRAM; a próxima requisição o recarrega. 0 mantém o modelo carregado. Mínimo de 60 segundos.",
         idleNeedsEnable:
           "Ative Trocar de modelo por requisição para que um modelo descarregado seja recarregado no próximo uso.",
         idleActiveViaEnv:
           "O descarregamento automático por inatividade está ativo por meio da variável de ambiente UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Falha ao carregar as configurações de troca automática de modelo.",
         saveError: "Falha ao salvar as configurações de troca automática de modelo.",
-        idleError: "Insira um número inteiro de segundos (0 ou mais).",
+        idleError: "Insira 0 para manter o modelo carregado, ou pelo menos 60 segundos.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -343,10 +344,6 @@ export const ptBR = {
         fontSmoothing: {
           label: "Suavização de fonte",
           description: "Usar anti-aliasing suavizado nas fontes.",
-        },
-        edgeFades: {
-          label: "Esmaecimento nas bordas",
-          description: "Esmaece o conteúdo nas bordas dos painéis. Desligado mostra uma linha divisória fina.",
         },
         contrast: {
           label: "Contraste",

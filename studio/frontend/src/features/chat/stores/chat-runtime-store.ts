@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
-import { cancelStagedModelDownload } from "@/features/hub";
+import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
+import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -23,21 +23,21 @@ import {
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
 import { useExternalProvidersStore } from "./external-providers-store";
+import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
-const HF_TOKEN_KEY = "unsloth_hf_token";
-const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
+  "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
-export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
@@ -69,6 +69,7 @@ export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
 export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
 export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
 // Persist only the model-agnostic intents (auto/ngram/off). MTP modes
 // (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
@@ -219,6 +220,11 @@ export type PendingImageEditReference = {
   openaiResponseId?: string;
   openaiReasoningItem?: unknown;
 };
+export type LoadingModelPick = {
+  id: string;
+  ggufVariant: string | null;
+  nativePathToken: string | null;
+};
 export type ReasoningEffort =
   | "none"
   | "minimal"
@@ -366,6 +372,24 @@ function saveBool(key: string, value: boolean): void {
   }
 }
 
+// The visibility flag shipped after the menu pins, so when it is absent,
+// profiles that had explicitly pinned Canvas keep it visible.
+function loadShowCanvasMenuItem(): boolean {
+  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
+  if (stored !== null) return stored;
+  if (!canUseStorage()) return false;
+  try {
+    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
+    if (raw === null) return false;
+    const parsed = JSON.parse(raw) as {
+      state?: { pins?: { canvas?: boolean } };
+    };
+    return parsed.state?.pins?.canvas === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * "full" is intentionally not restorable: it disables the sandbox and every
  * confirmation gate, so it must be re-enabled (through the warning dialog)
@@ -483,45 +507,185 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
-function notifyHfTokenChanged(value: string): void {
-  if (!canUseStorage()) return;
-  try {
-    window.dispatchEvent(
-      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
-    );
-  } catch {
-    // ignore
-  }
+// GPU Memory strategy is a standing preference (like speculative type), not a
+// per-model setting: a "manual" choice persists across model switches and reloads.
+export function readPersistedGpuMemoryMode(): "auto" | "manual" {
+  return loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto") === "manual" ? "manual" : "auto";
 }
 
-/** A local model staged for a deferred load (see `pendingSelection`). Shape is
- *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
-export type PendingModelSelection = {
-  id: string;
-  isLora?: boolean;
-  ggufVariant?: string;
-  isDownloaded?: boolean;
-  expectedBytes?: number;
-  /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
-   *  the header and to load. Absent for HF-repo models. */
-  nativePathToken?: string;
-  /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
-   *  though it carries neither an HF variant nor a native path token. */
-  isGguf?: boolean;
-  /** Native context length read from the GGUF header once the file is local.
-   *  Scoped here (not the shared `ggufContextLength`) so a staged model's
-   *  metadata never pollutes the currently-loaded model's context display. */
-  contextLength?: number | null;
-  /** "Load on selection" on + un-cached GGUF: download via the manager (global
-   *  indicator) without opening the sheet, then load once the download finishes. */
-  autoLoad?: boolean;
-  /** Uncached non-GGUF HF repo: download the full snapshot via the manager
-   *  (variant null) the same way GGUF picks download a variant. */
-  isHubRepo?: boolean;
-};
+export function saveGpuMemoryMode(value: "auto" | "manual"): void {
+  saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
+}
 
-/** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
- *  has pre-load options worth staging. Works on a selection or a staged pick. */
+/** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
+ *  non-GGUF has no such mode, and diffusion runs mode-agnostic (reports "auto"),
+ *  so neither must clobber the standing manual preference. */
+export function persistGpuMemoryModeOnLoad(
+  resp: { is_gguf?: boolean; is_diffusion?: boolean },
+  mode: "auto" | "manual",
+): void {
+  if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
+}
+
+// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
+// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
+export const GPU_LAYERS_AUTO = -1;
+
+// Round real-valued shares to integers summing exactly to `total`, giving the
+// leftover units to the largest fractional parts (largest-remainder method).
+function largestRemainder(shares: number[], total: number): number[] {
+  const out = shares.map((x) => Math.floor(x));
+  let rem = total - out.reduce((a, b) => a + b, 0);
+  const byFrac = shares
+    .map((x, i) => ({ i, frac: x - Math.floor(x) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; rem > 0 && k < byFrac.length; k++, rem--) out[byFrac[k].i] += 1;
+  return out;
+}
+
+// Spread `total` layers across GPUs in proportion to `weights` (e.g. per-GPU
+// VRAM), as integers summing exactly to `total`; even split for all-zero/empty
+// weights. Default per-GPU layer split before the user edits it (mirrors
+// llama.cpp's free-VRAM default).
+export function distributeByWeight(total: number, weights: number[]): number[] {
+  if (weights.length === 0) return [];
+  const t = Math.max(0, Math.floor(total));
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const w = sum > 0 ? weights : weights.map(() => 1);
+  const wSum = w.reduce((a, b) => a + b, 0);
+  return largestRemainder(
+    w.map((x) => (t * x) / wSum),
+    t,
+  );
+}
+
+// Set GPU `index` to `value` and rebalance the rest so per-GPU counts still sum
+// to `total`; others absorb the remainder in proportion to their counts (evenly
+// if all zero). The --tensor-split editor: counts are sent verbatim, and
+// llama.cpp gives each GPU exactly its count when gpu_layers == sum(counts).
+export function rebalanceSplit(
+  total: number,
+  counts: number[],
+  index: number,
+  value: number,
+): number[] {
+  const v = Math.max(0, Math.min(value, total));
+  const out = counts.slice();
+  const otherIdx = counts.map((_, i) => i).filter((i) => i !== index);
+  // No other GPU to absorb the remainder: this one holds everything.
+  if (otherIdx.length === 0) {
+    out[index] = total;
+    return out;
+  }
+  out[index] = v;
+  const dist = distributeByWeight(
+    total - v,
+    otherIdx.map((i) => counts[i]),
+  );
+  otherIdx.forEach((i, k) => (out[i] = dist[k]));
+  return out;
+}
+
+// Validate a persisted gpu_ids pick against the GPUs present right now, before
+// restoring it from remembered settings. Returns null (= automatic) when the
+// pick is stale (none of the saved ids exist, or the host can't pin a multi-GPU
+// set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
+// way to clear it. A null pick (= automatic) passes through unchanged, and an
+// unpopulated device cache leaves the pick alone (the backend still guards).
+export function reconcilePersistedGpuIds(
+  ids: number[] | null,
+): number[] | null {
+  if (ids == null) return ids;
+  const pinnable = cachedPinnableGpuIndices();
+  if (pinnable === null) return ids; // cache not ready: can't validate, keep it
+  const kept = ids.filter((i) => pinnable.includes(i));
+  return kept.length > 0 ? kept : null;
+}
+
+// Store fields derived from a load/status response's GPU-memory settings.
+// Shared by every load path so the manual-knob round-trip can't drift.
+export function loadedGpuMemoryFields(resp: {
+  is_gguf?: boolean;
+  is_diffusion?: boolean;
+  gpu_memory_mode?: "auto" | "manual";
+  gpu_layers?: number;
+  n_cpu_moe?: number;
+  tensor_split?: number[] | null;
+  n_layers?: number | null;
+  n_moe_layers?: number;
+  gpu_ids?: number[] | null;
+}) {
+  // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
+  // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
+  // the authoritative is_gguf flag, not the field's presence -- otherwise loading
+  // a transformers model would reset the standing manual preference.
+  if (!resp.is_gguf) {
+    // Clear the GPU pick / offload baseline a prior GGUF load may have left, so it
+    // reflects the non-GGUF model (no pin) -- else a stale loadedGpuIds reads as
+    // dirty (gpuIdsDirty is ungated) and Reset restores it while the picker is
+    // hidden. gpuMemoryMode (the standing preference) is kept, but its loaded
+    // baseline clears to null so Reset preserves the preference, not a stale mode.
+    return {
+      selectedGpuIds: null,
+      loadedGpuIds: null,
+      loadedGpuMemoryMode: null,
+      gpuLayers: GPU_LAYERS_AUTO,
+      loadedGpuLayers: null,
+      nCpuMoe: 0,
+      loadedNCpuMoe: null,
+      splitRatio: null,
+      loadedSplitRatio: null,
+      ggufLayerCount: null,
+      moeLayerCount: null,
+    };
+  }
+  const mode = resp.gpu_memory_mode ?? "auto";
+  const gpuIds = resp.gpu_ids ?? null;
+  // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
+  // the server ignores them, so don't seed the loaded baseline or the editable
+  // knobs with values it never applied. In manual, the server reports gpu_layers
+  // = -1 under Auto, which round-trips the slider back to its Auto position.
+  const manualKnobs =
+    mode === "manual"
+      ? {
+          loadedGpuLayers: resp.gpu_layers ?? null,
+          loadedNCpuMoe: resp.n_cpu_moe ?? null,
+          loadedSplitRatio: resp.tensor_split ?? null,
+          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
+          nCpuMoe: resp.n_cpu_moe ?? 0,
+          splitRatio: resp.tensor_split ?? null,
+        }
+      : {
+          loadedGpuLayers: null,
+          loadedNCpuMoe: null,
+          loadedSplitRatio: null,
+          // Auto ignores these, so reset the editable knobs too (not just the
+          // loaded baseline) -- else a later switch back to Manual would snapshot
+          // and send a previous model's stale gpuLayers/nCpuMoe/split that this
+          // load never applied. Mirrors the non-GGUF branch above.
+          gpuLayers: GPU_LAYERS_AUTO,
+          nCpuMoe: 0,
+          splitRatio: null,
+        };
+  return {
+    // A diffusion GGUF runs mode-agnostic (pins all layers on one GPU, reports
+    // "auto"), so adopt everything a chat GGUF does EXCEPT the live standing
+    // preference -- the next chat load must still honor the user's manual choice.
+    // The loaded baseline is still "auto", but the UI hides mode controls for a
+    // loaded diffusion model so it can't read as dirty against the preference.
+    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
+    loadedGpuMemoryMode: mode,
+    ggufLayerCount: resp.n_layers ?? null,
+    // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
+    moeLayerCount: resp.n_moe_layers ?? null,
+    // The picker reflects what loaded (the request sent the user's pick).
+    selectedGpuIds: gpuIds,
+    loadedGpuIds: gpuIds,
+    ...manualKnobs,
+  };
+}
+
+/** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
 export function hasGgufSource(x: {
   ggufVariant?: string;
   nativePathToken?: string;
@@ -556,30 +720,6 @@ export function isDownloadableHubRepo(x: {
     x.isLora !== true &&
     x.nativePathToken == null &&
     !isLocalModelPath(x.id)
-  );
-}
-
-export function isPendingGguf(pending: PendingModelSelection | null): boolean {
-  return pending != null && hasGgufSource(pending);
-}
-
-/** Whether `pending` refers to the same model as `pick` (id + GGUF variant +
- *  native path token, optionals null-normalized). Native ids are display labels
- *  that can collide, so the token must match too — id alone can land on the
- *  wrong file. */
-export function pendingSelectionMatches(
-  pending: PendingModelSelection | null,
-  pick: {
-    id: string;
-    ggufVariant?: string | null;
-    nativePathToken?: string | null;
-  },
-): boolean {
-  return (
-    pending != null &&
-    pending.id === pick.id &&
-    (pending.ggufVariant ?? null) === (pick.ggufVariant ?? null) &&
-    (pending.nativePathToken ?? null) === (pick.nativePathToken ?? null)
   );
 }
 
@@ -651,6 +791,8 @@ type ChatRuntimeStore = {
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   artifactsEnabled: boolean;
+  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
@@ -666,7 +808,7 @@ type ChatRuntimeStore = {
   // Describe figures/charts at ingest time (vision model required).
   ragCaptionFigures: boolean;
   /**
-   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * When on, local Unsloth tool calls pause for an explicit allow/deny in the
    * chat before they run.
    */
   confirmToolCalls: boolean;
@@ -715,6 +857,13 @@ type ChatRuntimeStore = {
   autoSaveMemories: boolean;
 
   toolStatus: string | null;
+  /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
+   *  appended by tool_output, cleared on tool_end or run end. */
+  toolLiveOutput: Record<string, string>;
+  /** Full live output of finished tools whose result was truncated for the
+   *  model, keyed by toolCallId. Set from tool_end; finished cards prefer it
+   *  over the truncated result. Session-transient. */
+  toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
@@ -736,10 +885,32 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
-  /** Persisted: when false, picking a local model stages it as
-   *  `pendingSelection` (and opens settings) instead of loading immediately,
-   *  so load settings can be set before the single load. */
-  loadOnSelection: boolean;
+  /** GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and context
+   *  to fit; "manual" = you own the offload (gpuLayers < 0 = Auto/--fit, >= 0
+   *  pins layers + nCpuMoe). */
+  gpuMemoryMode: "auto" | "manual";
+  /** Backend-reported gpu memory mode; null until first hydrated. */
+  loadedGpuMemoryMode: "auto" | "manual" | null;
+  /** Manual mode: layers to offload to GPU. -1 = Auto (--fit); >= model layer
+   *  count = all. */
+  gpuLayers: number;
+  loadedGpuLayers: number | null;
+  /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
+  nCpuMoe: number;
+  loadedNCpuMoe: number | null;
+  /** Manual mode: per-GPU layer counts (--tensor-split), in GPU-in-use order;
+   *  null = unset (llama.cpp splits by free VRAM). */
+  splitRatio: number[] | null;
+  /** Backend-reported per-GPU split ratio (--tensor-split); null = unset. */
+  loadedSplitRatio: number[] | null;
+  /** Model layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (the output layer is offloadable too). */
+  ggufLayerCount: number | null;
+  /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
+  moeLayerCount: number | null;
+  /** Picked physical GPU indices (null = use all / automatic). */
+  selectedGpuIds: number[] | null;
+  loadedGpuIds: number[] | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -748,9 +919,6 @@ type ChatRuntimeStore = {
   /** Persisted, shared by the chat model selector and the Hub page: list only
    *  models whose size fits this device's memory budget. */
   fitOnDeviceOnly: boolean;
-  /** A local model picked while `loadOnSelection` is off: staged, not loaded.
-   *  The settings sheet shows its load knobs and a Load button. */
-  pendingSelection: PendingModelSelection | null;
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
    *  denoising-canvas artifact auto-render. */
@@ -759,6 +927,9 @@ type ChatRuntimeStore = {
    *  per step, cleared when the run ends, never persisted into the transcript. */
   activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
+  /** The pinned context the loaded model used (null = Auto), so dirty-tracking
+   *  and a later fit Apply can tell an explicit pin apart from Auto. */
+  loadedCustomContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
@@ -786,9 +957,16 @@ type ChatRuntimeStore = {
     cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;
+  loadingModelPick: LoadingModelPick | null;
   activeNativePathToken: string | null;
+  // Wall-clock expiry (ms) of the active native path token. The desktop host
+  // prunes file leases after a TTL, so a reload checks this to prompt
+  // re-selection instead of reusing a dead token.
+  activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
+  setLoadingModelPick: (pick: LoadingModelPick | null) => void;
+  clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
   setCustomPresets: (presets: Preset[]) => void;
@@ -827,6 +1005,7 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
+  setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
@@ -852,39 +1031,27 @@ type ChatRuntimeStore = {
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
+  appendToolLiveOutput: (toolCallId: string, text: string) => void;
+  /** Clear one tool's live output, or all when no id is given. */
+  clearToolLiveOutput: (toolCallId?: string) => void;
+  /** Preserve a finished tool's full live-streamed output for display. */
+  setToolFullOutput: (toolCallId: string, text: string) => void;
+  /** Drop a stale preserved full output (a new run is reusing the id). */
+  clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
-  setKvCacheDtype: (dtype: string | null) => void;
-  setSpeculativeType: (type: string | null) => void;
-  setSpecDraftNMax: (value: number | null) => void;
-  /** Revert the editable load knobs to the loaded model's baseline (or defaults
-   *  when nothing is loaded). Used by the settings-sheet Reset button and to
-   *  start each deferred-staging session clean so one staged pick's settings
-   *  don't leak onto the next. */
-  resetModelSettingsToLoaded: () => void;
-  /** Seed the editable load knobs from a model's remembered settings. Shared by
-   *  the settings sheet's restore effect and the "Load on selection" paths,
-   *  which skip the sheet but must still honor a saved config. */
-  applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
-  setTensorParallel: (value: boolean) => void;
-  setLoadOnSelection: (value: boolean) => void;
+  setGpuMemoryMode: (mode: "auto" | "manual") => void;
+  setGpuLayers: (value: number) => void;
+  setNCpuMoe: (value: number) => void;
+  setSplitRatio: (value: number[] | null) => void;
+  setSelectedGpuIds: (ids: number[] | null) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
-  setPendingSelection: (selection: PendingModelSelection | null) => void;
-  /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
-   *  record the selection, and open the settings sheet. */
-  stageModel: (selection: PendingModelSelection) => void;
-  /** Abandon a staged pick without loading: revert knobs to the loaded baseline
-   *  and clear the pending selection. Cancels its in-flight download too, unless
-   *  `keepDownload` is set (navigation keeps the transfer running, like Hub). */
-  abandonStagedModel: (opts?: { keepDownload?: boolean }) => void;
-  setCustomContextLength: (v: number | null) => void;
-  setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
   setPendingImageEditReference: (
@@ -1090,23 +1257,6 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   saveSettingsPatch({ [key]: value });
 }
 
-/** The "revert to the loaded model" baseline for the editable load knobs.
- *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
- *  overrides speculative to start a fresh pick from the standing default). */
-function loadedBaselineSettings(s: ChatRuntimeStore) {
-  const hasLoadedModel = Boolean(s.params.checkpoint);
-  return {
-    customContextLength: null,
-    kvCacheDtype: s.loadedKvCacheDtype,
-    tensorParallel: s.loadedTensorParallel ?? false,
-    speculativeType: hasLoadedModel
-      ? s.loadedSpeculativeType
-      : readPersistedSpeculativeType(),
-    specDraftNMax: hasLoadedModel ? s.loadedSpecDraftNMax : null,
-    chatTemplateOverride: s.loadedChatTemplateOverride,
-  };
-}
-
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   // Hydrate the last external checkpoint so the external picker survives a
@@ -1128,7 +1278,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoTitle: false,
   referenceMemories: true,
   autoSaveMemories: true,
-  hfToken: loadString(HF_TOKEN_KEY, ""),
+  hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
@@ -1155,6 +1305,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -1188,6 +1339,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
   ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
+  toolLiveOutput: {},
+  toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
@@ -1203,14 +1356,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
-  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  gpuMemoryMode: readPersistedGpuMemoryMode(),
+  loadedGpuMemoryMode: null,
+  gpuLayers: GPU_LAYERS_AUTO,
+  loadedGpuLayers: null,
+  nCpuMoe: 0,
+  loadedNCpuMoe: null,
+  splitRatio: null,
+  loadedSplitRatio: null,
+  ggufLayerCount: null,
+  moeLayerCount: null,
+  selectedGpuIds: null,
+  loadedGpuIds: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
-  pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
+  loadedCustomContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
@@ -1224,7 +1388,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   pendingImageEditReference: null,
   contextUsage: null,
   modelLoading: false,
+  loadingModelPick: null,
   activeNativePathToken: null,
+  activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1263,6 +1429,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     return settingsHydrationPromise;
   },
   setModelLoading: (loading) => set({ modelLoading: loading }),
+  setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
+  clearLoadingModelPick: (expected) =>
+    set((state) => {
+      const current = state.loadingModelPick;
+      if (
+        !current ||
+        current.id !== expected.id ||
+        current.ggufVariant !== expected.ggufVariant ||
+        current.nativePathToken !== expected.nativePathToken
+      ) {
+        return state;
+      }
+      return { loadingModelPick: null };
+    }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
@@ -1350,11 +1530,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       flushPendingSettingsPatch();
       return { autoSaveMemories };
     }),
-  setHfToken: (hfToken) => {
-    saveString(HF_TOKEN_KEY, hfToken);
-    set({ hfToken });
-    notifyHfTokenChanged(hfToken);
-  },
+  setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
@@ -1367,13 +1543,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
-      const pendingToClear =
-        checkpointChanged && state.params.checkpoint
-          ? state.pendingSelection
-          : null;
-      if (pendingToClear) {
-        cancelStagedModelDownload(pendingToClear);
-      }
       // Clamp maxTokens to the new model's cap when switching into an external
       // model so a value carried over from a local session doesn't exceed the
       // slider's max.
@@ -1401,14 +1570,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         },
         activeGgufVariant: ggufVariant ?? null,
         ...(checkpointChanged ? { contextUsage: null } : {}),
-        // Switching away from a loaded model (e.g. picking an external provider)
-        // abandons any staged pick, so its Load button and edited knobs don't
-        // linger over the newly active model. Same revert as abandonStagedModel.
-        // Guarded on a non-empty current checkpoint: an establishing set from a
-        // background status sync (empty -> active) must not wipe a fresh stage.
-        ...(pendingToClear
-          ? { ...loadedBaselineSettings(state), pendingSelection: null }
-          : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>
@@ -1422,7 +1583,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // clear any stored external selection so the next refresh doesn't snap
     // back to a model the user intentionally cleared.
     saveLastExternalCheckpoint(null);
-    cancelStagedModelDownload(get().pendingSelection);
     return set((state) => ({
       params: {
         ...state.params,
@@ -1430,7 +1590,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeNativePathToken: null,
-      pendingSelection: null,
+      activeNativePathExpiresAtMs: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
@@ -1457,6 +1617,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      toolLiveOutput: {},
+      toolFullOutput: {},
       activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -1467,9 +1629,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       tensorParallel: false,
       loadedTensorParallel: null,
+      // Standing preference: survives unload, unlike the per-model knobs above.
+      gpuMemoryMode: readPersistedGpuMemoryMode(),
+      loadedGpuMemoryMode: null,
+      gpuLayers: GPU_LAYERS_AUTO,
+      loadedGpuLayers: null,
+      nCpuMoe: 0,
+      loadedNCpuMoe: null,
+      splitRatio: null,
+      loadedSplitRatio: null,
+      ggufLayerCount: null,
+      moeLayerCount: null,
+      selectedGpuIds: null,
+      loadedGpuIds: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
+      loadedCustomContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
@@ -1527,6 +1703,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       return { artifactsEnabled };
+    }),
+  setShowCanvasMenuItem: (showCanvasMenuItem) =>
+    set(() => {
+      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
+      return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set((state) => {
@@ -1680,6 +1861,43 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { ragCaptionFigures };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  appendToolLiveOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolLiveOutput: {
+        ...state.toolLiveOutput,
+        [toolCallId]: (state.toolLiveOutput[toolCallId] ?? "") + text,
+      },
+    })),
+  setToolFullOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolFullOutput: {
+        ...state.toolFullOutput,
+        [toolCallId]: text,
+      },
+    })),
+  clearToolFullOutput: (toolCallId) =>
+    set((state) => {
+      if (!(toolCallId in state.toolFullOutput)) {
+        return {};
+      }
+      const next = { ...state.toolFullOutput };
+      delete next[toolCallId];
+      return { toolFullOutput: next };
+    }),
+  clearToolLiveOutput: (toolCallId) =>
+    set((state) => {
+      if (toolCallId === undefined) {
+        return Object.keys(state.toolLiveOutput).length
+          ? { toolLiveOutput: {} }
+          : {};
+      }
+      if (!(toolCallId in state.toolLiveOutput)) {
+        return {};
+      }
+      const next = { ...state.toolLiveOutput };
+      delete next[toolCallId];
+      return { toolLiveOutput: next };
+    }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
@@ -1719,25 +1937,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { toolCallTimeout };
     }),
-  setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
-  setSpeculativeType: (speculativeType) => set({ speculativeType }),
-  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
-  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
-  resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
-  applyRememberedLoadSettings: (settings) =>
-    // Coalesce every field: a blob persisted by an older/newer build can omit
-    // keys, and a raw spread would push `undefined` into fields typed non-null.
-    set({
-      customContextLength: settings.contextLength ?? null,
-      kvCacheDtype: settings.kvCacheDtype ?? null,
-      speculativeType: settings.speculativeType ?? "auto",
-      specDraftNMax: settings.specDraftNMax ?? null,
-      tensorParallel: settings.tensorParallel ?? false,
-    }),
-  setLoadOnSelection: (loadOnSelection) => {
-    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
-    set({ loadOnSelection });
-  },
+  // Standing preference, but persisted only on a successful load (see
+  // use-chat-model-runtime), not on selection -- so an unapplied pick the user
+  // resets/abandons doesn't stick to the next session.
+  setGpuMemoryMode: (gpuMemoryMode) => set({ gpuMemoryMode }),
+  setGpuLayers: (gpuLayers) => set({ gpuLayers }),
+  setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
+  setSplitRatio: (splitRatio) => set({ splitRatio }),
+  setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });
@@ -1750,39 +1957,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
     set({ fitOnDeviceOnly });
   },
-  setPendingSelection: (pendingSelection) => set({ pendingSelection }),
-  stageModel: (selection) => {
-    // Refuse staging mid-load: post-load cleanup would silently drop the queued
-    // pick. stageOrLoad toasts first for callers that can.
-    if (get().modelLoading) return;
-    // Rebinding to a new pick keeps the prior pick's download running so the
-    // user can queue multiple downloads at once (Hub-style).
-    set((s) => {
-      return {
-        ...loadedBaselineSettings(s),
-        pendingSelection: selection,
-        // autoLoad downloads silently and loads on completion, so keep the sheet shut.
-        settingsPanelOpen: !selection.autoLoad,
-        // Speculative starts from the standing default, not the loaded model's
-        // mode, so a fresh pick doesn't inherit (and then carry, via the staged
-        // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
-        speculativeType: readPersistedSpeculativeType(),
-        specDraftNMax: null,
-      };
-    });
-  },
-  abandonStagedModel: (opts) => {
-    const { pendingSelection } = get();
-    if (!pendingSelection) return;
-    // Cancel the staged pick's in-flight download (centralized for every abandon
-    // path: sheet close, thread switch, route exit, new chat). `keepDownload`
-    // opts out so navigation leaves the transfer running, like a Hub download.
-    if (!opts?.keepDownload) cancelStagedModelDownload(pendingSelection);
-    set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
-  },
-  setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) =>
-    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
@@ -1793,6 +1967,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+// Mirror token edits made through the shared store (e.g. Unsloth's field).
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
 
 export function resolveSpeculativeSettingsForLoad({
   usePersistedPreference = false,

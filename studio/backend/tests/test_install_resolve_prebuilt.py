@@ -200,14 +200,9 @@ def _gpu_linux_host(caps):
     )
 
 
-def test_host_is_blackwell_includes_datacenter_parts():
-    assert ilp._host_is_blackwell(_gpu_linux_host(["10.0"])) is True  # B200 sm_100
-    assert ilp._host_is_blackwell(_gpu_linux_host(["10.3"])) is True  # B300 sm_103
-    assert ilp._host_is_blackwell(_gpu_linux_host(["12.0"])) is True  # RTX 50 sm_120
-    assert ilp._host_is_blackwell(_gpu_linux_host(["12.1"])) is True  # DGX Spark sm_121
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0"])) is False  # Hopper
-    assert ilp._host_is_blackwell(_gpu_linux_host(["8.0"])) is False  # Ampere
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0", "10.0"])) is True  # highest cap wins
+# _host_is_blackwell / _blackwell_min_toolkit_for_host are prebuilt_core
+# re-exports; their value tables moved verbatim to
+# tests/studio/install/test_prebuilt_core.py.
 
 
 def _linux_cuda_artifact(runtime_line, supported_sms, min_sm, max_sm, profile):
@@ -283,16 +278,6 @@ def test_drop_blackwell_incapable_windows_cuda_applies_to_datacenter():
     )
     kept = ilp._drop_blackwell_incapable_windows_cuda(host, [cuda124, cuda13])
     assert [a.name for a in kept] == [cuda13.name]
-
-
-def test_blackwell_min_toolkit_is_sm_aware():
-    # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
-    f = ilp._blackwell_min_toolkit_for_host
-    assert f(_gpu_linux_host(["10.0"])) == (12, 8)  # B200
-    assert f(_gpu_linux_host(["12.0"])) == (12, 8)  # RTX 50
-    assert f(_gpu_linux_host(["10.3"])) == (12, 9)  # B300
-    assert f(_gpu_linux_host(["12.1"])) == (12, 9)  # DGX Spark
-    assert f(_gpu_linux_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
 
 
 def test_sm103_host_drops_cuda128_windows_build():
@@ -443,6 +428,101 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert repo == FORK
     assert tag == "b9596-mix-abc"
     assert routed is host
+
+
+@pytest.mark.parametrize("cpu_flag", ["--cpu-fallback", "--force-cpu"])
+def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys, cpu_flag):
+    """Either CPU flag via CLI must suppress Vulkan even on an Intel GPU host: both
+    drop GPU detection (--force-cpu additionally persists, on the install path)."""
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen = {}
+
+    def _resolver(tag, host, repo, published_release_tag):
+        seen["host"] = host
+        seen["repo"] = repo
+        raise ilp.PrebuiltFallback("no asset")
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            cpu_flag,
+            "--output-format",
+            "json",
+        ],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    # The CPU flag must suppress Intel GPU, route to fork (not upstream Vulkan)
+    assert seen["host"].has_intel_gpu is False
+    assert seen["repo"] == FORK
+
+
+@pytest.mark.parametrize(
+    "flags, expect_force, expect_persist",
+    [
+        ([], False, False),
+        # Automatic/transient last resort (arm64 GPU-build recovery): drops GPU but
+        # does NOT persist, so a later update heals to a GPU bundle (#6097).
+        (["--cpu-fallback"], True, False),
+        # Deliberate CPU-only (UNSLOTH_LLAMA_CPP_BACKEND=cpu): drops GPU AND persists so
+        # the updater re-asserts it and never revives the Intel iGPU crash (#7213).
+        (["--force-cpu"], True, True),
+        (["--cpu-fallback", "--force-cpu"], True, True),
+    ],
+)
+def test_cli_cpu_flags_thread_force_and_persist(
+    monkeypatch, tmp_path, flags, expect_force, expect_persist
+):
+    captured = {}
+    monkeypatch.setattr(ilp, "install_prebuilt", lambda **kw: captured.update(kw))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--install-dir", str(tmp_path / "llama.cpp"), *flags],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    assert captured["force_cpu"] is expect_force
+    assert captured["persist_force_cpu"] is expect_persist
+
+
+@pytest.mark.parametrize(
+    "existing, requested, expected",
+    [
+        # A deliberate --force-cpu on top of a naturally-installed CPU bundle (same
+        # asset, install skipped) must still flip the marker to true (#7213).
+        (False, True, True),
+        (None, True, True),
+        # No spurious writes when already in sync, and a released force syncs down.
+        (True, True, True),
+        (False, False, False),
+        (True, False, False),
+    ],
+)
+def test_sync_marker_force_cpu(tmp_path, existing, requested, expected):
+    marker = {"tag": "b9585", "asset": "llama-b9585-bin-ubuntu-x64.tar.gz"}
+    if existing is not None:
+        marker["force_cpu"] = existing
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps(marker))
+    ilp.sync_marker_force_cpu(tmp_path, requested)
+    written = json.loads(marker_path.read_text())
+    assert written["force_cpu"] is expected
+    # Unrelated fields are preserved.
+    assert written["asset"] == "llama-b9585-bin-ubuntu-x64.tar.gz"
+
+
+def test_sync_marker_force_cpu_missing_marker_is_noop(tmp_path):
+    # No marker (or unreadable) must not crash the reuse path.
+    ilp.sync_marker_force_cpu(tmp_path, True)
+    assert not (tmp_path / "UNSLOTH_PREBUILT_INFO.json").exists()
 
 
 def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():

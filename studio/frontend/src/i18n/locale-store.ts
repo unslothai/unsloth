@@ -98,7 +98,6 @@ function writeStoredPreference(preference: LocalePreference): void {
 function syncDocumentLang(locale: Locale): void {
   if (typeof document === "undefined") return;
   document.documentElement.lang = locale;
-  document.documentElement.dir = LOCALES[locale].dir;
 }
 
 function notifySubscribers(): void {

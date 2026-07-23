@@ -40,7 +40,7 @@ export const ja = {
       returnToChat: "チャットに戻る",
       compare: "比較",
       search: "検索",
-      hub: "ハブ",
+      hub: "モデル",
       train: "トレーニング",
       recipes: "レシピ",
       export: "エクスポート",
@@ -104,6 +104,7 @@ export const ja = {
       connections: "接続",
       apiKeys: "API",
       about: "情報",
+      voice: "音声",
     },
     general: {
       title: "一般",
@@ -113,7 +114,7 @@ export const ja = {
       huggingFaceTokenDescription: "ゲート付きモデルの読み込みや、アーティファクトのプッシュに使用されます。",
       hideToken: "トークンを非表示",
       showToken: "トークンを表示",
-      tokenSaved: "トークンを保存しました",
+      tokenValidated: "トークンは検証済みです",
       password: "パスワード",
       passwordDescription: "この Unsloth アカウントのパスワードを変更します。",
       passwordDialog: {
@@ -148,12 +149,12 @@ export const ja = {
         enable: "リクエストごとにモデルを切り替え",
         enableDescription: "OpenAI互換のリクエストが別のダウンロード済み GGUF を指定した場合、応答する前にそのモデルを読み込みます。デフォルトはオフです。不明な名前の場合は、読み込み済みのモデルで応答を続けます。",
         idleUnload: "アイドル時の自動アンロード",
-        idleUnloadDescription: "指定した秒数だけアイドル状態が続くとモデルをアンロードして VRAM を解放します。次のリクエストで再読み込みされます。0 にすると読み込んだままにします。",
+        idleUnloadDescription: "指定した秒数だけアイドル状態が続くとモデルをアンロードして VRAM を解放します。次のリクエストで再読み込みされます。0 にすると読み込んだままにします。最小 60 秒。",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
         saveError: "モデル自動切り替え設定の保存に失敗しました。",
-        idleError: "秒数を整数（0 以上）で入力してください。",
+        idleError: "モデルを読み込んだままにするには 0 を、それ以外は 60 秒以上を入力してください。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
@@ -321,10 +322,6 @@ export const ja = {
           label: "フォントスムージング",
           description: "滑らかなアンチエイリアスを使用します。",
         },
-        edgeFades: {
-          label: "エッジのフェード",
-          description: "パネル端でコンテンツをフェードします。オフにすると細い区切り線を表示します。",
-        },
         contrast: {
           label: "コントラスト",
           description: "枠線と補助テキストの強さ。",
@@ -363,7 +360,7 @@ export const ja = {
     },
     resources: {
       title: "システム",
-      description: "この Studio サーバーのハードウェアとストレージを監視します。",
+      description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",
       disableOverlay: "オーバーレイを無効化",

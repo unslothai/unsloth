@@ -39,7 +39,7 @@ export const zhCN = {
       returnToChat: "返回聊天",
       compare: "对比",
       search: "搜索",
-      hub: "Hub",
+      hub: "模型",
       train: "训练",
       recipes: "配方",
       export: "导出",
@@ -103,6 +103,7 @@ export const zhCN = {
       connections: "连接",
       apiKeys: "API",
       about: "关于",
+      voice: "语音",
     },
     general: {
       title: "通用",
@@ -112,7 +113,7 @@ export const zhCN = {
       huggingFaceTokenDescription: "用于加载受限模型和推送产物。",
       hideToken: "隐藏 token",
       showToken: "显示 token",
-      tokenSaved: "Token 已保存",
+      tokenValidated: "Token 已验证",
       password: "密码",
       passwordDescription: "更改此 Unsloth 账号的密码。",
       passwordDialog: {
@@ -151,14 +152,14 @@ export const zhCN = {
           "当兼容 OpenAI 的请求指定了另一个已下载的 GGUF 时，先加载它再提供服务。默认关闭；未知名称将继续使用已加载的模型。",
         idleUnload: "空闲自动卸载",
         idleUnloadDescription:
-          "空闲达到该秒数后卸载模型以释放 VRAM；下次请求会重新加载。设为 0 则保持加载。",
+          "空闲达到该秒数后卸载模型以释放 VRAM；下次请求会重新加载。设为 0 则保持加载。最小 60 秒。",
         idleNeedsEnable:
           "开启“按请求切换模型”，以便已卸载的模型在下次使用时重新加载。",
         idleActiveViaEnv:
           "空闲自动卸载已通过 UNSLOTH_MODEL_IDLE_TTL 环境变量启用。",
         loadError: "加载模型自动切换设置失败。",
         saveError: "保存模型自动切换设置失败。",
-        idleError: "请输入整数秒数（0 或以上）。",
+        idleError: "输入 0 保持模型加载，或输入至少 60 秒。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
@@ -343,10 +344,6 @@ export const zhCN = {
           label: "字体平滑",
           description: "使用平滑的字体抗锯齿。",
         },
-        edgeFades: {
-          label: "边缘淡出",
-          description: "在面板边缘淡出内容。关闭后显示细分隔线。",
-        },
         contrast: {
           label: "对比度",
           description: "边框和次要文本的强度。",
@@ -378,7 +375,7 @@ export const zhCN = {
     },
     resources: {
       title: "系统",
-      description: "监控此 Studio 服务器的硬件和存储。",
+      description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",
       disableOverlay: "禁用悬浮层",
@@ -904,7 +901,8 @@ export const zhCN = {
       continueAction: "继续训练",
       cancelAction: "取消训练",
       stopTitle: "停止训练",
-      stopDescription: "选择如何停止当前训练运行。",
+      stopDescription:
+        "选择如何停止当前训练运行。“停止并保存”会写入检查点，之后可从该处恢复；“停止”则无法恢复。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止并保存",

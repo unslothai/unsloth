@@ -15,15 +15,14 @@ import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-import { openModelsDir } from "@/features/native-intents";
 import { emitTrainingRunsChanged } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
+import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -42,7 +41,6 @@ import {
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
 } from "../api/helper-precache";
-import { type ModelsFolder, loadModelsFolder } from "../api/models-folder";
 import {
   type PreviewSharingSettings,
   loadPreviewSharing,
@@ -92,9 +90,11 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
   "unsloth_chat_preferences",
+  "unsloth_model_configs",
+  "unsloth_model_configs_migrated",
   "unsloth_load_settings",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_load_on_selection",
+  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
   "unsloth_models_fit_on_device_only",
@@ -114,6 +114,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  // Voice settings
+  "unsloth_voice_settings",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
@@ -178,7 +180,6 @@ export function GeneralTab() {
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
-  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
   const [embeddingModel, setEmbeddingModel] =
     useState<EmbeddingModelSettings | null>(null);
   const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
@@ -214,11 +215,19 @@ export function GeneralTab() {
     if (trimmed !== hfToken) setHfToken(trimmed);
   };
 
-  // Show an "accepted" tick once a non-empty token has been committed to the
-  // store and the field still matches it (i.e. not mid-edit). Gives the user
-  // feedback that a pasted token was saved.
-  const tokenSaved =
+  const clearHfToken = () => {
+    draftRef.current = "";
+    setDraftToken("");
+    setHfToken("");
+  };
+
+  // Only show the success tick for the currently displayed token after the
+  // authenticated validation endpoint has confirmed it. A saved token alone
+  // may still be malformed, expired, or revoked.
+  const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
+  const tokenValidation = useHfTokenValidation(hfToken ?? "");
+  const tokenValidated = tokenIsCurrent && tokenValidation.isValid === true;
 
   useEffect(() => {
     let cancelled = false;
@@ -303,43 +312,6 @@ export function GeneralTab() {
       cancelled = true;
     };
   }, [t]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void loadModelsFolder()
-      .then((folder) => {
-        if (cancelled) return;
-        setModelsFolder(folder);
-      })
-      .catch(() => {
-        // Non-critical: leave the row hidden if the path can't be resolved.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Desktop opens the folder in the OS file manager; the browser can't, so it
-  // falls back to copying the path (which is the info users actually want).
-  const handleModelsFolder = async () => {
-    const folder = modelsFolder;
-    if (!folder) return;
-    if (isTauri) {
-      try {
-        await openModelsDir(folder.path);
-      } catch (error) {
-        toast.error(t("settings.general.storage.openError"), {
-          description: error instanceof Error ? error.message : undefined,
-        });
-      }
-      return;
-    }
-    if (await copyToClipboard(folder.path)) {
-      toast.success(t("settings.general.storage.copied"));
-    } else {
-      toast.error(t("settings.general.storage.copyError"));
-    }
-  };
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -496,46 +468,70 @@ export function GeneralTab() {
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
         >
-          <div className="relative w-[260px]">
-            <Input
-              type={showToken ? "text" : "password"}
-              placeholder="hf_…"
-              value={draftToken}
-              onChange={(e) => setDraftToken(e.target.value)}
-              onBlur={commitToken}
-              className={cn(
-                "h-8 w-full font-mono text-xs",
-                tokenSaved ? "pr-14" : "pr-8",
-              )}
-            />
-            {tokenSaved ? (
-              // Decorative: pointer-events-none lets clicks reach the input
-              // underneath so the field still focuses anywhere.
-              <span
-                className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
-                role="img"
-                aria-label={t("settings.general.tokenSaved")}
+          <div className="flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-2">
+              <div className="relative w-[260px]">
+                <Input
+                  type={showToken ? "text" : "password"}
+                  name="hf-token"
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  placeholder="hf_…"
+                  value={draftToken}
+                  onChange={(e) => setDraftToken(e.target.value)}
+                  onBlur={commitToken}
+                  className={cn(
+                    "h-8 w-full font-mono text-xs",
+                    tokenValidated ? "pr-14" : "pr-8",
+                  )}
+                />
+                {tokenValidated ? (
+                  // Decorative: pointer-events-none lets clicks reach the input
+                  // underneath so the field still focuses anywhere.
+                  <span
+                    className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                    role="img"
+                    aria-label={t("settings.general.tokenValidated")}
+                  >
+                    <Check className="size-4" strokeWidth={2.5} />
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setShowToken((s) => !s)}
+                  className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                  aria-label={
+                    showToken
+                      ? t("settings.general.hideToken")
+                      : t("settings.general.showToken")
+                  }
+                  tabIndex={-1}
+                >
+                  {showToken ? (
+                    <EyeOff className="size-3.5" />
+                  ) : (
+                    <Eye className="size-3.5" />
+                  )}
+                </button>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                disabled={!draftToken && !hfToken}
+                onClick={clearHfToken}
               >
-                <Check className="size-4" strokeWidth={2.5} />
-              </span>
+                Clear
+              </Button>
+            </div>
+            {tokenValidation.isChecking ? (
+              <p className="text-xs text-muted-foreground">Checking token…</p>
+            ) : tokenValidation.error ? (
+              <p className="max-w-[330px] text-right text-xs text-destructive">
+                {tokenValidation.error}
+              </p>
             ) : null}
-            <button
-              type="button"
-              onClick={() => setShowToken((s) => !s)}
-              className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-              aria-label={
-                showToken
-                  ? t("settings.general.hideToken")
-                  : t("settings.general.showToken")
-              }
-              tabIndex={-1}
-            >
-              {showToken ? (
-                <EyeOff className="size-3.5" />
-              ) : (
-                <Eye className="size-3.5" />
-              )}
-            </button>
           </div>
         </SettingsRow>
         {/* The desktop app authenticates via desktop auto-auth with a generated
@@ -550,33 +546,6 @@ export function GeneralTab() {
           </SettingsRow>
         )}
       </SettingsSection>
-
-      {modelsFolder ? (
-        <SettingsSection title={t("settings.general.storage.sectionTitle")}>
-          <SettingsRow
-            label={t("settings.general.storage.modelsFolder")}
-            description={t("settings.general.storage.modelsFolderDescription")}
-          >
-            <div className="flex items-center gap-2">
-              <span
-                title={modelsFolder.path}
-                className="max-w-[280px] truncate font-mono text-xs text-muted-foreground"
-              >
-                {modelsFolder.path}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => void handleModelsFolder()}
-              >
-                {isTauri
-                  ? t("settings.general.storage.openAction")
-                  : t("settings.general.storage.copyAction")}
-              </Button>
-            </div>
-          </SettingsRow>
-        </SettingsSection>
-      ) : null}
 
       <SettingsSection title={t("settings.appearance.language.title")}>
         <SettingsRow
@@ -652,9 +621,10 @@ export function GeneralTab() {
           description={t("settings.general.rag.embeddingModelDescription", {
             defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
           })}
+          className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
         >
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
+            <div className="flex items-center gap-2 max-[360px]:w-full">
               <EmbeddingModelCombobox
                 value={draftEmbeddingModel}
                 onChange={(next) => {
@@ -666,7 +636,7 @@ export function GeneralTab() {
                 disabled={!embeddingModel}
                 placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
                 ariaLabel={t("settings.general.rag.embeddingModel")}
-                className="w-[220px]"
+                className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
               />
               <Button
                 variant="outline"

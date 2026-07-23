@@ -60,12 +60,37 @@ def _job_status(
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
 
+def _load_in_flight(repo_id: str) -> bool:
+    try:
+        from core.inference.llama_cpp import hf_gguf_load_in_flight
+        return hf_gguf_load_in_flight(repo_id)
+    except Exception:
+        return False
+
+
+def _load_in_flight_error(repo_id: str) -> HTTPException:
+    return HTTPException(
+        status_code = 409,
+        detail = (
+            f"A model load for '{repo_id}' is in progress and may be "
+            "downloading it. Wait for the load to finish (or cancel it), "
+            "then start the download."
+        ),
+    )
+
+
+def _reject_if_load_in_flight(repo_id: str) -> None:
+    if _load_in_flight(repo_id):
+        raise _load_in_flight_error(repo_id)
+
+
 def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
     hf_token: Optional[str],
     use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    cache_env: Optional[dict[str, str]] = None,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
@@ -75,6 +100,7 @@ def _spawn_download_worker(
         hf_token,
         use_xet = use_xet,
         protected_blob_hashes = protected_blob_hashes,
+        cache_env = cache_env,
     )
 
 
@@ -89,6 +115,9 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
+    # Avoid concurrent writers to the same HF cache files.
+    _reject_if_load_in_flight(repo_id)
+
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
@@ -98,6 +127,10 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     key = _download_job_key(repo_id, variant)
     use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
     transport = download_lifecycle.resolve_transport(use_xet)
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache_paths = get_hf_cache_paths()
+    cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
     completed_baseline_bytes = 0
@@ -147,9 +180,14 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         blob_hashes = variant_blob_hashes,
         progress_blob_hashes = variant_progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
+        admission_check = lambda: not _load_in_flight(repo_id),
+        hub_cache = str(cache_paths.hub_cache),
+        xet_cache = str(cache_paths.xet_cache),
     )
     generation = _registry.current_generation(key)
     if not claimed:
+        if claim_state == "admission_blocked":
+            raise _load_in_flight_error(repo_id)
         # claim_state is the blocking job's state. The client can attach only
         # when the blocker is this key's own in-flight job (adoptable); a
         # cross-variant conflict or in-progress delete is not accepted.
@@ -159,7 +197,12 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             "accepted": _registry.adoptable(key),
             "generation": generation,
         }
-    download_manifest.clear_cancel_marker("model", repo_id, variant)
+    download_manifest.clear_cancel_marker(
+        "model",
+        repo_id,
+        variant,
+        hub_cache = cache_paths.hub_cache,
+    )
     # Blobs a concurrent same-repo variant is already writing (e.g. a shared
     # mmproj). The worker must not purge these during cache preparation.
     protected_blob_hashes = _registry.peer_blob_hashes(key) if variant else frozenset()
@@ -174,6 +217,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             hf_token,
             use_xet = use_xet,
             protected_blob_hashes = protected_blob_hashes,
+            cache_env = cache_env,
         ),
         hf_token = hf_token,
         label = label,

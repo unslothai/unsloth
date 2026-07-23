@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.testclient import TestClient
+from starlette.middleware.gzip import GZipMiddleware
 
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,7 @@ def main_module():
 def _make_protected_app(
     max_bytes: int,
     main_module,
+    request_max_bytes_getter = None,
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
 ):
@@ -40,7 +42,13 @@ def _make_protected_app(
     app.add_middleware(
         main_module.MaxBodyMiddleware,
         max_bytes_getter = lambda: max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
+        protected_prefixes = (
+            "/v1/chat/completions",
+            "/api/inference",
+            "/api/settings",
+            "/api/train",
+        ),
+        request_max_bytes_getter = request_max_bytes_getter,
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
     )
@@ -66,6 +74,10 @@ def _make_protected_app(
                 chunks += 1
                 total += len(chunk)
         return {"ok": True, "chunks": chunks, "total": total}
+
+    @app.post("/api/inference/audio/transcribe/raw")
+    async def transcribe_raw(request: Request):
+        return {"ok": True, "total": len(await request.body())}
 
     @app.get("/api/train/status")
     async def status_get():
@@ -95,6 +107,43 @@ class TestMaxBodyMiddleware:
         r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
+
+    def test_route_specific_cap_overrides_default(self, main_module):
+        app = _make_protected_app(
+            4096,
+            main_module,
+            request_max_bytes_getter = lambda path: (
+                128 if path.endswith("/transcribe/raw") else 4096
+            ),
+        )
+        c = TestClient(app)
+
+        rejected = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 129,
+        )
+        accepted = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 128,
+        )
+
+        assert rejected.status_code == 413
+        assert accepted.status_code == 200
+        assert accepted.json()["total"] == 128
+
+    def test_stt_routes_use_audio_specific_caps(self, main_module):
+        from utils.upload_limits import (
+            STT_AUDIO_JSON_MAX_BYTES,
+            STT_AUDIO_RAW_MAX_BYTES,
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
+            == STT_AUDIO_RAW_MAX_BYTES
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
+            == STT_AUDIO_JSON_MAX_BYTES
+        )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -469,6 +518,71 @@ class TestSecurityHeadersMiddleware:
         names = {n.lower() for n, _ in start["headers"]}
         assert b"content-security-policy" in names
         assert b"server" in names
+
+
+class TestFrontendAssets:
+    def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = GZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip"},
+        )
+
+        assert response.status_code == 200
+        assert response.content == content
+        assert response.headers["content-encoding"] == "gzip"
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+        assert "accept-encoding" in response.headers["vary"].lower()
+
+    def test_asset_revalidation_keeps_immutable_cache_header(self, tmp_path, main_module):
+        (tmp_path / "page-abc123.js").write_text("export {};", encoding = "utf-8")
+        app = FastAPI()
+        app.mount(
+            "/assets",
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            name = "assets",
+        )
+        client = TestClient(app)
+        first = client.get("/assets/page-abc123.js")
+
+        response = client.get(
+            "/assets/page-abc123.js",
+            headers = {"If-None-Match": first.headers["etag"]},
+        )
+
+        assert response.status_code == 304
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
+
+    def test_range_request_is_not_compressed(self, tmp_path, main_module):
+        content = b"export const value = 'responsive';\n" * 200
+        (tmp_path / "page-abc123.js").write_bytes(content)
+        app = FastAPI()
+        assets_app = main_module._AssetGZipMiddleware(
+            main_module.ImmutableStaticFiles(directory = tmp_path),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
+
+        response = TestClient(app).get(
+            "/assets/page-abc123.js",
+            headers = {"Accept-Encoding": "gzip", "Range": "bytes=0-99"},
+        )
+
+        assert response.status_code == 206
+        assert response.headers.get("content-encoding") != "gzip"
+        assert response.headers["content-range"] == f"bytes 0-99/{len(content)}"
+        assert response.content == content[:100]
+        assert response.headers["cache-control"] == (main_module._IMMUTABLE_ASSET_CACHE_CONTROL)
 
 
 # /api/health auth gate

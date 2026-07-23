@@ -43,6 +43,21 @@ except ImportError:
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+# Shared component-agnostic machinery lives in prebuilt_core (same directory);
+# put studio/ on sys.path so it resolves whether this file is run as a script
+# (from any cwd) or loaded via an importlib spec by the tests.
+_STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+if _STUDIO_DIR not in sys.path:
+    sys.path.insert(0, _STUDIO_DIR)
+
+import prebuilt_core as _core  # noqa: E402
+
+# Late-binding seam: core functions resolve collaborators (download_file,
+# fetch_json, ...) through this module's globals at call time, so tests that
+# monkeypatch names on this module keep working.
+_OPS = _core.ModuleOps(globals())
+USER_AGENT = "unsloth-studio-llama-prebuilt"
+
 
 EXIT_SUCCESS = 0
 EXIT_FALLBACK = 2
@@ -121,26 +136,7 @@ def _amd_smi_allowed() -> bool:
     return False
 
 
-def windows_hidden_subprocess_kwargs() -> dict[str, object]:
-    """Return Windows-only subprocess kwargs that suppress console windows."""
-    if sys.platform != "win32":
-        return {}
-
-    kwargs: dict[str, object] = {}
-    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    if create_no_window:
-        kwargs["creationflags"] = create_no_window
-
-    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
-    startf_use_showwindow = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
-    sw_hide = getattr(subprocess, "SW_HIDE", 0)
-    if startupinfo_factory is not None and startf_use_showwindow:
-        startupinfo = startupinfo_factory()
-        startupinfo.dwFlags |= startf_use_showwindow
-        startupinfo.wShowWindow = sw_hide
-        kwargs["startupinfo"] = startupinfo
-
-    return kwargs
+windows_hidden_subprocess_kwargs = _core.windows_hidden_subprocess_kwargs
 
 
 def env_int(
@@ -347,10 +343,7 @@ class LinuxCudaSelection:
         return self.attempts[0]
 
 
-@dataclass
-class CudaRuntimePreference:
-    runtime_line: str | None
-    selection_log: list[str]
+CudaRuntimePreference = _core.CudaRuntimePreference
 
 
 @dataclass(frozen = True)
@@ -404,12 +397,8 @@ class InstallReleasePlan:
     approved_checksums: ApprovedReleaseChecksums
 
 
-class PrebuiltFallback(RuntimeError):
-    pass
-
-
-class BusyInstallConflict(RuntimeError):
-    pass
+PrebuiltFallback = _core.PrebuiltFallback
+BusyInstallConflict = _core.BusyInstallConflict
 
 
 class ExistingInstallSatisfied(RuntimeError):
@@ -419,51 +408,8 @@ class ExistingInstallSatisfied(RuntimeError):
         self.used_fallback = used_fallback
 
 
-def _os_error_messages(exc: BaseException) -> list[str]:
-    messages: list[str] = []
-    if isinstance(exc, OSError):
-        for value in (
-            getattr(exc, "strerror", None),
-            getattr(exc, "filename", None),
-            getattr(exc, "filename2", None),
-        ):
-            if isinstance(value, str) and value:
-                messages.append(value)
-    text = str(exc)
-    if text:
-        messages.append(text)
-    return [message.lower() for message in messages if message]
-
-
-def is_busy_lock_error(exc: BaseException) -> bool:
-    if isinstance(exc, BusyInstallConflict):
-        return True
-    if isinstance(exc, OSError):
-        if exc.errno in {
-            errno.EACCES,
-            errno.EBUSY,
-            errno.EPERM,
-            errno.ETXTBSY,
-        }:
-            return True
-        if getattr(exc, "winerror", None) in {5, 32, 145}:
-            return True
-    for message in _os_error_messages(exc):
-        if any(
-            needle in message
-            for needle in (
-                "access is denied",
-                "being used by another process",
-                "device or resource busy",
-                "permission denied",
-                "text file busy",
-                "file is in use",
-                "process cannot access the file",
-                "cannot create a file when that file already exists",
-            )
-        ):
-            return True
-    return False
+_os_error_messages = _core._os_error_messages
+is_busy_lock_error = _core.is_busy_lock_error
 
 
 # Status logs default to stderr so resolver modes keep stdout machine-readable
@@ -481,153 +427,30 @@ def log_lines(lines: Iterable[str]) -> None:
         log(line)
 
 
-def parsed_hostname(url: str | None) -> str | None:
-    if not url:
-        return None
-    try:
-        hostname = urllib.parse.urlparse(url).hostname
-    except Exception:
-        return None
-    if not hostname:
-        return None
-    return hostname.lower()
-
-
-def should_send_github_auth(url: str | None) -> bool:
-    return parsed_hostname(url) in GITHUB_AUTH_HOSTS
-
-
-def should_send_hf_auth(url: str | None) -> bool:
-    return parsed_hostname(url) in HF_AUTH_HOSTS
+parsed_hostname = _core.parsed_hostname
+should_send_github_auth = _core.should_send_github_auth
+should_send_hf_auth = _core.should_send_hf_auth
 
 
 def auth_headers(url: str | None = None) -> dict[str, str]:
-    headers = {
-        "User-Agent": "unsloth-studio-llama-prebuilt",
-    }
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token and should_send_github_auth(url):
-        headers["Authorization"] = f"Bearer {token}"
-        return headers
-    # Anonymous huggingface.co fetches share a per-IP rate limit that CI
-    # fleets exhaust (HTTP 429), sinking the prebuilt path into a source
-    # build. Authenticate when a token is available.
-    hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-    if hf_token and should_send_hf_auth(url):
-        headers["Authorization"] = f"Bearer {hf_token}"
-    return headers
+    return _core.auth_headers(_OPS, url)
 
 
-class _CrossHostAuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Drop Authorization when a redirect leaves the original host.
-
-    huggingface.co redirects file downloads to CDN hosts whose signed URLs
-    can reject foreign Authorization headers; urllib forwards headers to
-    redirect targets by default (requests/huggingface_hub strip them).
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        new_request = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if new_request is not None and parsed_hostname(newurl) != parsed_hostname(req.full_url):
-            new_request.headers.pop("Authorization", None)
-            new_request.unredirected_hdrs.pop("Authorization", None)
-        return new_request
-
-
-_URL_OPENER = urllib.request.build_opener(_CrossHostAuthStrippingRedirectHandler())
+_CrossHostAuthStrippingRedirectHandler = _core._CrossHostAuthStrippingRedirectHandler
+_URL_OPENER = _core._URL_OPENER
 
 
 def github_api_headers(url: str | None = None) -> dict[str, str]:
-    return {
-        "Accept": "application/vnd.github+json",
-        **auth_headers(url),
-    }
+    return _core.github_api_headers(_OPS, url)
 
 
-def is_github_api_url(url: str | None) -> bool:
-    return parsed_hostname(url) == "api.github.com"
-
-
-def is_retryable_url_error(exc: Exception) -> bool:
-    if isinstance(exc, urllib.error.HTTPError):
-        # GitHub returns 403 (not the standard 429) when the API rate
-        # limit is hit. Anonymous calls share a 60-req/hour bucket per
-        # runner IP, which CI fleets can exhaust trivially. Treat 403
-        # against api.github.com as retryable so we get one or two
-        # backoff cycles before the source-build fallback fires; honour
-        # Retry-After / X-RateLimit-Reset in sleep_backoff for accurate
-        # waits. Real 403s on other hosts (private artefact downloads,
-        # auth failures) stay non-retryable.
-        if exc.code == 403:
-            return is_github_api_url(getattr(exc, "url", None))
-        return exc.code in RETRYABLE_HTTP_STATUS
-    if isinstance(exc, urllib.error.URLError):
-        return True
-    if isinstance(exc, TimeoutError):
-        return True
-    if isinstance(exc, socket.timeout):
-        return True
-    return False
-
-
+is_github_api_url = _core.is_github_api_url
+is_retryable_url_error = _core.is_retryable_url_error
 _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
-
-
-def _http_error_retry_delay(exc: Exception) -> float | None:
-    """Extract a recommended wait from rate-limit headers on a 403/429.
-
-    Returns None when no header is present or the indicated wait is
-    longer than _RATE_LIMIT_WAIT_CAP_SECONDS (in which case the caller
-    should not block on it -- the source-build fallback is faster).
-    """
-    if not isinstance(exc, urllib.error.HTTPError):
-        return None
-    headers = getattr(exc, "headers", None)
-    if headers is None:
-        return None
-    retry_after = headers.get("Retry-After")
-    if retry_after and retry_after.strip().isdigit():
-        wait = float(retry_after.strip())
-        return wait if wait <= _RATE_LIMIT_WAIT_CAP_SECONDS else None
-    rate_reset = headers.get("X-RateLimit-Reset")
-    if rate_reset and rate_reset.strip().isdigit():
-        wait = float(rate_reset.strip()) - time.time()
-        if 0.0 < wait <= _RATE_LIMIT_WAIT_CAP_SECONDS:
-            return wait + 1.0  # +1s of slack so the bucket is fresh
-    return None
-
-
-def sleep_backoff(
-    attempt: int,
-    *,
-    base_delay: float = HTTP_FETCH_BASE_DELAY_SECONDS,
-    exc: Exception | None = None,
-) -> None:
-    delay = base_delay * (2 ** max(attempt - 1, 0))
-    header_delay = _http_error_retry_delay(exc) if exc is not None else None
-    if header_delay is not None:
-        delay = max(delay, header_delay)
-    delay += random.uniform(0.0, 0.2)
-    time.sleep(delay)
-
-
-def atomic_write_bytes(destination: Path, data: bytes) -> None:
-    destination.parent.mkdir(parents = True, exist_ok = True)
-    with tempfile.NamedTemporaryFile(
-        prefix = destination.name + ".tmp-",
-        dir = destination.parent,
-        delete = False,
-    ) as handle:
-        tmp_path = Path(handle.name)
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, destination)
-
-
-def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents = True, exist_ok = True)
-    os.replace(tmp_path, destination)
+_http_error_retry_delay = _core._http_error_retry_delay
+sleep_backoff = _core.sleep_backoff
+atomic_write_bytes = _core.atomic_write_bytes
+atomic_replace_from_tempfile = _core.atomic_replace_from_tempfile
 
 
 def source_archive_logical_name(upstream_tag: str) -> str:
@@ -638,27 +461,9 @@ def exact_source_archive_logical_name(source_commit: str) -> str:
     return f"llama.cpp-source-commit-{source_commit}.tar.gz"
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def normalize_sha256_digest(value: str | None) -> str | None:
-    if not isinstance(value, str) or not value:
-        return None
-    lowered = value.lower()
-    if lowered.startswith("sha256:"):
-        lowered = lowered.split(":", 1)[1]
-    if len(lowered) != 64 or any(ch not in "0123456789abcdef" for ch in lowered):
-        return None
-    return lowered
+sha256_file = _core.sha256_file
+sha256_bytes = _core.sha256_bytes
+normalize_sha256_digest = _core.normalize_sha256_digest
 
 
 def normalize_source_ref_kind(value: str | None) -> str | None:
@@ -682,15 +487,7 @@ def normalize_source_commit(value: str | None) -> str | None:
 
 
 def validate_schema_version(payload: dict[str, Any], *, label: str) -> None:
-    schema_version = payload.get("schema_version")
-    if schema_version is None:
-        return
-    try:
-        normalized = int(schema_version)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"{label} schema_version was not an integer") from exc
-    if normalized != 1:
-        raise RuntimeError(f"{label} schema_version={normalized} is unsupported")
+    _core.validate_schema_version(payload, label = label)
 
 
 def repo_slug_from_source(value: str | None) -> str | None:
@@ -856,127 +653,10 @@ def _published_windows_cuda_runtime(
     return f"{major}.{best}" if best is not None else None
 
 
-def format_byte_count(num_bytes: float) -> str:
-    units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    value = float(num_bytes)
-    for unit in units:
-        if abs(value) < 1024.0 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024.0
-    return f"{num_bytes:.1f} B"
-
-
-def _progress_percent_step() -> int:
-    """Non-tty milestone granularity. The in-app updater sets
-    UNSLOTH_PROGRESS_PERCENT_STEP=5 to stream finer progress lines."""
-    try:
-        step = int(os.environ.get("UNSLOTH_PROGRESS_PERCENT_STEP", "25"))
-    except ValueError:
-        return 25
-    return min(max(step, 1), 50)
-
-
-class DownloadProgress:
-    def __init__(self, label: str, total_bytes: int | None) -> None:
-        self.label = label
-        self.total_bytes = total_bytes if total_bytes and total_bytes > 0 else None
-        self.start_time = time.monotonic()
-        self.last_emit = 0.0
-        term_ok = os.environ.get("TERM", "").lower() != "dumb"
-        self.stream = (
-            sys.stderr if sys.stderr.isatty() else sys.stdout if sys.stdout.isatty() else sys.stderr
-        )
-        self.is_tty = term_ok and self.stream.isatty()
-        self.completed = False
-        self.milestone_step = _progress_percent_step()
-        self.last_milestone_percent = -1
-        self.last_milestone_bytes = 0
-        self.has_rendered_tty_progress = False
-
-    def _render(
-        self,
-        downloaded_bytes: int,
-        *,
-        final: bool = False,
-    ) -> str:
-        elapsed = max(time.monotonic() - self.start_time, 1e-6)
-        speed = downloaded_bytes / elapsed
-        speed_text = f"{format_byte_count(speed)}/s"
-        if self.total_bytes is not None:
-            percent = min(100.0, (downloaded_bytes / self.total_bytes) * 100.0)
-            return (
-                f"{self.label}: {percent:5.1f}% "
-                f"({format_byte_count(downloaded_bytes)}/{format_byte_count(self.total_bytes)}) "
-                f"at {speed_text}"
-            )
-        if final:
-            return f"{self.label}: {format_byte_count(downloaded_bytes)} downloaded at {speed_text}"
-        return f"{self.label}: {format_byte_count(downloaded_bytes)} downloaded at {speed_text}"
-
-    def update(self, downloaded_bytes: int) -> None:
-        now = time.monotonic()
-        if self.is_tty:
-            elapsed = now - self.start_time
-            if not self.has_rendered_tty_progress:
-                if self.total_bytes is not None and downloaded_bytes >= self.total_bytes:
-                    return
-                if elapsed < TTY_PROGRESS_START_DELAY_SECONDS:
-                    return
-            min_interval = 0.2
-            if (
-                self.has_rendered_tty_progress
-                and not self.completed
-                and (now - self.last_emit) < min_interval
-            ):
-                return
-            self.last_emit = now
-            line = self._render(downloaded_bytes)
-            self.stream.write("\r\033[K" + line)
-            self.stream.flush()
-            self.has_rendered_tty_progress = True
-            return
-
-        should_emit = False
-        if self.total_bytes is not None:
-            percent = int((downloaded_bytes * 100) / max(self.total_bytes, 1))
-            step = self.milestone_step
-            milestone_percent = min((percent // step) * step, 100)
-            if milestone_percent > self.last_milestone_percent and milestone_percent < 100:
-                self.last_milestone_percent = milestone_percent
-                should_emit = True
-        else:
-            byte_step = 25 * 1024 * 1024
-            if (
-                downloaded_bytes - self.last_milestone_bytes >= byte_step
-                and (now - self.last_emit) >= 5.0
-            ):
-                self.last_milestone_bytes = downloaded_bytes
-                should_emit = True
-
-        if not should_emit:
-            return
-
-        self.last_emit = now
-        self.stream.write(self._render(downloaded_bytes) + "\n")
-        self.stream.flush()
-
-    def finish(self, downloaded_bytes: int) -> None:
-        self.completed = True
-        line = self._render(downloaded_bytes, final = True)
-        if self.is_tty:
-            if not self.has_rendered_tty_progress:
-                return
-            self.stream.write("\r\033[K")
-        else:
-            self.stream.write(line + "\n")
-        self.stream.flush()
-
-
-def download_label_from_url(url: str) -> str:
-    name = Path(urllib.parse.urlparse(url).path).name
-    return name or url
+format_byte_count = _core.format_byte_count
+_progress_percent_step = _core._progress_percent_step
+DownloadProgress = _core.DownloadProgress
+download_label_from_url = _core.download_label_from_url
 
 
 def download_bytes(
@@ -987,151 +667,30 @@ def download_bytes(
     headers: dict[str, str] | None = None,
     progress_label: str | None = None,
 ) -> bytes:
-    last_exc: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            request = urllib.request.Request(url, headers = headers or auth_headers(url))
-            with _URL_OPENER.open(request, timeout = timeout) as response:
-                total_bytes: int | None = None
-                content_length = response.headers.get("Content-Length")
-                if content_length and content_length.isdigit():
-                    total_bytes = int(content_length)
-                progress = DownloadProgress(progress_label, total_bytes) if progress_label else None
-                data = bytearray()
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    if progress is not None:
-                        progress.update(len(data))
-                if progress is not None:
-                    progress.finish(len(data))
-                return bytes(data)
-        except Exception as exc:
-            last_exc = exc
-            if attempt >= attempts or not is_retryable_url_error(exc):
-                raise
-            log(f"fetch failed ({attempt}/{attempts}) for {url}: {exc}; retrying")
-            sleep_backoff(attempt, exc = exc)
-    assert last_exc is not None
-    raise last_exc
+    return _core.download_bytes(
+        _OPS,
+        url,
+        timeout = timeout,
+        attempts = attempts,
+        headers = headers,
+        progress_label = progress_label,
+    )
 
 
 def fetch_json(url: str) -> Any:
-    attempts = JSON_FETCH_ATTEMPTS if is_github_api_url(url) else 1
-    last_decode_exc: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            data = download_bytes(
-                url,
-                timeout = 30,
-                headers = github_api_headers(url) if is_github_api_url(url) else auth_headers(url),
-            )
-        except urllib.error.HTTPError as exc:
-            if exc.code == 403 and is_github_api_url(url):
-                hint = ""
-                if not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
-                    hint = "; set GH_TOKEN or GITHUB_TOKEN to avoid GitHub API rate limits"
-                raise RuntimeError(f"GitHub API returned 403 for {url}{hint}") from exc
-            raise
-        if not data:
-            last_decode_exc = RuntimeError(f"downloaded empty JSON payload from {url}")
-        else:
-            try:
-                payload = json.loads(data.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                last_decode_exc = RuntimeError(f"downloaded invalid JSON from {url}: {exc}")
-            else:
-                if not isinstance(payload, dict) and not isinstance(payload, list):
-                    raise RuntimeError(
-                        f"downloaded unexpected JSON type from {url}: {type(payload).__name__}"
-                    )
-                return payload
-        if attempt >= attempts:
-            assert last_decode_exc is not None
-            raise last_decode_exc
-        log(f"json fetch failed ({attempt}/{attempts}) for {url}; retrying")
-        sleep_backoff(attempt)
-    assert last_decode_exc is not None
-    raise last_decode_exc
+    return _core.fetch_json(_OPS, url)
 
 
 def download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents = True, exist_ok = True)
-    last_exc: Exception | None = None
-    for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
-        tmp_path: Path | None = None
-        try:
-            request = urllib.request.Request(url, headers = auth_headers(url))
-            with tempfile.NamedTemporaryFile(
-                prefix = destination.name + ".tmp-",
-                dir = destination.parent,
-                delete = False,
-            ) as handle:
-                tmp_path = Path(handle.name)
-                with _URL_OPENER.open(request, timeout = 120) as response:
-                    total_bytes: int | None = None
-                    content_length = response.headers.get("Content-Length")
-                    if content_length and content_length.isdigit():
-                        total_bytes = int(content_length)
-                    progress = DownloadProgress(f"Downloading {destination.name}", total_bytes)
-                    downloaded_bytes = 0
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        progress.update(downloaded_bytes)
-                    progress.finish(downloaded_bytes)
-                handle.flush()
-                os.fsync(handle.fileno())
-            if not tmp_path.exists() or tmp_path.stat().st_size == 0:
-                raise RuntimeError(f"downloaded empty file from {url}")
-            atomic_replace_from_tempfile(tmp_path, destination)
-            return
-        except Exception as exc:
-            last_exc = exc
-            if tmp_path is not None:
-                try:
-                    tmp_path.unlink(missing_ok = True)
-                except Exception:
-                    pass
-            if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
-                raise
-            log(f"download failed ({attempt}/{HTTP_FETCH_ATTEMPTS}) for {url}: {exc}; retrying")
-            sleep_backoff(attempt, exc = exc)
-    assert last_exc is not None
-    raise last_exc
+    _core.download_file(_OPS, url, destination)
 
 
 def download_file_verified(
     url: str, destination: Path, *, expected_sha256: str | None, label: str
 ) -> None:
-    normalized_expected = normalize_sha256_digest(expected_sha256)
-    if not normalized_expected:
-        download_file(url, destination)
-        log(f"downloaded {label} without a published sha256; relying on install validation")
-        return
-
-    for attempt in range(1, 3):
-        download_file(url, destination)
-        actual_sha256 = sha256_file(destination)
-        if actual_sha256 == normalized_expected:
-            log(f"verified {label} sha256={actual_sha256}")
-            return
-
-        log(
-            f"{label} checksum mismatch on attempt {attempt}/2: "
-            f"expected={normalized_expected} actual={actual_sha256}"
-        )
-        destination.unlink(missing_ok = True)
-        if attempt == 2:
-            raise PrebuiltFallback(
-                f"{label} checksum mismatch after retry: expected={normalized_expected} actual={actual_sha256}"
-            )
-        log(f"retrying {label} download after checksum mismatch")
+    _core.download_file_verified(
+        _OPS, url, destination, expected_sha256 = expected_sha256, label = label
+    )
 
 
 def upstream_source_archive_urls(tag: str) -> list[str]:
@@ -1165,21 +724,11 @@ def release_asset_download_url(
 
 
 def github_release_assets(repo: str, tag: str) -> dict[str, str]:
-    payload = fetch_json(
-        f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe = '')}"
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"unexpected release payload for {repo}@{tag}")
-    return release_asset_map(payload)
+    return _core.github_release_assets(_OPS, repo, tag)
 
 
 def github_release(repo: str, tag: str) -> dict[str, Any]:
-    payload = fetch_json(
-        f"https://api.github.com/repos/{repo}/releases/tags/{urllib.parse.quote(tag, safe = '')}"
-    )
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"unexpected release payload for {repo}@{tag}")
-    return payload
+    return _core.github_release(_OPS, repo, tag)
 
 
 def github_releases(
@@ -1542,10 +1091,7 @@ def resolve_simple_install_release_plans(
                 if not allow_older_release_fallback:
                     raise
                 release_tag = release.get("tag_name") or "unknown"
-                log(
-                    "published release skipped for install planning: "
-                    f"{repo}@{release_tag} ({exc})"
-                )
+                log(f"published release skipped for install planning: {repo}@{release_tag} ({exc})")
                 continue
 
             plans.append(plan)
@@ -1571,198 +1117,23 @@ def normalized_requested_llama_tag(requested_tag: str | None) -> str:
     return "latest"
 
 
-def normalize_compute_cap(value: Any) -> str | None:
-    raw = str(value).strip()
-    if not raw:
-        return None
-    if "." in raw:
-        parts = raw.split(".", 1)
-        if len(parts) != 2:
-            return None
-        major, minor = parts
-        if not major.isdigit() or not minor.isdigit():
-            return None
-        return f"{int(major)}{int(minor)}"
-    if raw.isdigit():
-        return str(int(raw))
-    return None
-
-
-def normalize_compute_caps(compute_caps: Iterable[str]) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw in compute_caps:
-        normalized_value = normalize_compute_cap(raw)
-        if normalized_value is None:
-            continue
-        if normalized_value in seen:
-            continue
-        seen.add(normalized_value)
-        normalized.append(normalized_value)
-    normalized.sort(key = int)
-    return normalized
-
-
-def parse_cuda_visible_devices(value: str | None) -> list[str] | None:
-    if value is None:
-        return None
-    raw = value.strip()
-    if not raw or raw == "-1":
-        return []
-    return [token.strip() for token in raw.split(",") if token.strip()]
-
-
-def supports_explicit_visible_device_matching(visible_devices: list[str] | None) -> bool:
-    if not visible_devices:
-        return False
-    for token in visible_devices:
-        lowered = token.lower()
-        if token.isdigit() or lowered.startswith("gpu-"):
-            continue
-        return False
-    return True
-
-
-def select_visible_gpu_rows(
-    gpu_rows: Iterable[tuple[str, str, str]], visible_devices: list[str] | None
-) -> list[tuple[str, str, str]]:
-    rows = list(gpu_rows)
-    if visible_devices is None:
-        return rows
-    if not visible_devices:
-        return []
-
-    by_index = {index: (index, uuid, cap) for index, uuid, cap in rows}
-    by_uuid = {uuid.lower(): (index, uuid, cap) for index, uuid, cap in rows}
-    selected: list[tuple[str, str, str]] = []
-    seen_indices: set[str] = set()
-    for token in visible_devices:
-        row = by_index.get(token)
-        if row is None:
-            normalized_token = token.lower()
-            row = by_uuid.get(normalized_token)
-            if row is None and normalized_token.startswith("gpu-"):
-                row = by_uuid.get(normalized_token)
-            if row is None and not normalized_token.startswith("gpu-"):
-                row = by_uuid.get("gpu-" + normalized_token)
-        if row is None:
-            continue
-        index = row[0]
-        if index in seen_indices:
-            continue
-        seen_indices.add(index)
-        selected.append(row)
-    return selected
-
-
-def dir_provides_exact_library(directory: str | Path, library: str) -> bool:
-    if not library:
-        return False
-    candidate = Path(directory) / library
-    return candidate.exists() and (candidate.is_file() or candidate.is_symlink())
+normalize_compute_cap = _core.normalize_compute_cap
+normalize_compute_caps = _core.normalize_compute_caps
+parse_cuda_visible_devices = _core.parse_cuda_visible_devices
+supports_explicit_visible_device_matching = _core.supports_explicit_visible_device_matching
+select_visible_gpu_rows = _core.select_visible_gpu_rows
+dir_provides_exact_library = _core.dir_provides_exact_library
 
 
 def linux_runtime_dirs_for_required_libraries(required_libraries: Iterable[str]) -> list[str]:
-    required = [library for library in required_libraries if library]
-    candidates: list[str | Path] = []
-
-    env_dirs = os.environ.get("CUDA_RUNTIME_LIB_DIR", "")
-    if env_dirs:
-        candidates.extend(part for part in env_dirs.split(os.pathsep) if part)
-    ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
-    if ld_library_path:
-        candidates.extend(part for part in ld_library_path.split(os.pathsep) if part)
-
-    cuda_roots: list[Path] = []
-    for name in ("CUDA_HOME", "CUDA_PATH", "CUDA_ROOT"):
-        value = os.environ.get(name)
-        if value:
-            cuda_roots.append(Path(value))
-    cuda_roots.extend(Path(path) for path in glob_paths("/usr/local/cuda", "/usr/local/cuda-*"))
-
-    for root in cuda_roots:
-        candidates.extend(
-            [
-                root / "lib",
-                root / "lib64",
-                root / "targets" / "x86_64-linux" / "lib",
-            ]
-        )
-
-    candidates.extend(
-        Path(path)
-        for path in glob_paths(
-            "/lib",
-            "/lib64",
-            "/usr/lib",
-            "/usr/lib64",
-            "/usr/local/lib",
-            "/usr/local/lib64",
-            "/lib/x86_64-linux-gnu",
-            "/usr/lib/x86_64-linux-gnu",
-        )
-    )
-    candidates.extend(
-        Path(path) for path in glob_paths("/usr/local/lib/ollama/cuda_v*", "/usr/lib/wsl/lib")
-    )
-    candidates.extend(Path(path) for path in python_runtime_dirs())
-    candidates.extend(Path(path) for path in ldconfig_runtime_dirs(required))
-
-    resolved = dedupe_existing_dirs(candidates)
-    if not required:
-        return resolved
-
-    matched: list[tuple[int, str]] = []
-    for directory in resolved:
-        base = Path(directory)
-        provided = sum(1 for library in required if dir_provides_exact_library(directory, library))
-        if provided:
-            matched.append((provided, directory))
-
-    matched.sort(key = lambda item: item[0], reverse = True)
-    return [directory for _, directory in matched]
+    return _core.linux_runtime_dirs_for_required_libraries(_OPS, required_libraries)
 
 
 def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
-    line_requirements = {
-        f"cuda{m}": [f"libcudart.so.{m}", f"libcublas.so.{m}"]
-        for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
-    }
-    detected: list[str] = []
-    runtime_dirs: dict[str, list[str]] = {}
-    for line, required in line_requirements.items():
-        dirs = linux_runtime_dirs_for_required_libraries(required)
-        library_matches: dict[str, list[str]] = {}
-        matching_dirs: list[str] = []
-        for library in required:
-            matched_dirs = [
-                directory for directory in dirs if any(Path(directory).glob(f"{library}*"))
-            ]
-            if not matched_dirs:
-                library_matches = {}
-                matching_dirs = []
-                break
-            library_matches[library] = matched_dirs
-            for directory in matched_dirs:
-                if directory not in matching_dirs:
-                    matching_dirs.append(directory)
-        if library_matches:
-            detected.append(line)
-            runtime_dirs[line] = matching_dirs
-    return detected, runtime_dirs
+    return _core.detected_linux_runtime_lines(_OPS)
 
 
-def release_asset_map(release: dict[str, Any]) -> dict[str, str]:
-    assets = release.get("assets")
-    if not isinstance(assets, list):
-        return {}
-    return {
-        asset["name"]: asset.get("browser_download_url", "")
-        for asset in assets
-        if isinstance(asset, dict)
-        and isinstance(asset.get("name"), str)
-        and isinstance(asset.get("browser_download_url"), str)
-    }
+release_asset_map = _core.release_asset_map
 
 
 def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
@@ -2067,47 +1438,9 @@ def iter_published_release_bundles(
         yield bundle
 
 
-def _artifact_covers_sms(artifact: PublishedLlamaArtifact, host_sms: Iterable[str]) -> bool:
-    """True when every host SM is listed in the artifact's supported_sms and
-    falls within its [min_sm, max_sm] range."""
-    if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
-        return False
-    supported = {str(value) for value in artifact.supported_sms}
-    return all(sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms)
-
-
-def _sm_range(artifact: PublishedLlamaArtifact) -> int:
-    """SM-coverage span used as a sort key, where a tighter (smaller) range wins.
-    A bundle with no SM metadata (legacy/upstream-named) gets a max range so it
-    sorts last and can't outrank a real targeted bundle whose tight range would
-    otherwise sort first."""
-    if artifact.min_sm is not None and artifact.max_sm is not None:
-        return artifact.max_sm - artifact.min_sm
-    return 9999
-
-
-def _blackwell_capable_linux_runtime_lines(
-    host_sms: list[str], artifacts: list[PublishedLlamaArtifact]
-) -> list[str]:
-    """CUDA runtime lines (highest major first) shipping a bundle that covers every
-    visible host SM. Lets a Blackwell host prefer a native sm_120 line over torch's
-    reported line, mirroring the Windows Blackwell preference."""
-    lines: set[str] = set()
-    for artifact in artifacts:
-        line = artifact.runtime_line
-        # Only rank "cuda<major>" lines; ignore malformed/future-format values
-        # (e.g. "cuda13.1") so they are skipped, as pre-existing code does, rather
-        # than crashing the major sort.
-        if not (line and line.startswith("cuda") and line[len("cuda") :].isdigit()):
-            continue
-        if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
-            continue
-        supported = {str(value) for value in artifact.supported_sms}
-        if all(
-            sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms
-        ):
-            lines.add(line)
-    return sorted(lines, key = lambda line: int(line[len("cuda") :]), reverse = True)
+_artifact_covers_sms = _core.artifact_covers_sms
+_sm_range = _core.sm_range
+_blackwell_capable_linux_runtime_lines = _core.blackwell_capable_linux_runtime_lines
 
 
 def linux_cuda_choice_from_release(
@@ -2398,50 +1731,15 @@ def _download_host_resolve_enabled() -> bool:
 
 
 def _release_asset_download_url(repo: str, tag: str, asset_name: str) -> str:
-    """Tag-pinned asset URL on the release-assets CDN (not api.github.com, so no
-    rate limit)."""
-    return (
-        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/download/"
-        f"{urllib.parse.quote(tag, safe = '')}/"
-        f"{urllib.parse.quote(asset_name, safe = '')}"
-    )
+    return _core.release_asset_download_url(repo, tag, asset_name)
 
 
 def _download_host_latest_release_tag(repo: str) -> str | None:
-    """Authoritative latest tag from GitHub's /releases/latest redirect target
-    (github.com, no api.github.com rate limit); the fast path pins URLs to it rather
-    than the checksum asset's self-reported release_tag. /releases/latest resolves by
-    created_at/make_latest, which can lag the published_at newest the freshness
-    detection uses. None on 404 so the caller falls back to the API."""
-    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
-    request = urllib.request.Request(
-        url,
-        method = "HEAD",
-        headers = {"User-Agent": "unsloth-studio-llama-prebuilt"},
-    )
-    try:
-        with _URL_OPENER.open(request, timeout = 30) as response:
-            final_url = response.geturl()
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        raise
-    marker = "/releases/tag/"
-    index = final_url.find(marker)
-    if index == -1:
-        return None
-    tag = urllib.parse.unquote(final_url[index + len(marker) :]).strip("/")
-    return tag or None
+    return _core.download_host_latest_release_tag(_OPS, repo)
 
 
 def _fetch_download_host_json(url: str) -> Any:
-    # Public CDN asset: plain unauthenticated GET, not the rate-limited API.
-    data = download_bytes(
-        url,
-        timeout = 30,
-        headers = {"User-Agent": "unsloth-studio-llama-prebuilt"},
-    )
-    return json.loads(data.decode("utf-8"))
+    return _core.fetch_download_host_json(_OPS, url)
 
 
 def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
@@ -2897,7 +2195,7 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
             break
     if _vis_raw is not None:
         _vis = _vis_raw.strip()
-        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Studio).
+        # Empty or "-1" means "no AMD GPU visible" (matches the rest of Unsloth).
         if _vis == "" or _vis == "-1":
             return None
         _first = _vis.split(",")[0].strip()
@@ -3292,38 +2590,14 @@ def pick_windows_cuda_runtime(host: HostInfo) -> str | None:
     return None
 
 
-def compatible_linux_runtime_lines(host: HostInfo) -> list[str]:
-    if not host.driver_cuda_version:
-        return []
-    major, _minor = host.driver_cuda_version
-    if major < _MIN_CUDA_MAJOR:
-        return []
-    return _cuda_runtime_lines_for_major(major)
+compatible_linux_runtime_lines = _core.compatible_linux_runtime_lines
 
 
-def windows_runtime_line_info() -> dict[str, tuple[str, ...]]:
-    # Generated per CUDA major (newest first) so a new toolkit is detected
-    # without a code change while the cudart64_<major>.dll naming holds.
-    return {
-        f"cuda{m}": (
-            f"cudart64_{m}*.dll",
-            f"cublas64_{m}*.dll",
-            f"cublasLt64_{m}*.dll",
-        )
-        for m in range(_MAX_PROBE_CUDA_MAJOR, _MIN_CUDA_MAJOR - 1, -1)
-    }
+windows_runtime_line_info = _core.windows_runtime_line_info
 
 
 def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
-    dirs = windows_runtime_dirs()
-    detected: list[str] = []
-    runtime_dirs: dict[str, list[str]] = {}
-    for runtime_line, required_patterns in windows_runtime_line_info().items():
-        matching_dirs = windows_runtime_dirs_for_patterns(required_patterns, dirs)
-        if matching_dirs:
-            detected.append(runtime_line)
-            runtime_dirs[runtime_line] = matching_dirs
-    return detected, runtime_dirs
+    return _core.detected_windows_runtime_lines(_OPS)
 
 
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
@@ -3337,68 +2611,8 @@ def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     return _cuda_runtime_lines_for_major(major)
 
 
-def runtime_line_from_cuda_version(cuda_version: str | None) -> str | None:
-    if not cuda_version:
-        return None
-    raw = str(cuda_version).strip()
-    if not raw:
-        return None
-    major, _, _ = raw.partition(".")
-    if major == "12":
-        return "cuda12"
-    if major == "13":
-        return "cuda13"
-    return None
-
-
-def detect_torch_cuda_runtime_preference(host: HostInfo) -> CudaRuntimePreference:
-    selection_log: list[str] = []
-    if host.is_macos:
-        selection_log.append("torch_cuda_preference: skipped on macOS")
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-    if not (host.has_usable_nvidia and (host.is_linux or host.is_windows)):
-        selection_log.append(
-            "torch_cuda_preference: skipped because CUDA host prerequisites were not met"
-        )
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-
-    try:
-        import torch
-    except Exception as exc:
-        selection_log.append(f"torch_cuda_preference: import failed: {exc}")
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-
-    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
-    if not isinstance(cuda_version, str) or not cuda_version.strip():
-        selection_log.append(
-            "torch_cuda_preference: torch.version.cuda missing; skipping Torch shortcut"
-        )
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-
-    try:
-        cuda_available = bool(torch.cuda.is_available())
-    except Exception as exc:
-        selection_log.append(f"torch_cuda_preference: torch.cuda.is_available() failed: {exc}")
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-
-    if not cuda_available:
-        selection_log.append(
-            "torch_cuda_preference: torch.cuda.is_available() returned False; falling back to normal selection"
-        )
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-
-    runtime_line = runtime_line_from_cuda_version(cuda_version)
-    if runtime_line is None:
-        selection_log.append(
-            f"torch_cuda_preference: unsupported torch.version.cuda={cuda_version}; falling back to normal selection"
-        )
-        return CudaRuntimePreference(runtime_line = None, selection_log = selection_log)
-
-    selection_log.append(
-        "torch_cuda_preference: selected runtime_line="
-        f"{runtime_line} from torch.version.cuda={cuda_version}"
-    )
-    return CudaRuntimePreference(runtime_line = runtime_line, selection_log = selection_log)
+runtime_line_from_cuda_version = _core.runtime_line_from_cuda_version
+detect_torch_cuda_runtime_preference = _core.detect_torch_cuda_runtime_preference
 
 
 def windows_cuda_attempts(
@@ -3569,18 +2783,8 @@ def _windows_cuda_attempt_covers_blackwell(
     return attempt.max_sm is not None and attempt.max_sm >= _BLACKWELL_MIN_SM
 
 
-def _host_is_blackwell(host: HostInfo) -> bool:
-    caps = normalize_compute_caps(host.compute_caps)
-    return bool(caps) and int(caps[-1]) >= _BLACKWELL_MIN_SM
-
-
-def _blackwell_min_toolkit_for_host(host: HostInfo) -> tuple[int, int]:
-    """Minimum CUDA toolkit this Blackwell host needs: 12.8 for the family,
-    12.9 if any of its SMs is sm_103/sm_121 (no native target before 12.9)."""
-    req = _BLACKWELL_MIN_TOOLKIT
-    for sm in normalize_compute_caps(host.compute_caps):
-        req = max(req, _BLACKWELL_SM_MIN_TOOLKIT.get(int(sm), _BLACKWELL_MIN_TOOLKIT))
-    return req
+_host_is_blackwell = _core.host_is_blackwell
+_blackwell_min_toolkit_for_host = _core.blackwell_min_toolkit_for_host
 
 
 def _drop_blackwell_incapable_windows_cuda(
@@ -4204,169 +3408,7 @@ def resolve_release_asset_choice(
     )
 
 
-def extract_archive(archive_path: Path, destination: Path) -> None:
-    def safe_extract_path(base: Path, member_name: str) -> Path:
-        normalized = member_name.replace("\\", "/")
-        member_path = Path(normalized)
-        if member_path.is_absolute():
-            raise PrebuiltFallback(f"archive member used an absolute path: {member_name}")
-
-        target = (base / member_path).resolve()
-        base_resolved = base.resolve()
-        try:
-            target.relative_to(base_resolved)
-        except ValueError as exc:
-            raise PrebuiltFallback(f"archive member escaped destination: {member_name}") from exc
-        return target
-
-    def _try_repair_missing_slash(
-        member_name: str, link_name: str, archive_names: set[str]
-    ) -> str | None:
-        """Some upstream llama.cpp Mac releases (e.g. b9165, b9169) ship
-        symlinks whose linkname is missing the directory separator AND
-        the leading character of the file basename between the
-        top-level dir and the rest of the path:
-
-            llama-b9165/libggml-rpc.0.dylib -> llama-b9165ibggml-rpc.0.11.1.dylib
-
-        That cannot be resolved as written. Detect the pattern
-        (linkname starts with the top-level dir name but no following
-        slash) and search archive entries under that dir for a real
-        file whose basename ends with the mangled suffix. Only accept
-        when the suffix uniquely identifies a real archive entry.
-        Returns the corrected linkname expressed relative to the
-        member's parent directory -- callers join it with
-        `target.parent`, so a full `top/file` path would double the
-        prefix into `top/top/file`."""
-        if "/" not in member_name or "/" in link_name:
-            return None
-        top, _, _ = member_name.partition("/")
-        if not link_name.startswith(top) or len(link_name) <= len(top):
-            return None
-        bad_suffix = link_name[len(top) :]
-        if not bad_suffix or bad_suffix.startswith("/"):
-            return None
-        prefix = f"{top}/"
-        candidates = [
-            name
-            for name in archive_names
-            if name.startswith(prefix)
-            and "/" not in name[len(prefix) :]
-            and name[len(prefix) :].endswith(bad_suffix)
-        ]
-        if len(candidates) != 1:
-            return None
-        # Strip the top-level dir so the caller's `target.parent / Path(...)`
-        # composition resolves inside the staging dir, not into a duplicate
-        # `top/top/...` path.
-        return candidates[0][len(prefix) :]
-
-    def safe_link_target(
-        base: Path, member_name: str, link_name: str, target: Path, archive_names: set[str]
-    ) -> tuple[str, Path]:
-        normalized = link_name.replace("\\", "/")
-        repaired = _try_repair_missing_slash(member_name, normalized, archive_names)
-        if repaired is not None:
-            normalized = repaired
-        link_path = Path(normalized)
-        if link_path.is_absolute():
-            raise PrebuiltFallback(
-                f"archive link used an absolute target: {member_name} -> {link_name}"
-            )
-        if not normalized:
-            raise PrebuiltFallback(f"archive link used an empty target: {member_name}")
-
-        resolved = (target.parent / link_path).resolve()
-        base_resolved = base.resolve()
-        try:
-            resolved.relative_to(base_resolved)
-        except ValueError as exc:
-            raise PrebuiltFallback(
-                f"archive link escaped destination: {member_name} -> {link_name}"
-            ) from exc
-        return normalized, resolved
-
-    def extract_zip_safely(source: Path, base: Path) -> None:
-        with zipfile.ZipFile(source) as archive:
-            for member in archive.infolist():
-                target = safe_extract_path(base, member.filename)
-                mode = (member.external_attr >> 16) & 0o170000
-                if mode == 0o120000:
-                    raise PrebuiltFallback(
-                        f"zip archive contained a symlink entry: {member.filename}"
-                    )
-                if member.is_dir():
-                    target.mkdir(parents = True, exist_ok = True)
-                    continue
-                target.parent.mkdir(parents = True, exist_ok = True)
-                with archive.open(member, "r") as src, target.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-
-    def extract_tar_safely(source: Path, base: Path) -> None:
-        pending_links: list[tuple[tarfile.TarInfo, Path]] = []
-        archive_names: set[str] = set()
-        with tarfile.open(source, "r:gz") as archive:
-            for member in archive.getmembers():
-                archive_names.add(member.name)
-                target = safe_extract_path(base, member.name)
-                if member.isdir():
-                    target.mkdir(parents = True, exist_ok = True)
-                    continue
-                if member.islnk() or member.issym():
-                    pending_links.append((member, target))
-                    continue
-                if not member.isfile():
-                    raise PrebuiltFallback(
-                        f"tar archive contained an unsupported entry: {member.name}"
-                    )
-                target.parent.mkdir(parents = True, exist_ok = True)
-                extracted = archive.extractfile(member)
-                if extracted is None:
-                    raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
-                with extracted, target.open("wb") as dst:
-                    shutil.copyfileobj(extracted, dst)
-
-        unresolved = list(pending_links)
-        while unresolved:
-            next_round: list[tuple[tarfile.TarInfo, Path]] = []
-            progressed = False
-            for member, target in unresolved:
-                normalized_link, resolved_target = safe_link_target(
-                    base, member.name, member.linkname, target, archive_names
-                )
-                if not resolved_target.exists() and not resolved_target.is_symlink():
-                    next_round.append((member, target))
-                    continue
-                if resolved_target.is_dir():
-                    raise PrebuiltFallback(
-                        f"archive link targeted a directory: {member.name} -> {member.linkname}"
-                    )
-
-                target.parent.mkdir(parents = True, exist_ok = True)
-                if target.exists() or target.is_symlink():
-                    target.unlink()
-
-                if member.issym():
-                    target.symlink_to(normalized_link)
-                else:
-                    shutil.copy2(resolved_target, target)
-                progressed = True
-
-            if not progressed:
-                details = ", ".join(
-                    f"{member.name} -> {member.linkname}" for member, _ in next_round
-                )
-                raise PrebuiltFallback(f"tar archive contained unresolved link entries: {details}")
-            unresolved = next_round
-
-    destination.mkdir(parents = True, exist_ok = True)
-    if archive_path.name.endswith(".zip"):
-        extract_zip_safely(archive_path, destination)
-        return
-    if archive_path.name.endswith(".tar.gz"):
-        extract_tar_safely(archive_path, destination)
-        return
-    raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
+extract_archive = _core.extract_archive
 
 
 def copy_globs(
@@ -4437,7 +3479,7 @@ def ensure_diffusion_visual_server(
     approved_checksums: ApprovedReleaseChecksums,
 ) -> None:
     """Best-effort placement of the DiffusionGemma visual-server binary next to
-    llama-server in the install tree, so Studio can serve DiffusionGemma GGUFs
+    llama-server in the install tree, so Unsloth can serve DiffusionGemma GGUFs
     without any DG_* env. This is an Unsloth artifact (not a ggml-org one), so it
     is optional: if it is already present we just make it executable, otherwise we
     try the published release and quietly skip on absence. A source build
@@ -4719,7 +3761,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     # repackage the SO/DLL set (e.g. ggml-org/llama.cpp#23462 split the
     # per-binary entry code into paired ``lib<binary>-impl.so`` shared
     # libraries between b9279 and b9283) without us re-enumerating
-    # every new file. Studio invokes llama-server, llama-quantize, and the
+    # every new file. Unsloth invokes llama-server, llama-quantize, and the
     # DiffusionGemma visual-server (when the bundle ships it, for native
     # DiffusionGemma serving); other CLIs upstream ships (llama-cli,
     # llama-bench, ...) are skipped.
@@ -4778,83 +3820,8 @@ def metadata_patterns_for_choice(choice: AssetChoice) -> list[str]:
     return patterns
 
 
-@contextmanager
-def install_lock(lock_path: Path) -> Iterator[None]:
-    lock_path.parent.mkdir(parents = True, exist_ok = True)
-
-    if FileLock is None:
-        # Fallback: exclusive file creation as a simple lock.
-        # Write our PID so stale locks from crashed processes can be detected.
-        fd: int | None = None
-        deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                try:
-                    os.write(fd, f"{os.getpid()}\n".encode())
-                    os.fsync(fd)
-                except Exception:
-                    os.close(fd)
-                    fd = None
-                    lock_path.unlink(missing_ok = True)
-                    raise
-                break
-            except FileExistsError:
-                # Check if the holder process is still alive
-                stale = False
-                try:
-                    raw = lock_path.read_text().strip()
-                except FileNotFoundError:
-                    # Lock vanished between our open attempt and read -- retry
-                    continue
-                if not raw:
-                    # File exists but PID not yet written -- another process
-                    # just created it. Wait briefly for the write to land.
-                    if time.monotonic() >= deadline:
-                        raise BusyInstallConflict(
-                            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
-                        )
-                    time.sleep(0.1)
-                    continue
-                try:
-                    holder_pid = int(raw)
-                    os.kill(holder_pid, 0)  # signal 0 = existence check
-                except ValueError:
-                    # PID unreadable (corrupted file)
-                    stale = True
-                except ProcessLookupError:
-                    # Process is dead
-                    stale = True
-                except PermissionError:
-                    # Process is alive but owned by another user -- not stale
-                    pass
-                if stale:
-                    lock_path.unlink(missing_ok = True)
-                    continue
-                if time.monotonic() >= deadline:
-                    raise BusyInstallConflict(
-                        f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
-                    )
-                time.sleep(0.5)
-        try:
-            yield
-        finally:
-            if fd is not None:
-                os.close(fd)
-            lock_path.unlink(missing_ok = True)
-        return
-
-    try:
-        with FileLock(lock_path, timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
-            yield
-    except FileLockTimeout as exc:
-        raise BusyInstallConflict(
-            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for concurrent install lock: {lock_path}"
-        ) from exc
-
-
-def install_lock_path(install_dir: Path) -> Path:
-    return install_dir.parent / f".{install_dir.name}.install.lock"
+install_lock = _core.install_lock
+install_lock_path = _core.install_lock_path
 
 
 def install_staging_root(install_dir: Path) -> Path:
@@ -5441,18 +4408,7 @@ _CPU_TYPE_X86_64 = 0x01000007
 _CPU_TYPE_ARM64 = 0x0100000C
 
 
-def parse_macos_version(value: str | None) -> tuple[int, int] | None:
-    """Parse a macOS product version string into (major, minor).
-
-    Handles "14.7.1", "15.5", "26.0" and bare "26". Returns None when the
-    value is empty or cannot be parsed (callers then defer to runtime
-    validation rather than rejecting every prebuilt)."""
-    if not value:
-        return None
-    match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2) or 0)
+parse_macos_version = _core.parse_macos_version
 
 
 def host_supports_macos_minos(host: HostInfo, minos: tuple[int, int] | None) -> bool:
@@ -5717,6 +4673,50 @@ def _wsl_system_rocm_lib_dirs() -> list[str]:
     return out
 
 
+def _bundled_hip_present(binary_dir: str) -> bool:
+    if not binary_dir:
+        return False
+    try:
+        # Glob the version suffix (libggml-hip.so, .so.0, .so.0.11.1) the same
+        # way the installer's runtime health check matches libggml-hip.so*.
+        return any(Path(str(binary_dir)).glob("libggml-hip.so*"))
+    except OSError:
+        return False
+
+
+def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> list[str]:
+    # UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the bundled runtime (opt-out).
+    if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
+        return []
+    if sys.platform != "linux" or os.path.exists("/dev/dxg"):
+        return []
+    if not os.path.exists("/dev/kfd"):
+        return []
+    if not _bundled_hip_present(binary_dir):
+        return []
+    # Env-configured ROCm root first; /opt/rocm only as a fallback so a stale
+    # /opt/rocm doesn't shadow the driver-matching install these vars point at.
+    candidates = []
+    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        val = os.environ.get(var)
+        if val:
+            candidates.append(val)
+    candidates.append("/opt/rocm")
+    out: list[str] = []
+    seen: set[str] = set()
+    for base in candidates:
+        for lib_sub in ("lib", "lib64"):
+            d = os.path.join(base, lib_sub)
+            if d in seen:
+                continue
+            seen.add(d)
+            if os.path.exists(os.path.join(d, "libhsa-runtime64.so")) or os.path.exists(
+                os.path.join(d, "libhsa-runtime64.so.1")
+            ):
+                out.append(d)
+    return out
+
+
 # Secrets a downloaded llama.cpp binary never needs; keep them out of binary_env().
 # The installer's own API calls read os.environ directly, so auth is unaffected.
 _SECRET_ENV_EXACT_NAMES = frozenset(
@@ -5877,6 +4877,11 @@ def binary_env(
         if _wsl_rocm:
             ld_dirs = [*_wsl_rocm, *ld_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+        # Native Linux AMD: system ROCm libs before the bundle's bundled HIP
+        # runtime, which can be incompatible with the host amdkfd driver.
+        _native_rocm = _native_linux_system_rocm_lib_dirs(str(binary_path.parent))
+        if _native_rocm:
+            ld_dirs = [*_native_rocm, *ld_dirs]
         existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dedupe_existing_dirs([*ld_dirs, *existing]))
     elif host.is_macos:
@@ -6320,7 +5325,7 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
     from asset names."""
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
-        # Prefer the cudart major Studio loads at runtime (torch's bundled
+        # Prefer the cudart major Unsloth loads at runtime (torch's bundled
         # libcudart), not the newest detected on disk. Without this a stray
         # cuda13 runtime outranks the torch cuda12 the binary links against.
         torch_preference = detect_torch_cuda_runtime_preference(host)
@@ -6450,6 +5455,7 @@ def write_prebuilt_metadata(
     choice: AssetChoice,
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
+    force_cpu: bool = False,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -6474,6 +5480,10 @@ def write_prebuilt_metadata(
         "release_tag": release_tag,
         "published_repo": approved_checksums.repo,
         "asset": choice.name,
+        # True only for a deliberate CPU choice (--force-cpu). The updater re-asserts it
+        # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
+        # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
+        "force_cpu": force_cpu,
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6499,6 +5509,24 @@ def write_prebuilt_metadata(
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(metadata, indent = 2) + "\n")
+
+
+def sync_marker_force_cpu(install_dir: Path, persist_force_cpu: bool) -> None:
+    """Sync only the force_cpu flag of an existing marker when the resolved bundle is
+    unchanged, so the install is skipped without a full metadata rewrite. A deliberate
+    --force-cpu on top of a naturally installed CPU bundle (same asset) must still be
+    recorded, else the updater will not re-assert it and can re-route the install to a
+    GPU/Vulkan bundle that revives the crash (#7213)."""
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    try:
+        marker = json.loads(marker_path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(marker, dict) or bool(marker.get("force_cpu")) == persist_force_cpu:
+        return
+    marker["force_cpu"] = persist_force_cpu
+    marker_path.write_text(json.dumps(marker, indent = 2) + "\n")
+    log(f"existing install reused; recorded force_cpu={persist_force_cpu} from this run")
 
 
 def expected_install_fingerprint(
@@ -6549,6 +5577,52 @@ def load_prebuilt_metadata(install_dir: Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def default_managed_llama_dir() -> Path:
+    """The managed llama.cpp install root, mirroring setup.sh and the updater:
+    the UNSLOTH_LLAMA_CPP_PATH override, else <custom studio home>/llama.cpp,
+    else the legacy ~/.unsloth/llama.cpp."""
+    override = (os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    if home:
+        root = Path(home).expanduser()
+        legacy_studio = Path.home() / ".unsloth" / "studio"
+        try:
+            is_legacy = root.resolve() == legacy_studio.resolve()
+        except (OSError, ValueError):
+            is_legacy = root == legacy_studio
+        if not is_legacy:
+            return root / "llama.cpp"
+    return Path.home() / ".unsloth" / "llama.cpp"
+
+
+def installed_llama_runtime(install_dir: Path | None = None) -> tuple[Path, str, str] | None:
+    """The completed managed llama.cpp prebuilt install, or None.
+
+    Returns (runtime bin dir holding the ggml libraries, installed release tag,
+    bundle profile). install_whisper_prebuilt.py reads this to pair slim whisper
+    bundles with the ggml runtime the llama install already provides; tests pass
+    an explicit ``install_dir``.
+    """
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    metadata = load_prebuilt_metadata(root)
+    if metadata is None:
+        return None
+    release_tag = metadata.get("release_tag")
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+    # Same layout install_runtime_dir() derives; a marker on disk always
+    # belongs to this host, so the running OS picks the variant.
+    bin_dir = root / "build" / "bin"
+    if os.name == "nt":
+        bin_dir = bin_dir / "Release"
+    if not bin_dir.is_dir():
+        return None
+    profile = metadata.get("bundle_profile")
+    return bin_dir, release_tag, profile if isinstance(profile, str) else ""
 
 
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
@@ -6746,6 +5820,7 @@ def validate_prebuilt_choice(
     approved_checksums: ApprovedReleaseChecksums,
     prebuilt_fallback_used: bool,
     quantized_path: Path,
+    force_cpu: bool = False,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -6786,6 +5861,7 @@ def validate_prebuilt_choice(
         choice = choice,
         approved_checksums = approved_checksums,
         prebuilt_fallback_used = prebuilt_fallback_used,
+        force_cpu = force_cpu,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -6828,6 +5904,7 @@ def validate_prebuilt_attempts(
     approved_checksums: ApprovedReleaseChecksums,
     initial_fallback_used: bool = False,
     existing_install_dir: Path | None = None,
+    force_cpu: bool = False,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -6880,6 +5957,7 @@ def validate_prebuilt_attempts(
                 approved_checksums = approved_checksums,
                 prebuilt_fallback_used = tried_fallback,
                 quantized_path = quantized_path,
+                force_cpu = force_cpu,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -6939,8 +6017,8 @@ def _route_to_vulkan_prebuilt(
     """Point a Vulkan-capable host at the upstream ggml-org Vulkan prebuilt.
 
     The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
-    from UPSTREAM_REPO. Two triggers route here, both suppressed under
-    --cpu-fallback (the explicit "give me CPU" last resort wins):
+    from UPSTREAM_REPO. Two triggers route here, both suppressed when a CPU flag
+    (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
       * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
         of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
@@ -7020,8 +6098,11 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    persist_force_cpu: bool = False,
     instruction_cleanup_root: Path | None = None,
 ) -> None:
+    # force_cpu drops GPU detection (mechanism, both --cpu-fallback and --force-cpu);
+    # persist_force_cpu records the deliberate choice so the updater re-asserts it.
     host = detect_host()
     host = _apply_host_overrides(
         host,
@@ -7072,6 +6153,9 @@ def install_prebuilt(
                         "existing llama.cpp install already matches selected release "
                         f"{current.release_tag} upstream_tag={current.llama_tag}; skipping download and install"
                     )
+                    # Reused bundle is unchanged, but a fresh --force-cpu still must be
+                    # recorded so the updater re-asserts it (#7213).
+                    sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
@@ -7092,6 +6176,7 @@ def install_prebuilt(
                                 "existing llama.cpp install already matches fallback release "
                                 f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                             )
+                            sync_marker_force_cpu(install_dir, persist_force_cpu)
                             return
                     log(
                         "selected "
@@ -7112,6 +6197,8 @@ def install_prebuilt(
                             initial_fallback_used = release_index > 0,
                             # Skip is gated per-attempt inside, so pass the dir always.
                             existing_install_dir = install_dir,
+                            # Persist only the deliberate choice, not a transient fallback.
+                            force_cpu = persist_force_cpu,
                         )
                     except ExistingInstallSatisfied:
                         return
@@ -7209,8 +6296,21 @@ def parse_args() -> argparse.Namespace:
         default = False,
         help = (
             "Select the CPU prebuilt for this OS/arch even when a GPU is present. "
-            "setup.sh uses this as a last resort for arm64 Linux GPU hosts whose "
-            "source build failed (no arm64 CUDA prebuilt exists anywhere)."
+            "Automatic/transient: setup.sh uses this as a last resort for arm64 Linux "
+            "GPU hosts whose source build failed. Does NOT persist, so a later update "
+            "heals back to a GPU bundle once one is available (#6097). Use --force-cpu "
+            "for a deliberate CPU-only choice that survives updates."
+        ),
+    )
+    parser.add_argument(
+        "--force-cpu",
+        action = "store_true",
+        default = False,
+        help = (
+            "Deliberate CPU-only install (UNSLOTH_LLAMA_CPP_BACKEND=cpu). Drops GPU "
+            "detection like --cpu-fallback but also records force_cpu in the marker, so "
+            "the in-app updater re-asserts CPU and never re-routes to a GPU/Vulkan "
+            "bundle that would revive the Intel iGPU crash (#7213)."
         ),
     )
     resolve_group = parser.add_mutually_exclusive_group()
@@ -7333,16 +6433,19 @@ def main() -> int:
         # Host-aware "is a prebuilt available" probe, no download. Every host now
         # plans against the fork (args.published_repo defaults to it); an explicit
         # --published-repo overrides. PrebuiltFallback == source build.
+        # Both flags drop GPU detection; --force-cpu additionally persists (install
+        # path only). The probe only needs the mechanism, so OR them.
+        _cpu_mechanism = args.cpu_fallback or args.force_cpu
         host = _apply_host_overrides(
             detect_host(),
             override_has_rocm = args.has_rocm,
             override_rocm_gfx = args.rocm_gfx,
-            force_cpu = args.cpu_fallback,
+            force_cpu = _cpu_mechanism,
         )
         # Same Vulkan routing the install path applies, so the probe's answer
         # matches what would install (an Intel/forced-Vulkan host -> upstream).
         host, repo, release_tag = _route_to_vulkan_prebuilt(
-            host, args.published_repo, args.published_release_tag or "", force_cpu = args.cpu_fallback
+            host, args.published_repo, args.published_release_tag or "", force_cpu = _cpu_mechanism
         )
         try:
             _requested, plans = resolve_simple_install_release_plans(
@@ -7380,7 +6483,10 @@ def main() -> int:
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
-        force_cpu = args.cpu_fallback,
+        # Both drop GPU detection; only --force-cpu (deliberate) is recorded so the
+        # updater re-asserts it. --cpu-fallback stays transient and heals to GPU.
+        force_cpu = args.cpu_fallback or args.force_cpu,
+        persist_force_cpu = args.force_cpu,
         instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS

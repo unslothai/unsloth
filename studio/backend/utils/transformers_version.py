@@ -44,6 +44,7 @@ import time
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -516,13 +517,10 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     """
     if not _is_canonical_repo_id(model_name):
         return None
-    hub = (
-        os.environ.get("HF_HUB_CACHE")
-        or os.environ.get("HUGGINGFACE_HUB_CACHE")
-        or os.path.join(
-            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
-        )
-    )
+    # Route through the selected cache: after a no-restart /settings switch the
+    # process HF_HUB_CACHE env is stale, but the model loads from the selected
+    # cache, which get_hf_cache_paths() reflects (the DB switch).
+    hub = str(get_hf_cache_paths().hub_cache)
     repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
     candidates = []
     ref_main = repo_dir / "refs" / "main"
@@ -681,13 +679,10 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
     # Only a canonical ``owner/repo`` Hub id maps to a cache dir; reject local paths.
     if not model_name or model_name.count("/") != 1 or model_name[0] in "/.~" or "\\" in model_name:
         return None
-    hub = (
-        os.environ.get("HF_HUB_CACHE")
-        or os.environ.get("HUGGINGFACE_HUB_CACHE")
-        or os.path.join(
-            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
-        )
-    )
+    # Route through the selected cache: after a no-restart /settings switch the
+    # process HF_HUB_CACHE env is stale, but the model loads from the selected
+    # cache, which get_hf_cache_paths() reflects (the DB switch).
+    hub = str(get_hf_cache_paths().hub_cache)
     repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
     candidates = []
     ref_main = repo_dir / "refs" / "main"
@@ -1251,7 +1246,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     True = parses, False = parse/version failure (escalate), None = transient
     (auth/network/offline/spawn) so the caller fails safe and does not cache.
     """
-    env = child_env_without_native_path_secret()
+    env = get_hf_cache_paths().child_env(child_env_without_native_path_secret())
     if hf_token:
         env["HF_TOKEN"] = hf_token
         # The probe relies on the implicit HF_TOKEN env (no token= arg). Clear any inherited
@@ -1806,7 +1801,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
@@ -1829,7 +1824,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
-        env = child_env_without_native_path_secret(),
+        env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -2151,7 +2146,7 @@ def end_sidecar_swap() -> None:
 
 def sidecar_swap_in_progress() -> bool:
     """True while a .venv_t5_latest install or repair holds the reservation,
-    in this process or any other Studio process (lock file)."""
+    in this process or any other Unsloth process (lock file)."""
     return sidecar_swap_kind() is not None
 
 
@@ -2458,7 +2453,7 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
         last_out = result.stdout or ""

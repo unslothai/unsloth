@@ -207,7 +207,7 @@ function DetailRow({
 }) {
   if (value == null || value === "") return null;
   return (
-    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-[13px]">
+    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-ui-13">
       <span className="text-muted-foreground">{label}</span>
       <span
         className={cn(
@@ -288,7 +288,7 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
   return (
     <span
       className={cn(
-        "aui-response-model-badge inline-flex min-h-5 max-w-full items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100",
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
         className,
       )}
       title={providerLabel ? `${modelLabel} - ${providerLabel}` : modelLabel}

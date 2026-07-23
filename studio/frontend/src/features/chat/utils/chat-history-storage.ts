@@ -324,7 +324,7 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
   if (legacyChatImportPromise) return legacyChatImportPromise;
 
   legacyChatImportPromise = (async () => {
-    // Fast-path: no Dexie DB -- new user, never had browser-only Studio.
+    // Fast-path: no Dexie DB -- new user, never had browser-only Unsloth.
     if (await dexieDbAbsent()) {
       markLegacyChatImportDone();
       return;

@@ -38,11 +38,11 @@ BASE_URL = os.getenv("STUDIO_TEST_URL", "http://localhost:8000")
 USERNAME = os.getenv("STUDIO_TEST_USER", "unsloth")
 PASSWORD = os.getenv("STUDIO_TEST_PASSWORD", "")
 
-# Skip the whole module when no live Studio server / bootstrap password is
+# Skip the whole module when no live Unsloth server / bootstrap password is
 # available (e.g. on CI) so pytest discovery does not error out.
 pytestmark = pytest.mark.skipif(
     not PASSWORD,
-    reason = "Integration test requires a running Studio server; set STUDIO_TEST_PASSWORD to enable.",
+    reason = "Integration test requires a running Unsloth server; set STUDIO_TEST_PASSWORD to enable.",
 )
 
 # provider_type → (env var name, model for inference test)

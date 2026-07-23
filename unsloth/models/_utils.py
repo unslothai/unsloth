@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.2"
+__version__ = "2026.7.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1668,6 +1668,13 @@ except:
 # Errors out on
 # Some weights of Gemma3nForConditionalGeneration were not initialized from the model checkpoint
 from transformers.modeling_utils import logger as transformers_logger
+
+
+# Faster safetensors loads on UMA (integrated) GPUs; lazy gate keeps this import
+# fork-safe (no CUDA init). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+from ._uma_safetensors import patch_unified_memory_safetensors_load
+
+patch_unified_memory_safetensors_load()
 
 
 def _all_missing_keys_are_position_ids(record_str):

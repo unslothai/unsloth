@@ -473,7 +473,7 @@ def _apply_mistral_reasoning_controls(
 # handles every provider without storing credentials.
 def _create_shared_http_client() -> httpx.AsyncClient:
     # Unsupported env proxy schemes (socks:// etc) raise at construction and
-    # would crash Studio startup (#6090); retry ignoring env proxies instead.
+    # would crash Unsloth startup (#6090); retry ignoring env proxies instead.
     try:
         return httpx.AsyncClient()
     except (ImportError, ValueError) as exc:
@@ -858,7 +858,7 @@ class ExternalProviderClient:
         if not self._is_openai_compatible():
             # Gemini speaks its own native REST shape (contents/parts);
             # `_stream_gemini` translates request/response into the OpenAI
-            # Chat Completions chunk format the rest of Studio expects.
+            # Chat Completions chunk format the rest of Unsloth expects.
             # API ref: https://ai.google.dev/gemini-api/docs
             if self.provider_type == "gemini":
                 async for line in self._stream_gemini(
@@ -1713,7 +1713,7 @@ class ExternalProviderClient:
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
                 # - `image_url`     -> `{type:"image", source:...}`
                 # - `input_document` -> `{type:"document", source:...}`
-                #   (Studio extension; mirrors Anthropic's document block,
+                #   (Unsloth extension; mirrors Anthropic's document block,
                 #   which supports PDFs as base64 or URL per
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
@@ -1756,7 +1756,7 @@ class ExternalProviderClient:
                                 }
                             )
                     elif part.get("type") == "input_document":
-                        # Studio's normalised PDF/doc type (file_data data-URI or
+                        # Unsloth's normalised PDF/doc type (file_data data-URI or
                         # file_url) -> Anthropic's native `document` block.
                         url = part.get("file_url") or ""
                         data_uri = part.get("file_data") or ""
@@ -4711,7 +4711,7 @@ class ExternalProviderClient:
                                 {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
-                        # Map Studio's `input_document` onto Responses' `input_file`.
+                        # Map Unsloth's `input_document` onto Responses' `input_file`.
                         # https://developers.openai.com/api/docs/guides/images-vision
                         file_url = part.get("file_url")
                         file_data = part.get("file_data")
@@ -6017,7 +6017,7 @@ class ExternalProviderClient:
             if not models and self.provider_type == "ollama":
                 models = await self._list_ollama_native_models()
             # Gemini's native /v1beta/models uses a different shape; repackage
-            # into the OpenAI-compatible one Studio expects.
+            # into the OpenAI-compatible one Unsloth expects.
             if not models and self.provider_type == "gemini":
                 models = self._parse_gemini_models(data)
             return models
@@ -6220,7 +6220,7 @@ def _friendly_provider_error_text(
     *,
     model: str | None = None,
 ) -> str:
-    """Rewrite common provider errors into actionable Studio copy."""
+    """Rewrite common provider errors into actionable Unsloth copy."""
     if status_code == 404 and model:
         lowered = raw_message.lower()
         if "not found" in lowered or "not_found" in lowered:

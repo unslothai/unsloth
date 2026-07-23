@@ -4,11 +4,11 @@
 # Windows counterpart to studio-ui-smoke.yml / studio-mac-ui-smoke.yml.
 # Same Playwright + Chromium end-to-end chat UI flow + extra UI flow,
 # but on the FREE windows-latest runner so we catch Windows-specific
-# regressions in the install path (install.ps1), the Studio CLI's
+# regressions in the install path (install.ps1), the Unsloth CLI's
 # Windows process-management branches, and the llama.cpp prebuilt's
 # Windows HTTP layer.
 
-name: Windows Studio UI CI
+name: Windows Unsloth UI CI
 
 on:
   pull_request:
@@ -19,6 +19,7 @@ on:
       - 'install.ps1'
       - 'pyproject.toml'
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
   push:
     branches: [main, pip]
@@ -49,7 +50,7 @@ jobs:
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18896'
       HF_HOME: ${{ github.workspace }}/hf-cache
-      # Force UTF-8 for stdio so Python tools (hf download, Studio
+      # Force UTF-8 for stdio so Python tools (hf download, Unsloth
       # CLI, etc.) can print Unicode characters like the success
       # checkmark "✓". Windows defaults to cp1252 / charmap and
       # any tool that prints "OK ✓" hits a UnicodeEncodeError.
@@ -121,7 +122,7 @@ jobs:
           # studio-windows-update-smoke.yml for the full rationale --
           # creating an empty studio/frontend/dist trips setup.ps1's
           # mtime-based staleness check into "frontend up to date, skip
-          # rebuild" and Studio boots with an empty dist directory.
+          # rebuild" and Unsloth boots with an empty dist directory.
           # Add-MpPreference accepts paths that do not yet exist.
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth",
@@ -148,7 +149,7 @@ jobs:
           Set-Content -LiteralPath (Join-Path $appDir 'launch-studio.vbs') -Value 'WScript.Echo "legacy"' -Encoding Unicode
           Write-Host "seeded legacy launch-studio.vbs at $appDir"
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         # install.ps1 is the supported Windows installer. install.sh
         # has no Windows branch (apt-get / brew calls). The PS1
         # script's `Install-UnslothStudio @args` line at the bottom
@@ -205,7 +206,7 @@ jobs:
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
 
-      - name: Assert Studio launcher chain (no VBS, hidden PowerShell shortcut)
+      - name: Assert Unsloth launcher chain (no VBS, hidden PowerShell shortcut)
         # The shortcut launch path is otherwise untested here (the steps below
         # boot `unsloth studio` directly). Guard against re-introducing the VBS
         # that tripped Kaspersky HEUR:Trojan.VBS.Agent.gen and against the .lnk
@@ -234,7 +235,7 @@ jobs:
           }
           Write-Host "launcher chain OK (no VBS; hidden powershell over launch-studio.ps1)"
 
-      - name: Launch Studio via the shortcut and assert health
+      - name: Launch Unsloth via the shortcut and assert health
         # Run the exact command the .lnk stores (hidden PowerShell over
         # launch-studio.ps1) and confirm it brings the backend up. This is the
         # only step that proves the shortcut launch is not silently broken.
@@ -265,10 +266,10 @@ jobs:
             $owner = (Get-NetTCPConnection -LocalPort $foundPort -State Listen -ErrorAction Stop | Select-Object -First 1).OwningProcess
             if ($owner) { taskkill /PID $owner /T /F 2>$null | Out-Null }
           } catch {}
-          if (-not $foundPort) { throw "Studio did not become healthy when launched via the shortcut" }
-          Write-Host "Studio healthy on port $foundPort (launched via the shortcut)"
+          if (-not $foundPort) { throw "Unsloth did not become healthy when launched via the shortcut" }
+          Write-Host "Unsloth healthy on port $foundPort (launched via the shortcut)"
 
-      - name: Add Studio shim to GITHUB_PATH
+      - name: Add Unsloth shim to GITHUB_PATH
         # install.ps1 puts unsloth.exe at $StudioHome\bin\unsloth.exe
         # and adds that dir to the User PATH via the Windows registry.
         # Registry-level PATH updates don't propagate to a running
@@ -284,7 +285,7 @@ jobs:
           fi
           # GITHUB_PATH wants Windows-style paths; convert via cygpath.
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-          echo "Added Studio shim dir to PATH: $(cygpath -w "$SHIM_DIR")"
+          echo "Added Unsloth shim dir to PATH: $(cygpath -w "$SHIM_DIR")"
 
       - name: Install Playwright + Chromium
         # No --with-deps on Windows: that flag installs Linux apt
@@ -294,7 +295,7 @@ jobs:
           python -m pip install 'playwright>=1.45'
           python -m playwright install chromium
 
-      - name: Reset auth + boot Studio
+      - name: Reset auth + boot Unsloth
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -339,13 +340,17 @@ jobs:
           mkdir -p logs/playwright
           python tests/studio/playwright_chat_ui.py
 
-      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
-      - name: Reset auth + boot Studio for extra UI tests (port 18897)
+      - name: Edge permission controls
+        run: |
+          bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
+
+      - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -372,7 +377,7 @@ jobs:
           echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
-      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
         env:
           BASE_URL: http://127.0.0.1:18897
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -386,7 +391,7 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
-      - name: Stop second Studio
+      - name: Stop second Unsloth
         if: always()
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
@@ -402,5 +407,7 @@ jobs:
             logs/studio_extra.log
             logs/install.log
             logs/playwright
+            logs/playwright-permissions-*
             logs/playwright_extra
+            logs/studio-permissions-*.log
           retention-days: 7
