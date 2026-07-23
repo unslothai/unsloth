@@ -1752,6 +1752,9 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
+            # Gate every call to exercise the approval flow; unset now defaults
+            # to "auto", which would not prompt this safe print(1).
+            permission_mode = "ask",
             session_id = "sess",
         )
     )
@@ -1784,6 +1787,9 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
         tools = [{"type": "function", "function": {"name": "python"}}],
         max_tool_iterations = 1,
         confirm_tool_calls = True,
+        # Gate the call so the approval-slot lifecycle runs; unset now defaults
+        # to "auto", which would not prompt this safe print(1).
+        permission_mode = "ask",
         session_id = "sess",
     )
     try:
@@ -1817,6 +1823,9 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
+            # "ask" gates every call, so autoinject waits for approval; unset now
+            # defaults to "auto", where the safe retrieval never gates.
+            permission_mode = "ask",
             session_id = "sess",
             rag_scope = {"thread_id": "t1"},
         )
@@ -1861,6 +1870,9 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 2,
             confirm_tool_calls = True,
+            # Gate every call so the deny-then-retry path runs; unset now defaults
+            # to "auto", which would not prompt this safe print(1).
+            permission_mode = "ask",
             session_id = "sess",
         )
     )

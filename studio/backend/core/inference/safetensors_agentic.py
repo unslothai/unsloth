@@ -515,12 +515,18 @@ def run_safetensors_tool_loop(
     conversation = list(messages)
 
     # Normalize the mode (mirrors the GGUF loop): "full" and
-    # bypass_permissions are the same switch; unset/unknown behaves as "ask".
-    # "off" keeps the sandbox but never prompts.
+    # bypass_permissions are the same switch; unset defaults to "auto" (the
+    # product default) and an unknown value falls back to the stricter "ask".
+    # An explicit confirm_tool_calls=True with no mode is resolved to "ask" at the
+    # request layer (_fold_full_permission_into_bypass), so it arrives here as
+    # "ask" rather than an ambiguous unset. "off" keeps the sandbox but never
+    # prompts.
     if permission_mode == "full":
         bypass_permissions = True
     elif bypass_permissions:
         permission_mode = "full"
+    elif permission_mode is None:
+        permission_mode = "auto"
     elif permission_mode not in ("ask", "auto", "off"):
         permission_mode = "ask"
 
@@ -1191,16 +1197,16 @@ def run_safetensors_tool_loop(
 
             # Bypass wins over the confirm gate at the loop level too, so a
             # direct internal caller passing both flags never prompts. In
-            # "auto" mode only calls detected as potentially unsafe pause.
-            # "off" never prompts (sandbox stays on).
+            # "auto" mode only calls detected as high risk pause (credential
+            # access, privilege escalation, destructive/persistence, network
+            # exec/exfil); ordinary dev commands run. "off" never prompts
+            # (sandbox stays on).
             needs_confirm = (
                 bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_potentially_unsafe_tool_call
-                needs_confirm = is_potentially_unsafe_tool_call(
-                    decision.tool_name, decision.arguments
-                )
+                from core.inference.tools import is_high_risk_tool_call
+                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()

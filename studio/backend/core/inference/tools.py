@@ -551,6 +551,21 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     r")s?(?:[_\-]|$)",
     re.IGNORECASE,
 )
+# Split a camelCase boundary with an underscore (runCommand -> run_Command) so
+# the term-boundary MCP regexes match camelCase tool names too.
+_CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# An MCP tool that runs arbitrary commands/code on its server (run_command,
+# execute_script, eval_code, invoke_shell, spawn_process, bash) is as unsafe as
+# a terminal call and is forwarded straight to the server, outside the terminal
+# sandbox, so auto gates it. Matches an execution verb or code-exec noun as a
+# whole name segment; read/list names (get_command, list_shells) do not match.
+_AUTO_EXEC_MCP_TOOL_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"exec|execute|run|eval|spawn|invoke|launch|"
+    r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 
 # Python: modules whose import alone signals side effects auto mode should ask
 # about (process spawning, network, bulk file ops, low-level memory).
@@ -1389,6 +1404,23 @@ def _folded_is_sensitive(folded) -> bool:
     )
 
 
+def _command_references_sensitive(command: str) -> bool:
+    """True if a shell command reads/writes a credential path or escapes the
+    sandbox workdir (../), after undoing the shell expansions that would hide it.
+
+    Strips quotes/backslash escapes and applies brace/parameter/ANSI-C expansion
+    and NAME=value prefixes first, so `cat /proc/$PPID/enviro''n`, `cat /et\\c/passwd`,
+    `p="/proc/$PPID"; cat $p/environ`, and a brace-expanded glob
+    (`cat /e{t,}c/pass?d` -> `/etc/pass?d`) are all caught. Shared by the
+    potentially-unsafe classifier and the high-risk classifier."""
+    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
+    candidates = []
+    for c in (command, stripped, _decode_ansi_c(command)):
+        c_param = _expand_param_defaults(c)
+        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+    return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
@@ -1398,21 +1430,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them. Strip shell quotes/backslash
-    # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
-    # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
-    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    # Bash applies brace/parameter/ANSI-C expansion after this classifier, so a
-    # path split across a brace group (/etc/pass{w,}d), a default/substring param
-    # (${x:-wd}, ${p:0:6}), or an escape ($'...') is invisible to the raw scan;
-    # expand first (ANSI-C decoded from the raw command, before backslash strip).
-    candidates = []
-    for c in (command, stripped, _decode_ansi_c(command)):
-        c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
-    # Run both the literal and glob-sensitive scans over every candidate, so a
-    # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
-    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
+    # not "safe" reads; ask before running them.
+    if _command_references_sensitive(command):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -2488,6 +2507,575 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
     if name == "python":
         return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    return True
+
+
+# Terminal commands that are high risk regardless of their arguments, so auto
+# ("Approve for me") pauses them for approval while ordinary dev commands
+# (pip/npm install, mkdir, cp, python <script>, make, git, ...) run. Grouped:
+# privilege escalation, destructive/device ops, account/persistence/service
+# changes, firewall/mount changes, and remote-exec / raw network transfer. The
+# hard-block command set, rlimits, secret-env stripping, and the per-session
+# scratch workdir remain always-on backstops beneath this prompt.
+_HIGH_RISK_COMMANDS = frozenset(
+    {
+        # privilege escalation
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        # destructive filesystem / storage devices (mkfs* matched by prefix)
+        "rm",
+        "rmdir",
+        "shred",
+        "dd",
+        "wipefs",
+        "fdisk",
+        "parted",
+        "blkdiscard",
+        "chattr",
+        "truncate",
+        # Windows cmd.exe built-ins that delete files / trees (the terminal
+        # executor runs `cmd /c` there, and these are not in _BLOCKED_COMMANDS_WIN)
+        "del",
+        "erase",
+        "rd",
+        # accounts / persistence / system services
+        "crontab",
+        "systemctl",
+        "service",
+        "useradd",
+        "userdel",
+        "usermod",
+        "groupadd",
+        "groupdel",
+        "passwd",
+        "chpasswd",
+        "visudo",
+        "chsh",
+        # firewall / mounts
+        "iptables",
+        "ip6tables",
+        "nft",
+        "ufw",
+        "mount",
+        "umount",
+        # remote exec / raw network transfer
+        "ssh",
+        "scp",
+        "sftp",
+        "telnet",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+    }
+)
+# Recursive-permission commands are high risk only with a recursive flag
+# (chmod -R 777 .); a scoped `chmod +x build.sh` stays out.
+_HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
+# Commands that forward command position to a following command name
+# (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
+# command is checked against the high-risk sets too.
+_HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "watch"})
+# find/fd flags that delete matches outright (a bare `find . -delete`, with no
+# separate command token to catch); an `-exec rm` is caught via forwarding.
+_HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
+# curl/wget flags that send local data out (exfiltration surface).
+# curl upload/POST flags. The short forms may be attached (-d@f, -Ffile=@dump.sql),
+# so they are matched prefix-wise; the long forms are exact.
+_CURL_UPLOAD_LONG_FLAGS = frozenset(
+    {
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--form",
+        "--upload-file",
+    }
+)
+_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+# wget upload/POST flags. Kept separate from curl's so a benign wget short option
+# (wget -T 10 timeout, wget -F force-html) is not misread as an upload.
+_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
+# curl/wget output piped straight into an interpreter is remote code execution.
+_PIPE_TO_INTERPRETER_RE = re.compile(
+    r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
+)
+# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that
+# precedes the real command, so it is not mistaken for the command itself.
+_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+# Non-shell interpreters running an inline program (python -c, node -e, perl -E,
+# php -r): the terminal path never screens that program the way the python tool
+# does, so an arbitrary destructive script would run unprompted. sh/bash -c are
+# omitted -- the sandbox hard-block already recurses into their payloads.
+_INLINE_CODE_INTERPRETERS = frozenset(
+    {
+        "python",
+        "python2",
+        "python3",
+        "pypy",
+        "pypy3",
+        "node",
+        "nodejs",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "php",
+    }
+)
+_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
+# Versioned interpreter binaries (python3.11, python2.7, pypy3.10) are the same
+# inline-code risk as their unversioned names, so recognise the version suffix.
+_VERSIONED_INTERPRETER_RE = re.compile(r"^(?:python|pypy)\d+(?:\.\d+)*$")
+# busybox / toybox dispatch to an applet given as the first argument
+# (busybox rm -rf ...), so they are treated like a command wrapper: the applet,
+# not the multicall binary, is the command whose risk is judged.
+_MULTICALL_BINARIES = frozenset({"busybox", "toybox"})
+# Directory-changing builtins: `cd /proc/$PPID; cat environ` reads a sensitive
+# path after the chdir even though no single token spells it out, so a chdir into
+# a sensitive directory is gated.
+_CHDIR_COMMANDS = frozenset({"cd", "pushd", "chdir"})
+# A chdir target that lands in a sensitive directory (/proc/<pid> holds environ
+# and cmdline; /etc, secret stores, and credential dotfile dirs hold secrets).
+# The absolute system dirs are anchored so an unrelated user dir (/home/x/etc)
+# does not match; the credential dotfile dirs match anywhere in the path.
+_SENSITIVE_CHDIR_RE = re.compile(
+    r"^~?/proc/[^/\s'\"]+"
+    r"|^~?/etc(?:/|$)"
+    r"|^~?/root(?:/|$)"
+    r"|^~?/(?:var/)?run/secrets(?:/|$)"
+    r"|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)(?:[/\\]|$)"
+    r"|(?:^|[/\\])\.config[/\\](?:gcloud|gh)(?:[/\\]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_inline_code_interpreter(name: str) -> bool:
+    """True for an interpreter whose ``-c`` / ``-e`` runs an inline program the
+    terminal path never screens, including versioned python/pypy binaries."""
+    return name in _INLINE_CODE_INTERPRETERS or bool(_VERSIONED_INTERPRETER_RE.match(name))
+
+
+def _short_flag_arg(token: str, letters: str) -> "str | None":
+    """For a short-flag cluster (``-lc``, ``-Bc``, ``-c``), if one of ``letters``
+    appears as a flag in it, return the text glued after that letter -- ``""`` when
+    the value is the next token, or the attached payload for ``-c'cmd'``. Returns
+    ``None`` when no such flag is present, or for long options / non-flags. This
+    catches combined forms like ``bash -lc 'git clean'`` and ``python -Bc '...'``
+    that an exact ``-c`` match would miss."""
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    body = token[1:]
+    for i, ch in enumerate(body):
+        if ch in letters:
+            return body[i + 1 :]
+    return None
+
+
+# git subcommands / flags that discard or overwrite work in the session workdir.
+# `git clean` deletes untracked files; `reset`/`push` only qualify with a
+# destructive flag, so `git reset --soft`, a plain `git push`, and read/commit
+# subcommands run. Ordinary git (add/commit/status/log/pull) stays out.
+_HIGH_RISK_GIT_SUBCOMMANDS = frozenset({"clean"})
+_HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
+_HIGH_RISK_GIT_PUSH_FLAGS = frozenset({"-f", "--force", "--force-with-lease"})
+# git global options that take a separate value token (git -C repo clean, git
+# --git-dir d clean); the value must be consumed so it is not mistaken for the
+# subcommand. Attached forms (-C=..., --git-dir=...) carry their own value.
+_GIT_GLOBAL_VALUE_FLAGS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+)
+# Shells whose `-c PAYLOAD` runs an inline program: the payload is recursively
+# screened, so a high-risk command wrapped in `bash -c '...'` / `sh -c '...'`
+# (git clean, truncate, ... -- destructive but not in the hard-block set) is
+# still caught. The hard-block only recurses for its own smaller command set.
+_SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
+# A command synthesized by a command substitution at command position
+# ($(printf rm) -rf build, `printf rm` ...) cannot be read statically. A
+# substitution in argument position (echo $(date), make $(FILES)) is left alone.
+# Matches $( or a backtick at the start of the command or right after a command
+# separator, allowing leading NAME=value prefixes.
+_COMMAND_SUBST_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
+)
+
+# A command substitution appearing anywhere ($(...) that is not arithmetic
+# $((...)), or a backtick). Used to catch a substitution stashed in a variable
+# (x=`...`) that a later dynamic exec runs, which never surfaces as literal text.
+_HAS_COMMAND_SUBST_RE = re.compile(r"\$\((?!\()|`")
+# A variable expansion executed as a command: $VAR at command position (after
+# optional NAME=value prefixes), or a shell `-c` / eval whose payload contains a
+# `$` expansion. Paired with _HAS_COMMAND_SUBST_RE, this flags the pattern
+# `x=`printf 'git clean -fd'`; bash -c "$x"` (or `; $x`) whose executed command
+# is assembled at runtime and so cannot be screened statically.
+_VAR_EXECUTED_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w"
+    r"|\b(?:sh|bash|zsh|dash|ksh|ash)\b[^\n]*?\s-c\b[^\n]*\$"
+    r"|\beval\b[^\n]*\$"
+)
+
+
+def _command_is_network_exec_or_exfil(command: str) -> bool:
+    """curl/wget used to run remote code (piped into a shell, or via process
+    substitution) or to upload local data. Plain downloads (curl -O, wget URL)
+    are ordinary and stay out. Fails closed on an unparseable command."""
+    low = command.lower()
+    has_curl = "curl" in low
+    has_wget = "wget" in low
+    if not has_curl and not has_wget:
+        return False
+    if _PIPE_TO_INTERPRETER_RE.search(low):
+        return True
+    if "<(" in command:  # bash <(curl ...) process substitution
+        return True
+    try:
+        tokens = shlex.split(command.replace("\n", " "), posix = True)
+    except ValueError:
+        return True
+    for t in tokens:
+        name = t.split("=", 1)[0]
+        if has_curl and (
+            name in _CURL_UPLOAD_LONG_FLAGS
+            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
+            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
+        ):
+            return True
+        if has_wget and name in _WGET_UPLOAD_FLAGS:
+            return True
+    return False
+
+
+def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
+    """High-risk terminal command for auto mode: credential/secret access,
+    privilege escalation, destructive/persistence changes, or network
+    exec/exfil. Ordinary dev commands run without a prompt. Fails closed
+    (prompts) on an unparseable command. ``_depth`` bounds the recursion into
+    shell ``-c`` payloads."""
+    if not command or not command.strip():
+        return False
+    # A credential/secret path read or write, or a sandbox escape (../), asks.
+    if _command_references_sensitive(command):
+        return True
+    # Newlines separate commands in a shell but read as whitespace to shlex.
+    normalized = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+    # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
+    # (${c:-rm}) is expanded so the resolved token is scanned too.
+    expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
+    # Run the network exfil check over the expanded form too, so a curl/wget
+    # name assembled from variables (c=cu d=rl; $c$d -F ...) is still seen.
+    if _command_is_network_exec_or_exfil(command) or _command_is_network_exec_or_exfil(expanded):
+        return True
+    # A command substitution at command position generates the command Bash runs.
+    if _COMMAND_SUBST_AT_CMD_RE.search(command):
+        return True
+    # A substitution stashed in a variable and then executed dynamically
+    # (x=`printf 'git clean -fd'`; bash -c "$x") never appears as literal text,
+    # so the token scan below cannot see the real command. When a command
+    # substitution coincides with a variable executed as a command, fail closed.
+    if _HAS_COMMAND_SUBST_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
+        return True
+    for text in {normalized, expanded}:
+        try:
+            lexer = shlex.shlex(text, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return True
+        recursive = any(
+            t in ("-R", "--recursive")
+            or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
+            for t in tokens
+        )
+        find_like = any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
+        )
+        if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
+            return True
+        expect_command = True  # at the start of a command (after a separator)
+        prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
+        scan_forward = False  # a forwarding command (find/xargs/...) precedes another command
+        current_command = ""  # the resolved command whose flags / git subcommand we judge
+        git_subcommand = ""  # the first positional after `git`
+        shell_c_pending = False  # a shell `-c` precedes its inline payload
+        git_glob_pending = False  # a git global option (-C repo) precedes its value
+        chdir_pending = False  # a cd/pushd precedes its target directory
+        for token in tokens:
+            if (
+                token in _SHELL_SEPARATORS
+                or token in _SHELL_KEYWORDS_AS_SEP
+                or not set(token) - set(";&|()")
+            ):
+                expect_command = True
+                prefix_pending = False
+                scan_forward = False
+                current_command = ""
+                git_subcommand = ""
+                shell_c_pending = False
+                git_glob_pending = False
+                chdir_pending = False
+                continue
+            if token.startswith("-"):
+                flag = token.split("=", 1)[0]
+                # An interpreter running inline code (python -c, python3.11 -Bc,
+                # node -e, perl -E) executes an arbitrary program the terminal path
+                # never screens. Match the long --eval/--exec forms, and any short
+                # cluster carrying -c (attached python -c'...' and combined -Bc too).
+                if _is_inline_code_interpreter(current_command) and (
+                    flag in _INLINE_CODE_FLAGS or _short_flag_arg(token, "ceEr") is not None
+                ):
+                    return True
+                # A shell `-c PAYLOAD` runs its quoted payload; screen it
+                # recursively. Combined clusters (bash -lc, bash -xc) and the
+                # attached form (bash -c'...') carry -c among other short flags.
+                if current_command in _SHELL_C_INTERPRETERS:
+                    payload = _short_flag_arg(token, "c")
+                    if payload is not None:
+                        if payload:
+                            if _depth < 3 and _terminal_is_high_risk(payload, _depth + 1):
+                                return True
+                        else:
+                            shell_c_pending = True
+                # env -S 'cmd' / --split-string parses and runs the string as a new
+                # command; env -C / --chdir changes the working directory (enabling
+                # a relative sensitive read). Screen the -S payload; a chdir asks.
+                if current_command == "env":
+                    if flag in ("-C", "--chdir"):
+                        return True
+                    payload = None
+                    if token.startswith("-S") and token != "-S":
+                        payload = token[2:]  # attached: -S'cmd'
+                    elif flag == "--split-string" and "=" in token:
+                        payload = token.split("=", 1)[1]
+                    elif token == "-S" or flag == "--split-string":
+                        shell_c_pending = True  # payload is the next token
+                    if (
+                        payload is not None
+                        and _depth < 3
+                        and _terminal_is_high_risk(payload, _depth + 1)
+                    ):
+                        return True
+                # git reset --hard discards the working tree; git push --force
+                # overwrites a remote ref.
+                if current_command == "git":
+                    if git_subcommand == "reset" and flag in _HIGH_RISK_GIT_RESET_FLAGS:
+                        return True
+                    if git_subcommand == "push" and flag in _HIGH_RISK_GIT_PUSH_FLAGS:
+                        return True
+                    # A git global option that takes a separate value (git -C repo
+                    # clean) precedes its value, not the subcommand.
+                    if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
+                        git_glob_pending = True
+                continue
+            if _ASSIGNMENT_RE.match(token):
+                # PATH/LD_PRELOAD-style assignments hijack command lookup/loading.
+                if _env_assignment_is_unsafe(token.split("=", 1)[0]):
+                    return True
+                continue
+            raw = token.strip(";&|()`{}")
+            if not raw:
+                continue
+            # The payload of a shell `-c`: recursively screen it so a high-risk
+            # command wrapped in `bash -c '...'` is caught (bounded recursion).
+            if shell_c_pending:
+                shell_c_pending = False
+                if _depth < 3 and _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+                expect_command = False
+                continue
+            # The value of a git global option (git -C repo clean): not the subcommand.
+            if git_glob_pending:
+                git_glob_pending = False
+                continue
+            # A wrapper's bare duration argument (timeout 5 rm) is not the command.
+            if prefix_pending and _WRAPPER_DURATION_RE.fullmatch(raw):
+                continue
+            base = os.path.basename(raw).lower()
+            stem, ext = os.path.splitext(base)
+            if ext in {".exe", ".com", ".bat", ".cmd"}:
+                base = stem
+            if (expect_command or prefix_pending) and (
+                base in _AUTO_SAFE_WRAPPERS or base in _MULTICALL_BINARIES
+            ):
+                # A wrapper (env/timeout) or a multicall binary (busybox rm)
+                # precedes the real command; keep seeking it. Track it so its own
+                # flags (env -S / -C) are judged; the real command / applet
+                # overwrites this when it is reached.
+                prefix_pending = True
+                expect_command = False
+                current_command = base
+                continue
+            if expect_command or prefix_pending or scan_forward:
+                if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
+                    return True
+                if base in _HIGH_RISK_RECURSIVE_COMMANDS and recursive:
+                    return True
+                if base in _HIGH_RISK_FORWARDING_COMMANDS:
+                    scan_forward = True
+                # Remember the resolved command so its own flags (python -c), git
+                # subcommand (git clean), or chdir target (cd /proc/x) can be
+                # judged as they follow.
+                current_command = base
+                if base in _CHDIR_COMMANDS:
+                    chdir_pending = True
+            elif current_command == "git" and not git_subcommand:
+                # The first positional after `git` is its subcommand.
+                git_subcommand = base
+                if base in _HIGH_RISK_GIT_SUBCOMMANDS:
+                    return True
+            elif chdir_pending:
+                # The target of a cd/pushd: a chdir into a sensitive directory
+                # sets up a relative read that no single token spells out
+                # (cd /proc/$PPID; cat environ).
+                chdir_pending = False
+                if any(
+                    _SENSITIVE_CHDIR_RE.search(cand)
+                    for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
+                ):
+                    return True
+            expect_command = False
+            prefix_pending = False
+    return False
+
+
+def _python_is_high_risk(code: str) -> bool:
+    """High-risk python for auto mode: code the sandbox static analysis would
+    refuse anyway (shell escape, network egress, a sensitive read), that
+    reads/writes a credential path, or that runs dynamically built code past
+    those static checks. Ordinary in-workdir file writes and computation run
+    without a prompt."""
+    if not code or not code.strip():
+        return False
+    # _check_code_safety objecting means execution would be refused outright, so
+    # surfacing it as a confirmation first is strictly a better UX than a silent
+    # refusal; it covers subprocess/os.system shell escapes and network egress.
+    if _check_code_safety(code) is not None:
+        return True
+    if _references_sensitive_path(code):
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False  # runs into a normal traceback; nothing to guard
+    # A sensitive path split across names or joins (p = "/etc"; open(p + "/shadow"),
+    # os.path.join("/etc", "shadow"), f"{base}/shadow", Path("/etc") / "shadow") is
+    # not a contiguous literal above, so fold the string-literal variables and reuse
+    # the shared _folded_path builder (which handles +, os.path.join, str.join,
+    # f-strings, %/.format, and pathlib Path(...) / joinpath / the "/" operator) and
+    # re-check. An unresolved fragment folds to a sentinel so a partial fold never
+    # false-positives; _folded_is_sensitive applies the same sentinel-aware test the
+    # broad classifier uses (credential file, dynamic segment under a sensitive dir,
+    # or a pathlib .parent escape).
+    str_vars: "dict[str, str]" = {}
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            str_vars[node.targets[0].id] = value.value
+        elif isinstance(value, (ast.Call, ast.BinOp, ast.JoinedStr, ast.Name)):
+            # p = Path("/etc") / q = p / r = os.path.join("/etc", "x"): record the
+            # fully-literal folded path so a later reuse (p / "shadow") resolves. A
+            # dynamic or escaping fold is skipped so only fully-known paths bind.
+            folded = _folded_path(value, str_vars)
+            if folded and "\x00" not in folded and "\x02" not in folded:
+                str_vars[node.targets[0].id] = folded
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
+            folded = _folded_path(node, str_vars)
+            if folded and _folded_is_sensitive(folded):
+                return True
+    # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
+    # eval(input()), __import__(name)) runs whatever it builds at runtime, past
+    # the static checks above; ask. A literal eval("1+1") is harmless and runs.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = None
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            if func.attr == "import_module":  # importlib.import_module(name)
+                name = "__import__"
+            elif func.attr in ("exec", "eval", "compile"):  # builtins.exec(...)
+                name = func.attr
+        if name not in ("exec", "eval", "compile", "__import__"):
+            continue
+        # The source is the first positional, or the source=/name= keyword when
+        # called by keyword (compile(source=x), importlib.import_module(name=x)).
+        arg = node.args[0] if node.args else None
+        if arg is None:
+            for kw in node.keywords:
+                if kw.arg in ("source", "name"):
+                    arg = kw.value
+                    break
+        if arg is None:
+            continue
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, (str, bytes)):
+            # A literal source is only as safe as the code it runs: exec("x=1")
+            # is fine, but exec("import urllib.request; ...urlopen(...)") egresses.
+            # Screen the literal recursively; __import__("os") of a module name is
+            # not analyzable as code, so a literal name stays safe.
+            if name == "__import__":
+                continue
+            inner = (
+                arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
+            )
+            if _python_is_high_risk(inner):
+                return True
+            continue
+        return True
+    return False
+
+
+def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
+    """Whether a tool call is sensitive enough to pause for approval in auto
+    ("Approve for me") mode.
+
+    Unlike is_potentially_unsafe_tool_call (which prompts on anything not
+    read-only), this prompts only on genuinely sensitive actions - credential
+    access, privilege escalation, destructive/persistence changes, and network
+    exec/exfil - and lets ordinary development commands (pip install, mkdir,
+    cp, python <script>, git commit, in-workdir writes) run. The hard-block
+    command set, rlimits, and secret-env stripping remain in force underneath.
+    Unknown tools fail closed (prompt).
+    """
+    if name in _ALWAYS_SAFE_TOOLS:
+        return False
+    if name == "render_html":
+        # A static canvas is fine; only a networked canvas can egress.
+        return _render_html_reaches_network(arguments)
+    if name.startswith(MCP_TOOL_PREFIX):
+        tool_name = name.split("__", 2)[-1]
+        # Split camelCase into `_`-delimited terms (runCommand -> run_Command) so
+        # the term-boundary regexes below match camelCase names too, not only
+        # snake/kebab-case ones.
+        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
+        # An execution tool (run_command, execute_script, eval_code, shell) runs
+        # arbitrary commands on the MCP server, outside the terminal sandbox, so
+        # it is gated like a terminal call. A credential noun (read_secret,
+        # list_tokens) discloses secrets, and a read/write pointed at a sensitive
+        # path is a sensitive access; all prompt. Ordinary create/update/delete
+        # MCP calls run in auto.
+        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name):
+            return True
+        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_arguments_reference_sensitive(arguments):
+            return True
+        return False
+    if name == "terminal":
+        return _terminal_is_high_risk(str(arguments.get("command", "")))
+    if name == "python":
+        return _python_is_high_risk(str(arguments.get("code", "")))
     return True
 
 
@@ -5684,6 +6272,12 @@ def _python_exec(
         error = _check_code_safety(code)
         if error:
             return error
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the Unsloth process's unfiltered
+        # secrets. Close that read here too, not only in bypass mode. Best-effort
+        # in the sandbox: the child env is already scrubbed, so a system where
+        # prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
@@ -5829,6 +6423,12 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the Unsloth process's unfiltered
+        # secrets (cd /proc/$PPID; cat environ). Close that read here too, not
+        # only in bypass mode. Best-effort in the sandbox: the child env is
+        # already scrubbed, so a system where prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
