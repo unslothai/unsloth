@@ -783,6 +783,35 @@ class TestLoadHubDownloadExclusion:
 
         asyncio.run(scenario())
 
+    def test_load_marker_does_not_require_projector_for_text_only_load(self):
+        from core.inference.llama_cpp import _with_gguf_load_marker
+
+        class FakeBackend:
+            @_with_gguf_load_marker
+            def load_model(self, **_kwargs):
+                return True
+
+        with patch(
+            "core.inference.llama_cpp._hub_download_blocks_gguf_load",
+            return_value = False,
+        ) as blocked:
+            assert (
+                FakeBackend().load_model(
+                    hf_repo = REPO,
+                    hf_variant = VARIANT,
+                    is_vision = True,
+                    load_mmproj = False,
+                )
+                is True
+            )
+
+        blocked.assert_called_once_with(
+            REPO,
+            VARIANT,
+            require_mmproj = False,
+            hf_token = None,
+        )
+
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
         gguf_branch = source[source.index("if config.is_gguf:") :]

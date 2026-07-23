@@ -221,6 +221,15 @@ def test_fingerprint_tracks_effective_context_length(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_effective_projector_state(tmp_path):
+    backend = _resume_backend(tmp_path)
+    backend._load_mmproj = True
+
+    before = backend._slot_launch_fingerprint()
+    backend._load_mmproj = False
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
