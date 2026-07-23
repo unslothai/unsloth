@@ -914,6 +914,7 @@ def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
     )
     backend = _mem_loaded_backend(memory_mode = None, extra_args = ["--top-k", "5"])
     backend._gpu_ids = [0]
+    backend._requested_gpu_ids = [0]
     assert inference_routes._request_matches_loaded_settings(req, backend) is True
 
 
