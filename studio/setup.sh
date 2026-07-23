@@ -1948,6 +1948,7 @@ else
                         run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
                         if [ "$BUILD_OK" = true ]; then
                             run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+                            run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
                         fi
                     else
                         BUILD_OK=false
