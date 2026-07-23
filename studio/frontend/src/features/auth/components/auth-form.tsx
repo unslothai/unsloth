@@ -439,7 +439,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         {helperText && (
           <p className="text-center text-sm text-amber-600">{helperText}</p>
         )}
-        {error && <p className="text-center text-sm text-destructive">{error}</p>}
+        {error && (
+          <p className="text-center text-sm text-destructive [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        )}
 
         <Button
           type="submit"
