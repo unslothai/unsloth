@@ -74,7 +74,17 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models this pins llama-server to exactly these GPUs (CUDA_VISIBLE_DEVICES, plus HIP_VISIBLE_DEVICES on AMD ROCm, or --device Vulkan<i> on a Vulkan build).",
+        description = (
+            "Physical GPU indices to use, for example [0, 1]. Omit or pass "
+            "[] to use automatic selection. Explicit gpu_ids are unsupported "
+            "when the parent visibility mask uses non-numeric or subdevice "
+            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
+            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
+            "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
+            "Intel XPU. For GGUF models this pins llama-server to exactly "
+            "these GPUs using CUDA_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES on "
+            "AMD ROCm, or --device Vulkan<i> on a Vulkan build."
+        ),
     )
     speculative_type: Optional[str] = Field(
         None,

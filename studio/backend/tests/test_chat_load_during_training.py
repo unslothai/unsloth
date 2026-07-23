@@ -295,7 +295,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
 
 
 class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
-    def test_non_cuda_allows(self):
+    def test_non_accelerator_allows(self):
         with patch("utils.hardware.get_device", return_value = DeviceType.MLX):
             ok, info = tv.can_load_chat_during_training(
                 model_name = "m",
@@ -305,7 +305,30 @@ class TestCanLoadMisc(_GpuCacheResetMixin, unittest.TestCase):
                 requested_gpu_ids = None,
             )
         self.assertTrue(ok)
-        self.assertEqual(info["mode"], "non_cuda")
+        self.assertEqual(info["mode"], "non_accelerator")
+
+    def test_xpu_overcommit_is_refused(self):
+        # XPU must NOT get the blanket non-accelerator allow: an oversized
+        # chat model during resident training is refused, like CUDA.
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.XPU),
+            patch(
+                "utils.hardware.auto_select_gpu_ids",
+                return_value = (
+                    None,
+                    {"selection_mode": "auto", "required_gb": 50.0, "usable_gb": 4.0},
+                ),
+            ),
+        ):
+            ok, info = tv.can_load_chat_during_training(
+                model_name = "m",
+                hf_token = None,
+                load_in_4bit = True,
+                max_seq_length = 0,
+                requested_gpu_ids = None,
+            )
+        self.assertFalse(ok)
+        self.assertNotEqual(info.get("mode"), "non_accelerator")
 
     def test_no_visible_gpus_refuses(self):
         # GGUF with an empty device list -> no candidate GPU -> default-deny.

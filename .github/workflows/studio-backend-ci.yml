@@ -193,6 +193,7 @@ jobs:
             --ignore=tests/sh \
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
+            --ignore=tests/studio/test_xpu_spoof_pipeline.py \
             --ignore=tests/vllm_compat \
             --ignore=tests/version_compat \
             -m 'not server and not e2e' \
@@ -205,14 +206,15 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
-        # These two files mutate hardware.py module globals at runtime
-        # via the spoof fixtures, which leaks state into any other test
-        # that imports hardware. Run them in their own pytest invocation
-        # so the leak does not cross file boundaries.
+        # These files mutate hardware.py module globals at runtime via the
+        # spoof fixtures (CUDA/ROCm/XPU/MLX/CPU), which leaks state into any
+        # other test that imports hardware. Run them in their own pytest
+        # invocation so the leak does not cross file boundaries.
         run: |
           python -m pytest -q --tb=short \
             tests/studio/test_hardware_dispatch_matrix.py \
-            tests/studio/test_is_mlx_dispatch_gate.py
+            tests/studio/test_is_mlx_dispatch_gate.py \
+            tests/studio/test_xpu_spoof_pipeline.py
 
       - name: Shell installer tests
         # Subset that does not depend on a writable / pristine install.sh
