@@ -538,6 +538,34 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
         return self
 
+    @model_validator(mode = "after")
+    def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
+        # The frontend only ever sends one of these and never under Full
+        # Finetuning, but a direct API/YAML/CLI caller can bypass that. Nothing
+        # downstream breaks (full finetune ignores them, MLX rejects use_dora/
+        # use_loftq outright), but reject early here for a clear error instead
+        # of a silently-ignored flag.
+        active = [
+            name
+            for name, enabled in (
+                ("use_rslora", self.use_rslora),
+                ("use_loftq", self.use_loftq),
+                ("use_dora", self.use_dora),
+            )
+            if enabled
+        ]
+        if len(active) > 1:
+            raise ValueError(
+                f"Only one LoRA variant may be enabled at a time; got {active}. "
+                "use_rslora, use_loftq, and use_dora are mutually exclusive."
+            )
+        if self.training_type == "Full Finetuning" and active:
+            raise ValueError(
+                f"{active[0]} requires an adapter method (LoRA/QLoRA or "
+                "Continued Pretraining); it has no effect under Full Finetuning."
+            )
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
