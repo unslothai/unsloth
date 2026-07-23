@@ -513,10 +513,14 @@ def _normalize_url(url: str) -> Optional[str]:
     if value.lower().endswith(".git"):
         value = value[:-4]
     lower = value.lower()
+    has_url_host = False
     for scheme in ("https://", "http://"):
         if lower.startswith(scheme):
             value = value[len(scheme) :]
+            has_url_host = True
             break
+    if not has_url_host:
+        return value
     host, separator, path = value.partition("/")
     return host.lower() + (separator + path if separator else "")
 

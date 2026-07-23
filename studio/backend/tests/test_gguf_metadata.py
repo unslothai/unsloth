@@ -461,6 +461,18 @@ def test_pairing_score_preserves_case_sensitive_repo_paths():
     assert pairing_score(weight, mmproj) == -1
 
 
+def test_pairing_score_preserves_case_sensitive_bare_repo_ids():
+    weight = {
+        "general.base_model.0.repo_url": "Org/Model",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "org/Model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_rejects_derivative_projector_for_base_weight():
     weight = {
         "general.basename": "model",
