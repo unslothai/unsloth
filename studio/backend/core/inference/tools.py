@@ -764,12 +764,9 @@ def _is_dynamic_import_callable(
         ) in {"import_module", "__import__"}
     if not isinstance(node, ast.Call):
         return False
-    if (
-        node.args
-        and (
-            (isinstance(node.func, ast.Name) and node.func.id == "partial")
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == "partial")
-        )
+    if node.args and (
+        (isinstance(node.func, ast.Name) and node.func.id == "partial")
+        or (isinstance(node.func, ast.Attribute) and node.func.attr == "partial")
     ):
         return _is_dynamic_import_callable(
             node.args[0], dynamic_import_aliases, dynamic_namespace_aliases
@@ -6121,8 +6118,7 @@ def _check_signal_escape_patterns(code: str):
                 and isinstance(func.func, ast.Name)
                 and func.func.id == "getattr"
                 and len(func.args) >= 2
-                and _subscript_key(func.args[1])
-                in (_PYYAML_LOAD_NAMES | _PYYAML_UNSAFE_LOAD_NAMES)
+                and _subscript_key(func.args[1]) in (_PYYAML_LOAD_NAMES | _PYYAML_UNSAFE_LOAD_NAMES)
                 and isinstance(func.args[0], ast.Call)
                 and isinstance(func.args[0].func, ast.Name)
                 and func.args[0].func.id in self.function_parameter_aliases

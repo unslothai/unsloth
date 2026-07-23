@@ -40,11 +40,7 @@ def _blocked(code: str, *, expect_phrase: str):
             "    return getattr(im(name), 'unsafe_load')('a: 1')\n"
             "parse(__import__, 'yaml')"
         ),
-        (
-            "import pydoc\n"
-            "loc = pydoc.locate\n"
-            "loc('yaml.unsafe_load')('a: 1')"
-        ),
+        ("import pydoc\nloc = pydoc.locate\nloc('yaml.unsafe_load')('a: 1')"),
         (
             "import yaml\n"
             "name = 'yaml_multi_constructors'\n"
@@ -62,10 +58,7 @@ def _blocked(code: str, *, expect_phrase: str):
             "yaml.constructor.SafeConstructor.add_constructor("
             "'!run', lambda loader, node: None)"
         ),
-        (
-            "from pkgutil import resolve_name\n"
-            "resolve_name('yaml:unsafe_load')('a: 1')"
-        ),
+        ("from pkgutil import resolve_name\nresolve_name('yaml:unsafe_load')('a: 1')"),
         (
             "from functools import partial\n"
             "im = partial(__import__, 'yaml')\n"
