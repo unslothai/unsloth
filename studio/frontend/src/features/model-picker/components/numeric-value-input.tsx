@@ -29,8 +29,8 @@ function sanitizeNumeric(raw: string, allowNegative: boolean): string {
 }
 
 export type NumericValueInputHandle = {
-  /** Commit a focused draft and return the resolved numeric value. */
-  commit: () => number;
+  /** Commit a focused draft; returns a value only when the user edited the field. */
+  commit: () => number | null;
 };
 
 export const NumericValueInput = forwardRef<
@@ -66,6 +66,7 @@ export const NumericValueInput = forwardRef<
   const [draft, setDraft] = useState("");
   const cancelBlurCommitRef = useRef(false);
   const draftRef = useRef("");
+  const dirtyRef = useRef(false);
 
   const commitDraft = (raw: string): number => {
     const parsed = Number.parseFloat(raw);
@@ -83,19 +84,27 @@ export const NumericValueInput = forwardRef<
     ref,
     () => ({
       commit: () => {
+        if (!dirtyRef.current) {
+          if (focused) {
+            setFocused(false);
+          }
+          return null;
+        }
         const raw = draftRef.current;
-        if (focused) {
-          const final = commitDraft(raw);
-          setFocused(false);
-          return final;
-        }
-        // Load can blur the input in the same click turn before React re-renders
-        // onChange from onBlur — still flush a pending draft here.
         const parsed = Number.parseFloat(raw);
-        if (Number.isFinite(parsed)) {
-          return commitDraft(raw);
+        if (!Number.isFinite(parsed)) {
+          dirtyRef.current = false;
+          if (focused) {
+            setFocused(false);
+          }
+          return null;
         }
-        return value;
+        const final = commitDraft(raw);
+        dirtyRef.current = false;
+        if (focused) {
+          setFocused(false);
+        }
+        return final;
       },
     }),
     [draft, focused, max, min, onChange, step, value],
@@ -117,6 +126,7 @@ export const NumericValueInput = forwardRef<
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
+        dirtyRef.current = false;
         const next = String(value);
         draftRef.current = next;
         setDraft(next);
@@ -127,12 +137,13 @@ export const NumericValueInput = forwardRef<
       onBlur={() => {
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
-        } else {
+        } else if (dirtyRef.current) {
           commitDraft(draftRef.current);
         }
         setFocused(false);
       }}
       onChange={(e) => {
+        dirtyRef.current = true;
         const next = sanitizeNumeric(e.target.value, (min ?? 0) < 0);
         draftRef.current = next;
         setDraft(next);
@@ -142,6 +153,7 @@ export const NumericValueInput = forwardRef<
           e.currentTarget.blur();
         } else if (e.key === "Escape") {
           cancelBlurCommitRef.current = true;
+          dirtyRef.current = false;
           const next = String(value);
           draftRef.current = next;
           setDraft(next);
