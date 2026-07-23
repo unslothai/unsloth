@@ -1771,7 +1771,7 @@ export function ChatPage({
         );
         setExternalProviders(synced);
       } catch {
-        // Silent on startup — Connections settings still surfaces load errors.
+        // Silent on startup; Connections settings still surfaces load errors.
       }
     })();
   }, [hydratePersistedSettings, setExternalProviders]);
