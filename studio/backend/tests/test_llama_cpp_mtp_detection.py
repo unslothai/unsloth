@@ -688,6 +688,7 @@ def test_probe_server_capabilities_handles_missing_binary():
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False
+    assert caps["supports_load_mode"] is False
 
 
 # ngram-mod flag flavor detection (new vs legacy llama-server).
@@ -726,6 +727,11 @@ _CACHE_FLAGS_HELP = """\
 --cache-ram N                           store prompt cache in RAM (default: 0)
 --ctx-checkpoints N                     number of context checkpoints (default: 0)
 --no-cache-prompt                       do not reuse prompt cache
+"""
+
+_LOAD_MODE_HELP = """\
+-lm, --load-mode MODE                  model loading mode (default: mmap)
+                                        (env: LLAMA_ARG_LOAD_MODE)
 """
 
 
@@ -792,6 +798,14 @@ def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False
+
+
+@_NEEDS_BASH
+def test_probe_detects_unified_load_mode(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _LOAD_MODE_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_load_mode"] is True
 
 
 @_NEEDS_BASH

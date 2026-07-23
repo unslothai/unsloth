@@ -178,8 +178,21 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
     }
 )
 # Shadow the GGUF memory_mode field: pass-through in explicit extras, stripped on
-# inherit when the mode changes. --mmap is the inverse of --no-mmap.
-_MEMORY_MODE_FLAGS: frozenset[str] = frozenset({"--mlock", "--no-mmap", "--mmap"})
+# inherit when the mode changes. New llama.cpp builds unify these under
+# --load-mode; retain every deprecated spelling for older/custom binaries.
+_MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
+    {
+        "-lm",
+        "--load-mode",
+        "--mlock",
+        "--no-mmap",
+        "--mmap",
+        "-dio",
+        "--direct-io",
+        "-ndio",
+        "--no-direct-io",
+    }
+)
 # Multi-GPU split mode shadows the Tensor Parallelism toggle
 # (--split-mode tensor). Pass-through stays allowed so users keep the
 # row/none/layer modes the toggle doesn't expose, but it's stripped on
@@ -226,6 +239,10 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "--mlock",
         "--no-mmap",
         "--mmap",
+        "-dio",
+        "--direct-io",
+        "-ndio",
+        "--no-direct-io",
     }
 )
 

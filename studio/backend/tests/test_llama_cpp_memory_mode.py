@@ -13,6 +13,8 @@ import types as _types
 from pathlib import Path
 from unittest.mock import patch
 
+_REAL_POPEN = subprocess.Popen
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -162,6 +164,22 @@ def test_memory_mode_flags_maps_modes(mode, expected):
     assert LlamaCppBackend._memory_mode_flags(mode) == expected
 
 
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        (None, []),
+        ("auto", []),
+        ("pinned", ["--load-mode", "mlock"]),
+        ("resident", ["--load-mode", "none"]),
+    ],
+)
+def test_memory_mode_flags_use_unified_load_mode(mode, expected):
+    assert (
+        LlamaCppBackend._memory_mode_flags(mode, supports_load_mode = True)
+        == expected
+    )
+
+
 # ── _already_in_target_state ─────────────────────────────────────────────────
 
 
@@ -258,6 +276,9 @@ def test_empty_probe_preserves_explicit_gpu_ids(tmp_path):
     captured = {}
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -312,6 +333,9 @@ def test_torchless_vulkan_populated_probe_uses_identity_ordinals(tmp_path):
     captured = {}
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 321
 
@@ -393,6 +417,9 @@ def test_vulkan_gpu_ids_strips_conflicting_user_device(tmp_path):
     captured = {}
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 999
 
@@ -498,6 +525,9 @@ def test_gpu_ids_preserved_on_fit_fallback(tmp_path):
     captured_envs = []
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -554,6 +584,9 @@ def test_gpu_ids_scrubs_inherited_llama_arg_device(tmp_path, monkeypatch, gpu_id
     captured_envs = []
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -599,9 +632,11 @@ def test_memory_mode_clears_inherited_mmap_env_vars(tmp_path):
     base_env = dict(os.environ)
     base_env.update(
         {
+            "LLAMA_ARG_LOAD_MODE": "dio",
             "LLAMA_ARG_MLOCK": "1",
             "LLAMA_ARG_MMAP": "1",
             "LLAMA_ARG_NO_MMAP": "1",
+            "LLAMA_ARG_DIO": "1",
         }
     )
     backend._llama_server_env_for_binary = lambda _binary: dict(base_env)
@@ -609,6 +644,9 @@ def test_memory_mode_clears_inherited_mmap_env_vars(tmp_path):
     captured_envs = []
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -629,9 +667,14 @@ def test_memory_mode_clears_inherited_mmap_env_vars(tmp_path):
 
     assert captured_envs, "llama-server was not spawned"
     env = captured_envs[-1]
-    assert "LLAMA_ARG_MLOCK" not in env
-    assert "LLAMA_ARG_MMAP" not in env
-    assert "LLAMA_ARG_NO_MMAP" not in env
+    for var in (
+        "LLAMA_ARG_LOAD_MODE",
+        "LLAMA_ARG_MLOCK",
+        "LLAMA_ARG_MMAP",
+        "LLAMA_ARG_NO_MMAP",
+        "LLAMA_ARG_DIO",
+    ):
+        assert var not in env
 
 
 @pytest.mark.parametrize(
@@ -654,6 +697,9 @@ def test_memory_mode_strips_conflicting_extra_args(tmp_path, mode, user_flag, wi
     captured_cmds = []
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -717,6 +763,9 @@ def test_vulkan_gpu_ids_used_as_direct_ordinals_not_remapped(tmp_path):
     captured_cmds = []
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -920,6 +969,9 @@ def test_explicit_gpu_ids_strips_stored_device_extra_args(tmp_path):
     backend._select_gpus = lambda requested_total, gpus, **k: ([gpus[0][0]], False)
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -1076,6 +1128,8 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
     monkeypatch.setenv("LLAMA_ARG_MMAP", "true")
+    monkeypatch.setenv("LLAMA_ARG_LOAD_MODE", "dio")
+    monkeypatch.setenv("LLAMA_ARG_DIO", "1")
 
     gguf = tmp_path / "model.gguf"
     _write_minimal_gguf(gguf)
@@ -1084,6 +1138,9 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
     captured_envs = []
 
     def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
         class _FakePopen:
             pid = 12345
 
@@ -1104,7 +1161,13 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
 
     assert captured_envs, "llama-server was not spawned"
     env = captured_envs[-1]
-    for var in ("LLAMA_ARG_MLOCK", "LLAMA_ARG_NO_MMAP", "LLAMA_ARG_MMAP"):
+    for var in (
+        "LLAMA_ARG_LOAD_MODE",
+        "LLAMA_ARG_MLOCK",
+        "LLAMA_ARG_NO_MMAP",
+        "LLAMA_ARG_MMAP",
+        "LLAMA_ARG_DIO",
+    ):
         assert (var not in env) == scrubbed
 
 

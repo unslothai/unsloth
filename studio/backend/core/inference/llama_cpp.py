@@ -2732,6 +2732,7 @@ class LlamaCppBackend:
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
+                "supports_load_mode": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "supports_no_cache_prompt": False,
@@ -2753,6 +2754,7 @@ class LlamaCppBackend:
         supports_kv_unified = False
         supports_fit_ctx = False
         supports_fit_target = False
+        supports_load_mode = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
@@ -2852,6 +2854,7 @@ class LlamaCppBackend:
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
+            supports_load_mode = _is_real("--load-mode")
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
@@ -2870,6 +2873,7 @@ class LlamaCppBackend:
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
+            "supports_load_mode": supports_load_mode,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "supports_no_cache_prompt": supports_no_cache_prompt,
@@ -6195,17 +6199,28 @@ class LlamaCppBackend:
         return mode
 
     @staticmethod
-    def _memory_mode_flags(memory_mode: Optional[str]) -> List[str]:
+    def _memory_mode_flags(
+        memory_mode: Optional[str], *, supports_load_mode: bool = False
+    ) -> List[str]:
         """Return the llama-server flags for a GGUF memory placement mode.
 
-        - "pinned"   -> --mlock (lock mmap'd pages in RAM).
-        - "resident" -> --no-mmap --mlock (load fully into RAM and lock).
+        New llama.cpp builds use the unified --load-mode flag. Older builds
+        retain the deprecated mmap/mlock flags.
+
+        - "pinned"   -> load-mode mlock, or legacy --mlock.
+        - "resident" -> load-mode none, or legacy --no-mmap --mlock.
         - otherwise  -> [] (llama.cpp default, memory-mapped file).
         """
         mode = LlamaCppBackend._canonical_memory_mode(memory_mode)
         if mode == "pinned":
+            if supports_load_mode:
+                return ["--load-mode", "mlock"]
             return ["--mlock"]
         if mode == "resident":
+            if supports_load_mode:
+                # Unified load modes cannot combine non-mmap loading with
+                # mlock. "none" preserves the non-mmap part of this mode.
+                return ["--load-mode", "none"]
             return ["--no-mmap", "--mlock"]
         return []
 
@@ -7556,10 +7571,17 @@ class LlamaCppBackend:
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
+                server_caps = self.probe_server_capabilities(binary)
+
                 # Memory placement: keep weights resident so idle weights aren't paged
                 # out and re-faulted from disk (#7164). Emitted as a CMD flag (not env)
                 # so it side-steps _clear_manual_placement_env in manual mode.
-                cmd.extend(self._memory_mode_flags(memory_mode))
+                cmd.extend(
+                    self._memory_mode_flags(
+                        memory_mode,
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    )
+                )
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -7636,7 +7658,6 @@ class LlamaCppBackend:
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
 
-                server_caps = self.probe_server_capabilities(binary)
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
                 if server_caps.get("supports_metrics"):
@@ -7910,7 +7931,13 @@ class LlamaCppBackend:
                 # launched WITH inherited placement flags so a later explicit 'auto' reloads
                 # to clear them (the dedup treats 'auto' and None alike and would otherwise
                 # leave it mlocked). Mirrors the threads / split / cache scrubs.
-                _mm_vars = ("LLAMA_ARG_MLOCK", "LLAMA_ARG_NO_MMAP", "LLAMA_ARG_MMAP")
+                _mm_vars = (
+                    "LLAMA_ARG_LOAD_MODE",
+                    "LLAMA_ARG_MLOCK",
+                    "LLAMA_ARG_NO_MMAP",
+                    "LLAMA_ARG_MMAP",
+                    "LLAMA_ARG_DIO",
+                )
                 if memory_mode is not None:
                     for _mm_var in _mm_vars:
                         env.pop(_mm_var, None)

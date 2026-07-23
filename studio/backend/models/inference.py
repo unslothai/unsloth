@@ -177,9 +177,10 @@ class LoadRequest(BaseModel):
             "control system RAM residency and file mapping on the host, NOT GPU VRAM "
             "placement, so they do not by themselves keep offloaded weights pinned in "
             "VRAM. 'auto' (default) uses llama.cpp's normal memory-mapped loading. "
-            "'pinned' adds --mlock so the OS cannot page the model's host pages out. "
-            "'resident' loads the full model into RAM with --no-mmap and locks it with "
-            "--mlock, avoiding any file-backed mapping. Ignored for non-GGUF models."
+            "'pinned' locks memory-mapped host pages so the OS cannot page them out. "
+            "'resident' avoids file-backed mapping and loads the model into RAM. On "
+            "llama.cpp builds with unified load modes it cannot also be locked, so the "
+            "OS may still swap it. Ignored for non-GGUF models."
         ),
     )
 
