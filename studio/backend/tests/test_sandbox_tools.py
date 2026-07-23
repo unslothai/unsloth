@@ -488,28 +488,28 @@ class TestSandboxEnvIsolation:
         assert str(trusted_git) in parts
         assert str(shim) not in parts
 
-    def test_program_roots_fallback_uses_systemdrive_not_env(self, monkeypatch):
-        """When the known-folder API is unavailable, roots come from a fixed
-        SystemDrive path, never the overrideable %ProgramFiles% env."""
+    def test_program_roots_fails_closed_without_known_folder_api(self, monkeypatch):
+        """When the known-folder API is unavailable, no roots are trusted: env
+        vars (even %SystemDrive%) are caller-overrideable, so we never derive a
+        trusted root from them."""
         import core.inference.tools as tools_mod
 
-        # ctypes fails on this Linux host, so the fallback runs. An attacker
-        # override of ProgramFiles must NOT enter the trusted roots.
+        # ctypes fails on this Linux host, so the API path raises and we fail
+        # closed. Any attacker override of these env vars must be irrelevant.
         monkeypatch.setenv("ProgramFiles", r"D:\attacker-writable")
         monkeypatch.setenv("ProgramW6432", r"D:\attacker-writable")
-        monkeypatch.setenv("SystemDrive", "C:")
-        roots = [r.lower() for r in tools_mod._windows_program_roots()]
-        assert any(r.endswith(r"\program files") for r in roots)
-        assert not any("attacker-writable" in r for r in roots)
+        monkeypatch.setenv("SystemDrive", "D:")
+        assert tools_mod._windows_program_roots() == []
 
-    def test_program_roots_include_native_root(self, monkeypatch):
-        """The fallback yields both the native and x86 Program Files roots."""
+    def test_augment_native_program_roots_derives_native_sibling(self):
+        """A 32-bit process only sees the x86 root; the native sibling is
+        derived by stripping the ` (x86)` suffix."""
         import core.inference.tools as tools_mod
 
-        monkeypatch.setenv("SystemDrive", "C:")
-        roots = [r.lower() for r in tools_mod._windows_program_roots()]
-        assert any(r.endswith(r"\program files") for r in roots)
-        assert any(r.endswith(r"\program files (x86)") for r in roots)
+        roots = tools_mod._augment_native_program_roots([r"C:\Program Files (x86)"])
+        lowered = [r.lower() for r in roots]
+        assert r"c:\program files (x86)" in lowered
+        assert r"c:\program files" in lowered
 
     def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""

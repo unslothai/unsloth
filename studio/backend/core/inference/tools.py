@@ -2499,11 +2499,28 @@ def _canon_win_path(p: str) -> str:
     return os.path.normcase(os.path.normpath(os.path.realpath(p)))
 
 
+def _augment_native_program_roots(roots: list[str]) -> list[str]:
+    """Add the native Program Files sibling for any x86 root by stripping the
+    `` (x86)`` suffix, so a 32-bit process (whose known-folder ids map only to
+    the x86 root) still trusts a 64-bit Git install."""
+    out = list(roots)
+    for root in roots:
+        base = root.rstrip("\\/")
+        if base.lower().endswith(" (x86)"):
+            native = base[: -len(" (x86)")]
+            if native and native not in out:
+                out.append(native)
+    return out
+
+
 def _windows_program_roots() -> list[str]:
-    """Program Files install roots, resolved from the Windows known-folder API
-    (SHGetKnownFolderPath) so an overridden ``%ProgramFiles%`` env value cannot
-    move the trust boundary. Falls back to the env vars, then to fixed
-    ``%SystemDrive%`` paths, only if the API is unavailable (#7317).
+    """Program Files install roots, resolved ONLY from the Windows known-folder
+    API (SHGetKnownFolderPath). Fails closed (returns ``[]``) if the API is
+    unavailable: env vars (%ProgramFiles%, even %SystemDrive%) are caller-
+    overrideable and could relocate the trust boundary, so we never derive a
+    trusted root from them. On any real Windows host shell32 is present, so
+    this only returns empty in a broken/non-Windows environment where the
+    sandbox git-PATH feature is not needed anyway (#7317).
     """
     roots: list[str] = []
     try:
@@ -2529,23 +2546,8 @@ def _windows_program_roots() -> list[str]:
                     roots.append(ptr.value)
                 _CoTaskMemFree(ptr)
     except Exception:
-        roots = []
-    if not roots:
-        # Do NOT fall back to %ProgramFiles%/%ProgramW6432%: a caller can
-        # override those to a writable dir and relocate the trust boundary.
-        # SystemDrive is not a viable override (retargeting it breaks the OS).
-        drive = os.environ.get("SystemDrive", "C:")
-        roots = [drive + r"\Program Files", drive + r"\Program Files (x86)"]
-    # A 32-bit process on 64-bit Windows only sees the x86 root (the X64
-    # known-folder id is unsupported there), so derive the native sibling by
-    # stripping the " (x86)" suffix. Derived from a trusted root, not env.
-    for root in list(roots):
-        base = root.rstrip("\\/")
-        if base.lower().endswith(" (x86)"):
-            native = base[: -len(" (x86)")]
-            if native and native not in roots:
-                roots.append(native)
-    return roots
+        return []
+    return _augment_native_program_roots(roots)
 
 
 def _resolve_trusted_windows_git() -> tuple[str, str]:
