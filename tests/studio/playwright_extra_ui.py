@@ -482,6 +482,14 @@ with sync_playwright() as p:
     step("Settings dialog: cycle through tabs")
     page.goto(f"{BASE}/chat")
     composer.wait_for(state = "visible", timeout = 60_000)
+    dictate = page.get_by_role("button", name = "Dictate").first
+    if dictate.count() == 0:
+        fail("Chat Dictate button not found")
+    elif dictate.get_attribute("type") != "button":
+        fail("Chat Dictate control must use type=button, not submit the composer")
+    else:
+        info("OK Chat Dictate control is type=button")
+
     page.keyboard.press("Control+,")
     page.wait_for_timeout(800)
     settings = page.get_by_role("dialog").first
