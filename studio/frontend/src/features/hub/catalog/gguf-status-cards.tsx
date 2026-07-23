@@ -34,7 +34,7 @@ export function GgufDownloadStatusCard({
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
           <span
             className={cn(
-              "flex min-w-0 items-center gap-2 text-[12.5px]",
+              "flex min-w-0 items-center gap-2 text-[0.78125rem]",
               tone === "danger" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -91,7 +91,7 @@ export function GgufDownloadingFallbackCard({
     <div className="flex w-full flex-col gap-2">
       <DownloadCard job={job} progress={progress}>
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-2 text-[0.78125rem] text-muted-foreground">
             {progress.variant && <DotTag tone="gguf" label={progress.variant} />}
             <span className="truncate">Downloading…</span>
           </span>

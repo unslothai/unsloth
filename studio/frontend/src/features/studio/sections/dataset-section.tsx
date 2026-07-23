@@ -728,7 +728,7 @@ export function DatasetSection() {
                       }
                     }}
                     className={cn(
-                      "relative inline-flex h-9 flex-auto cursor-pointer items-center justify-center rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                      "relative inline-flex h-9 flex-auto cursor-pointer items-center justify-center rounded-full px-3 text-[0.78125rem] font-medium transition-colors",
                       datasetSource === item.value
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
@@ -764,7 +764,7 @@ export function DatasetSection() {
             <div className="flex min-w-0 flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.dataset.chooseDataset")}
-                <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
+                <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[0.625rem] font-medium text-foreground/80">
                   {datasetSource === "upload"
                     ? t("studio.dataset.localTab")
                     : "Hugging Face"}
@@ -1030,7 +1030,7 @@ export function DatasetSection() {
                 </p>
               )}
               {pickerTab !== activeSourceTab && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-[0.6875rem] text-muted-foreground">
                   {t("studio.dataset.browsingSource", {
                     browsing:
                       pickerTab === "local"
@@ -1068,7 +1068,7 @@ export function DatasetSection() {
                       <p className="text-xs font-medium text-muted-foreground">
                         {t("studio.dataset.localDatasetMetadata")}
                       </p>
-                      <p className="text-[10px] text-muted-foreground/80">
+                      <p className="text-[0.625rem] text-muted-foreground/80">
                         {t("studio.dataset.dataRecipeOutput")}
                       </p>
                     </div>
@@ -1172,7 +1172,7 @@ export function DatasetSection() {
                       ? t("studio.dataset.uploading")
                       : t("studio.dataset.uploadEvalFile")}
                   </Button>
-                  <p className="text-[10px] text-muted-foreground/80">
+                  <p className="text-[0.625rem] text-muted-foreground/80">
                     {t("studio.dataset.evalDatasetDescription")}
                   </p>
                 </div>
@@ -1379,7 +1379,7 @@ export function DatasetSection() {
                           deriveLocalDatasetName(selectedDatasetName))
                         : selectedDatasetName}
                     </p>
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-[0.625rem] text-muted-foreground">
                       {datasetSource === "upload" ? (
                         uploadedFile ? (
                           <>
@@ -1433,7 +1433,7 @@ export function DatasetSection() {
                     <span className="block text-xs font-medium text-foreground">
                       {t("studio.dataset.dropFileOrClick")}
                     </span>
-                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                    <span className="mt-0.5 block truncate text-[0.625rem] text-muted-foreground">
                       {TRAINING_DATASET_UPLOAD_LABEL} · up to {uploadLimitLabel}
                       ; {DOCUMENT_REDIRECT_LABEL}
                     </span>

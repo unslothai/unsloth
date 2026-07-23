@@ -435,7 +435,7 @@ export function OpenAICodeExecSection({
         <div className="flex min-w-0 items-center gap-1.5">
           <label
             htmlFor="openai-container-ttl"
-            className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg"
+            className="min-w-0 text-[0.8125rem] font-medium leading-[1.25] tracking-nav text-nav-fg"
           >
             Idle timeout
           </label>
@@ -459,7 +459,7 @@ export function OpenAICodeExecSection({
           ACTIVE pill marks which one (no separate picker). */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+          <span className="text-[0.6875rem] uppercase tracking-wider text-muted-foreground">
             Containers
           </span>
           <Button
@@ -531,15 +531,15 @@ export function OpenAICodeExecSection({
                         {c.name ?? "(unnamed)"}
                       </span>
                       {isPending ? (
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[0.5625rem] font-medium uppercase tracking-wider text-muted-foreground">
                           Creating
                         </span>
                       ) : isActive ? (
-                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[9px] font-medium uppercase tracking-wider text-primary">
+                        <span className="shrink-0 rounded-sm bg-primary/15 px-1 py-px text-[0.5625rem] font-medium uppercase tracking-wider text-primary">
                           Active
                         </span>
                       ) : statusLabel ? (
-                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+                        <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[0.5625rem] font-medium uppercase tracking-wider text-muted-foreground">
                           {statusLabel}
                         </span>
                       ) : null}
@@ -548,10 +548,10 @@ export function OpenAICodeExecSection({
                       className="flex min-w-0 items-center gap-1.5 text-muted-foreground"
                       title={c.id}
                     >
-                      <span className="min-w-0 truncate font-mono text-[11px]">
+                      <span className="min-w-0 truncate font-mono text-[0.6875rem]">
                         {shortContainerId(c.id)}
                       </span>
-                      <span className="shrink-0 text-[10px] uppercase tracking-wider">
+                      <span className="shrink-0 text-[0.625rem] uppercase tracking-wider">
                         · {ttlMinutes}m
                       </span>
                     </div>

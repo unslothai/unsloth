@@ -96,7 +96,7 @@ export function TrainingLossChartCard({
               tickLine={false}
               axisLine={false}
               tickMargin={8}
-              fontSize={10}
+              fontSize="0.625rem"
               tickFormatter={(value) => formatStepTick(Number(value))}
               interval="preserveStartEnd"
             />
@@ -107,7 +107,7 @@ export function TrainingLossChartCard({
               axisLine={false}
               tickMargin={8}
               tickCount={5}
-              fontSize={10}
+              fontSize="0.625rem"
               width={DEFAULT_Y_AXIS_WIDTH}
               tickFormatter={(value) => {
                 const num = Number(value);
@@ -152,7 +152,7 @@ export function TrainingLossChartCard({
                     value: formatMetric(avgRaw),
                   }),
                   position: "insideTopRight",
-                  fontSize: 10,
+                  fontSize: "0.625rem",
                   fill: "#3b82f6",
                 }}
               />

@@ -71,7 +71,7 @@ export const ContextUsageBar: FC<{
               : `Token usage: ${formatTokenCount(used)} tokens`
           }
           className={cn(
-            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-[13px] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
+            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-[0.8125rem] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >
@@ -149,7 +149,7 @@ export const ContextUsageBar: FC<{
             </span>
           </div>
           {hasKnownLimit && percent !== null && percent > 85 ? (
-            <div className="mt-1 max-w-64 text-[11px] leading-snug text-muted-foreground/90">
+            <div className="mt-1 max-w-64 text-[0.6875rem] leading-snug text-muted-foreground/90">
               Close to the context limit. Generation will stop at 100%.
               Increase <span className="font-medium">Context Length</span> in
               the chat Settings panel to keep going.

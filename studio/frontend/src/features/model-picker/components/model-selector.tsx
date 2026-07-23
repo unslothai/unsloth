@@ -232,13 +232,13 @@ function ModelSelectorTrigger({
           </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
-          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[1rem] font-medium leading-tight text-black dark:text-white">
             {currentModel?.name ?? "Select model"}
             {showCloudIndicator ? (
               <HugeiconsIcon
                 icon={CloudIcon}
                 strokeWidth={1.75}
-                className="relative top-[0.15625rem] ml-1.5 mr-[0.36rem] size-3.5 shrink-0 text-muted-foreground"
+                className="relative top-[2.5px] ml-1.5 mr-[5.76px] size-3.5 shrink-0 text-muted-foreground"
               />
             ) : null}
           </span>
@@ -505,16 +505,16 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-16px)] min-w-0 gap-0",
         visibleConfigTarget
-          ? "w-[min(468px,calc(100vw-1rem))] px-4 pt-4 pb-4"
+          ? "w-[min(468px,calc(100vw-16px))] px-4 pt-4 pb-4"
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last
               // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
               hasExternal
-                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+                ? "w-[min(614px,calc(100vw-16px))] pr-4"
+                : "w-[min(506px,calc(100vw-16px))] pr-2",
             ),
         className,
       )}
@@ -881,7 +881,7 @@ function ExternalModelPicker({
           ) : (
             grouped.map((group) => (
               <div key={group.providerId}>
-                <div className="flex items-center gap-2 px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="flex items-center gap-2 px-2.5 py-1.5 text-[0.625rem] font-semibold uppercase tracking-wider text-muted-foreground">
                   <ExternalProviderLogo
                     providerType={group.models[0]?.providerType}
                     className="size-3.5"

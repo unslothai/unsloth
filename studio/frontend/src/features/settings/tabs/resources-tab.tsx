@@ -114,7 +114,7 @@ function MetricTile({
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <span className="truncate text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
         </span>
         <span
