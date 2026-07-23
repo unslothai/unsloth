@@ -138,7 +138,9 @@ export const NumericValueInput = forwardRef<
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
         } else if (dirtyRef.current) {
-          commitDraft(draftRef.current);
+          const final = commitDraft(draftRef.current);
+          dirtyRef.current = false;
+          draftRef.current = String(final);
         }
         setFocused(false);
       }}
