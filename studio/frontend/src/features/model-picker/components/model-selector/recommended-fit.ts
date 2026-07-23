@@ -135,14 +135,18 @@ export function hfModelFitsDevice(
     systemRamAvailableGb: number;
   },
 ): boolean {
-  // "Can this run at all" assumes the quantized llama.cpp path, so budget
-  // against the devices llama-server can use (can exceed the torch view on a
-  // Vulkan build, e.g. a pre-ROCm card next to a ROCm one).
-  const gpuGb = gpu.ggufMemoryTotalGb ?? gpu.memoryTotalGb;
+  // Per-row budget: GGUF rows load through llama-server, whose device set can
+  // exceed the torch view on a Vulkan build (e.g. a pre-ROCm card next to a
+  // ROCm one). Safetensors/MLX rows load through torch, which cannot use
+  // Vulkan-only cards, so they must stay on the torch total.
+  const isGguf = isGgufId(model.id, model.isGguf);
+  const gpuGb = isGguf
+    ? (gpu.ggufMemoryTotalGb ?? gpu.memoryTotalGb)
+    : gpu.memoryTotalGb;
   if (gpuGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
   const params = model.totalParams ?? paramsFromId(model.id);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
-  const sizeBytes = isGgufId(model.id, model.isGguf)
+  const sizeBytes = isGguf
     ? (model.estimatedSizeBytes ?? quantBytes)
     : (quantBytes ?? model.estimatedSizeBytes);
   return fitsDevice({

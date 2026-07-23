@@ -3967,6 +3967,19 @@ def _guard_chat_load_against_training(
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
+    # A Vulkan build's gpu_ids are ggml Vulkan ordinals with no defined mapping
+    # to the physical index space this guard sizes against (the free-VRAM rows
+    # of get_visible_gpu_utilization, _diffusion_gpu_arg's device token). Drop
+    # the pick and size like an unpinned load: the pool math below still
+    # protects training on every visible card, which is the conservative read
+    # when the ordinal-to-card mapping is unknown.
+    if is_gguf and requested_gpu_ids:
+        try:
+            if LlamaCppBackend._is_vulkan_backend():
+                requested_gpu_ids = None
+        except Exception as e:
+            logger.debug("Vulkan backend check failed in chat-load guard: %s", e)
+
     diffusion_gpu = None
     if is_gguf and diffusion_kind is not False:
         # Use the same token selection as the runner: an explicit pick wins,

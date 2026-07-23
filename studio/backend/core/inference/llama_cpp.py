@@ -3323,10 +3323,13 @@ class LlamaCppBackend:
             )
         probe_script = Path(__file__).with_name("_vulkan_probe.py")
         try:
+            # UTF-8 to match the probe's stdout reconfigure: device names can be
+            # non-ASCII, and the platform-default decode (cp1252) could throw.
             result = subprocess.run(
                 [sys.executable, str(probe_script), str(binary_dir)],
                 capture_output = True,
-                text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 15,
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),

@@ -50,6 +50,35 @@ const DEFAULT_GPU: GpuInfo = {
 let cachedSystem: SystemInfoResponse | null = null;
 let systemPromise: Promise<SystemInfoResponse | null> | null = null;
 
+// Persisted gpu_ids picks are bare numbers, so they only mean "these cards"
+// within the index space they were saved in: physical CUDA/ROCm ids, or ggml
+// Vulkan ordinals on a Vulkan build. Swapping the llama.cpp backend flips that
+// space while keeping many numbers valid (Vulkan ordinal 1 exists but may be a
+// different card than physical id 1), so remember the last-seen space and flag
+// a change; reconcilePersistedGpuIds clears saved picks for the session.
+const GPU_INDEX_KIND_STORAGE_KEY = "unsloth-gpu-pick-index-kind";
+let gpuIndexSpaceChanged = false;
+
+function noteGpuIndexKind(data: SystemInfoResponse | null): void {
+  if (!data) return;
+  const kind = (data.gpu?.gguf_devices ?? []).length ? "vulkan" : "physical";
+  try {
+    const last = window.localStorage.getItem(GPU_INDEX_KIND_STORAGE_KEY);
+    // Installs predating the marker could only save physical picks, so a
+    // missing marker on a Vulkan host counts as a space change too.
+    gpuIndexSpaceChanged = last === null ? kind === "vulkan" : last !== kind;
+    window.localStorage.setItem(GPU_INDEX_KIND_STORAGE_KEY, kind);
+  } catch {
+    gpuIndexSpaceChanged = false;
+  }
+}
+
+/** True when the GPU index space differs from the one the last session's picks
+ * were saved in; stays true for the whole session so late restores clear too. */
+export function gpuIndexSpaceChangedSinceLastSession(): boolean {
+  return gpuIndexSpaceChanged;
+}
+
 async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
   if (cachedSystem) return cachedSystem;
   if (systemPromise) return systemPromise;
@@ -58,6 +87,7 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       cachedSystem = (await res.json()) as SystemInfoResponse;
+      noteGpuIndexKind(cachedSystem);
       return cachedSystem;
     } catch {
       systemPromise = null; // reset so a later call retries (backend not ready)
@@ -79,9 +109,13 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
   const gpuData = data?.gpu;
   const devices = gpuData?.devices ?? [];
   // GGUF budget: what llama-server can use. Skips iGPUs (their "VRAM" is the
-  // shared system RAM already reported above); falls back to the torch total
-  // when the backend reports no separate llama-server inventory.
-  const ggufDeviceTotalGb = (gpuData?.gguf_devices ?? []).reduce(
+  // shared system RAM already reported above). When the backend reports a
+  // separate llama-server inventory it is authoritative EVEN at zero discrete
+  // VRAM (e.g. llama-server masked to an iGPU while torch still sees a dGPU
+  // that llama-server won't use); only its absence falls back to the torch
+  // total.
+  const ggufDevices = gpuData?.gguf_devices ?? [];
+  const ggufDeviceTotalGb = ggufDevices.reduce(
     (sum, d) => sum + (d.is_igpu ? 0 : (d.memory_total_gb ?? 0)),
     0,
   );
@@ -99,7 +133,7 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     available: true,
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb,
-    ggufMemoryTotalGb: ggufDeviceTotalGb || memoryTotalGb,
+    ggufMemoryTotalGb: ggufDevices.length ? ggufDeviceTotalGb : memoryTotalGb,
   };
 }
 

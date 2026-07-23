@@ -37,6 +37,19 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
     """
     flags = [False] * count
     names = [""] * count
+
+    # The name lookup is bound OUTSIDE the type-detection try: a ggml-base
+    # without ggml_backend_dev_description (older/custom build) must degrade to
+    # unnamed devices, not abort before the iGPU flags are read (which would
+    # count an iGPU's shared RAM as VRAM).
+    describe = None
+    try:
+        base.ggml_backend_dev_description.restype = ctypes.c_char_p
+        base.ggml_backend_dev_description.argtypes = [ctypes.c_void_p]
+        describe = base.ggml_backend_dev_description
+    except Exception:
+        pass
+
     try:
         lib.ggml_backend_vk_reg.restype = ctypes.c_void_p
         lib.ggml_backend_vk_reg.argtypes = []
@@ -46,8 +59,6 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
         base.ggml_backend_reg_dev_get.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         base.ggml_backend_dev_type.restype = ctypes.c_int
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
-        base.ggml_backend_dev_description.restype = ctypes.c_char_p
-        base.ggml_backend_dev_description.argtypes = [ctypes.c_void_p]
 
         reg = lib.ggml_backend_vk_reg()
         if not reg:
@@ -57,15 +68,20 @@ def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str]]
             dev = base.ggml_backend_reg_dev_get(reg, i)
             if dev:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
-                desc = base.ggml_backend_dev_description(dev)
-                if desc:
-                    # Tabs/newlines would corrupt the line protocol; spaces are safe.
-                    names[i] = (
-                        desc.decode("utf-8", errors = "replace")
-                        .replace("\t", " ")
-                        .replace("\n", " ")
-                        .strip()
-                    )
+                if describe is not None:
+                    try:
+                        desc = describe(dev)
+                        if desc:
+                            # Tabs/newlines would corrupt the line protocol;
+                            # spaces are safe.
+                            names[i] = (
+                                desc.decode("utf-8", errors = "replace")
+                                .replace("\t", " ")
+                                .replace("\n", " ")
+                                .strip()
+                            )
+                    except Exception:
+                        pass
     except Exception:
         # Best-effort: any failure degrades to "discrete"/"unnamed" so the
         # memory readings still get through instead of crashing the probe.
@@ -77,6 +93,14 @@ def main() -> int:
     if len(sys.argv) < 2:
         return 0
     bindir = sys.argv[1]
+
+    # Device names can be non-ASCII (localized drivers); the platform-default
+    # stdout encoding (e.g. cp1252) would raise on them and lose the whole
+    # inventory. The reader decodes UTF-8 with the same error mode.
+    try:
+        sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
+    except Exception:
+        pass
 
     # Hold add_dll_directory's handle for the rest of main() (the documented
     # idiom) so bindir stays on the search path while the sibling ggml DLLs

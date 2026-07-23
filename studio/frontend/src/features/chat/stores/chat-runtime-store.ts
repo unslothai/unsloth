@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndices,
+  gpuIndexSpaceChangedSinceLastSession,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -589,6 +592,10 @@ export function reconcilePersistedGpuIds(
   if (ids == null) return ids;
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
+  // A pick saved under the other index space (physical CUDA/ROCm ids vs ggml
+  // Vulkan ordinals, after a llama.cpp backend swap) can pass the membership
+  // check below by number alone while meaning a different card; drop it.
+  if (gpuIndexSpaceChangedSinceLastSession()) return null;
   const kept = ids.filter((i) => pinnable.includes(i));
   return kept.length > 0 ? kept : null;
 }

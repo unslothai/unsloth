@@ -421,6 +421,52 @@ class TestChatLoadGuardRoute(unittest.TestCase):
     def test_allows_when_fits(self):
         self._guard(training_active = True, decision = (True, {"mode": "auto"}))
 
+    def test_vulkan_build_drops_gpu_ids_before_physical_sizing(self):
+        # A Vulkan build's gpu_ids are ggml Vulkan ordinals; forwarding them to
+        # can_load_chat_during_training would resolve them in physical index
+        # space (the wrong card's free-VRAM row, or a ValueError that skips the
+        # protection entirely). The guard must size such loads as unpinned.
+        captured = []
+        config = SimpleNamespace(is_gguf = True, is_lora = False, path = None)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", lambda c: False),
+            patch.object(self.route, "_estimate_gguf_required_gb", lambda *a, **k: 2.0),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_is_vulkan_backend",
+                staticmethod(lambda binary = None: True),
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf"}),
+                requested_gpu_ids = [1],
+            )
+        self.assertIsNone(captured[0]["requested_gpu_ids"])
+
+    def test_non_vulkan_build_keeps_gpu_ids_for_sizing(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True, is_lora = False, path = None)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", lambda c: False),
+            patch.object(self.route, "_estimate_gguf_required_gb", lambda *a, **k: 2.0),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_is_vulkan_backend",
+                staticmethod(lambda binary = None: False),
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf"}),
+                requested_gpu_ids = [1],
+            )
+        self.assertEqual(captured[0]["requested_gpu_ids"], [1])
+
     def test_diffusion_detection_uses_name_before_download(self):
         config = SimpleNamespace(
             identifier = "unsloth/DiffusionGemma-GGUF",
