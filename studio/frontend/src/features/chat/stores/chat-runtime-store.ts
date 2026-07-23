@@ -9,8 +9,13 @@ import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
+  getOrderedPresets,
   getPresetSource,
 } from "../presets/preset-policy";
+import {
+  applyPresetLoadConfig,
+  normalizePresetLoadConfig,
+} from "../presets/preset-load-config";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   type ChatLoraSummary,
@@ -1156,13 +1161,17 @@ function getHydratedCustomPresets(
   state: ChatRuntimeStore,
 ): Preset[] {
   return (
-    settings.customPresets?.map((preset) => ({
-      name: preset.name,
-      params: {
-        ...DEFAULT_INFERENCE_PARAMS,
-        ...preset.params,
-      },
-    })) ?? state.customPresets
+    settings.customPresets?.map((preset) => {
+      const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
+      return {
+        name: preset.name,
+        params: {
+          ...DEFAULT_INFERENCE_PARAMS,
+          ...preset.params,
+        },
+        ...(loadConfig ? { loadConfig } : {}),
+      };
+    }) ?? state.customPresets
   );
 }
 
@@ -1395,6 +1404,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           };
           return nextState;
         });
+        const hydrated = get();
+        const activeDefinition = getOrderedPresets(hydrated.customPresets).find(
+          (preset) => preset.name === hydrated.activePreset,
+        );
+        if (activeDefinition?.loadConfig) {
+          applyPresetLoadConfig(activeDefinition.loadConfig);
+        }
       } catch {
         // Hydrate failed: treat as hydrated-with-defaults so future setParams
         // calls reach saveSettingsPatch (which toasts on real network failure).

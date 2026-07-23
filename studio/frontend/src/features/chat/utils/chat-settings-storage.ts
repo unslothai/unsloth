@@ -8,6 +8,7 @@ import {
   type PersistedChatSettings,
   type PersistedInferenceParams,
 } from "../api/chat-settings-api";
+import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
   defaultInferenceParams,
@@ -152,6 +153,7 @@ function sanitizeInferenceParams(
 }
 
 function toFullPreset(preset: PersistedChatPreset): Preset {
+  const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
   return {
     name: preset.name,
     params: {
@@ -159,6 +161,7 @@ function toFullPreset(preset: PersistedChatPreset): Preset {
       ...preset.params,
       checkpoint: defaultInferenceParams.checkpoint,
     },
+    ...(loadConfig ? { loadConfig } : {}),
   };
 }
 
@@ -174,7 +177,12 @@ function sanitizeCustomPresets(
       const name = item.name.trim();
       if (!name) return null;
       const params = sanitizeInferenceParams(item.params);
-      return { name, params: params ?? {} };
+      const loadConfig = normalizePresetLoadConfig(item.loadConfig);
+      return {
+        name,
+        params: params ?? {},
+        ...(loadConfig ? { loadConfig } : {}),
+      };
     })
     .filter((preset): preset is PersistedChatPreset => preset !== null);
 
@@ -183,6 +191,7 @@ function sanitizeCustomPresets(
     (preset, index) => ({
       name: preset.name,
       params: presets[index]?.params ?? {},
+      ...(preset.loadConfig ? { loadConfig: preset.loadConfig } : {}),
     }),
   );
 }
