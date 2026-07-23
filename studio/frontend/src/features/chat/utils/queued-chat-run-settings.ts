@@ -78,6 +78,17 @@ export function discardQueuedChatRunSettings(id: number): void {
   if (index >= 0) pendingSettings.splice(index, 1);
 }
 
+export function discardQueuedChatRunSettingsForThread(
+  threadId?: string | null,
+): void {
+  if (!threadId) return;
+  for (let index = pendingSettings.length - 1; index >= 0; index -= 1) {
+    if (pendingSettings[index].threadIds.has(threadId)) {
+      pendingSettings.splice(index, 1);
+    }
+  }
+}
+
 export function consumeQueuedChatRunSettings(
   threadId?: string | null,
 ): QueuedChatRunSettings | null {

@@ -178,6 +178,12 @@ def test_retry_edit_and_compare_preflights_reserve_global_capacity():
     assert "if (!tryReservePreStreamRun())" in SHARED_COMPOSER
     assert "compareReservationPending = true;" in SHARED_COMPOSER
     assert "notifyPreStreamRunFailed();" in SHARED_COMPOSER
+    reserve = _between(
+        THREAD,
+        "function reserveInteractiveRun(",
+        "function isPromptQueueRunReadyToDispatch(",
+    )
+    assert "!usePromptQueueUI.getState().isRunning" in reserve
 
 
 def test_background_queue_snapshots_settings_and_blocks_model_changes():
@@ -195,6 +201,8 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert '"preserveThinking"' in QUEUED_SETTINGS
     assert "pendingSettingsIds" in target
     assert "discardQueuedChatRunSettings(settingsId)" in target
+    assert "discardQueuedChatRunSettingsForThread(threadId);" in THREAD
+    assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert "? queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
     assert ": liveRuntime" in CHAT_ADAPTER

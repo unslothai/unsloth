@@ -96,6 +96,7 @@ import {
   releasePreStreamRunReservation,
   tryReservePreStreamRun,
   discardQueuedChatRunSettings,
+  discardQueuedChatRunSettingsForThread,
   registerQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
   composerDraftKey,
@@ -436,7 +437,13 @@ function reserveInteractiveRun(
     stopPropagation?: () => void;
   },
 ): boolean {
-  if (promptQueueHasCapacity() && tryReservePreStreamRun()) return true;
+  if (
+    !usePromptQueueUI.getState().isRunning &&
+    promptQueueHasCapacity() &&
+    tryReservePreStreamRun()
+  ) {
+    return true;
+  }
   event?.preventDefault();
   event?.stopPropagation?.();
   toast.error("Wait for the current response to finish");
@@ -994,6 +1001,7 @@ function stopAllPromptQueueRuns() {
 }
 
 function handlePromptQueueRunFailed(threadId?: string | null) {
+  discardQueuedChatRunSettingsForThread(threadId);
   if (threadId) {
     const failedRun = findPromptQueueRunByThreadIds([threadId]);
     if (failedRun && promptQueueActiveRunIds.has(failedRun.id)) {
