@@ -152,6 +152,7 @@ async def stream_external_local_tool_loop(
     thread_id: Optional[str] = None,
     tool_call_timeout: int = 300,
     max_tool_iterations: int = 25,
+    rag_scope: Optional[dict] = None,
     cancel_event: Optional[threading.Event] = None,
     completion_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
@@ -207,9 +208,9 @@ async def stream_external_local_tool_loop(
                     break
                 payload = _parse_sse_data_line(line)
                 if payload is None:
-                    # Forward non-JSON / keepalive lines verbatim.
+                    # Preserve SSE comments/fields (e.g. `: ping`, `event:`) as-is.
                     if line and line.strip() and line.strip() != "data: [DONE]":
-                        yield line if line.startswith("data:") else f"data: {line}"
+                        yield line
                     continue
                 if payload.get("error"):
                     yield line if line.startswith("data:") else f"data: {json.dumps(payload)}"
@@ -313,7 +314,7 @@ async def stream_external_local_tool_loop(
             tool_call_id = tc["id"]
 
             # Skip tools the caller did not enable (defense in depth).
-            if enabled_names and name not in enabled_names and not str(name).startswith("mcp__"):
+            if enabled_names and name not in enabled_names:
                 result = f"Error: tool '{name}' is not enabled for this request."
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': name, 'tool_call_id': tool_call_id, 'arguments': arguments})}"
                 yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result})}"
@@ -347,6 +348,7 @@ async def stream_external_local_tool_loop(
             }
             if approval_id:
                 start_event["approval_id"] = approval_id
+            start_event["awaiting_confirmation"] = needs_confirm
             yield f"data: {json.dumps(start_event, ensure_ascii = False)}"
 
             denied = False
@@ -370,7 +372,7 @@ async def stream_external_local_tool_loop(
                         tool_call_timeout,
                         session_id,
                         thread_id,
-                        None,
+                        rag_scope,
                         bypass_permissions,
                         None,
                     )

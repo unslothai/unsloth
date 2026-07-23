@@ -562,6 +562,39 @@ class TestChatCompletionRequestToolFields:
         assert resp.status_code == 200, resp.text
         assert seen["called"] is True
 
+    def test_confirm_tool_calls_rejected_for_oai_compat_with_client_tools(self, monkeypatch):
+        """Client-supplied tools stay on passthrough; confirm is not supported there."""
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "custom_fn",
+                            "description": "x",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
             is_loaded = False

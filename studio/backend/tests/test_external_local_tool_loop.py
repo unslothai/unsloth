@@ -275,6 +275,194 @@ def test_stream_external_local_tool_loop_rejects_disabled_tool(monkeypatch):
     assert "not enabled" in end["result"]
 
 
+def test_stream_external_local_tool_loop_rejects_fabricated_mcp_tool(monkeypatch):
+    tool_call_stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_mcp",
+                    "type": "function",
+                    "function": {
+                        "name": "mcp__filesystem__read_file",
+                        "arguments": '{"path":"/etc/passwd"}',
+                    },
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "ok", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_call_stream, final_stream])
+    called = {"n": 0}
+
+    def fake_execute_tool(*_a, **_k):
+        called["n"] += 1
+        return "should not run"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "hi"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],  # MCP not enabled
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    assert called["n"] == 0
+    events = _parse_events(lines)
+    end = next(e for e in events if e.get("type") == "tool_end")
+    assert "not enabled" in end["result"]
+
+
+def test_stream_external_local_tool_loop_awaiting_confirmation(monkeypatch):
+    tool_call_stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query":"test"}',
+                    },
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "done", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_call_stream, final_stream])
+
+    def fake_wait_tool_decision(_slot, _approval_id, _cancel_event):
+        return "allow"
+
+    monkeypatch.setattr("core.inference.external_agentic.wait_tool_decision", fake_wait_tool_decision)
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda *_a, **_k: "ok",
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "search"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+        ):
+            lines.append(line)
+        return lines
+
+    events = _parse_events(asyncio.run(_run()))
+    start = next(e for e in events if e.get("type") == "tool_start")
+    assert start.get("awaiting_confirmation") is True
+    assert start.get("approval_id")
+
+
+def test_stream_external_local_tool_loop_forwards_rag_scope(monkeypatch):
+    tool_call_stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_rag",
+                    "type": "function",
+                    "function": {
+                        "name": "search_knowledge_base",
+                        "arguments": '{"query":"docs"}',
+                    },
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "answer", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_call_stream, final_stream])
+    rag_tool = {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge_base",
+            "description": "Search docs",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+    seen = {"rag_scope": None}
+
+    def fake_execute_tool(_name, _arguments, *_args, rag_scope=None, **_kwargs):
+        seen["rag_scope"] = _args[4] if len(_args) > 4 else rag_scope
+        return "hits"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "search docs"}],
+            model = "remote-model",
+            tools = [rag_tool],
+            rag_scope = {"thread_id": "t-ext-1"},
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    asyncio.run(_run())
+    assert seen["rag_scope"] == {"thread_id": "t-ext-1"}
+
+
+def test_stream_external_local_tool_loop_preserves_sse_keepalives():
+    client = _FakeClient(
+        [
+            [
+                ": ping\n",
+                _sse_chunk(content = "hi", finish_reason = "stop"),
+                "data: [DONE]",
+            ]
+        ]
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "hi"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    assert any(line.startswith(": ping") for line in lines)
+
+
 def test_proxy_ollama_enable_tools_attaches_local_tools(monkeypatch):
     """``_proxy_to_external_provider`` must enter the local tool loop for Ollama."""
     import routes.inference as inf_mod
