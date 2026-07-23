@@ -100,9 +100,7 @@ def test_cancelled_preflight_does_not_open_late_owned_dialogs():
     assert hf_token.index("await validateHfToken(normalized)") < hf_token.index(
         "if (options.signal?.aborted)"
     )
-    assert remote_code.index("await getRemoteCodeScan") < remote_code.index(
-        "if (signal?.aborted)"
-    )
+    assert remote_code.index("await getRemoteCodeScan") < remote_code.index("if (signal?.aborted)")
 
 
 def test_other_runtime_surface_can_cancel_the_shared_load():
