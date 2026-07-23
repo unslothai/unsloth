@@ -233,7 +233,8 @@ async def list_hidden_models(current_subject: str = Depends(get_current_subject)
 async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    cache_path: Optional[str] = Body(None),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token)
+    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)

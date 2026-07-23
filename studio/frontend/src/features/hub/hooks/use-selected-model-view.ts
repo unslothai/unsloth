@@ -48,7 +48,12 @@ function localResource(
       ? "cached"
       : "local";
   const id =
-    row.source === "hf_cache" && repoId && !row.partial ? repoId : row.loadId;
+    row.source === "hf_cache" &&
+    row.activeCache !== false &&
+    repoId &&
+    !row.partial
+      ? repoId
+      : row.loadId;
   return {
     repoId,
     localPath: row.path,

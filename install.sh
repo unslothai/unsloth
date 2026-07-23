@@ -475,14 +475,20 @@ _start_studio_venv_replacement() {
     _stamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo "time")
     _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$"
     _suffix=0
-    while [ -e "$_candidate" ]; do
+    while [ -e "$_candidate" ] || [ -L "$_candidate" ]; do
         _suffix=$((_suffix + 1))
         _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$.$_suffix"
     done
-    mv "$_existing_dir" "$_candidate"
     _VENV_ROLLBACK_DIR="$_candidate"
     _VENV_ROLLBACK_TARGET="$_existing_dir"
     _VENV_ROLLBACK_ACTIVE=true
+    # Publish the rollback state before the atomic rename so a signal cannot
+    # land after mv but before the exit handlers know where the old venv went.
+    if ! mv "$_existing_dir" "$_candidate"; then
+        _VENV_ROLLBACK_ACTIVE=false
+        _VENV_ROLLBACK_DIR=""
+        return 1
+    fi
     substep "previous environment preserved for rollback"
 }
 
@@ -503,13 +509,68 @@ _restore_studio_venv_replacement() {
     fi
 }
 
-_commit_studio_venv_replacement() {
-    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
-    if [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ]; then
-        rm -rf "$_VENV_ROLLBACK_DIR" || true
+_studio_venv_rollback_must_be_preserved() {
+    _rollback_name=${1##*/}
+    _rollback_metadata=${_rollback_name#unsloth_studio.rollback.}
+    _rollback_stamp=${_rollback_metadata%%.*}
+    _rollback_process=${_rollback_metadata#*.}
+    # Preserve anything outside the installer's timestamp.PID[.suffix] format.
+    [ "$_rollback_process" != "$_rollback_metadata" ] || return 0
+    case "$_rollback_stamp" in
+        time) ;;
+        ''|*[!0-9]*) return 0 ;;
+        *) [ "${#_rollback_stamp}" -eq 14 ] || return 0 ;;
+    esac
+    _rollback_pid=${_rollback_process%%.*}
+    case "$_rollback_pid" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    _rollback_suffix=${_rollback_process#*.}
+    if [ "$_rollback_suffix" != "$_rollback_process" ]; then
+        case "$_rollback_suffix" in ''|*[!0-9]*) return 0 ;; esac
     fi
-    _VENV_ROLLBACK_ACTIVE=false
-    _VENV_ROLLBACK_DIR=""
+    kill -0 "$_rollback_pid" 2>/dev/null
+}
+
+_prune_stale_studio_venv_rollbacks() {
+    for _stale_rollback in "$STUDIO_HOME"/unsloth_studio.rollback.*; do
+        [ -d "$_stale_rollback" ] || continue
+        if [ -L "$_stale_rollback" ]; then
+            echo "⚠️  Refusing to remove rollback symlink $_stale_rollback" >&2
+            continue
+        fi
+        # A concurrent installer may have moved its live venv aside. The PID in
+        # the generated name keeps this successful run from deleting its rescue copy.
+        _studio_venv_rollback_must_be_preserved "$_stale_rollback" && continue
+        if rm -rf "$_stale_rollback"; then
+            substep "removed stale environment rollback ${_stale_rollback##*/}"
+        else
+            echo "⚠️  Could not remove stale environment rollback $_stale_rollback" >&2
+        fi
+    done
+}
+
+_commit_studio_venv_replacement() {
+    if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
+        _rollback_to_remove="$_VENV_ROLLBACK_DIR"
+        # The new environment is already committed. Clear the restore state
+        # before deletion so an interrupt cannot replace it with a half-deleted backup.
+        _VENV_ROLLBACK_ACTIVE=false
+        _VENV_ROLLBACK_DIR=""
+        if [ -n "$_rollback_to_remove" ] && [ -d "$_rollback_to_remove" ]; then
+            if ! rm -rf "$_rollback_to_remove"; then
+                echo "⚠️  Could not remove environment rollback $_rollback_to_remove" >&2
+            fi
+        fi
+    fi
+    # Only prune older orphaned copies after the replacement has succeeded, so
+    # an interrupted install never discards the last known-good environment.
+    _prune_stale_studio_venv_rollbacks
+}
+
+_cleanup_install_temporaries() {
+    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -517,15 +578,28 @@ _on_install_exit() {
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
     fi
-    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
-    [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
+    _cleanup_install_temporaries
     exit "$_status"
+}
+
+_on_install_signal() {
+    _signal_status="$1"
+    # EXIT is disabled to avoid a second cleanup pass. Ignore further termination
+    # signals until the old environment is back in place.
+    trap - EXIT
+    trap '' HUP INT TERM
+    _restore_studio_venv_replacement
+    _cleanup_install_temporaries
+    exit "$_signal_status"
 }
 # Empty so an inherited value never reaches the trap's rm; only temp paths this
 # script creates below (spaced-path dir, torch-trio overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
+trap '_on_install_signal 129' HUP
+trap '_on_install_signal 130' INT
+trap '_on_install_signal 143' TERM
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -3397,7 +3471,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4"
+            "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -3414,7 +3488,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" ${_MLX_LM_EXCLUDE_ARG:-}
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -3638,7 +3712,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4"
+            "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -3657,7 +3731,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4"
+            --upgrade-package unsloth "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3685,7 +3759,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.4" "unsloth>=2026.7.4" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.6" "unsloth>=2026.7.5" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

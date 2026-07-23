@@ -196,8 +196,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     !isLoginMode &&
     (currentPassword.length < 8 ||
       newPassword.length < 8 ||
+      /\s/.test(newPassword) ||
       newPassword !== confirmPassword ||
       currentPassword === newPassword);
+  const showWhitespaceWarning = !isLoginMode && /\s/.test(newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
@@ -220,6 +222,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
       if (newPassword.length < 8) {
         setError("New password must be at least 8 characters.");
+        return;
+      }
+      if (/\s/.test(newPassword)) {
+        setError("New password cannot contain spaces.");
         return;
       }
       if (newPassword !== confirmPassword) {
@@ -425,13 +431,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             </div>
             <p
               className={`min-h-4 text-xs ${
-                showPasswordMismatchWarning ? "text-destructive" : "text-muted-foreground"
+                showWhitespaceWarning || showPasswordMismatchWarning
+                  ? "text-destructive"
+                  : "text-muted-foreground"
               }`}
               aria-live="polite"
             >
-              {showPasswordMismatchWarning
-                ? "Please ensure passwords match."
-                : "Must be at least 8 characters."}
+              {showWhitespaceWarning
+                ? "New password cannot contain spaces."
+                : showPasswordMismatchWarning
+                  ? "Please ensure passwords match."
+                  : "Must be at least 8 characters."}
             </p>
           </>
         )}

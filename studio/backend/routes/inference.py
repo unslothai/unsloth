@@ -29,6 +29,8 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
+from hub.dependencies import get_hf_token
 from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -1692,6 +1694,8 @@ async def _aiter_llama_stream_items(
 from models.inference import (
     LoadRequest,
     UnloadRequest,
+    TranscribeRequest,
+    SttLoadRequest,
     GenerateRequest,
     LoadResponse,
     LoadProgressResponse,
@@ -6122,6 +6126,342 @@ async def generate_audio(
 
 
 # =====================================================================
+# Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
+# =====================================================================
+
+
+def _resolve_stt_engine(engine: Optional[str]) -> str:
+    """Normalize the requested STT engine name; default is Transformers."""
+    normalized = (engine or "transformers").strip().lower()
+    if normalized in ("", "transformers", "whisper"):
+        return "transformers"
+    if normalized in ("gguf", "ggml", "whisper_cpp", "whisper.cpp"):
+        return "gguf"
+    raise HTTPException(
+        status_code = 422,
+        detail = f"Unknown STT engine '{engine}'. Use 'transformers' or 'gguf'.",
+    )
+
+
+def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
+    """Resolve the engine that will actually serve a model.
+
+    whisper.cpp (gguf) only accepts curated ids, which Transformers serves too,
+    so when whisper-server is not installed (the common case: `unsloth studio
+    update` does not yet build it) fall back to Transformers instead of 501-ing
+    on every recording. Used for download/load/transcribe; unload targets a
+    specific engine via _resolve_stt_engine.
+    """
+    resolved = _resolve_stt_engine(engine)
+    if resolved == "gguf":
+        from core.inference import stt_ggml_sidecar
+        if not stt_ggml_sidecar.is_available():
+            return "transformers"
+    return resolved
+
+
+def _stt_sidecar_for(engine: str):
+    if engine == "gguf":
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+        return get_ggml_stt_sidecar()
+    from core.inference.stt_sidecar import get_stt_sidecar
+    return get_stt_sidecar()
+
+
+@studio_router.get("/audio/stt/status")
+async def stt_status(
+    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Report STT availability and which model, if any, is resident.
+
+    ``model`` extends the Transformers ``downloaded_models`` check to a
+    custom Hugging Face repository beyond the curated defaults.
+    """
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+    from core.inference.stt_sidecar import (
+        DEFAULT_STT_MODEL,
+        STT_MODELS,
+        get_stt_sidecar,
+        is_available,
+    )
+
+    sidecar = get_stt_sidecar()
+    ggml = stt_ggml_sidecar.get_ggml_stt_sidecar()
+    transformers_downloaded = [
+        model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
+    ]
+    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+        transformers_downloaded.append(model)
+    return JSONResponse(
+        content = {
+            "available": is_available(),
+            "loaded_model": sidecar.loaded_model,
+            "loading": sidecar.is_loading(),
+            "device": sidecar.device,
+            "keep_alive_seconds": sidecar.keep_alive_seconds,
+            "default_model": DEFAULT_STT_MODEL,
+            "models": list(STT_MODELS.keys()),
+            # Transformers engine, same shape as "gguf" below so clients read
+            # either generically. Top-level fields above kept for old clients.
+            "transformers": {
+                "available": is_available(),
+                "loaded_model": sidecar.loaded_model,
+                "loading": sidecar.is_loading(),
+                "device": sidecar.device,
+                "keep_alive_seconds": sidecar.keep_alive_seconds,
+                "default_model": DEFAULT_STT_MODEL,
+                "models": list(STT_MODELS.keys()),
+                "downloaded_models": transformers_downloaded,
+                "download": stt_sidecar.download_status(),
+            },
+            # whisper.cpp (GGUF) engine.
+            "gguf": {
+                "available": stt_ggml_sidecar.is_available(),
+                "loaded_model": ggml.loaded_model,
+                "loading": ggml.is_loading(),
+                "device": ggml.device,
+                "keep_alive_seconds": ggml.keep_alive_seconds,
+                "default_model": stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL,
+                "models": list(stt_ggml_sidecar.GGML_STT_MODELS.keys()),
+                "downloaded_models": [
+                    model_id
+                    for model_id in stt_ggml_sidecar.GGML_STT_MODELS
+                    if stt_ggml_sidecar._cached_model_path(model_id) is not None
+                ],
+                "download": stt_ggml_sidecar.download_status(),
+            },
+        }
+    )
+
+
+@studio_router.post("/audio/stt/download")
+async def stt_download(
+    payload: SttLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Start a background download of a dictation model.
+
+    Both engines download directly (a GGML checkpoint is a single file the Model
+    Hub's GGUF variant planner cannot express; a Transformers checkpoint is a
+    whole snapshot). Progress is reported by /audio/stt/status.
+    """
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
+
+    engine = _resolve_serving_stt_engine(payload.engine)
+    module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
+    try:
+        # Transformers accepts custom `owner/model` repos, so confirm the repo is
+        # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
+        # possibly-large non-STT repo into the shared cache. Curated ids
+        # short-circuit; GGUF only accepts curated ids, so it needs no check.
+        if engine != "gguf":
+            validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+            # Pin the download to the commit that was just validated so the
+            # repo cannot be swapped between validation and snapshot_download.
+            await asyncio.to_thread(
+                module.start_model_download,
+                payload.model,
+                hf_token,
+                validated.get("revision"),
+            )
+        else:
+            await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    return JSONResponse(content = module.download_status())
+
+
+@studio_router.post("/audio/stt/load")
+async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
+    """Load the selected STT model after the user starts local dictation."""
+    from core.inference.stt_sidecar import (
+        SttLoadCancelledError,
+        SttModelCompatibilityError,
+        SttModelIdError,
+        SttModelNotDownloadedError,
+        SttUnavailableError,
+        get_stt_sidecar,
+    )
+
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(payload.engine))
+    try:
+        await asyncio.to_thread(sidecar.load, payload.model)
+    except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except SttLoadCancelledError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except Exception as e:
+        logger.error(f"STT load error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
+
+
+@studio_router.post("/audio/stt/validate")
+async def stt_validate(
+    payload: SttLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Verify a Hub repository is a Whisper checkpoint before downloading it."""
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
+
+    try:
+        result = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+    except (SttModelIdError, SttModelCompatibilityError) as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    return JSONResponse(content = result)
+
+
+@studio_router.post("/audio/stt/unload")
+async def stt_unload(
+    engine: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Release the local STT model when dictation is idle.
+
+    Without an engine, both sidecars unload so an engine switch in Voice
+    settings always frees whichever backend was resident.
+    """
+    if engine is None:
+        engines = ["transformers", "gguf"]
+    else:
+        # Use the serving resolver: a "gguf" pick without whisper-server is
+        # actually served by the Transformers fallback, so unload must target
+        # that same engine or the resident model is never freed.
+        engines = [_resolve_serving_stt_engine(engine)]
+    # Attempt every engine even if one raises, so failing to unload one never
+    # skips freeing the other (both can be resident after a switch).
+    failed: list[str] = []
+    for name in engines:
+        try:
+            await asyncio.to_thread(_stt_sidecar_for(name).unload)
+        except Exception as exc:  # noqa: BLE001 - report after attempting all engines
+            logger.warning("Failed to unload STT engine '%s': %s", name, exc)
+            failed.append(name)
+    if failed:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
+        )
+    return JSONResponse(content = {"loaded_model": None, "device": None})
+
+
+async def _transcribe_audio_bytes(
+    raw: bytes,
+    model: Optional[str],
+    language: Optional[str],
+    fast: bool,
+    engine: Optional[str] = None,
+) -> JSONResponse:
+    """Run STT for already-decoded request bytes."""
+    from core.inference.stt_sidecar import (
+        SttAudioDecodeError,
+        SttAudioTooLongError,
+        SttLanguageError,
+        SttLoadCancelledError,
+        SttModelCompatibilityError,
+        SttModelIdError,
+        SttModelNotDownloadedError,
+        SttUnavailableError,
+    )
+
+    if not raw:
+        raise HTTPException(status_code = 400, detail = "Audio is empty.")
+    if len(raw) > _MAX_AUDIO_RAW_BYTES:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
+    try:
+        result = await asyncio.to_thread(
+            sidecar.transcribe,
+            raw,
+            model,
+            language,
+            fast,
+        )
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except SttLoadCancelledError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttLanguageError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttAudioTooLongError as e:
+        raise HTTPException(status_code = 413, detail = str(e))
+    except SttAudioDecodeError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except Exception as e:
+        logger.error(f"Transcription error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    return JSONResponse(content = result)
+
+
+@studio_router.post("/audio/transcribe")
+async def transcribe_audio(
+    payload: TranscribeRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Transcribe dictation audio to text via the STT sidecar.
+
+    Runs alongside the chat model without evicting it, so any model (including
+    text-only ones) can be driven by voice.
+    """
+    b64 = payload.audio or ""
+    if not b64:
+        raise HTTPException(status_code = 400, detail = "No audio provided.")
+    if len(b64) > _MAX_AUDIO_B64_CHARS:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    try:
+        raw = base64.b64decode(b64, validate = True)
+    except Exception:
+        raise HTTPException(status_code = 400, detail = "Audio is not valid base64.")
+    return await _transcribe_audio_bytes(
+        raw, payload.model, payload.language, payload.fast, payload.engine
+    )
+
+
+@studio_router.post("/audio/transcribe/raw")
+async def transcribe_audio_raw(
+    request: Request,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+    fast: bool = False,
+    engine: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Transcribe a raw audio body without base64 or JSON conversion overhead."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > _MAX_AUDIO_RAW_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
+        chunks.append(chunk)
+    return await _transcribe_audio_bytes(b"".join(chunks), model, language, fast, engine)
+
+
+# =====================================================================
 # OpenAI-Compatible Chat Completions  (/chat/completions)
 # =====================================================================
 
@@ -6162,8 +6502,8 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 # cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
 # bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
 # can expand to a far larger PCM array than the encoded-size cap implies.
-_MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
-_MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
+_MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
+_MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 _MAX_AUDIO_SECONDS = 30 * 60
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
