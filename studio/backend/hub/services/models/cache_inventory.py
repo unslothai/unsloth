@@ -34,7 +34,6 @@ from hub.services.models.common import (
     _is_mmproj_filename,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
-    _prefer_complete_larger,
     _runtime_for_format,
 )
 
@@ -250,24 +249,76 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
 def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
     if existing is None:
         return True
-    return _prefer_complete_larger(
-        bool(candidate.get("partial")),
-        int(candidate.get("size_bytes") or 0),
-        bool(existing.get("partial")),
-        int(existing.get("size_bytes") or 0),
-    )
+    candidate_partial = bool(candidate.get("partial"))
+    existing_partial = bool(existing.get("partial"))
+    if candidate_partial != existing_partial:
+        return not candidate_partial
+    candidate_active = bool(candidate.get("active_cache"))
+    existing_active = bool(existing.get("active_cache"))
+    if candidate_active != existing_active:
+        return candidate_active
+    return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
+
+
+def _cached_gguf_load_snapshot(repo_id: str, repo_path: Path) -> Optional[Path]:
+    """Snapshot containing the variants that cache inventory will expose."""
+    try:
+        from core.inference.llama_cpp import _snapshot_dir_of, cached_gguf_for_load
+        from hub.utils.gguf import list_gguf_variants_from_hf_cache
+
+        cached = list_gguf_variants_from_hf_cache(
+            repo_id,
+            offline = True,
+            root = repo_path.parent,
+        )
+        if cached is None:
+            return None
+        variants, _has_vision = cached
+        for variant in variants:
+            path = cached_gguf_for_load(
+                repo_id,
+                variant.quant,
+                cache_dir = str(repo_path.parent),
+            )
+            snapshot = _snapshot_dir_of(path) if path is not None else None
+            if snapshot is not None:
+                return snapshot
+    except Exception:
+        return None
+    return None
 
 
 def _cache_inventory_fields(
     repo_id: str,
     model_format: ModelFormat,
     *,
+    repo_path: Optional[Path] = None,
+    snapshot_path: Optional[Path] = None,
+    active_hub_cache: Optional[Path] = None,
     partial: bool = False,
     requires_variant: bool = False,
 ) -> dict:
+    load_id = repo_id
+    active_cache = True
+    if repo_path is not None:
+        try:
+            if active_hub_cache is None:
+                from utils.hf_cache_settings import get_hf_cache_paths
+                active_hub_cache = get_hf_cache_paths().hub_cache
+            active_root = active_hub_cache.resolve(strict = False)
+            cached_root = repo_path.parent.resolve(strict = False)
+            if cached_root != active_root:
+                active_cache = False
+                if model_format == "gguf":
+                    snapshot_path = _cached_gguf_load_snapshot(repo_id, repo_path) or snapshot_path
+                load_id = str(snapshot_path or repo_path.resolve(strict = False))
+        except (OSError, RuntimeError, ValueError):
+            active_cache = False
+            load_id = str(snapshot_path or repo_path)
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
-        "load_id": repo_id,
+        "load_id": load_id,
+        "active_cache": active_cache,
         "model_format": model_format,
         "runtime": _runtime_for_format(model_format),
         "format_variant": None,
@@ -294,6 +345,9 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
 
     seen_lower: dict[str, dict] = {}
     for hf_cache in cache_scans:
@@ -305,7 +359,10 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
-                has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                has_variant_state, variant_state_size = _gguf_variant_state_summary(
+                    repo_id,
+                    hub_cache = repo_path.parent,
+                )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
@@ -342,6 +399,9 @@ def _scan_cached_gguf() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         "gguf",
+                        repo_path = repo_path,
+                        snapshot_path = snapshot_path,
+                        active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                         requires_variant = True,
                     )
@@ -487,6 +547,19 @@ def _read_json_object(path: Path) -> dict:
         return {}
 
 
+def _is_whisper_model_config(config: object) -> bool:
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type.strip().lower() == "whisper":
+        return True
+    architectures = config.get("architectures")
+    return isinstance(architectures, list) and any(
+        isinstance(name, str) and name == "WhisperForConditionalGeneration"
+        for name in architectures
+    )
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -517,6 +590,8 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 
     result: dict = {}
     config = _read_json_object(snapshot / "config.json")
+    if _is_whisper_model_config(config):
+        result["_hidden_stt"] = True
     quant_method = (
         config.get("quantization_config", {}).get("quant_method")
         if isinstance(config.get("quantization_config"), dict)
@@ -543,11 +618,15 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 def _scan_cached_models() -> list[dict]:
     """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
 
     seen_lower: dict[str, dict] = {}
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
+    skipped_stt = 0
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             inspected += 1
@@ -575,6 +654,10 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
+                local_metadata = _cached_model_local_metadata(repo_path)
+                if local_metadata.pop("_hidden_stt", False):
+                    skipped_stt += 1
+                    continue
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
@@ -594,7 +677,7 @@ def _scan_cached_models() -> list[dict]:
                         if snapshot_partial
                         else None
                     ),
-                    **_cached_model_local_metadata(repo_path),
+                    **local_metadata,
                 }
                 last_modified = max(
                     payload.last_modified,
@@ -606,6 +689,9 @@ def _scan_cached_models() -> list[dict]:
                     _cache_inventory_fields(
                         repo_id,
                         payload.model_format,
+                        repo_path = repo_path,
+                        snapshot_path = snapshot_path,
+                        active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                     )
                 )
@@ -619,10 +705,12 @@ def _scan_cached_models() -> list[dict]:
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
-        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
+        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d "
+        "skipped_stt=%d returned=%d",
         inspected,
         skipped_gguf,
         skipped_no_weights,
+        skipped_stt,
         len(cached),
     )
     return cached

@@ -131,6 +131,10 @@ def _symlink_or_skip(link: Path, target: Path) -> None:
 def hf_cache(tmp_path, monkeypatch):
     """Point ``huggingface_hub.constants.HF_HUB_CACHE`` at a temp dir."""
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+    )
     return tmp_path
 
 
@@ -228,6 +232,10 @@ class TestGgufVariantFileResolution:
             return f"/fake/{repo_id}/{filename}"
 
         monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+        )
         with (
             patch(
                 "huggingface_hub.list_repo_files",
@@ -435,6 +443,40 @@ class TestGgufVariantFileResolution:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
+    def test_download_companion_uses_selected_cache_not_import_time_default(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        import_time_cache = tmp_path / "import-time-cache"
+        selected_cache = tmp_path / "selected-cache"
+        monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(import_time_cache))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = selected_cache),
+        )
+        repo = "unsloth/vision-GGUF"
+        snap = _build_cache(selected_cache, repo, {"mmproj-F16.gguf": 4})
+        backend = LlamaCppBackend()
+
+        offline_error = type("OfflineModeIsEnabled", (Exception,), {})
+
+        def fail_list(*_args, **_kwargs):
+            raise offline_error("offline")
+
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("selected-cache companion must not download")
+
+        with (
+            patch("huggingface_hub.list_repo_files", fail_list),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fail_download,
+            ),
+        ):
+            out = backend._download_mmproj(hf_repo = repo)
+
+        assert out == str(snap / "mmproj-F16.gguf")
+
     def test_download_includes_uppercase_split_gguf_shards(self, monkeypatch, tmp_path):
         backend = LlamaCppBackend()
         downloaded: list[str] = []
@@ -461,6 +503,10 @@ class TestGgufVariantFileResolution:
             return f"/fake/{repo_id}/{filename}"
 
         monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+        )
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: files),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
@@ -677,12 +723,12 @@ class TestResolveRepoIdCasing:
                 _types.SimpleNamespace(path = path, size = 100) for path in paths
             ],
         ):
-            out = list_hub_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+            out = list_hub_gguf_variants_from_hf_cache("unsloth/vision-GGUF", root = hf_cache)
             variants, has_vision = out
             assert [v.quant for v in variants] == ["Q4_K_M"]
 
             (partial / "vision-Q8_0-00002-of-00002.gguf").write_bytes(b"\0" * 50)
-            out = list_hub_gguf_variants_from_hf_cache("unsloth/vision-GGUF")
+            out = list_hub_gguf_variants_from_hf_cache("unsloth/vision-GGUF", root = hf_cache)
             variants, has_vision = out
             assert [v.quant for v in variants] == ["Q4_K_M"]
 

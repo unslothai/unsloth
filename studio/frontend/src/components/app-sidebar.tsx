@@ -45,6 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
+  getClientPlatform,
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
@@ -55,6 +56,7 @@ import {
   Archive03Icon,
   ArrowRight02Icon,
   BadgeInfoIcon,
+  BubbleChatIcon,
   ChefHatIcon,
   CloudIcon,
   CpuIcon,
@@ -108,6 +110,7 @@ import {
   deleteChatItem,
   listStoredChatThreads,
   moveChatItemToProject,
+  notifyChatHistoryUpdated,
   renameChatItem,
   renameChatProject,
   useChatRuntimeStore,
@@ -115,6 +118,7 @@ import {
   useChatSearchStore,
   useChatSidebarItems,
   usePinnedChatsStore,
+  usePinnedProjectsStore,
   useChatPreferencesStore,
   type ProjectRecord,
   type SidebarItem,
@@ -140,7 +144,14 @@ import {
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
@@ -198,6 +209,9 @@ const TestTubeOutlineIcon = TestTube01Icon.slice(
 
 
 type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+
+// A pinned project shows this many recent chats before "Show more".
+const PINNED_PROJECT_CHAT_LIMIT = 4;
 
 const CHAT_EXPORT_OPTIONS: Array<{
   label: string;
@@ -307,7 +321,7 @@ function NavItem({
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
-          <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
+          <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {spinner && (
             <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
@@ -330,6 +344,8 @@ export function AppSidebar() {
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
+  // Mac uses Cmd, others use Ctrl. Not Tauri-gated, so it's right on web too.
+  const [isMacPlatform] = useState(() => getClientPlatform().includes("mac"));
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -445,14 +461,63 @@ export function AppSidebar() {
       ),
     [allChatItems, pinnedIdSet],
   );
-  // Pinned chats, in pin order (most recent first).
+  const [pinnedOpen, setPinnedOpen] = useState(true);
+  // "Projects" section: projects the user pinned, in pin order (most recent
+  // first). The section only appears once at least one project is pinned.
+  const pinnedProjectIds = usePinnedProjectsStore((s) => s.pinnedIds);
+  const unpinProject = usePinnedProjectsStore((s) => s.unpin);
+  const pinnedProjectRecords = useMemo(() => {
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    return pinnedProjectIds
+      .map((id) => byId.get(id))
+      .filter((p): p is ProjectRecord => Boolean(p));
+  }, [projects, pinnedProjectIds]);
+  // Pinned chats, in pin order (most recent first). Includes chats that live
+  // inside a project: pinning promotes a chat into this list, and it is removed
+  // from the project's nested list below so it never shows twice.
   const pinnedChatItems = useMemo(() => {
     const byId = new Map(allChatItems.map((item) => [item.id, item]));
     return pinnedIds
       .map((id) => byId.get(id))
       .filter((item): item is SidebarItem => Boolean(item));
   }, [allChatItems, pinnedIds]);
-  const [pinnedOpen, setPinnedOpen] = useState(true);
+  // A pinned project reveals its recent chats (most recent first) nested below.
+  // Pinned chats are excluded here since they render in the pinned-chats list.
+  const chatsByProjectId = useMemo(() => {
+    const map = new Map<string, SidebarItem[]>();
+    for (const item of allChatItems) {
+      if (!item.projectId) continue;
+      if (pinnedIdSet.has(item.id)) continue;
+      const list = map.get(item.projectId);
+      if (list) list.push(item);
+      else map.set(item.projectId, [item]);
+    }
+    for (const list of map.values())
+      list.sort((a, b) => b.updatedAt - a.updatedAt);
+    return map;
+  }, [allChatItems, pinnedIdSet]);
+  // Default expanded (not collapsed); the row toggles this. Show-more reveals
+  // chats past the first PINNED_PROJECT_CHAT_LIMIT.
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [expandedChatProjectIds, setExpandedChatProjectIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const toggleProjectCollapsed = (id: string) =>
+    setCollapsedProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleProjectShowAll = (id: string) =>
+    setExpandedChatProjectIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const anyChatRunning = useChatRuntimeStore((s) =>
@@ -732,6 +797,8 @@ export function AppSidebar() {
     const shouldDeleteProjectFiles =
       target.kind === "project" && deleteProjectFiles;
     setConfirmingDelete(null);
+    // Reset so the next project delete never inherits this checkbox.
+    setDeleteProjectFiles(false);
     if (target.kind === "chat") {
       await deleteChatWithCleanup(target.item);
       return;
@@ -741,7 +808,20 @@ export function AppSidebar() {
         await deleteChatProject(target.project.id, {
           deleteFiles: shouldDeleteProjectFiles,
         });
-        if (activeProjectId === target.project.id) {
+        // Refresh chat history so the project's reparented chats don't linger
+        // as stale top-level rows.
+        notifyChatHistoryUpdated();
+        // activeProjectId is only the ?project= param; on a thread-only URL the
+        // project is resolved from the thread into the runtime store, so check
+        // that too or we strand the user on a now-deleted thread. Only redirect
+        // from a chat route: the runtime store value can be stale elsewhere.
+        const runtimeProjectId =
+          useChatRuntimeStore.getState().activeProjectId;
+        if (
+          isChatRoute &&
+          (activeProjectId === target.project.id ||
+            runtimeProjectId === target.project.id)
+        ) {
           useChatRuntimeStore.getState().setActiveProjectId(null);
           navigate({ to: "/chat", search: { new: createNavigationNonce() } });
         }
@@ -824,12 +904,15 @@ export function AppSidebar() {
         ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
+      // Pinned chats carry a chat icon, so add the nav-item icon gap.
+      isPinned && variant !== "project" && "gap-[8.5px]",
       variant === "project"
-        ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
+        ? // Room for the hover pin quick-action plus the kebab.
+          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
         : isPinned
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
@@ -856,7 +939,7 @@ export function AppSidebar() {
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
               // No pill or box; edit in place as plain highlighted text.
-              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-[14.5px] leading-[19px] font-medium tracking-nav outline-none",
+              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
               variant === "project" ? "pl-[39px]" : "pl-3",
             )}
           />
@@ -889,10 +972,43 @@ export function AppSidebar() {
             closeMobileIfOpen();
           }}
         >
+          {isPinned && variant !== "project" && (
+            <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
+          )}
           <span className="truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
         </SidebarMenuButton>
+        {variant === "project" && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePinnedChat(item.id);
+            }}
+            aria-label={isPinned ? "Unpin chat" : "Pin chat"}
+            className="sidebar-row-action is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+          >
+            <span className="sidebar-row-action-glyph">
+              <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+            </span>
+          </button>
+        )}
+        {variant === "recent" && isPinned && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePinnedChat(item.id);
+            }}
+            aria-label="Unpin chat"
+            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+          >
+            <span className="sidebar-row-action-glyph">
+              <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
+            </span>
+          </button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
@@ -1068,40 +1184,70 @@ export function AppSidebar() {
                   aria-disabled={chatDisabled}
                   tabIndex={chatDisabled ? -1 : undefined}
                 >
+                  {/* Logo lockup follows the UI font size at half rate:
+                      base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="h-[34px] w-[34px] rounded-full object-cover"
+                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] rounded-full object-cover"
                   />
-                  <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                  <span className="font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
                     unsloth
                   </span>
-                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>
                 </Link>
               )}
-              {!isMobile && (
+              <div className="flex items-center gap-0.5">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
                       type="button"
-                      onClick={togglePinned}
+                      onClick={() => {
+                        useChatSearchStore.getState().open();
+                        closeMobileIfOpen();
+                      }}
                       className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("shell.aria.closeSidebar")}
+                      aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
                     side="bottom"
                     sideOffset={6}
-                    className="tooltip-compact"
+                    className="tooltip-compact flex items-center gap-1.5"
+                    hidden={isMobile}
                   >
-                    {t("shell.aria.closeSidebar")}
+                    {t("shell.navigation.search")}
+                    <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
+                      {isMacPlatform ? "⌘K" : "Ctrl+K"}
+                    </kbd>
                   </TooltipContent>
                 </Tooltip>
-              )}
+                {!isMobile && (
+                  <Tooltip>
+                    <TooltipPrimitive.Trigger asChild>
+                      <button
+                        type="button"
+                        onClick={togglePinned}
+                        className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={t("shell.aria.closeSidebar")}
+                      >
+                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                      </button>
+                    </TooltipPrimitive.Trigger>
+                    <TooltipContent
+                      side="bottom"
+                      sideOffset={6}
+                      className="tooltip-compact"
+                    >
+                      {t("shell.aria.closeSidebar")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
             </div>
             {!isMobile && (
               <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[33px] items-center justify-center w-full">
@@ -1133,8 +1279,10 @@ export function AppSidebar() {
       {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pb-px shrink-0",
+          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 shrink-0 transition-[padding]",
           showCompactMacBrand ? "pt-0" : "pt-[9px]",
+          // Scrolled: New Chat is pinned, give a little gap below it.
+          scrolled ? "pb-[5px]" : "pb-px",
         )}
       >
         <SidebarGroupContent>
@@ -1167,10 +1315,18 @@ export function AppSidebar() {
                 openNewChat(null);
               }}
             />
+            {/* Search sits in the header when the brand row is shown (mac/web).
+                Hide this row there, but keep it in the collapsed rail. On custom
+                titlebars (win/linux) there's no header button, so keep the row. */}
             <NavItem
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
+              className={
+                showSidebarBrand
+                  ? "hidden group-data-[collapsible=icon]:block"
+                  : undefined
+              }
               onClick={() => {
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
@@ -1203,6 +1359,18 @@ export function AppSidebar() {
         <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
+              <NavItem
+                icon={DashboardCircleIcon}
+                label={t("shell.navigation.hub")}
+                active={pathname === "/hub" || pathname.startsWith("/hub/")}
+                onClick={() => {
+                  navigate({ to: "/hub" });
+                  closeMobileIfOpen();
+                }}
+                onIntent={() => {
+                  preloadSilently(router.preloadRoute({ to: "/hub" }));
+                }}
+              />
               <NavItem
                 icon={Folder01Icon}
                 label="Projects"
@@ -1238,18 +1406,6 @@ export function AppSidebar() {
                   </span>
                 </button>
               </NavItem>
-              <NavItem
-                icon={DashboardCircleIcon}
-                label={t("shell.navigation.hub")}
-                active={pathname === "/hub" || pathname.startsWith("/hub/")}
-                onClick={() => {
-                  navigate({ to: "/hub" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/hub" }));
-                }}
-              />
               {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
               <NavItem
                 icon={TestTubeOutlineIcon}
@@ -1344,28 +1500,156 @@ export function AppSidebar() {
           </SidebarGroup>
         </Collapsible>
 
-        {/* Pinned chats: own section above Recents */}
-        {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
-          <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
-            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                  Pinned
-                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                </CollapsibleTrigger>
-              </SidebarGroupLabel>
-              <CollapsibleContent>
-                <SidebarGroupContent className="pl-1.5 pr-2">
-                  <SidebarMenu>
-                    {pinnedChatItems.map((item) =>
-                      renderChatSidebarItem(item, "recent"),
-                    )}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </CollapsibleContent>
-            </SidebarGroup>
-          </Collapsible>
-        )}
+        {/* Pinned: pinned projects (with their chats) and pinned chats */}
+        {!isStudioRoute &&
+          !showTrainingRecents &&
+          (pinnedProjectRecords.length > 0 ||
+            pinnedChatItems.length > 0) && (
+            <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
+              <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+                <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+                  <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                    Pinned
+                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                  </CollapsibleTrigger>
+                </SidebarGroupLabel>
+                <CollapsibleContent>
+                  <SidebarGroupContent className="pl-1.5 pr-2">
+                    <SidebarMenu>
+                      {pinnedProjectRecords.map((project) => {
+                        const projectChats =
+                          chatsByProjectId.get(project.id) ?? [];
+                        const expanded = !collapsedProjectIds.has(project.id);
+                        const showAll = expandedChatProjectIds.has(project.id);
+                        const visibleChats =
+                          expanded && !showAll
+                            ? projectChats.slice(0, PINNED_PROJECT_CHAT_LIMIT)
+                            : projectChats;
+                        return (
+                        <Fragment key={project.id}>
+                        <SidebarMenuItem
+                          className="group/recent-item relative"
+                        >
+                          <SidebarMenuButton
+                            // Highlight the folder only on the project home; when
+                            // a chat inside it is open, only that chat row is active.
+                            isActive={activeProjectId === project.id && !activeThreadId}
+                            onClick={() => toggleProjectCollapsed(project.id)}
+                            className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+                          >
+                            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
+                            <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
+                          </SidebarMenuButton>
+                          {/* New chat in this project */}
+                          <button
+                            type="button"
+                            aria-label="New chat"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openNewChat(project.id);
+                            }}
+                            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                          >
+                            <span className="sidebar-row-action-glyph">
+                              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                            </span>
+                          </button>
+                          {/* Project options */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label="Project options"
+                                className="sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                              >
+                                <span className="sidebar-row-action-glyph">
+                                  <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                                </span>
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                              side="bottom"
+                              align="start"
+                              sideOffset={0}
+                              className="unsloth-plus-menu menu-flat-destructive w-56"
+                            >
+                              <DropdownMenuItem onSelect={() => openProject(project.id)}>
+                                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Project home</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
+                                <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>New chat</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onSelect={() => {
+                                  // Seed the shared draft so the dialog opens
+                                  // with the current name, not stale text.
+                                  setRenameDraft(project.name);
+                                  setRenamingTarget({
+                                    kind: "project",
+                                    project,
+                                    current: project.name,
+                                  });
+                                }}
+                              >
+                                <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Rename project</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onSelect={() => unpinProject(project.id)}>
+                                <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
+                                <span>Unpin project</span>
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={() => {
+                                  // Start each delete with the file toggle off:
+                                  // Cancel closes programmatically and skips the
+                                  // dialog onOpenChange reset.
+                                  setDeleteProjectFiles(false);
+                                  setConfirmingDelete({ kind: "project", project });
+                                }}
+                              >
+                                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                <span>Delete project</span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </SidebarMenuItem>
+                        {expanded &&
+                          visibleChats.map((chat) =>
+                            renderChatSidebarItem(chat, "project"),
+                          )}
+                        {expanded &&
+                          projectChats.length > PINNED_PROJECT_CHAT_LIMIT && (
+                            <SidebarMenuItem>
+                              <SidebarMenuButton
+                                onClick={() => toggleProjectShowAll(project.id)}
+                                // Force the muted token: .sidebar-nav-btn's own
+                                // color rule outweighs a plain text utility, so
+                                // Show more would otherwise match the chat rows.
+                                className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
+                              >
+                                <span className="text-ui-13 leading-ui-18 tracking-nav">
+                                  {showAll ? "Show less" : "Show more"}
+                                </span>
+                              </SidebarMenuButton>
+                            </SidebarMenuItem>
+                          )}
+                        </Fragment>
+                        );
+                      })}
+                      {pinnedChatItems.map((item) =>
+                        renderChatSidebarItem(item, "recent"),
+                      )}
+                    </SidebarMenu>
+                  </SidebarGroupContent>
+                </CollapsibleContent>
+              </SidebarGroup>
+            </Collapsible>
+          )}
 
         {!isStudioRoute && !showTrainingRecents && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
@@ -1427,7 +1711,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-ui-14p5 tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             // From Recipes/Export, jump to Train so the run's
@@ -1447,7 +1731,7 @@ export function AppSidebar() {
                             <span className="truncate">
                               {getTrainingRunDisplayTitle(run)}
                             </span>
-                            <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
+                            <span className="ml-auto mr-0.5 shrink-0 text-ui-10 text-muted-foreground">
                               {formatRelativeShort(run.started_at)}
                             </span>
                           </div>
@@ -1548,11 +1832,11 @@ export function AppSidebar() {
                   />
                 </span>
                 <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                  <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                  <span className="truncate font-heading text-ui-13p5 font-semibold text-nav-fg">
                     {t("shell.updateAvailable")}
                   </span>
                   {updateVersion && (
-                    <span className="truncate text-[11.5px] text-muted-foreground">
+                    <span className="truncate text-ui-11p5 text-muted-foreground">
                       v{updateVersion}
                     </span>
                   )}
@@ -1589,8 +1873,8 @@ export function AppSidebar() {
                   {/* min-w-0 so long names truncate instead of overflowing;
                       pr on the button reserves room for the settings cog */}
                   <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
-                    <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
+                    <span className="truncate font-heading text-ui-13p5 tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
+                    <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>

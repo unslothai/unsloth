@@ -39,6 +39,7 @@ import yaml
 
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_cache_settings import active_hf_hub_cache, get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -495,6 +496,7 @@ def load_model_config(
             trust_remote_code = trust_remote_code,
             token = token,
             local_files_only = local_files_only,
+            cache_dir = active_hf_hub_cache(),
         )
 
     if not use_auth:
@@ -505,6 +507,7 @@ def load_model_config(
                 trust_remote_code = trust_remote_code,
                 token = None,
                 local_files_only = local_files_only,
+                cache_dir = active_hf_hub_cache(),
             )
 
     # Default auth (cached tokens)
@@ -512,6 +515,7 @@ def load_model_config(
         model_name,
         trust_remote_code = trust_remote_code,
         local_files_only = local_files_only,
+        cache_dir = active_hf_hub_cache(),
     )
 
 
@@ -661,6 +665,7 @@ def _raw_config_model_type(model_name: str, hf_token: Optional[str] = None) -> O
                     repo_id = model_name,
                     filename = "config.json",
                     token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
                 )
             )
         model_type = json.loads(config_path.read_text()).get("model_type")
@@ -686,6 +691,7 @@ def _raw_config_has_vision_config(
                     filename = "config.json",
                     token = hf_token,
                     local_files_only = local_files_only,
+                    cache_dir = active_hf_hub_cache(),
                 )
             )
         config = json.loads(config_path.read_text())
@@ -832,7 +838,7 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
             capture_output = True,
             text = True,
             timeout = 60,
-            env = child_env_without_native_path_secret(),
+            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -1039,9 +1045,9 @@ VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm", "a
 GGUF_TTS_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac")
 _NON_CHAT_AUDIO_TYPES = frozenset(VALID_AUDIO_TYPES) - {"audio_vlm"}
 
-# Keyed like the vision cache by (name, token, local_files_only) so an unauthenticated
-# or offline miss cannot poison a later authenticated / online lookup.
-_audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
+# Keyed like the vision cache by (name, token, local_files_only, active_cache) so an
+# unauthenticated, offline, or previous-cache result cannot poison a later lookup.
+_audio_detection_cache: Dict[Tuple[str, Optional[str], bool, Optional[str]], Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (codec, Whisper, and audio-VLM signatures)
 _AUDIO_TOKEN_PATTERNS = {
@@ -1076,16 +1082,24 @@ def detect_audio_type(
     """
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
-        if is_local_path(model_name):
+        local_model = is_local_path(model_name)
+        if local_model:
             resolved_name = normalize_path(model_name)
         else:
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
+        local_model = False
         resolved_name = model_name
     # Key on effective offline (kwarg OR env), matching where the remote fetch is skipped,
     # so an offline negative can't poison a later online probe.
     effective_offline = bool(local_files_only or _env_offline())
-    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
+    active_cache = None if local_model else str(active_hf_hub_cache())
+    cache_key = (
+        resolved_name,
+        _token_fingerprint(hf_token),
+        effective_offline,
+        active_cache,
+    )
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
@@ -1828,6 +1842,21 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
+def _hf_cache_repo_context(path: str) -> Optional[Tuple[str, str]]:
+    """Return (repo_id, Hub cache root) for a path inside a model cache repo."""
+    try:
+        selected = Path(path).absolute()
+        for candidate in (selected, *selected.parents):
+            if not candidate.name.startswith("models--"):
+                continue
+            parts = candidate.name[len("models--") :].split("--", 1)
+            if len(parts) == 2 and all(parts):
+                return f"{parts[0]}/{parts[1]}", str(candidate.parent)
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
 def _local_gguf_config_source(gguf_file: str, *search_roots: Optional[Union[str, Path]]) -> str:
     """Use config metadata nearest to the selected GGUF artifact."""
     candidates = [Path(gguf_file).parent]
@@ -1840,19 +1869,20 @@ def _local_gguf_config_source(gguf_file: str, *search_roots: Optional[Union[str,
     return str(candidates[0])
 
 
-def _iter_hf_cache_snapshots(repo_id: str):
+def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[Union[str, Path]] = None):
     """Yield HF cache snapshot dirs for *repo_id*, newest first.
 
     Empty if HF_HUB_CACHE is missing, the repo isn't cached, or has no
     snapshots. Repo name match is case-insensitive to handle casing drift
     between download time and lookup.
     """
-    try:
-        from huggingface_hub import constants as hf_constants
-    except Exception:
-        return
-
-    cache_dir = Path(hf_constants.HF_HUB_CACHE)
+    if cache_dir is None:
+        try:
+            from utils.hf_cache_settings import get_hf_cache_paths
+            cache_dir = get_hf_cache_paths().hub_cache
+        except Exception:
+            return
+    cache_dir = Path(cache_dir)
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dirs: list[Path] = []
     try:
@@ -2224,12 +2254,31 @@ def download_gguf_file(
         repo_id = repo_id,
         filename = filename,
         token = hf_token,
+        cache_dir = active_hf_hub_cache(),
     )
     return local_path
 
 
 # Cache embedding detection per session to avoid repeated HF API calls
 _embedding_detection_cache: Dict[tuple, bool] = {}
+
+
+# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+def _embedding_marker_in_hf_cache(model_name: str) -> bool:
+    """True when model_name's cached snapshot carries a modules.json (the ST marker).
+    Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        return (snapshot / "modules.json").is_file()
+    except OSError:
+        return False
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -2246,6 +2295,15 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Returns:
         True if embedding model, else False (default for local paths or errors).
     """
+    from utils.utils import hf_env_offline
+
+    # Offline (remote repo): reclassify from the local cache on every call, before/without the
+    # memo. An online lookup can memoize True from tags with no weights cached, so trusting it once
+    # the session goes offline would accept a repo _get() cannot load; a cached negative can also be
+    # invalidated by later cache materialization. The cache probe is local-only, so it's cheap.
+    if not is_local_path(model_name) and hf_env_offline():
+        return _embedding_marker_in_hf_cache(model_name)
+
     cache_key = (model_name, hf_token)
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
@@ -2260,7 +2318,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -2281,9 +2339,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
+        # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        _embedding_detection_cache[cache_key] = False
-        return False
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
 
 
 def _has_model_weight_files(model_dir: Path) -> bool:
@@ -2643,7 +2703,10 @@ def get_base_model_from_lora_identifier(
     for _attempt in range(2):  # one retry: a transient blip must not skip the base
         try:
             cfg_path = hf_hub_download(
-                identifier, "adapter_config.json", token = hf_token if hf_token else None
+                identifier,
+                "adapter_config.json",
+                token = hf_token if hf_token else None,
+                cache_dir = active_hf_hub_cache(),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
             # No adapter_config.json -> not a resolvable LoRA; caller scans the identifier.
@@ -2925,6 +2988,50 @@ class ModelConfig:
                 # Direct file selections may point into a quant subdir while
                 # mmproj-*.gguf lives at the snapshot root.
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+                cache_context = _hf_cache_repo_context(path)
+                if mmproj_file is None and cache_context is not None:
+                    from core.inference.llama_cpp import (
+                        _cached_companion_for_repo,
+                        _pick_mmproj,
+                    )
+
+                    cache_repo_id, cache_dir = cache_context
+
+                    def _pick_matching_mmproj(candidates):
+                        return _pick_mmproj(
+                            [
+                                filename
+                                for filename in candidates
+                                if mmproj_matches_model_family(gguf_file, filename)
+                            ]
+                        )
+
+                    weight_meta = read_gguf_general_metadata(gguf_file)
+
+                    def _metadata_compatible(candidate):
+                        return (
+                            pairing_score(
+                                weight_meta,
+                                read_gguf_general_metadata(candidate),
+                            )
+                            != -1
+                        )
+
+                    mmproj_file = _cached_companion_for_repo(
+                        cache_repo_id,
+                        gguf_file,
+                        _pick_matching_mmproj,
+                        cache_dir = cache_dir,
+                        accept = _metadata_compatible,
+                    )
+                    if mmproj_file is not None:
+                        candidate_config = _local_gguf_config_source(
+                            gguf_file,
+                            companion_root,
+                            Path(mmproj_file).parent,
+                        )
+                        if (Path(candidate_config) / "config.json").is_file():
+                            config_source = candidate_config
                 projector_has_audio = False
                 if mmproj_file:
                     gguf_is_vision = True
@@ -3148,7 +3255,12 @@ class ModelConfig:
                 try:
                     from huggingface_hub import hf_hub_download
 
-                    config_path = hf_hub_download(identifier, "adapter_config.json", token = hf_token)
+                    config_path = hf_hub_download(
+                        identifier,
+                        "adapter_config.json",
+                        token = hf_token,
+                        cache_dir = active_hf_hub_cache(),
+                    )
                     with open(config_path, "r") as f:
                         adapter_config = json.load(f)
                     base_model = adapter_config.get("base_model_name_or_path")

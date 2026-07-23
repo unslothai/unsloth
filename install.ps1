@@ -1416,11 +1416,80 @@ exit 0
             $suffix++
             $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
         }
-        Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
+        # Publish the rollback state before the atomic rename so interruption
+        # cannot land after Move-Item but before cleanup knows where the old venv went.
+        try {
+            Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
+        } catch {
+            # A collision or ordinary rename failure leaves the original in place.
+            # Keep state active only when the rename happened before interruption.
+            if (Test-Path -LiteralPath $ExistingDir) {
+                $script:StudioVenvRollbackActive = $false
+                $script:StudioVenvRollbackDir = $null
+            }
+            throw
+        }
         substep "previous environment preserved for rollback"
+    }
+
+    function Remove-StudioVenvTreeWithRetry {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [Parameter(Mandatory = $true)][string]$Label
+        )
+        $lastError = $null
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            } catch {
+                $lastError = $_.Exception.Message
+            }
+            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
+        }
+        Write-Host "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
+        if ($lastError) { Write-Host "       $lastError" -ForegroundColor Yellow }
+        return $false
+    }
+
+    function Test-StudioVenvRollbackMustBePreserved {
+        param([Parameter(Mandatory = $true)][System.IO.FileSystemInfo]$Rollback)
+        # Preserve anything outside the installer's timestamp.PID[.suffix] format.
+        if ($Rollback.Name -notmatch '^unsloth_studio\.rollback\.[0-9]{14}\.([0-9]+)(?:\.[0-9]+)?$') {
+            return $true
+        }
+        $ownerPid = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$ownerPid)) { return $true }
+        if ($ownerPid -eq $PID) { return $true }
+        return $null -ne (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)
+    }
+
+    function Remove-StaleStudioVenvRollbacks {
+        try {
+            $rollbacks = @(
+                Get-ChildItem -LiteralPath $StudioHome -Directory -Force -ErrorAction Stop |
+                    Where-Object { $_.Name -like 'unsloth_studio.rollback.*' }
+            )
+        } catch {
+            Write-Host "[WARN] Could not inspect stale environment rollbacks in $StudioHome" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            return
+        }
+        foreach ($rollback in $rollbacks) {
+            if (($rollback.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Write-Host "[WARN] Refusing to remove rollback reparse point $($rollback.FullName)" -ForegroundColor Yellow
+                continue
+            }
+            # A concurrent installer may have moved its live venv aside. The PID
+            # in the generated name keeps this run from deleting its rescue copy.
+            if (Test-StudioVenvRollbackMustBePreserved -Rollback $rollback) { continue }
+            if (Remove-StudioVenvTreeWithRetry -Path $rollback.FullName -Label "stale environment rollback") {
+                substep "removed stale environment rollback $($rollback.Name)"
+            }
+        }
     }
 
     function Restore-StudioVenvRollback {
@@ -1434,7 +1503,9 @@ exit 0
         substep "restoring previous environment after failed install..." "Yellow"
         try {
             if (Test-Path -LiteralPath $target) {
-                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
+                    throw "Could not remove incomplete environment at $target"
+                }
             }
             Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             substep "restored previous environment"
@@ -1449,13 +1520,17 @@ exit 0
     function Complete-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
-            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        # The replacement is committed. Disable restoration before deleting the
+        # backup so interruption cannot restore a partially deleted environment.
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
+        }
     }
 
+    $studioVenvReplacementCommitted = $false
+    try {
     if (Test-Path -LiteralPath $VenvPython) {
         # why: matching guard to the .venv branch below -- in env-mode
         # $StudioHome is a user-chosen workspace, so refuse to nuke an
@@ -1844,7 +1919,7 @@ exit 0
                 $nameArchTable = @(
                     @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
                     @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
-                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                    @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                     @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
@@ -2030,16 +2105,18 @@ exit 0
     # _strip_index_url_credentials (install.sh / py / setup.ps1).
     function Remove-IndexUrlCredentials {
         param([string]$Url)
-        $sep = $Url.IndexOf('://')
+        # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
+        # IndexOf treats "://" as ignorable, mis-locates it, and crashes Substring (issue #7279).
+        $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
         if ($sep -lt 0) { return $Url }
         $scheme = $Url.Substring(0, $sep)
         $rest = $Url.Substring($sep + 3)
         # Drop query / fragment (may hold auth tokens).
         $q = $rest.IndexOfAny([char[]]('?', '#'))
         if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
-        $slash = $rest.IndexOf('/')
+        $slash = $rest.IndexOf('/', [System.StringComparison]::Ordinal)
         $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
-        $at = $authority.LastIndexOf('@')
+        $at = $authority.LastIndexOf('@', [System.StringComparison]::Ordinal)
         $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
         if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
         return "${scheme}://${host_}"
@@ -2686,6 +2763,13 @@ exit 0
     }
     Refresh-SessionPath  # sync current session with registry
     Complete-StudioVenvRollback
+    $studioVenvReplacementCommitted = $true
+    Remove-StaleStudioVenvRollbacks
+    } finally {
+        if (-not $studioVenvReplacementCommitted) {
+            Restore-StudioVenvRollback
+        }
+    }
 
     # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy
     # User PATH entry (Machine > User > current $env:Path) would win.

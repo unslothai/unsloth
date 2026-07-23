@@ -82,3 +82,24 @@ def test_unknown_non_chat_config_uses_raw_model_type(tmp_path, model_type):
 
     assert config.is_chat_capable is False
     assert config.has_audio_input is (model_type in {"qwen3_asr", "whisper"})
+
+
+def test_unknown_remote_non_chat_config_uses_active_cache(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"model_type": "qwen3_asr"}')
+    selected_cache = str(tmp_path / "hub")
+
+    def cached_config(
+        *_args,
+        cache_dir = None,
+        **_kwargs,
+    ):
+        assert cache_dir == selected_cache
+        return str(config_path)
+
+    with (
+        patch("utils.models.model_config.load_model_config", side_effect = ValueError("unknown")),
+        patch("utils.models.model_config.active_hf_hub_cache", return_value = selected_cache),
+        patch("huggingface_hub.hf_hub_download", side_effect = cached_config),
+    ):
+        assert _classify_audio_capability("org/asr", None) == (None, True, False)

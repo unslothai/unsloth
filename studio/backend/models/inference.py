@@ -187,6 +187,32 @@ class UnloadRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier to unload")
 
 
+class TranscribeRequest(BaseModel):
+    """Speech-to-text request for the dictation STT sidecar."""
+
+    audio: str = Field(..., description = "Base64-encoded audio (any common format)")
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
+class SttLoadRequest(BaseModel):
+    """Warm the STT sidecar with a model without transcribing."""
+
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
 class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 

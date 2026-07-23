@@ -106,6 +106,10 @@ def _build_cache(
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+    )
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     return tmp_path
@@ -120,6 +124,61 @@ def _fail_get_paths_info(*_args, **_kwargs):
 
 
 class TestLoadReusesCachedCopy:
+    def test_download_uses_selected_cache_for_lookup_preflight_and_write(
+        self, tmp_path, monkeypatch
+    ):
+        backend = LlamaCppBackend()
+        selected = tmp_path / "selected" / "hub"
+        startup = tmp_path / "startup" / "hub"
+        monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(startup))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = selected),
+        )
+        seen = {"lookups": [], "disk": [], "downloads": []}
+
+        def cached_lookup(
+            repo_id,
+            filename,
+            *,
+            cache_dir = None,
+            **_kwargs,
+        ):
+            seen["lookups"].append((repo_id, filename, cache_dir))
+            return None
+
+        def disk_usage(path):
+            seen["disk"].append(str(path))
+            return _types.SimpleNamespace(free = 1024)
+
+        def download(repo_id, filename, _token, **kwargs):
+            seen["downloads"].append((repo_id, filename, kwargs.get("cache_dir")))
+            return str(selected / filename)
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch(
+                "huggingface_hub.get_paths_info",
+                lambda _repo, paths, **_kwargs: [
+                    _types.SimpleNamespace(path = path, size = 4) for path in paths
+                ],
+            ),
+            patch("huggingface_hub.try_to_load_from_cache", cached_lookup),
+            patch("core.inference.llama_cpp.shutil.disk_usage", disk_usage),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                download,
+            ),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(selected / MAIN)
+        assert seen == {
+            "lookups": [(REPO, MAIN, str(selected))],
+            "disk": [str(selected)],
+            "downloads": [(REPO, MAIN, str(selected))],
+        }
+
     def test_online_reuse_after_revision_bump(self, hf_cache):
         """A new repo revision does not replace a complete cached model."""
         backend = LlamaCppBackend()
@@ -459,6 +518,57 @@ class TestLoadReusesCachedCopy:
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / "Q4_K_M" / MAIN))
 
         assert out == str(snap / "mmproj-F16.gguf")
+
+    def test_snapshot_load_finds_projector_in_same_previous_cache(self, tmp_path):
+        import os
+
+        previous_cache = tmp_path / "previous-hub"
+        main = _build_cache(
+            previous_cache,
+            REPO,
+            {MAIN: 4},
+            snapshot_sha = "a" * 40,
+        )
+        projector = _build_cache(
+            previous_cache,
+            REPO,
+            {MATCHING_MMPROJ: 2},
+            snapshot_sha = "b" * 40,
+        )
+        incompatible = _build_cache(
+            previous_cache,
+            REPO,
+            {"mmproj-F16.gguf": 2},
+            snapshot_sha = "c" * 40,
+        )
+        os.utime(projector, (1_000_000, 1_000_000))
+        os.utime(incompatible, (2_000_000, 2_000_000))
+
+        def metadata(path):
+            repo = (
+                "Qwen/Qwen3.5-9B" if Path(path).name == "mmproj-F16.gguf" else "google/gemma-3-9B"
+            )
+            return {"general.base_model.0.repo_url": f"https://huggingface.co/{repo}"}
+
+        with (
+            patch(
+                "utils.models.model_config.load_model_config",
+                return_value = _types.SimpleNamespace(model_type = "llama"),
+            ),
+            patch("utils.models.model_config.detect_gguf_audio_type", return_value = None),
+            patch("utils.models.model_config.read_gguf_general_metadata", side_effect = metadata),
+            patch("utils.models.model_config.read_mmproj_audio_capability", return_value = None),
+        ):
+            selected = ModelConfig.from_identifier(str(main), gguf_variant = VARIANT)
+            assert selected is not None
+            assert selected.gguf_file == str(main / MAIN)
+            assert selected.gguf_mmproj_file == str(projector / MATCHING_MMPROJ)
+            assert selected.is_vision is True
+
+            same_snapshot_match = incompatible / "mmproj-gemma-F16.gguf"
+            same_snapshot_match.write_bytes(b"projector")
+            selected = ModelConfig.from_identifier(str(main), gguf_variant = VARIANT)
+            assert selected.gguf_mmproj_file == str(same_snapshot_match)
 
     def test_cross_snapshot_projector_controls_cached_validation(self, hf_cache, monkeypatch):
         requested_repo = REPO.lower()

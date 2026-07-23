@@ -247,6 +247,59 @@ def _wsl_system_rocm_lib_dirs() -> "list[str]":
     return out
 
 
+def _bundled_hip_present(binary_dir: str) -> bool:
+    """True when a prebuilt bundle ships its own HIP backend library."""
+    if not binary_dir:
+        return False
+    try:
+        # Glob the version suffix (libggml-hip.so, .so.0, .so.0.11.1) the same
+        # way the installer's runtime health check matches libggml-hip.so*.
+        return any(Path(str(binary_dir)).glob("libggml-hip.so*"))
+    except OSError:
+        return False
+
+
+def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
+    """System ROCm lib dir(s) to prepend before a prebuilt's bundled HIP, on native Linux.
+
+    The bundled bare-metal HIP runtime can mismatch the host amdkfd driver and crash
+    in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
+    version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
+    The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
+    system HIP/ROCR risks missing symbols. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure
+    bundle (for a host whose system ROCm lacks this arch); no-op on WSL / non-Linux.
+    """
+    if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
+        return []
+    if sys.platform != "linux" or os.path.exists("/dev/dxg"):
+        return []
+    if not os.path.exists("/dev/kfd"):
+        return []
+    if not _bundled_hip_present(binary_dir):
+        return []
+    # Env-configured ROCm root first; /opt/rocm only as a fallback so a stale
+    # /opt/rocm doesn't shadow the driver-matching install these vars point at.
+    candidates = []
+    for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
+        val = os.environ.get(var)
+        if val:
+            candidates.append(val)
+    candidates.append("/opt/rocm")
+    out: "list[str]" = []
+    seen: "set[str]" = set()
+    for base in candidates:
+        for lib_sub in ("lib", "lib64"):
+            d = os.path.join(base, lib_sub)
+            if d in seen:
+                continue
+            seen.add(d)
+            if os.path.exists(os.path.join(d, "libhsa-runtime64.so")) or os.path.exists(
+                os.path.join(d, "libhsa-runtime64.so.1")
+            ):
+                out.append(d)
+    return out
+
+
 # Plan-without-action re-prompt state now lives in tool_call_parser (imported above).
 
 # Default max_tokens to the effective context when known. The floor is high
@@ -526,7 +579,14 @@ def _swa_entry_from_layer_types(lt) -> Optional[object]:
 def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
         from huggingface_hub import hf_hub_download
-        cfg_path = hf_hub_download(repo_id, "config.json", repo_type = "model")
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        cfg_path = hf_hub_download(
+            repo_id,
+            "config.json",
+            repo_type = "model",
+            cache_dir = active_hf_hub_cache(),
+        )
         with open(cfg_path) as f:
             cfg = json.load(f)
     except Exception:
@@ -928,6 +988,7 @@ def _cached_hf_snapshot_file(
     filename: str,
     *,
     expected_size: Optional[int] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[str]:
     """Return a cached snapshot file even when HF's current-ref probe misses it."""
     if not filename:
@@ -936,8 +997,22 @@ def _cached_hf_snapshot_file(
     if not parts or any(part in (".", "..") for part in parts):
         return None
     try:
-        from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        if cache_dir is None:
+            from utils.models.model_config import _iter_hf_cache_snapshots
+            snapshots = _iter_hf_cache_snapshots(repo_id)
+        else:
+            from hub.utils.hf_cache_state import iter_active_repo_cache_dirs
+            snapshots = (
+                snapshot
+                for repo_dir in iter_active_repo_cache_dirs(
+                    "model",
+                    repo_id,
+                    root = Path(cache_dir),
+                )
+                for snapshot in (repo_dir / "snapshots").glob("*")
+                if snapshot.is_dir()
+            )
+        for snap in snapshots:
             candidate = snap.joinpath(*parts)
             if not candidate.is_file():
                 continue
@@ -1043,11 +1118,17 @@ def _cached_variant_candidates(
     hf_variant: str,
     *,
     require_mmproj: bool = False,
+    cache_dir: Optional[str] = None,
 ) -> Generator[tuple[str, str, list[str], Path], None, None]:
     """Yield complete cached variant copies in snapshot preference order."""
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
-        for snap in _iter_hf_cache_snapshots(repo_id):
+        snapshots = (
+            _iter_hf_cache_snapshots(repo_id)
+            if cache_dir is None
+            else _iter_hf_cache_snapshots(repo_id, cache_dir)
+        )
+        for snap in snapshots:
             cached_files = _gguf_snapshot_files(snap)
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
@@ -1154,15 +1235,18 @@ def cached_gguf_for_load(
     require_mmproj: bool = False,
     verify_sizes: bool = False,
     hf_token: Optional[str] = None,
+    cache_dir: Optional[str] = None,
 ) -> Optional[str]:
     """Return a cached GGUF that can be loaded without downloading."""
     if not hf_variant:
         return None
-    hf_repo = _resolve_repo_id_casing(hf_repo)
+    if cache_dir is None:
+        hf_repo = _resolve_repo_id_casing(hf_repo)
     for candidate in _cached_variant_candidates(
         hf_repo,
         hf_variant,
         require_mmproj = require_mmproj,
+        cache_dir = cache_dir,
     ):
         if verify_sizes and not _cached_candidate_matches_revision_size(
             hf_repo, candidate, hf_token
@@ -1184,21 +1268,48 @@ def _snapshot_dir_of(path: str) -> Optional[Path]:
     return None
 
 
+def _hub_cache_dir_for_snapshot_path(path: Optional[str]) -> Optional[str]:
+    """Return the HF Hub cache root that owns a snapshot-contained path."""
+    if not path:
+        return None
+    snapshot = _snapshot_dir_of(path)
+    if snapshot is None or snapshot.parent.name != "snapshots":
+        return None
+    return str(snapshot.parent.parent.parent)
+
+
+def _companion_in_snapshot(
+    snap: Path,
+    pick: Callable[[list[str]], Optional[str]],
+    accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
+    """Find the first accepted companion in one snapshot."""
+    try:
+        candidates = _gguf_snapshot_files(snap)
+    except Exception:
+        return None
+    while candidates:
+        sibling = pick(candidates)
+        if not sibling:
+            return None
+        candidates = [candidate for candidate in candidates if candidate != sibling]
+        candidate = snap / sibling
+        if not candidate.is_file():
+            continue
+        candidate_path = str(candidate)
+        if accept is None or accept(candidate_path):
+            return candidate_path
+    return None
+
+
 def _companion_snapshot_sibling(
-    near_path: str, pick: Callable[[list[str]], Optional[str]]
+    near_path: str,
+    pick: Callable[[list[str]], Optional[str]],
+    accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Find a companion in the same snapshot as near_path."""
     snap = _snapshot_dir_of(near_path)
-    if snap is None:
-        return None
-    try:
-        sibling = pick(_gguf_snapshot_files(snap))
-    except Exception:
-        return None
-    if not sibling:
-        return None
-    candidate = snap / sibling
-    return str(candidate) if candidate.is_file() else None
+    return None if snap is None else _companion_in_snapshot(snap, pick, accept)
 
 
 def _cached_companion_for_repo(
@@ -1208,31 +1319,35 @@ def _cached_companion_for_repo(
     *,
     current_ref_only: bool = False,
     revision: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    accept: Optional[Callable[[str], bool]] = None,
 ) -> Optional[str]:
     """Find a cached companion, preferring the main GGUF's snapshot."""
-    cached = _companion_snapshot_sibling(near_path, pick)
+    cached = _companion_snapshot_sibling(near_path, pick, accept)
     if cached:
         return cached
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
 
         near_snapshot = _snapshot_dir_of(near_path)
-        snapshots = [snap for snap in _iter_hf_cache_snapshots(hf_repo) if snap != near_snapshot]
+        candidates = (
+            _iter_hf_cache_snapshots(hf_repo)
+            if cache_dir is None
+            else _iter_hf_cache_snapshots(hf_repo, cache_dir)
+        )
+        snapshots = [snap for snap in candidates if snap != near_snapshot]
         if current_ref_only:
             if not revision:
                 return None
             for snap in snapshots:
                 if snap.name != revision:
                     continue
-                sibling = pick(_gguf_snapshot_files(snap))
-                if sibling and (candidate := snap / sibling).is_file():
-                    return str(candidate)
+                if candidate := _companion_in_snapshot(snap, pick, accept):
+                    return candidate
             return None
         for snap in snapshots:
-            sibling = pick(_gguf_snapshot_files(snap))
-            if sibling:
-                if (candidate := snap / sibling).is_file():
-                    return str(candidate)
+            if candidate := _companion_in_snapshot(snap, pick, accept):
+                return candidate
     except Exception as e:
         logger.debug("Cached companion lookup failed for %s: %s", hf_repo, e)
     return None
@@ -2909,12 +3024,25 @@ class LlamaCppBackend:
         on the ordinal->physical mapping."""
         try:
             import torch
-            is_rocm = getattr(torch.version, "hip", None) is not None
+
+            # Same ROCm detection as _emit_child_gpu_visibility: AMD SDK wheels
+            # leave version.hip unset but encode "rocm" in __version__. The two
+            # must agree, else an inherited ROCR mask reads back as "no mask",
+            # ordinal 0 is labelled physical 0, and the child's new ROCR pin
+            # re-exposes the GPU the inherited mask was hiding.
+            is_rocm = (
+                getattr(torch.version, "hip", None) is not None
+                or "rocm" in getattr(torch, "__version__", "").lower()
+            )
         except Exception:
             is_rocm = False
         if is_rocm:
             hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
-            rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+            # ROCR_VISIBLE_DEVICES is a Linux ROCr variable; Windows HIP has no
+            # ROCr layer, so a stray ROCR var there does not mask the runtime and
+            # must not be read as the ordinal->physical mapping (mirrors the
+            # Windows gate in _emit_child_gpu_visibility).
+            rocr_v = None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
             cvd = (
                 hip_v
                 if hip_v is not None
@@ -2932,20 +3060,52 @@ class LlamaCppBackend:
             return None
 
     @staticmethod
-    def _emit_child_gpu_visibility(env: dict, pinned: str) -> None:
-        """Write the child's GPU visibility mask (CUDA, plus the HIP mirror on
-        ROCm, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child
-        seeing the full set). Do NOT also set ROCR_VISIBLE_DEVICES: ROCR and HIP
-        mask at different layers, so the same indices apply twice -- ROCR reduces
-        and re-indexes from 0, then a non-zero HIP pin points out of range, HIP
-        enumerates 0 devices, and llama.cpp falls back to CPU. The HIP mask alone
-        narrows correctly; clear any inherited ROCR mask so it can't double up."""
+    def _emit_child_gpu_visibility(
+        env: dict,
+        pinned: str,
+        *,
+        prefer_rocr: bool = False,
+    ) -> None:
+        """Write the child's GPU visibility mask: CUDA, plus a ROCm mirror on AMD
+        (masking only CUDA_VISIBLE_DEVICES leaves an AMD child seeing every GPU).
+
+        Default: HIP_VISIBLE_DEVICES, clearing any inherited ROCR mask so the two
+        can't stack (ROCR re-indexes from 0, then a non-zero HIP pin points out of
+        range, HIP sees 0 devices, and llama.cpp falls back to CPU).
+
+        prefer_rocr masks at the ROCr/HSA layer instead (clearing HIP). A HIP mask
+        filters only AFTER the HSA runtime enumerates every agent, and that
+        enumeration segfaults at startup on a GPU the build has no kernels for
+        (e.g. a gfx1103 iGPU under a gfx110X prebuilt), before llama-server logs a
+        line. ROCR drops the device at the driver layer, consuming physical ids.
+        The CPU-only sentinel ("-1") has no portable ROCR spelling, so it keeps
+        the HIP mask. Windows keeps the HIP mask too: ROCR_VISIBLE_DEVICES is a
+        Linux ROCr variable (Windows HIP has no ROCr layer), so the ROCR pin
+        would be dead there while the cleared HIP mask stops selecting."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         try:
             import torch as _torch
-            if getattr(_torch.version, "hip", None) is not None:
-                env["HIP_VISIBLE_DEVICES"] = pinned
-                env.pop("ROCR_VISIBLE_DEVICES", None)
+
+            # torch.version.hip is set on ROCm, None on CUDA; AMD SDK wheels may
+            # leave it unset but encode "rocm" in __version__ (mirrors detect_hardware).
+            if (
+                getattr(_torch.version, "hip", None) is not None
+                or "rocm" in getattr(_torch, "__version__", "").lower()
+            ):
+                if prefer_rocr and pinned != "-1" and sys.platform != "win32":
+                    env["ROCR_VISIBLE_DEVICES"] = pinned
+                    env.pop("HIP_VISIBLE_DEVICES", None)
+                    # ROCR re-indexes the visible agents from 0, and with HIP
+                    # cleared HIP honours CUDA_VISIBLE_DEVICES -- so it must carry
+                    # the post-ROCR ordinals (0..N-1), not the physical ids, else a
+                    # non-zero pick points out of range and HIP sees 0 devices (the
+                    # same stacking the default path avoids by clearing ROCR).
+                    env["CUDA_VISIBLE_DEVICES"] = ",".join(
+                        str(i) for i in range(len(pinned.split(",")))
+                    )
+                else:
+                    env["HIP_VISIBLE_DEVICES"] = pinned
+                    env.pop("ROCR_VISIBLE_DEVICES", None)
         except Exception as e:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
@@ -2980,7 +3140,21 @@ class LlamaCppBackend:
             logger.debug("Could not read reported GPU order for split pin: %s", e)
         if order is None:
             order = sorted(inherited)
-        LlamaCppBackend._emit_child_gpu_visibility(env, ",".join(str(i) for i in order))
+        # Re-emit at the layer that produced the mapping. A parent masked only
+        # via ROCR_VISIBLE_DEVICES hides agents at the driver layer, and the
+        # default HIP re-emission clears that mask -- HSA then enumerates every
+        # agent again and can segfault at startup on an unsupported GPU the
+        # parent was hiding (the crash prefer_rocr exists to avoid). Linux-only,
+        # mirroring _resolve_visible_physical_ids: on Windows a stray ROCR var
+        # is dead and was not the mapping's source.
+        prefer_rocr = (
+            sys.platform != "win32"
+            and env.get("HIP_VISIBLE_DEVICES") is None
+            and env.get("ROCR_VISIBLE_DEVICES") is not None
+        )
+        LlamaCppBackend._emit_child_gpu_visibility(
+            env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
+        )
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
@@ -3642,6 +3816,9 @@ class LlamaCppBackend:
             lib_dirs.extend(_wsl_system_rocm_lib_dirs())
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
+            # which can be incompatible with the host amdkfd driver.
+            lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -5005,6 +5182,9 @@ class LlamaCppBackend:
         touching the shared one; defaults to the shared event.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        download_cache_dir = str(get_hf_cache_paths().hub_cache)
         try:
             import huggingface_hub  # noqa: F401 -- presence check only
         except ImportError:
@@ -5100,7 +5280,11 @@ class LlamaCppBackend:
                     if not p.size:
                         continue
                     try:
-                        cached_path = try_to_load_from_cache(hf_repo, p.path)
+                        cached_path = try_to_load_from_cache(
+                            hf_repo,
+                            p.path,
+                            cache_dir = download_cache_dir,
+                        )
                     except Exception:
                         cached_path = None
                     if (
@@ -5111,6 +5295,7 @@ class LlamaCppBackend:
                             hf_repo,
                             p.path,
                             expected_size = p.size,
+                            cache_dir = download_cache_dir,
                         )
                     if isinstance(cached_path, str) and os.path.exists(cached_path):
                         try:
@@ -5124,12 +5309,8 @@ class LlamaCppBackend:
             total_download_bytes = max(0, total_bytes - already_cached_bytes)
 
             if total_download_bytes > 0:
-                cache_dir = os.environ.get(
-                    "HF_HUB_CACHE",
-                    str(Path.home() / ".cache" / "huggingface" / "hub"),
-                )
-                Path(cache_dir).mkdir(parents = True, exist_ok = True)
-                free_bytes = shutil.disk_usage(cache_dir).free
+                Path(download_cache_dir).mkdir(parents = True, exist_ok = True)
+                free_bytes = shutil.disk_usage(download_cache_dir).free
 
                 total_gb = total_download_bytes / (1024**3)
                 free_gb = free_bytes / (1024**3)
@@ -5147,7 +5328,7 @@ class LlamaCppBackend:
                         # surface the disk shortfall for the requested variant.
                         raise RuntimeError(
                             f"Not enough disk space to download {gguf_filename}. "
-                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                            f"Only {free_gb:.1f} GB free in {download_cache_dir}"
                         )
                     smaller = self._find_smallest_fitting_variant(
                         hf_repo,
@@ -5178,7 +5359,7 @@ class LlamaCppBackend:
                     else:
                         raise RuntimeError(
                             f"Not enough disk space to download any variant. "
-                            f"Only {free_gb:.1f} GB free in {cache_dir}"
+                            f"Only {free_gb:.1f} GB free in {download_cache_dir}"
                         )
         except RuntimeError:
             raise
@@ -5201,6 +5382,7 @@ class LlamaCppBackend:
                 cancel_event = cancel_event,
                 on_status = lambda m: logger.info(m),
                 force_download = force,
+                cache_dir = download_cache_dir,
             )
             for shard in gguf_extra_shards:
                 if cancel_event.is_set():
@@ -5212,6 +5394,7 @@ class LlamaCppBackend:
                     hf_token,
                     cancel_event = cancel_event,
                     force_download = force,
+                    cache_dir = download_cache_dir,
                 )
         except Exception as e:
             if isinstance(e, RuntimeError) and "Cancelled" in str(e):
@@ -5257,6 +5440,12 @@ class LlamaCppBackend:
                 logger.info("Reusing cached %s: %s", label, cached)
                 return cached
 
+        from utils.hf_cache_settings import get_hf_cache_paths
+
+        companion_cache_dir = _hub_cache_dir_for_snapshot_path(near_path) or str(
+            get_hf_cache_paths().hub_cache
+        )
+
         if _hub_download_in_flight(hf_repo):
             logger.info("Skipping %s download while a hub download is active", label)
             return None
@@ -5291,7 +5480,7 @@ class LlamaCppBackend:
         if target is None:
             try:
                 from utils.models.model_config import _iter_hf_cache_snapshots
-                for snap in _iter_hf_cache_snapshots(hf_repo):
+                for snap in _iter_hf_cache_snapshots(hf_repo, companion_cache_dir):
                     rel_files = _gguf_snapshot_files(snap)
                     target = pick(rel_files)
                     if target is not None:
@@ -5309,7 +5498,11 @@ class LlamaCppBackend:
         # hf_hub_download with hf_repo would miss the canonical file and silently
         # drop the companion. _cached_hf_snapshot_file scans every case variant.
         if _hf_env_offline():
-            cached = _cached_hf_snapshot_file(hf_repo, target)
+            cached = _cached_hf_snapshot_file(
+                hf_repo,
+                target,
+                cache_dir = companion_cache_dir,
+            )
             if cached:
                 logger.info("Resolved %s from local HF cache: %s", label, cached)
                 return cached
@@ -5322,6 +5515,7 @@ class LlamaCppBackend:
                 target,
                 hf_token,
                 cancel_event = cancel_event,
+                cache_dir = companion_cache_dir,
             )
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
@@ -5364,7 +5558,12 @@ class LlamaCppBackend:
             near_path = near_path,
         )
 
-    def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
+    def _cached_repo_mtp_drafter(
+        self,
+        hf_repo: str,
+        *,
+        cache_dir: Optional[str] = None,
+    ) -> Optional[str]:
         """A drafter already in this repo's local HF cache, reused offline when a
         fresh copy can't be fetched. Prefers a repo-root ``mtp-*.gguf`` across all
         cached snapshots; else an existing ``MTP/`` copy (any precision -- the
@@ -5374,7 +5573,12 @@ class LlamaCppBackend:
 
             roots: list[Path] = []
             subdirs: list[Path] = []
-            for snap in _iter_hf_cache_snapshots(hf_repo):  # newest first
+            snapshots = (
+                _iter_hf_cache_snapshots(hf_repo)
+                if cache_dir is None
+                else _iter_hf_cache_snapshots(hf_repo, cache_dir)
+            )
+            for snap in snapshots:  # newest first
                 for f in sorted(_gguf_snapshot_files(snap)):
                     if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
                         (roots if "/" not in f else subdirs).append(snap / f)
@@ -5427,7 +5631,10 @@ class LlamaCppBackend:
         # current cached file and refetch a changed one, so skip the probe here
         # rather than pair new weights with a stale draft.
         if _hf_env_offline():
-            cached = self._cached_repo_mtp_drafter(hf_repo)
+            cached = self._cached_repo_mtp_drafter(
+                hf_repo,
+                cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+            )
             if cached:
                 logger.info(f"Reusing cached MTP drafter (offline): {cached}")
                 return cached
@@ -7746,7 +7953,12 @@ class LlamaCppBackend:
                     # default FASTEST_FIRST order (#5025).
                     if gpu_ids:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-                    self._emit_child_gpu_visibility(env, ",".join(str(i) for i in gpu_indices))
+                    # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
+                    # enumerates every agent first, which segfaults on a deselected
+                    # unsupported GPU (e.g. gfx1103 iGPU under a gfx110X prebuilt).
+                    self._emit_child_gpu_visibility(
+                        env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
+                    )
                 elif manual_tensor_split_emitted and not is_vulkan_backend:
                     # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
                     # no CUDA_VISIBLE_DEVICES mask above): the UI built the
@@ -8108,6 +8320,20 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
+                            # If the text-only retry ALSO hard-crashed (a signal, not
+                            # OOM/timeout), the vision projector was never the cause:
+                            # llama-server is faulting during GPU/driver init. Say so
+                            # -- with the ROCm fix -- instead of blaming the mmproj.
+                            if self._is_signal_crash(_retry_rc):
+                                raise RuntimeError(
+                                    "llama-server crashed at startup on both the vision "
+                                    "and text-only attempts -- a GPU driver/runtime "
+                                    "initialization crash, not a model or vision-projector "
+                                    "problem. This often means an unsupported secondary "
+                                    "GPU; on AMD/ROCm, hide it with ROCR_VISIBLE_DEVICES "
+                                    "(e.g. ROCR_VISIBLE_DEVICES=0 exposes only the first "
+                                    "GPU) before launching Unsloth Studio."
+                                )
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
                                 "build, and the text-only retry also failed: "

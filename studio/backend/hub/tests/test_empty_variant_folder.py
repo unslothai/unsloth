@@ -122,11 +122,14 @@ def _force_compute_to_raise(monkeypatch):
     monkeypatch.setattr(
         gguf_variants,
         "list_gguf_variants_from_hf_cache",
-        lambda repo_id, hf_token = None: None,
+        lambda repo_id, hf_token = None, *, offline = False, root = None: None,
         raising = False,
     )
     monkeypatch.setattr(
-        gguf_variants, "list_partial_gguf_variants_from_state", lambda repo_id: None, raising = False
+        gguf_variants,
+        "list_partial_gguf_variants_from_state",
+        lambda repo_id, hub_cache = None: None,
+        raising = False,
     )
 
 
@@ -136,7 +139,11 @@ def test_get_variants_surfaces_cleanable_when_metadata_fails(monkeypatch):
     import asyncio
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: {"UD-IQ1_S"})
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_empty_gguf_variant_dirs",
+        lambda repo_id, root = None: {"UD-IQ1_S"},
+    )
 
     resp = asyncio.run(
         gguf_variants.get_gguf_variants_response(
@@ -155,7 +162,11 @@ def test_get_variants_reraises_when_no_cleanable(monkeypatch):
     from fastapi import HTTPException
 
     _force_compute_to_raise(monkeypatch)
-    monkeypatch.setattr(gguf_variants, "list_empty_gguf_variant_dirs", lambda repo_id: set())
+    monkeypatch.setattr(
+        gguf_variants,
+        "list_empty_gguf_variant_dirs",
+        lambda repo_id, root = None: set(),
+    )
 
     try:
         asyncio.run(

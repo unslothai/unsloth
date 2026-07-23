@@ -645,6 +645,29 @@ class TestAudioDetectionCacheTokenAware:
         assert calls == [None, "hf_x"]
         mc._audio_detection_cache.clear()
 
+    def test_audio_cache_is_active_cache_aware(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        selected = {"path": "/cache-a"}
+        calls = []
+
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        monkeypatch.setattr(mc, "active_hf_hub_cache", lambda: selected["path"])
+
+        def _probe(*_args, **_kwargs):
+            calls.append(selected["path"])
+            return ("csm", True) if selected["path"] == "/cache-a" else (None, True)
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
+
+        assert mc.detect_audio_type("org/model") == "csm"
+        selected["path"] = "/cache-b"
+        assert mc.detect_audio_type("org/model") is None
+        assert calls == ["/cache-a", "/cache-b"]
+        mc._audio_detection_cache.clear()
+
     def test_transient_none_is_not_cached_but_definitive_none_is(self, monkeypatch):
         """A transient probe failure (definitive=False) must retry; a clean
         'not audio' read (definitive=True) caches so we don't re-probe."""
