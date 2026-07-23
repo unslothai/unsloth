@@ -46,6 +46,9 @@ _PICKLE_WEIGHT_RE = re.compile(
     r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
     re.IGNORECASE,
 )
+# Pickle suffixes from the regex above. An index-referenced shard is one the loader is told to
+# deserialize, so a pickle extension alone flags it (its stem need not match the name heuristic).
+_PICKLE_WEIGHT_SUFFIXES = frozenset({".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle"})
 # Base-model safetensors set: HF names the base pickle pytorch_model.bin but the safetensors
 # model.safetensors (stems differ), so a base pickle is replaced only by these, not an adapter's.
 _BASE_SAFETENSORS_RE = re.compile(
@@ -313,13 +316,54 @@ def _st_load_roots(snapshot: Path) -> list:
     return roots
 
 
+def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list:
+    """Pickle shards a local weight index points a ``from_pretrained`` load at, resolved relative to
+    the index dir (``root``) like the loader so a shard in a nested dir is followed (iterdir misses
+    it). Lexical only, never ``Path.resolve()`` (HF snapshot files symlink into ``blobs/``, so
+    resolving escapes the snapshot and false-blocks every shard). Raises OSError -> caller fails
+    CLOSED on an unreadable/invalid index or a path escaping the snapshot; inert shards are ignored."""
+    import json
+    import os
+
+    try:
+        parsed = json.loads(index_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise OSError(f"unreadable weight index: {index_path}") from exc
+    weight_map = parsed.get("weight_map") if isinstance(parsed, dict) else None
+    if not isinstance(weight_map, dict):
+        return []  # no dict weight_map -> the loader resolves no shards from this index
+    snapshot_norm = os.path.normpath(str(snapshot))
+    shards = []
+    for shard in weight_map.values():
+        rel = _normalize_repo_path(str(shard))
+        if not rel:
+            continue
+        joined = os.path.normpath(os.path.join(str(root), rel))
+        if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
+            raise OSError(f"weight index escapes the snapshot: {index_path}")
+        shard_path = Path(joined)
+        if shard_path.suffix.lower() in _PICKLE_WEIGHT_SUFFIXES and shard_path.is_file():
+            shards.append(shard_path)
+    return shards
+
+
 def _cached_pickle_weight_files(snapshot: Path) -> list:
-    """Pickle weight files in snapshot's ST load roots, EXCLUDING those whose weight family also
-    ships an inert safetensors in the same dir (the loader prefers it): a base pickle is suppressed
-    only by a base model.safetensors, an adapter pickle only by adapter_model.safetensors -- an
-    unrelated safetensors is no substitute. Load roots only. Raises OSError if the snapshot root is
-    unreadable (caller blocks)."""
+    """Pickle weight files a SentenceTransformer/Transformers load deserializes from snapshot's ST
+    load roots, EXCLUDING those whose weight family also ships an inert safetensors in the same dir
+    (the loader prefers it): a base pickle is suppressed only by a base model.safetensors, an adapter
+    pickle only by adapter_model.safetensors -- an unrelated safetensors is no substitute. Covers
+    both direct-child pickles AND pickle shards referenced by a local weight index (which the loader
+    follows into nested dirs, matching the online gate). Raises OSError -- caller fails CLOSED -- if
+    the snapshot root or a weight index is unreadable, or an index reference escapes the snapshot."""
     blocked = []
+    seen = set()
+
+    def _add(path: Path):
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            blocked.append(path)
+
     for root in _st_load_roots(snapshot):
         try:
             entries = [p for p in root.iterdir() if p.is_file()]
@@ -335,7 +379,15 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             is_adapter = path.name.lower().startswith("adapter_model")
             has_alternative = has_adapter_safetensors if is_adapter else has_base_safetensors
             if not has_alternative:
-                blocked.append(path)
+                _add(path)
+        # A local weight index makes from_pretrained load nested pickle shards iterdir never sees.
+        # All index files are base-weight, so a base safetensors set (loader-preferred) suppresses.
+        for index_path in entries:
+            if index_path.name not in _TRANSFORMERS_INDEX_FILES:
+                continue
+            for shard_path in _indexed_pickle_shards(index_path, root, snapshot):
+                if not has_base_safetensors:
+                    _add(shard_path)
     return blocked
 
 

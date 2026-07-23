@@ -382,6 +382,166 @@ def test_gate_blocks_sharded_pickle(hf_cache):
         assert _offline_decision("org/shard").blocked is True
 
 
+def test_gate_blocks_indexed_pickle_shard_in_subdirectory(hf_cache):
+    # from_pretrained follows weight_map paths relative to the root index, so these nested shards
+    # are deserialized even though they are not direct children of the load root (iterdir misses
+    # them). The online gate blocks index-referenced subdir pickles; the offline gate must too.
+    _make_cache(
+        hf_cache,
+        "org/indexed-shard",
+        {
+            "pytorch_model.bin.index.json": (
+                '{"weight_map": {"layer.weight": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "shards/pytorch_model-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/indexed-shard")
+    assert decision.blocked is True
+    assert any(
+        u["path"] == "shards/pytorch_model-00001-of-00001.bin" for u in decision.unsafe_files
+    )
+
+
+def test_gate_blocks_indexed_pickle_shard_with_nonstandard_stem(hf_cache):
+    # The index tells the loader to deserialize this file, so a pickle EXTENSION is enough -- the
+    # shard's stem need not match the on-disk weight-name heuristic (which only guesses bare files).
+    _make_cache(
+        hf_cache,
+        "org/indexed-odd",
+        {
+            "pytorch_model.bin.index.json": '{"weight_map": {"w": "shards/evil-00001-of-00001.bin"}}',
+            "shards/evil-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/indexed-odd")
+    assert decision.blocked is True
+    assert any(u["path"] == "shards/evil-00001-of-00001.bin" for u in decision.unsafe_files)
+
+
+def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):
+    # A weight index inside a sentence-transformers module load root points at a nested pickle shard.
+    _make_cache(
+        hf_cache,
+        "org/mod-indexed",
+        {
+            "modules.json": _modules_json("0_Transformer"),
+            "0_Transformer/pytorch_model.bin.index.json": (
+                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "0_Transformer/shards/pytorch_model-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/mod-indexed")
+    assert decision.blocked is True
+    assert any(
+        u["path"] == "0_Transformer/shards/pytorch_model-00001-of-00001.bin"
+        for u in decision.unsafe_files
+    )
+
+
+def test_gate_allows_indexed_pickle_shard_with_safetensors_sibling(hf_cache):
+    # A base model.safetensors makes the loader ignore the pickle index entirely, so it must not
+    # block (mirrors the direct-file safetensors-sibling suppression).
+    _make_cache(
+        hf_cache,
+        "org/indexed-both",
+        {
+            "pytorch_model.bin.index.json": (
+                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "shards/pytorch_model-00001-of-00001.bin": "pickle",
+            "model.safetensors": "y",
+        },
+    )
+    with _no_network():
+        assert _offline_decision("org/indexed-both").blocked is False
+
+
+def test_gate_allows_indexed_safetensors_shard_in_subdirectory(hf_cache):
+    # A safetensors index lists inert shards -- following it must never block (guards against a
+    # scanner that flags every indexed shard regardless of format).
+    _make_cache(
+        hf_cache,
+        "org/st-indexed",
+        {
+            "model.safetensors.index.json": (
+                '{"weight_map": {"w": "shards/model-00001-of-00001.safetensors"}}'
+            ),
+            "shards/model-00001-of-00001.safetensors": "tensors",
+        },
+    )
+    with _no_network():
+        assert _offline_decision("org/st-indexed").blocked is False
+
+
+def test_gate_blocks_on_index_path_traversal(hf_cache):
+    # A weight_map entry escaping the snapshot via ".." is abnormal/hostile -> fail closed.
+    _make_cache(
+        hf_cache,
+        "org/escape",
+        {"pytorch_model.bin.index.json": '{"weight_map": {"w": "../../../../etc/evil.bin"}}'},
+    )
+    with _no_network():
+        assert _offline_decision("org/escape").blocked is True
+
+
+def test_gate_allows_symlinked_sharded_safetensors(tmp_path, monkeypatch):
+    # Real HF caches store snapshot files as symlinks into blobs/. A resolve()-based containment
+    # check would escape the snapshot and false-block every sharded model; the lexical gate must not.
+    import hashlib
+    import os
+
+    from huggingface_hub.file_download import repo_folder_name
+
+    root = tmp_path / "hub"
+    root.mkdir()
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(root))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = root),
+    )
+    repo_dir = root / repo_folder_name(repo_id = "org/sym", repo_type = "model")
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(_COMMIT)
+    blobs = repo_dir / "blobs"
+    blobs.mkdir()
+    snapshot = repo_dir / "snapshots" / _COMMIT
+    (snapshot / "shards").mkdir(parents = True)
+
+    def _blobbed(rel, content):
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        (blobs / digest).write_text(content)
+        target = snapshot / rel
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.symlink_to(os.path.relpath(blobs / digest, target.parent))
+
+    _blobbed("config.json", "{}")
+    _blobbed(
+        "model.safetensors.index.json",
+        '{"weight_map": {"w": "shards/model-00001-of-00001.safetensors"}}',
+    )
+    _blobbed("shards/model-00001-of-00001.safetensors", "tensors")
+    with _no_network():
+        assert _offline_decision("org/sym").blocked is False
+
+
+def test_gate_allows_index_without_weight_map(hf_cache):
+    # An index whose top-level JSON has no dict weight_map lets the loader resolve no shards, so it
+    # must not crash or block on its own (only inert safetensors are cached here).
+    _make_cache(
+        hf_cache,
+        "org/no-wm",
+        {"model.safetensors.index.json": "[]", "model.safetensors": "x"},
+    )
+    with _no_network():
+        assert _offline_decision("org/no-wm").blocked is False
+
+
 def test_gate_allows_nothing_cached(hf_cache):
     with _no_network():
         assert _offline_decision("org/missing").blocked is False
