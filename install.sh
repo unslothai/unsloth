@@ -2363,7 +2363,13 @@ get_torch_index_url() {
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
-    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
+    if [ "$_major" -ge 13 ]; then
+        # cu130 dropped Volta (sm_70/sm_72). A CUDA 13 driver still runs V100s,
+        # so cap Volta GPUs to cu128 (last wheels shipping sm_70). awk picks the
+        # lowest compute capability across GPUs (no tr/sort/grep dependency).
+        _min_cap=$(LC_ALL=C $_smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+            | awk '{gsub(/[ \r]/,"")} /^[0-9]+\.[0-9]+$/{split($0,a,"."); v=a[1]*100+a[2]; if(m==""||v<m){m=v;c=$0}} END{if(c!="")print c}')
+        case "$_min_cap" in 7.0|7.2) echo "$_base/cu128" ;; *) echo "$_base/cu130" ;; esac
     elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
     elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
     elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"

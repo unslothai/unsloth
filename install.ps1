@@ -2014,7 +2014,14 @@ exit 0
             # Accept both spellings so we don't fall through to the cu126 default.
             if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                    { return "$baseUrl/cu130" }
+                if ($major -ge 13) {
+                    # cu130 dropped Volta (sm_70/sm_72); cap V100s to cu128.
+                    $cap = (& $NvidiaSmiExe --query-gpu=compute_cap --format=csv,noheader 2>$null |
+                        ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+\.\d+$' } |
+                        Sort-Object { [version]$_ } | Select-Object -First 1)
+                    if ($cap -eq '7.0' -or $cap -eq '7.2') { return "$baseUrl/cu128" }
+                    return "$baseUrl/cu130"
+                }
                 if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
                 if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
                 if ($major -ge 12) { return "$baseUrl/cu124" }
