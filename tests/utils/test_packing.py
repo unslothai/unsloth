@@ -44,7 +44,9 @@ def _build_packed_training_setup(tmp_path, device):
             dtype = torch.bfloat16
         else:
             dtype = torch.float16
-
+    elif device.type == "xpu":
+        dtype = torch.bfloat16
+            
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM",
@@ -76,8 +78,8 @@ def _build_packed_training_setup(tmp_path, device):
         max_length = 64,
         logging_steps = 1,
         max_steps = 1,
-        fp16 = device.type == "cuda" and not torch.cuda.is_bf16_supported(),
-        bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported(),
+        fp16 = dtype == torch.float16,
+        bf16 = dtype == torch.bfloat16,
         dataset_num_proc = 1,
         output_dir = str(tmp_path),
         packing = True,
@@ -974,7 +976,12 @@ def test_enable_sample_packing():
 
 
 def test_enable_sample_packing_trl_collator(tmp_path):
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        device = torch.device("cpu")
     model, _, trainer, _ = _build_packed_training_setup(tmp_path, device)
 
     enable_sample_packing(model, trainer)
@@ -1030,7 +1037,12 @@ def test_enable_padding_free_metadata():
 
 
 def test_packing_sdpa(tmp_path):
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        device = torch.device("cpu")
     model, batch, trainer, llama_mod = _build_packed_training_setup(tmp_path, device)
 
     assert "packed_seq_lengths" in batch
