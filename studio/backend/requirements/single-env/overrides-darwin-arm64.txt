@@ -11,8 +11,9 @@ transformers>=4.57.6
 # wins the fight, so force one consistent <4.14 here too.
 anyio<4.14.0
 
-# mlx-lm 0.31.3 regressed QK-norm archs (gemma4 / qwen3_5): strict load_weights
-# rejects q_norm/k_norm, so those checkpoints fail to load. mlx-lm #1242.
-# The override also drops it from transitive resolution; keep the >=0.22.0 floor
-# (mirrors mlx_repair.py _MLX_MIN_VERSIONS) or the resolver could go below it.
-mlx-lm>=0.22.0,!=0.31.3
+# mlx-audio (pulled by mlx-vlm>=0.5.0) declares huggingface_hub>=1.0, which
+# conflicts with the transformers==4.57.6 stack (hub<1.0; constraints.txt pins
+# hub==0.36.2). Without this override uv silently backtracks mlx-vlm to 0.4.4,
+# dropping newer VLM/audio support. Keep <1.0 so the resolver can never pair
+# hub 1.x with the pinned transformers.
+huggingface_hub>=0.34.0,<1.0

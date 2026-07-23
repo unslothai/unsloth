@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
-from utils.hardware import apply_gpu_ids
+from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -801,10 +801,7 @@ def run_inference_process(
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
-    from utils.hardware import hardware as _hw
-
-    _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if is_apple_silicon():
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
@@ -816,6 +813,11 @@ def run_inference_process(
                 model_name,
                 exc,
             )
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 

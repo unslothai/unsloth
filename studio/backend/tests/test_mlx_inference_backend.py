@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import subprocess
 import sys
 import types
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -374,6 +376,67 @@ def test_worker_share_object_receives_distributed_payload(monkeypatch):
 
     response = responses[0]
     assert response["object"] == shared_obj
+
+
+def test_worker_activates_mlx_sidecar_before_hardware_detection():
+    backend_dir = Path(__file__).resolve().parent.parent
+    script = r"""
+import sys
+
+from core.inference import worker
+from utils.hardware import hardware
+
+class DetectionComplete(Exception):
+    pass
+
+def run_probe(apple_silicon, activation_error = False):
+    order = []
+
+    def activate(model_name, hf_token):
+        leaked = sorted(
+            name for name in sys.modules
+            if name.split(".", 1)[0]
+            in {"huggingface_hub", "mlx", "mlx_lm", "mlx_vlm", "transformers"}
+        )
+        assert not leaked, f"MLX dependencies imported before sidecar activation: {leaked}"
+        order.append(("activate", model_name, hf_token))
+        if activation_error:
+            raise RuntimeError("sidecar unavailable")
+
+    def detect():
+        order.append("detect")
+        raise DetectionComplete
+
+    worker.is_apple_silicon = lambda: apple_silicon
+    worker._activate_transformers_version = activate
+    hardware.detect_hardware = detect
+    try:
+        worker.run_inference_process(
+            cmd_queue = None,
+            resp_queue = None,
+            cancel_event = None,
+            config = {"model_name": "fake/model", "hf_token": "token"},
+        )
+    except DetectionComplete:
+        return order
+    raise AssertionError("hardware detection probe did not run")
+
+assert run_probe(True) == [("activate", "fake/model", "token"), "detect"]
+assert run_probe(True, activation_error=True) == [
+    ("activate", "fake/model", "token"), "detect"
+]
+assert run_probe(False) == ["detect"]
+print("MLX_SIDECAR_ORDER_OK")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd = backend_dir,
+        capture_output = True,
+        text = True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "MLX_SIDECAR_ORDER_OK" in result.stdout
 
 
 def test_worker_share_object_oversize_notifies_peers(monkeypatch):
