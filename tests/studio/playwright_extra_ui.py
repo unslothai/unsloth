@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
+"""Unsloth extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
 
 import json
 import os
@@ -90,11 +90,11 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
     page = ctx.new_page()
-    # 60s default for slow macos-14 --single-process Chromium (second Studio boot of the job).
+    # 60s default for slow macos-14 --single-process Chromium (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
     page_errors = []
 
-    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Studio bugs);
+    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Unsloth bugs);
     # shared base list lives in _playwright_robust.BENIGN_PAGE_ERROR_PATTERNS.
     def _on_pageerror(e):
         msg = str(e)
@@ -451,9 +451,9 @@ with sync_playwright() as p:
             )
 
     # ─────────────────────────────────────────────────────
-    # 4. Studio training route.
+    # 4. Unsloth training route.
     # ─────────────────────────────────────────────────────
-    step(f"Studio route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
+    step(f"Unsloth route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
     page.wait_for_timeout(1500)
     shoot("08-studio")
@@ -482,6 +482,14 @@ with sync_playwright() as p:
     step("Settings dialog: cycle through tabs")
     page.goto(f"{BASE}/chat")
     composer.wait_for(state = "visible", timeout = 60_000)
+    dictate = page.get_by_role("button", name = "Dictate").first
+    if dictate.count() == 0:
+        fail("Chat Dictate button not found")
+    elif dictate.get_attribute("type") != "button":
+        fail("Chat Dictate control must use type=button, not submit the composer")
+    else:
+        info("OK Chat Dictate control is type=button")
+
     page.keyboard.press("Control+,")
     page.wait_for_timeout(800)
     settings = page.get_by_role("dialog").first
@@ -501,6 +509,7 @@ with sync_playwright() as p:
             "Appearance",
             "Chat",
             "Developer",
+            "Voice",
             "About",
         )
         seen_tabs = []
@@ -528,6 +537,39 @@ with sync_playwright() as p:
                     soft_fail(f"Settings tab '{tab_name}' body suspiciously short: {body_text}")
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
+        step("Voice model picker: real mouse-wheel scrolling")
+        voice_tab = page.get_by_role(
+            "button", name = re.compile(r"^\s*Voice(?:\s+New)?\s*$", re.I)
+        ).first
+        if voice_tab.count() == 0:
+            fail("Voice settings tab not found")
+        else:
+            voice_tab.click()
+            page.get_by_label("Dictation engine").click()
+            page.get_by_role("option", name = "Local transcription").click()
+            page.get_by_label("Speech recognition model").click()
+            page.get_by_placeholder("Search model").fill("whisper")
+            results = page.get_by_test_id("stt-model-results")
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollHeight > node.clientHeight;
+                    }""",
+                    timeout = 30_000,
+                )
+                results.hover()
+                page.mouse.wheel(0, 700)
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollTop > 0;
+                    }""",
+                    timeout = 5_000,
+                )
+                info("OK Voice model picker mouse wheel changed scrollTop")
+            except Exception as exc:
+                fail(f"Voice model picker did not wheel-scroll: {exc!r}")
         shoot("10-settings-tabs-visited")
         page.keyboard.press("Escape")
         page.wait_for_timeout(300)

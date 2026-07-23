@@ -36,6 +36,10 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
+#
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default) or "cpu". When "cpu", forces
+#                               the CPU-only prebuilt bundle on GPU hosts.
+#                               Fixes Intel iGPU Vulkan crashes (#7213).
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -72,6 +76,16 @@ verbose_substep() {
         substep "$1"
     fi
     return 0
+}
+
+_remove_agent_instruction_files() {
+    local _root
+    for _root in "$@"; do
+        [ -d "$_root" ] || continue
+        [ -L "$_root" ] && continue
+        find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
+            -exec rm -f {} + 2>/dev/null || true
+    done
 }
 
 # ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
@@ -117,13 +131,13 @@ _suggest_npm_registry() {
     printf '\n' >&2
     step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "$C_WARN" >&2
     if [ -n "$_mirror" ]; then
-        substep "Studio pins the public npm registry; your mirror is being ignored." >&2
+        substep "Unsloth pins the public npm registry; your mirror is being ignored." >&2
         substep "Detected a registry in your npm config:" >&2
         substep "  $_mirror" >&2
-        substep "Re-run pointing Studio at it:" >&2
+        substep "Re-run pointing Unsloth at it:" >&2
         substep "  UNSLOTH_NPM_REGISTRY=$_mirror ./install.sh --local" >&2
     else
-        substep "If you use a private mirror/proxy, point Studio at it and re-run:" >&2
+        substep "If you use a private mirror/proxy, point Unsloth at it and re-run:" >&2
         substep "  UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./install.sh --local" >&2
     fi
     substep "(min-release-age and save-exact stay enforced.)" >&2
@@ -386,7 +400,7 @@ _print_cuda_driver_toolkit_mismatch() {
     local _driver_major=${_driver_version%%.*}
     substep "CUDA Toolkit $_toolkit_version is a major-version mismatch: toolkit major $_toolkit_major exceeds driver CUDA major $_driver_major ($_driver_version)." "$C_WARN"
     substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version, or install a CUDA $_driver_major.x toolkit." "$C_WARN"
-    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
+    substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
 }
 
 print_llama_error_log() {
@@ -521,13 +535,15 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence Studio created "$1": only prebuilt-installer metadata
+# Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
-# for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
-# A markerless source build stays strict since this runs right before an rm -rf.
+# for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
+# by our installers. Mirrors the setup.ps1 Node guard. A markerless source build
+# stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {
@@ -539,7 +555,7 @@ _assert_studio_owned_or_absent() {
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
         fi
-        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
         exit 1
     fi
@@ -575,7 +591,7 @@ if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
 else
 
 # ── Node (isolated; never touches the system Node/npm) ──
-# Studio's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Unsloth's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
 # Three sources:
 #   system  -- system Node + npm already satisfy both; used read-only.
 #   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
@@ -656,9 +672,9 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     set -e
     if [ "$_NODE_STATUS" -eq 3 ]; then
-        step "node" "install blocked by another active Studio install" "$C_ERR"
+        step "node" "install blocked by another active Unsloth install" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
-        substep "close other Studio installs and retry"
+        substep "close other Unsloth installs and retry"
         exit 3
     elif [ "$_NODE_STATUS" -ne 0 ]; then
         step "node" "isolated Node install failed" "$C_ERR"
@@ -682,7 +698,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
 else
     _FRONTEND_SKIP=true
     step "frontend" "skipped (no suitable Node; system left untouched)" "$C_WARN"
-    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Studio needs Node >=20.19/22.12/23 and npm >= 11"
+    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11"
     substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node"
 fi
 verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
@@ -847,6 +863,10 @@ elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
 
+_remove_agent_instruction_files \
+    "$SCRIPT_DIR/frontend/node_modules" \
+    "$_OXC_DIR/node_modules"
+
 # ── Python venv + deps ──
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
@@ -859,11 +879,11 @@ fi
 _COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
-        # On Colab there is no Studio venv -- install backend deps into system Python.
+        # On Colab there is no Unsloth venv -- install backend deps into system Python.
         # Strip all version constraints so pip keeps Colab's pre-installed
         # packages (huggingface-hub, datasets, transformers) and only pulls
         # in genuinely missing ones (structlog, fastapi, etc.).
-        substep "Colab detected, installing Studio backend dependencies..."
+        substep "Colab detected, installing Unsloth backend dependencies..."
         _COLAB_REQS_TMP="$(mktemp)"
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
             | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
@@ -1083,8 +1103,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
             '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
@@ -1118,7 +1137,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         case "$_setup_mkt" in
             *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
             *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
             *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
             *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
             *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
@@ -1176,63 +1195,19 @@ _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 
-# Pick the release repo install_llama_prebuilt.py plans against.
-# The fork ships CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and
-# macOS bundles. Only the plain CPU/Vulkan bundles still come from ggml-org, so
-# CPU-only Linux (x86_64 and arm64) routes there; GPU Linux, Windows and macOS
-# use unslothai.
-_LINUX_HAS_GPU=false
-# Route to the fork only for a usable GPU. NVIDIA counts only when a device is
-# actually enumerated and not hidden via CUDA_VISIBLE_DEVICES=""/-1
-# (_setup_nvidia_usable, from _setup_has_usable_nvidia_gpu above) -- mirroring
-# install_llama_prebuilt.py's has_usable_nvidia. Mere nvidia-smi presence
-# (CPU-only CUDA-toolkit containers, broken drivers) or a hidden GPU therefore
-# takes the ggml-org CPU prebuilt instead of a slow source build. AMD is
-# deliberately left on tooling presence, not usability: an unusable NVIDIA host
-# has a good CPU prebuilt to fall back to, whereas tightening AMD would regress
-# ROCm hosts exposing only hipconfig/hipinfo into an unnecessary CPU build.
-if [ "$_setup_nvidia_usable" = true ]; then
-    _LINUX_HAS_GPU=true
-else
-    for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
-        if command -v "$_GPU_TOOL" >/dev/null 2>&1; then
-            _LINUX_HAS_GPU=true
-            break
-        fi
-    done
-fi
+# Pick the release repo install_llama_prebuilt.py plans against. Every host this
+# installer supports now pulls its llama.cpp prebuilt from the unslothai fork: it
+# ships the CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and macOS
+# bundles, plus the CPU bundles for Linux/Windows on both x86_64 and arm64.
+# ggml-org artifacts are no longer used by default.
+_HELPER_RELEASE_REPO="unslothai/llama.cpp"
 # UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
 # nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
-# Honour it here so the routing guard below and the --rocm-gfx forwarding both see
-# it (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
-if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+# Honour it here so the --rocm-gfx forwarding below still sees it
+# (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
+if [ "${_setup_nvidia_usable:-}" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
     _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
 fi
-# A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
-# no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
-# picked instead of ggml-org / a source build.
-if [ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]; then
-    _LINUX_HAS_GPU=true
-fi
-
-if [ "$_HOST_SYSTEM" = "Linux" ] \
-        && [ "$_HOST_MACHINE" = "x86_64" ] \
-        && [ "$_LINUX_HAS_GPU" = false ]; then
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-elif [ "$_HOST_SYSTEM" = "Linux" ] \
-        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
-        && [ "$_LINUX_HAS_GPU" = false ]; then
-    # CPU-only Linux ARM64 (Ampere Altra, Raspberry Pi 5, GitHub
-    # `ubuntu-24.04-arm`, CPU-only Jetson rescue mode, ...). The fork ships no
-    # arm64 CPU bundle, so without this branch the prebuilt resolver returns 0
-    # attempts and the installer falls back to a source build. ggml-org ships
-    # llama-bNNNN-bin-ubuntu-arm64.tar.gz from at least b9072 onward.
-    _HELPER_RELEASE_REPO="ggml-org/llama.cpp"
-else
-    # GPU Linux (x64 CUDA/ROCm, arm64 CUDA), Windows (CUDA/ROCm), and macOS.
-    _HELPER_RELEASE_REPO="unslothai/llama.cpp"
-fi
-unset _GPU_TOOL
 _LLAMA_PR="${UNSLOTH_LLAMA_PR:-}"
 _SKIP_PREBUILT_INSTALL=false
 _LLAMA_PR_FORCE="${UNSLOTH_LLAMA_PR_FORCE:-${_DEFAULT_LLAMA_PR_FORCE}}"
@@ -1284,7 +1259,7 @@ _link_local_llama_quantize_shim() {
 }
 
 # Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
-# never rejects a tree Studio could actually run: a root-level llama-server (a
+# never rejects a tree Unsloth could actually run: a root-level llama-server (a
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
@@ -1328,13 +1303,13 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # Reusing disables BOTH the prebuilt download and the source build, so the
         # linked tree must already contain a runnable llama-server in one of the
         # layouts the backend resolves (root-level or build/bin/). Fail clearly
-        # rather than link an unbuilt or wrong-platform checkout and leave Studio
+        # rather than link an unbuilt or wrong-platform checkout and leave Unsloth
         # with no usable binary.
         if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
             step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
             exit 1
         fi
-        # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
+        # A stale link from a previous --with-llama-cpp-dir run isn't Unsloth-owned
         # content; drop it before the ownership check so re-runs stay idempotent
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
@@ -1384,11 +1359,32 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        # AMD was detected but gfx resolution failed; tell the installer ROCm is
-        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+    elif [ "$_setup_amd_detected" = true ] && \
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ] || \
+           ls /opt/rocm-*/bin/hipcc >/dev/null 2>&1; }; then
+        # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
+        # hipcc can actually build llama.cpp (incl. a versioned /opt/rocm-*/bin, the
+        # same paths the source build uses). With no gfx the prebuilt resolver finds
+        # no ROCm bundle and the source build would fail, so without hipcc fall
+        # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
+    # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, trimmed) forces the CPU-only
+    # prebuilt via --force-cpu, bypassing Vulkan/CUDA/ROCm. Fixes Intel iGPU crash (#7213).
+    # No effect on macOS: the universal bundle already runs on CPU (Metal is a runtime
+    # -ngl choice), so warn instead of writing a misleading forced-CPU marker.
+    _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+    case "$_llama_backend" in
+        cpu)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
+            else
+                _PREBUILT_CMD+=(--force-cpu)
+            fi
+            ;;
+        ""|auto) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$UNSLOTH_LLAMA_CPP_BACKEND' (expected 'auto' or 'cpu')" "$C_WARN" >&2 ;;
+    esac
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
@@ -1419,7 +1415,7 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "existing install was restored"
         fi
-        substep "close Studio or other llama.cpp users and retry"
+        substep "close Unsloth or other llama.cpp users and retry"
         exit 3
     else
         step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
@@ -1916,7 +1912,7 @@ else
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
             fi
             # DiffusionGemma visual server, if it was built (PR #24423): link next to
-            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            # llama-server so Unsloth serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
             if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
                 ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
@@ -1939,19 +1935,19 @@ else
 fi  # end _SKIP_GGUF_BUILD check
 
 # ── arm64 Linux GPU: CPU prebuilt as a last resort ──
-# arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
-# x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
-# GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
-# instead of leaving the host without llama.cpp.
+# An arm64 Linux GPU host source-builds for the GPU above. If that produced no
+# binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
+# instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
+# attributes so the CPU bundle is selected rather than re-attempting CUDA.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
-    substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
+    substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
     _ARM64_CPU_CMD=(
         python "$SCRIPT_DIR/install_llama_prebuilt.py"
         --install-dir "$LLAMA_CPP_DIR"
         --llama-tag "$_REQUESTED_LLAMA_TAG"
-        --published-repo "ggml-org/llama.cpp"
+        --published-repo "unslothai/llama.cpp"
         --cpu-fallback
     )
     # Trust the installer's exit code: it validates the server before exiting 0,
@@ -1960,6 +1956,107 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         step "llama.cpp" "arm64 CPU prebuilt installed (GPU build unavailable)" "$C_WARN"
         _LLAMA_CPP_DEGRADED=false
         print_installed_llama_prebuilt_release "$LLAMA_CPP_DIR"
+    fi
+fi
+
+if [ ! -L "$LLAMA_CPP_DIR" ] && {
+    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+        [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
+        _studio_owned_adoptable "$LLAMA_CPP_DIR"
+}; then
+    _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
+# ── whisper.cpp (local speech-to-text dictation engine) ──
+# Optional runtime for local dictation. Fail-open: any failure leaves the
+# Transformers STT engine and browser dictation working, so it never aborts
+# setup (unlike llama.cpp). Runs in 'unsloth studio update' too so the runtime
+# installs/refreshes without a compiler. Installs beside llama.cpp under the
+# same managed home the sidecar's _managed_whisper_cpp_dir() resolves.
+WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
+if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
+    verbose_substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
+    verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+else
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    fi
+    _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
+    if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
+        _WHISPER_CMD+=(--published-release-tag "$UNSLOTH_WHISPER_RELEASE_TAG")
+    fi
+    if [ -n "${_setup_gfx:-}" ]; then
+        _WHISPER_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        _WHISPER_CMD+=(--has-rocm)
+    fi
+    _WHISPER_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+        _WHISPER_STATUS=${PIPESTATUS[0]}
+    else
+        "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
+        _WHISPER_STATUS=$?
+    fi
+    set -e
+    if [ "$_WHISPER_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_WHISPER_LOG"; then
+            step "whisper.cpp" "prebuilt up to date"
+        else
+            step "whisper.cpp" "prebuilt installed"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+            : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+        rm -f "$_WHISPER_LOG"
+    elif [ "$_WHISPER_STATUS" -eq 3 ]; then
+        # A warm dictation server holds the binary; keep the old install.
+        step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
+        rm -f "$_WHISPER_LOG"
+    else
+        # A source build is opt-in. Keep the installer log until fallback has
+        # finished so setup can distinguish release skew from an operational
+        # installer failure and report the exact pairing when available.
+        _WHISPER_RECOVERED=false
+        _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
+        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
+                && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            # The source build overwrites whisper-server in the managed dir but
+            # knows nothing about the prebuilt marker; a stale marker would make
+            # a later setup run report "already matches" and skip repairing the
+            # prebuilt over the source binary. Drop it before building.
+            rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+                _WHISPER_RECOVERED=true
+                step "whisper.cpp" "source build installed"
+                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                    : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+                fi
+            else
+                :
+            fi
+        fi
+        if [ "$_WHISPER_RECOVERED" != true ]; then
+            if [ "$_WHISPER_STATUS" -eq 2 ]; then
+                _WHISPER_REQUIRED_TAG="$(sed -n 's/.*slim bundle requires llama\.cpp \([^; ]*\).*/\1/p' "$_WHISPER_LOG" | tail -n 1)"
+                _WHISPER_INSTALLED_TAG="$(python - "$UNSLOTH_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("release_tag", ""))
+except Exception:
+    pass
+PY
+)"
+                _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
+                step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
+            else
+                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
+            fi
+        fi
+        rm -f "$_WHISPER_LOG"
     fi
 fi
 
@@ -1997,15 +2094,15 @@ else
     else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 fi
 echo ""
 
 # When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
 # installer can report the GGUF failure after finishing PATH/shortcut setup.
 # When called directly via 'unsloth studio update', keep the install
-# successful -- the footer above already reports the limitation and Studio
+# successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     exit 1

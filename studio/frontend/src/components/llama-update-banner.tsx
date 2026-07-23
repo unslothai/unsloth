@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import { toast } from "@/lib/toast";
@@ -81,29 +82,39 @@ export function LlamaUpdateBanner({
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showBannerPref = useShowLlamaUpdateBanner();
+  // Not gated on showBannerPref: this hook instance is the app-wide listener
+  // for a cross-tab reload_required resync (the settings-sheet's own instance
+  // only runs during an MTP-fallback rebuild), so muting the banner must not
+  // also silence that resync -- it only suppresses the UI below.
   const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
-      enabled: enabled && showBannerPref,
+      enabled,
+      onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
 
   async function handleUpdate() {
+    const component = status?.component ?? "llama.cpp";
     const result = await apply();
     if (result?.ok) {
       const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
       const reloadHint = result.reloadRequired
         ? " Reload your model to use it."
         : "";
-      toast.success(`llama.cpp updated to ${updatedTag}.${reloadHint}`);
+      toast.success(`${component} updated to ${updatedTag}.${reloadHint}`);
     } else if (result) {
       toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
+        `${component} update failed: ${result.error ?? "unknown error"}`,
       );
     }
   }
 
   const show =
-    visible && status != null && (status.update_available || applying);
+    showBannerPref &&
+    visible &&
+    status != null &&
+    (status.update_available || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
+  const component = status?.component ?? "llama.cpp";
   const sizeLabel =
     sizeBytes && sizeBytes > 0
       ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
@@ -133,7 +144,7 @@ export function LlamaUpdateBanner({
             type="button"
             onClick={dismiss}
             className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-            aria-label="Dismiss llama.cpp update notification"
+            aria-label={`Dismiss ${component} update notification`}
           >
             <svg
               aria-hidden="true"
@@ -161,7 +172,7 @@ export function LlamaUpdateBanner({
           />
           <div className="min-w-0">
             <p className="font-heading text-base font-medium text-foreground">
-              {applying ? "Updating llama.cpp..." : "New llama.cpp update"}
+              {applying ? `Updating ${component}...` : `New ${component} update`}
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {status?.installed_tag ?? "unknown"} &rarr;{" "}
@@ -169,7 +180,7 @@ export function LlamaUpdateBanner({
                 {status?.latest_tag ?? ""}
               </span>
             </p>
-            <p className="mt-1 text-[11px] text-muted-foreground/70">
+            <p className="mt-1 text-ui-11 text-muted-foreground/70">
               {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
               after update
             </p>
@@ -180,7 +191,7 @@ export function LlamaUpdateBanner({
           <div
             className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
             role="progressbar"
-            aria-label="Updating llama.cpp"
+            aria-label={`Updating ${component}`}
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={
@@ -200,7 +211,7 @@ export function LlamaUpdateBanner({
             <Button
               size="sm"
               variant="ghost"
-              className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+              className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
               onClick={snooze}
               data-testid="llama-update-snooze-button"
             >
@@ -209,7 +220,7 @@ export function LlamaUpdateBanner({
             <Button
               size="sm"
               // Align pill edge with card padding.
-              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
               onClick={handleUpdate}
               data-testid="llama-update-button"
             >

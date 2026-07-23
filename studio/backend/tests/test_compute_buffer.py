@@ -65,12 +65,14 @@ def _backend(
     vocab = 248320,
     embd = 5120,
     mla = None,
+    arch = None,
 ):
     """Backend with just the dims the compute-buffer estimate reads."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
     b._vocab_size = vocab
     b._embedding_length = embd
     b._key_length_mla = mla  # non-None -> MLA (compressed attention)
+    b._architecture = arch  # GGUF general.architecture (e.g. 'deepseek4')
     return b
 
 
@@ -150,7 +152,7 @@ class TestFallback:
 
 
 class TestParallel1Default:
-    """At Studio's default --parallel 1 the buffer is negligible in pipeline."""
+    """At Unsloth's default --parallel 1 the buffer is negligible in pipeline."""
 
     def test_default_n_parallel(self):
         est = _backend()._estimate_compute_buffer_bytes() / MIB
@@ -290,3 +292,62 @@ class TestContextBufferMLA:
         b = _backend(embd = 6144, mla = 256)
         est = b._compute_buffer_ctx_bytes(754688, cache_type_kv = "q8_0") / MIB
         assert est <= 4141 * 1.7
+
+
+class TestContextBufferDSV4:
+    """DeepSeek-V4 (deepseek4) reserves a large lightning-indexer / sparse-attention
+    compute buffer the KQ-mask and MLA rates miss (present even with an f16 cache).
+    Measured on UD-Q4_K_XL (ub=512): ~2 GiB at 16k ctx, ~65.5 GiB at 1M. The auto-fit
+    must see this so it does not commit the full 1M train context and OOM (spilling
+    to CPU at ~4 tok/s)."""
+
+    _MEASURED_1M_GIB = 65.5  # 70353790464 B compute-graph reserve that OOM'd at 1M ctx
+    GIB = 1024**3
+
+    def test_covers_measured_1m_buffer(self):
+        b = _backend(embd = 4096, arch = "deepseek4")
+        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16") / self.GIB
+        assert gib >= self._MEASURED_1M_GIB, f"under-reserved {gib:.1f} < {self._MEASURED_1M_GIB}"
+
+    def test_not_wildly_over_at_1m(self):
+        # Within ~1.3x of measured so the fit still grants a large (~256k) context.
+        b = _backend(embd = 4096, arch = "deepseek4")
+        gib = b._compute_buffer_ctx_bytes(1048576, cache_type_kv = "f16") / self.GIB
+        assert gib <= self._MEASURED_1M_GIB * 1.3
+
+    def test_fires_for_f16_cache(self):
+        # The bug: an f16 (default) cache took the tiny mask-only path. DSV4 must
+        # reserve GiB, not the ~MiB a non-DSV4 model reserves at the same ctx.
+        dsv4 = _backend(embd = 4096, arch = "deepseek4")._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "f16"
+        )
+        other = _backend(embd = 4096, arch = "qwen3")._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "f16"
+        )
+        assert dsv4 > 40 * other
+
+    def test_cache_type_independent(self):
+        # Indexer scratch is present for an f16 and a quantized cache alike.
+        b = _backend(embd = 4096, arch = "deepseek4")
+        assert b._compute_buffer_ctx_bytes(
+            262144, cache_type_kv = "f16"
+        ) == b._compute_buffer_ctx_bytes(262144, cache_type_kv = "q8_0")
+
+    def test_flat_floor_at_small_ctx(self):
+        # ~2 GiB indexer scratch present even at tiny ctx (covers the measured 16k ~2 GiB).
+        b = _backend(embd = 4096, arch = "deepseek4")
+        assert b._compute_buffer_ctx_bytes(16384, cache_type_kv = "f16") / self.GIB >= 2.0
+
+    def test_scales_with_context_and_ubatch(self):
+        b = _backend(embd = 4096, arch = "deepseek4")
+        assert b._compute_buffer_ctx_bytes(131072) > b._compute_buffer_ctx_bytes(65536)
+        assert b._compute_buffer_ctx_bytes(131072, n_ubatch = 1024) > b._compute_buffer_ctx_bytes(
+            131072, n_ubatch = 256
+        )
+
+    def test_non_dsv4_unchanged(self):
+        # Regression guard: a non-deepseek4 model keeps the mask-only f16 rate.
+        b = _backend(embd = 4096, arch = "llama")
+        per_tok = b._compute_buffer_ctx_bytes(100000, cache_type_kv = "f16") / 100000
+        expected = 512 * 2 * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+        assert per_tok == pytest.approx(expected, rel = 1e-6)

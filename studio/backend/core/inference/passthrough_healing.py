@@ -5,7 +5,7 @@
 
 With server-side tools disabled (``unsloth run --disable-tools``, every
 ``unsloth start`` coding agent), requests carrying the client's own ``tools``
-bypass Studio's tool loop and are relayed to/from llama-server verbatim. Small
+bypass Unsloth's tool loop and are relayed to/from llama-server verbatim. Small
 GGUF models often emit their tool calls as TEXT (``<tool_call>{...}</tool_call>``,
 Gemma ``<|tool_call>...``, ``<function=...>`` XML) instead of structured
 ``tool_calls`` -- on the passthrough that text reaches the agent as prose and
@@ -18,7 +18,7 @@ promotes calls whose function name exactly matches a declared tool. Promotion
 removes EXACTLY the promoted calls' markup spans (the parser reports them):
 undeclared calls, unparseable blocks, and suppressed alternate formats keep
 every byte and relay as text, so healing can never silently delete model
-output. Responses without a tool signal, requests without tools, and Studio's
+output. Responses without a tool signal, requests without tools, and Unsloth's
 own enable-tools loop are untouched. Per-request opt-out:
 ``auto_heal_tool_calls: false``. Process kill-switch:
 ``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
@@ -29,9 +29,27 @@ import os
 from collections.abc import Mapping
 from typing import Any, Optional
 
-from core.inference.tool_call_parser import TOOL_XML_SIGNALS, has_tool_signal
 from core.inference.tool_loop_controller import coerce_tool_arguments
 from core.tool_healing import parse_tool_calls_from_text
+
+# Only the formats this healer's parser can promote -- narrower than the loops'
+# broader TOOL_XML_SIGNALS. A loop-only marker (Llama <|python_tag|>, bare
+# [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
+# healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
+_HEAL_SIGNALS = (
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+    "[TOOL_CALLS]",
+    # TML Inkling native call marker (leaks as text when the server-side
+    # parser misses a narration-then-call turn).
+    "<|content_invoke_tool_json|>",
+)
+
+
+def _has_heal_signal(text: str) -> bool:
+    return any(s in text for s in _HEAL_SIGNALS)
+
 
 # Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
@@ -44,7 +62,7 @@ def nudge_enabled(request_flag: Optional[bool]) -> bool:
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
-_MAX_SIGNAL_LEN = max(len(s) for s in TOOL_XML_SIGNALS)
+_MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
 # A suspected-but-unclosed tool block larger than this is declared a false
 # alarm and flushed, bounding memory on a model rambling XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
@@ -198,7 +216,7 @@ def heal_openai_message_events(
     if not isinstance(msg, dict) or msg.get("tool_calls"):
         return None
     content = msg.get("content")
-    if not isinstance(content, str) or not has_tool_signal(content):
+    if not isinstance(content, str) or not _has_heal_signal(content):
         return None
     parsed, spans = parse_tool_calls_from_text(content, allow_incomplete = True, with_spans = True)
     tool_schemas = _tool_schemas_by_name(tools) if tools is not None else None
@@ -248,7 +266,7 @@ def heal_openai_message(
 
 def _earliest_signal(buffer: str) -> int:
     best = -1
-    for signal in TOOL_XML_SIGNALS:
+    for signal in _HEAL_SIGNALS:
         index = buffer.find(signal)
         if index >= 0 and (best < 0 or index < best):
             best = index
@@ -275,7 +293,7 @@ def _partial_signal_suffix(buffer: str) -> int:
     """Length of the longest buffer suffix that is a proper prefix of a signal."""
     for length in range(min(len(buffer), _MAX_SIGNAL_LEN - 1), 0, -1):
         tail = buffer[-length:]
-        if any(signal.startswith(tail) for signal in TOOL_XML_SIGNALS):
+        if any(signal.startswith(tail) for signal in _HEAL_SIGNALS):
             return length
     return 0
 
@@ -340,9 +358,10 @@ class StreamToolCallHealer:
                         events.append(("text", emit))
                     self._buffer = self._buffer[len(self._buffer) - keep :]
                     return events
-            # HOLD: handle the FIRST complete block per pass so events keep
-            # document order (a later declared call must not overtake an
-            # earlier undeclared one flushing as text).
+            # HOLD: drain the first contiguous run per pass so events keep document
+            # order (a later declared call must not overtake an earlier undeclared one
+            # flushing as text). A run is one markup call OR a whole Mistral [TOOL_CALLS]
+            # array of contiguous spans, so later calls in it are not stranded as text.
             parsed, spans = parse_tool_calls_from_text(
                 self._buffer,
                 id_offset = self._id_offset,
@@ -363,26 +382,32 @@ class StreamToolCallHealer:
                     self._holding = False
                     continue
                 return events
-            start, end = spans[0]
-            promoted = _promote(
-                [parsed[0]],
-                self._allowed,
-                id_offset = self._id_offset,
-                tool_schemas = self._tool_schemas,
-            )
-            if promoted:
-                if start:
-                    events.append(("text", self._buffer[:start]))
-                events.append(("tool_call", promoted[0]))
-                self._id_offset += 1
-                # Drop exactly the promoted markup span; everything else
-                # (leading text, later blocks) stays and is rescanned.
-                self._buffer = self._buffer[end:]
-            else:
-                # Undeclared or unusable name: its markup is DATA, flush it
-                # (and anything before it) verbatim, then rescan the rest.
-                events.append(("text", self._buffer[:end]))
-                self._buffer = self._buffer[end:]
+            pos = 0
+            run_end = spans[0][1]
+            for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
+                # Stop at the first gap or incomplete trailing block: leave it for the
+                # next pass to re-hold and stream incrementally, not flush as text early.
+                if order and start != run_end:
+                    break
+                promoted = _promote(
+                    [call],
+                    self._allowed,
+                    id_offset = self._id_offset,
+                    tool_schemas = self._tool_schemas,
+                )
+                if promoted:
+                    # Flush any leading text, then drop the promoted markup span.
+                    if self._buffer[pos:start]:
+                        events.append(("text", self._buffer[pos:start]))
+                    events.append(("tool_call", promoted[0]))
+                    self._id_offset += 1
+                else:
+                    # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
+                    events.append(("text", self._buffer[pos:end]))
+                pos = end
+                run_end = end
+            # Everything past the drained run (later blocks) stays and is rescanned.
+            self._buffer = self._buffer[run_end:]
             self._holding = False
 
     def finalize(self) -> list:
@@ -508,7 +533,7 @@ def nudge_should_retry(
     if not message or message.get("tool_calls"):
         return False
     text = message.get("content")
-    if not isinstance(text, str) or not has_tool_signal(text):
+    if not isinstance(text, str) or not _has_heal_signal(text):
         return False
     return not _heal_would_promote(text, allowed_tools, tools)
 

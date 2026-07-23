@@ -294,11 +294,16 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        # PYTHONPATH is whitelist-built, never inherited: only the sandbox
+        # sitecustomize shim dir (code-interpreter path remap).
+        assert env["PYTHONPATH"].endswith("sandbox_site")
+        assert "leak-me" not in env["PYTHONPATH"]
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
@@ -314,6 +319,23 @@ class TestSandboxEnvIsolation:
         # could trigger color-escape parsing in downstream tools.
         env = _build_safe_env(str(tmp_path))
         assert env["TERM"] == "dumb"
+
+    def test_bypass_env_installs_sitecustomize_path_shim(self, tmp_path):
+        # Bypass mode must install the same /mnt/data path-remap shim as the safe
+        # env (finding 17), else /mnt/data writes work only in normal mode.
+        from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
+        env = _build_bypass_env(str(tmp_path))
+        assert _SANDBOX_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)
+
+    def test_bypass_env_prepends_shim_and_keeps_inherited_pythonpath(self, monkeypatch, tmp_path):
+        from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
+
+        monkeypatch.setenv("PYTHONPATH", "/operator/libs")
+        env = _build_bypass_env(str(tmp_path))
+        parts = env["PYTHONPATH"].split(os.pathsep)
+        # Shim first so its open()/makedirs remap wins, operator entries kept.
+        assert parts[0] == _SANDBOX_SITE_DIR
+        assert "/operator/libs" in parts
 
 
 class TestSandboxCpuRlimitDefault:

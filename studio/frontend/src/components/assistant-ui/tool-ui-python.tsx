@@ -6,8 +6,9 @@
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { useToolArgsStatus } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
-import { CodeIcon, CopyIcon } from "lucide-react";
+import { CodeIcon, CopyIcon, DownloadIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
@@ -18,6 +19,14 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { ToolLiveOutput } from "./tool-live-output";
+import { ToolResultOutput } from "./tool-result-output";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  preferFullToolOutput,
+  toolOutputKey,
+  useToolPaneScope,
+} from "@/features/chat";
 
 interface StructuredResult {
   text: string;
@@ -74,22 +83,98 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-/** Syntax-highlighted code via Streamdown + shiki; inherits parent container. */
-function HighlightedCode({ code: source, language }: { code: string; language: string }) {
-  const markdown = useMemo(
-    () => `\`\`\`${language}\n${truncate(source)}\n\`\`\``,
-    [source, language],
-  );
+/** Save the executed script as a .py file via a client-side Blob (no server file serving). */
+function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string }) {
+  const download = useCallback(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+    try {
+      const blob = new Blob([code], { type: "text/x-python" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      // Revoke next tick, after the click consumes the URL.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch {
+      // Best-effort: never break the transcript over a download.
+    }
+  }, [code, name]);
+
   return (
-    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0">
-      <Streamdown
-        mode="static"
-        plugins={{ code: codePlugin }}
-        controls={{ code: false }}
-        shikiTheme={SHIKI_THEME}
-      >
-        {markdown}
-      </Streamdown>
+    <button
+      type="button"
+      onClick={download}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      aria-label="Download script"
+    >
+      <DownloadIcon className="size-3" />
+      Download
+    </button>
+  );
+}
+
+/** Syntax-highlighted code via Streamdown + shiki; inherits parent container.
+ * The script is always in the DOM (a plain monospace placeholder), but shiki
+ * only tokenizes once the block scrolls near the viewport, so a long transcript
+ * with many scripts doesn't highlight every one up front. Falls back to
+ * immediate highlight when IntersectionObserver is unavailable (SSR / tests). */
+function HighlightedCode({ code: source, language }: { code: string; language: string }) {
+  const display = useMemo(() => truncate(source), [source]);
+  const markdown = useMemo(
+    () => `\`\`\`${language}\n${display}\n\`\`\``,
+    [display, language],
+  );
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [highlight, setHighlight] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+  useEffect(() => {
+    if (highlight) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setHighlight(true);
+          io.disconnect();
+        }
+      },
+      // Highlight just before the block enters view so it's colorized by the
+      // time the user reaches it, without tokenizing off-screen scripts.
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [highlight]);
+  return (
+    <div
+      ref={containerRef}
+      className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0"
+    >
+      {highlight ? (
+        <Streamdown
+          mode="static"
+          plugins={{ code: codePlugin }}
+          controls={{ code: false }}
+          shikiTheme={SHIKI_THEME}
+        >
+          {markdown}
+        </Streamdown>
+      ) : (
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would override a
+        // <pre>'s padding and shift the content by p-3 when shiki swaps in. Keep
+        // the same p-3, and whitespace-pre (not pre-wrap) so long lines scroll in
+        // the container's overflow-auto exactly like the highlighted <pre>, rather
+        // than wrapping taller and then collapsing when shiki swaps in.
+        <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
+          {display}
+        </div>
+      )}
     </div>
   );
 }
@@ -105,6 +190,7 @@ function isStructuredResult(val: unknown): val is StructuredResult {
 }
 
 const PythonToolUIImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   args,
   result,
   status,
@@ -112,6 +198,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const code = (args as { code?: string })?.code ?? "";
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
+  // Args still streaming = the model is WRITING the code, not running it yet.
+  const { propStatus } = useToolArgsStatus();
+  const isWritingCode = isRunning && propStatus.code === "streaming";
 
   let output: string;
   let images: string[] = [];
@@ -129,40 +218,60 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = "";
   }
 
+  // Show the fuller live stream over a truncated result, keeping its exit
+  // status. Session-transient: after a reload only the result remains.
+  const paneScope = useToolPaneScope();
+  const fullOutput = useChatRuntimeStore(
+    (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  );
+  const displayOutput = preferFullToolOutput(fullOutput, output);
+
   const authToken = getAuthToken();
 
   return (
-    <ToolFallbackRoot>
+    // Run status and output collapse from history, but the script source is
+    // rendered outside ToolFallbackContent so it stays visible on reopen (#7165).
+    <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
         icon={CodeIcon}
       />
+      {code && (
+        <div className="mt-1 pl-5">
+          <div className="border-l-2 border-muted-foreground/20 pl-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">
+                script
+              </span>
+              <div className="flex items-center gap-1">
+                <CopyBtn text={code} />
+                <DownloadBtn code={code} />
+              </div>
+            </div>
+            <HighlightedCode code={code} language="python" />
+          </div>
+        </div>
+      )}
       <ToolFallbackContent>
         <div className="border-l-2 border-muted-foreground/20 pl-2">
-          {/* Code + copy */}
-          {code && (
-            <div className="flex justify-end">
-              <CopyBtn text={code} />
-            </div>
-          )}
-          {code && <HighlightedCode code={code} language="python" />}
-
           {/* Output */}
           {isRunning ? (
-            <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner className="size-3.5" />
-              <span>Running&hellip;</span>
-            </div>
-          ) : output ? (
+            <>
+              <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner className="size-3.5" />
+                <span>{isWritingCode ? "Writing code…" : "Running…"}</span>
+              </div>
+              {/* Live stdout streamed via tool_output SSE events. */}
+              <ToolLiveOutput toolCallId={toolCallId} />
+            </>
+          ) : displayOutput ? (
             <div className="mt-2 border-t border-dashed pt-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">output</span>
-                <CopyBtn text={output} />
+                <CopyBtn text={displayOutput} />
               </div>
-              <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
-                {truncate(output)}
-              </pre>
+              <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
 

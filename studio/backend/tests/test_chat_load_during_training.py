@@ -168,11 +168,14 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         devices,
         required_override = None,
         estimate = None,
+        single_device_gpu = None,
+        gpu_ids = None,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
             patch("utils.hardware.estimate_required_model_memory_gb", return_value = (estimate, {})),
             patch("utils.hardware.get_visible_gpu_utilization", return_value = {"devices": devices}),
+            patch("utils.hardware.resolve_requested_gpu_ids", return_value = gpu_ids),
             patch("utils.hardware.auto_select_gpu_ids") as auto_mock,
         ):
             ok, info = tv.can_load_chat_during_training(
@@ -180,9 +183,10 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 hf_token = None,
                 load_in_4bit = True,
                 max_seq_length = 0,
-                requested_gpu_ids = None,
+                requested_gpu_ids = gpu_ids,
                 is_gguf = True,
                 required_override_gb = required_override,
+                single_device_gpu = single_device_gpu,
             )
         return ok, info, auto_mock
 
@@ -197,6 +201,88 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         # places, so the per-GPU floor that would block HF doesn't apply -> allow.
         ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
         self.assertTrue(ok)
+
+    def test_no_per_gpu_floor_for_gguf_with_explicit_gpu_ids(self):
+        # gpu_ids narrows llama.cpp's candidate pool but does not turn its
+        # self-placement into HF device_map="balanced". The uneven selected
+        # pair therefore keeps the aggregate GGUF check without an even-share
+        # floor on the nearly-full card.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70), (2, 80, 0)),
+            required_override = 20.0,
+            gpu_ids = [0, 1],
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "gguf")
+
+    def test_single_device_uses_selected_gpu(self):
+        # The model needs 27 GB with headroom. GPU 0 has 45 GB free, while an
+        # unrelated training-heavy GPU 1 has only 10 GB free.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            single_device_gpu = "0",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["usable_gb"], 45.0)
+
+        blocked, blocked_info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            single_device_gpu = "1",
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(blocked_info["usable_gb"], 10.0)
+
+    def test_single_device_unresolved_token_sizes_against_worst_device(self):
+        # A non-numeric device token (a CUDA UUID / MIG handle) can't map to a
+        # free-VRAM index. The runner still drives ONE device, so size against the
+        # worst-case visible device (min free), not the aggregate pool: one GPU
+        # with 80 GB free vs a 20 GB model -> allow.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 0)),
+            required_override = 20.0,
+            single_device_gpu = "GPU-uuid",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "single_device")
+        self.assertNotIn("reason", info)
+
+    def test_single_device_unresolved_token_refuses_when_worst_device_full(self):
+        # Same UUID fallback, worst-case device nearly full (2 GB for a 20 GB
+        # model) -> refuse (default-deny), not on an unresolved-token technicality.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 78)),
+            required_override = 20.0,
+            single_device_gpu = "GPU-uuid",
+        )
+        self.assertFalse(ok)
+        self.assertNotEqual(info.get("reason"), "unresolved_gpu_id")
+
+    def test_single_device_unresolved_token_uses_min_free_not_aggregate(self):
+        # The single-device runner uses ONE device but we can't tell which from a
+        # UUID token. Sizing against the aggregate pool would let a 20 GB model
+        # "fit" 160 GB of pooled free VRAM while landing on a 2 GB card and OOMing
+        # training. Min-free (2 GB) is the safe worst case -> refuse.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 78), (1, 80, 0), (2, 80, 0)),
+            required_override = 20.0,
+            single_device_gpu = "GPU-uuid",
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["mode"], "single_device")
+
+    def test_single_device_cpu_token_allows(self):
+        # An empty device token = a CPU-only single-device runner (CPU diffusion
+        # GGUF): it uses no GPU VRAM, so it never threatens training -> allow
+        # regardless of how full the GPUs are.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 78)),
+            required_override = 20.0,
+            single_device_gpu = "",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["reason"], "cpu_only")
 
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.
@@ -309,6 +395,8 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         captured = None,
         training_active,
         decision,
+        gpu_memory_mode = "auto",
+        requested_gpu_ids = None,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -320,7 +408,8 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 hf_token = None,
                 load_in_4bit = True,
                 max_seq_length = 0,
-                requested_gpu_ids = None,
+                requested_gpu_ids = requested_gpu_ids,
+                gpu_memory_mode = gpu_memory_mode,
             )
 
     def test_noop_when_training_inactive(self):
@@ -331,6 +420,141 @@ class TestChatLoadGuardRoute(unittest.TestCase):
 
     def test_allows_when_fits(self):
         self._guard(training_active = True, decision = (True, {"mode": "auto"}))
+
+    def test_diffusion_detection_uses_name_before_download(self):
+        config = SimpleNamespace(
+            identifier = "unsloth/DiffusionGemma-GGUF",
+            gguf_hf_repo = "unsloth/DiffusionGemma-GGUF",
+            gguf_file = None,
+        )
+        self.assertTrue(self.route._classify_diffusion_gguf(config))
+
+    def test_uncached_gguf_classification_remains_unknown(self):
+        config = SimpleNamespace(
+            identifier = "owner/renamed-model",
+            gguf_hf_repo = "owner/renamed-model",
+            gguf_variant = "Q4_K_M",
+            gguf_file = None,
+        )
+        self.assertIsNone(self.route._classify_diffusion_gguf(config))
+
+    def test_diffusion_detection_reuses_loader_metadata_probe(self):
+        import tempfile
+
+        seen = []
+
+        class _Probe:
+            is_diffusion = False
+            _architecture = None
+
+            def _read_gguf_metadata(self, path):
+                seen.append(path)
+                self.is_diffusion = True
+
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "renamed.gguf"
+            model.write_bytes(b"GGUF")
+            config = SimpleNamespace(identifier = "local", gguf_file = str(model))
+            with patch.object(self.route, "LlamaCppBackend", _Probe):
+                self.assertTrue(self.route._classify_diffusion_gguf(config))
+        self.assertEqual(seen, [str(model)])
+
+    def test_local_chat_gguf_classification_is_definitive(self):
+        import tempfile
+        class _Probe:
+            is_diffusion = False
+            _architecture = "llama"
+
+            def _read_gguf_metadata(self, _path):
+                pass
+
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "renamed.gguf"
+            model.write_bytes(b"GGUF")
+            config = SimpleNamespace(identifier = "local", gguf_file = str(model))
+            with patch.object(self.route, "LlamaCppBackend", _Probe):
+                self.assertFalse(self.route._classify_diffusion_gguf(config))
+
+    def test_manual_known_normal_gguf_bypasses_training_estimate(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with patch.object(self.route, "_classify_diffusion_gguf", return_value = False):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (False, {"reason": "must not run"}),
+                gpu_memory_mode = "manual",
+            )
+        self.assertEqual(captured, [])
+
+    def test_manual_unknown_gguf_keeps_single_device_training_guard(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_gpu_arg",
+                return_value = "2",
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+                gpu_memory_mode = "manual",
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["single_device_gpu"], "2")
+
+    def test_manual_diffusion_uses_single_device_guard(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf"}),
+                gpu_memory_mode = "manual",
+                requested_gpu_ids = [3, 1],
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["single_device_gpu"], "1")
+        self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def test_unpinned_diffusion_uses_runner_default_gpu(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_effective_gpu_count",
+                return_value = 2,
+            ),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_gpu_arg",
+                return_value = "3",
+            ) as gpu_arg,
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+                gpu_memory_mode = "manual",
+            )
+        gpu_arg.assert_called_once_with(None, cpu_only = False)
+        self.assertEqual(captured[0]["single_device_gpu"], "3")
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
@@ -467,36 +691,189 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
 
-    def test_rejects_gguf_with_gpu_ids_before_guard(self):
-        # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.
+    def test_validate_forwards_manual_gpu_memory_mode_to_guard(self):
         from models.inference import ValidateModelRequest
 
-        request = ValidateModelRequest(model_path = "x.gguf", gpu_ids = [0])
+        request = ValidateModelRequest(
+            model_path = "unsloth/model-GGUF",
+            gguf_variant = "Q4_K_M",
+            gpu_memory_mode = "manual",
+        )
         cfg = SimpleNamespace(
-            identifier = "x.gguf",
-            display_name = "x",
+            identifier = "unsloth/model-GGUF",
+            display_name = "model-GGUF",
             is_gguf = True,
             is_lora = False,
             is_vision = False,
             path = None,
             base_model = None,
         )
-        captured = []
+        captured = {}
         with (
             patch.object(
                 self.route,
                 "_resolve_model_identifier_for_request",
-                return_value = ("x.gguf", "x.gguf", False),
+                return_value = ("unsloth/model-GGUF", "unsloth/model-GGUF", False),
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
-            _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda config, **kw: captured.update(kw),
+            ),
         ):
-            with self.assertRaises(HTTPException) as exc:
-                asyncio.run(self.route.validate_model(request, current_subject = "u"))
-        self.assertEqual(exc.exception.status_code, 400)
-        self.assertIn("gpu_ids is not supported for GGUF", exc.exception.detail)
-        self.assertEqual(captured, [])  # guard never reached
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertEqual(captured.get("gpu_memory_mode"), "manual")
+
+    def test_validate_forwards_inherited_extras_and_parallel_to_guard(self):
+        # Regression: /load resolves inherited same-model extras and passes the
+        # real slot count to the guard; validate must do the same, else it sizes
+        # a smaller estimate (no inherited -c/--model-draft, n_parallel=1) and
+        # /load then 409s after the frontend has already unloaded.
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(model_path = "unsloth/Qwen3-1.7B", max_seq_length = 4096)
+        cfg = SimpleNamespace(
+            identifier = "unsloth/Qwen3-1.7B",
+            display_name = "Qwen3-1.7B",
+            is_gguf = False,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
+        )
+        captured = {}
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(self.route, "_resolve_inherited_extra_args", return_value = ["-c", "32768"]),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda config, **kw: captured.update(kw),
+            ),
+        ):
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertEqual(captured.get("llama_extra_args"), ["-c", "32768"])
+        self.assertIn("n_parallel", captured)
+
+    def test_metadata_probe_skips_training_guard(self):
+        # A header-only probe (include_context_length) allocates no VRAM, so the
+        # training guard must not run -- else the staging GPU-layers / MoE sliders
+        # it feeds are hidden exactly when a during-training user needs them.
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "unsloth/Qwen3-1.7B",
+            max_seq_length = 4096,
+            include_context_length = True,
+        )
+        cfg = SimpleNamespace(
+            identifier = "unsloth/Qwen3-1.7B",
+            display_name = "Qwen3-1.7B",
+            is_gguf = False,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
+        )
+        guard_called = []
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda *a, **kw: guard_called.append(True),
+            ),
+        ):
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertEqual(guard_called, [])
+
+    def _validate_gguf_template(
+        self,
+        *,
+        template,
+        canonical_path = "/picked/model.gguf",
+    ):
+        # Drive validate_model for a native lease-backed GGUF template probe and
+        # capture what the embedded-template reader was called with.
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "model.gguf",
+            gguf_variant = "Q4_K_M",
+            native_path_lease = "signed-lease",
+            include_chat_template = True,
+        )
+        cfg = SimpleNamespace(
+            identifier = canonical_path,
+            display_name = "model.gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = canonical_path,
+            path = None,
+            base_model = None,
+        )
+        import utils.models.gguf_metadata as gguf_meta
+
+        seen = {}
+
+        def _fake_read(path):
+            seen["path"] = path
+            return template
+
+        guard_called = []
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = (canonical_path, "model.gguf", True),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(gguf_meta, "read_gguf_chat_template", _fake_read),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda *a, **kw: guard_called.append(True),
+            ),
+        ):
+            resp = asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        return resp, seen, guard_called
+
+    def test_include_chat_template_reads_leased_gguf_embedded_template(self):
+        # The picker chat-template GET has no lease plumbing, so a native picked
+        # GGUF surfaces its default template through this lease-aware probe: the
+        # embedded template is read from the granted canonical path and returned.
+        resp, seen, _ = self._validate_gguf_template(template = "{{ messages }}")
+        self.assertEqual(resp.chat_template, "{{ messages }}")
+        # Read strictly the leased file's own embedded template, never a sibling
+        # sidecar: the grant authorizes just this one path.
+        self.assertEqual(seen["path"], "/picked/model.gguf")
+
+    def test_include_chat_template_skips_training_guard(self):
+        # A template-only probe allocates no VRAM, so like include_context_length
+        # it must not be refused by the training guard.
+        _, _, guard_called = self._validate_gguf_template(template = "{{ messages }}")
+        self.assertEqual(guard_called, [])
+
+    def test_include_chat_template_over_cap_is_dropped(self):
+        from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+        resp, _, _ = self._validate_gguf_template(template = "a" * (MAX_CHAT_TEMPLATE_BYTES + 1))
+        self.assertIsNone(resp.chat_template)
 
 
 # ── _estimate_gguf_required_gb (sizes the same weights the loader loads) ──────
@@ -651,11 +1028,19 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf._shutdown_subprocess = MagicMock()
         llama = SimpleNamespace(is_loaded = False, model_identifier = None, hf_variant = None)
         llama.unload_model = MagicMock()
-        cfg = SimpleNamespace(is_gguf = False, is_lora = False, path = None, base_model = None)
+        cfg = SimpleNamespace(
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            base_model = None,
+            identifier = "unsloth/Qwen3-1.7B",
+        )
         request = LoadRequest(model_path = "unsloth/Qwen3-1.7B")
         info = {"required_gb": 40.0, "usable_gb": 5.0, "needed_gb": 50.0, "mode": "auto"}
 
         with (
+            # Pin the latest-sidecar tier check so the guard path stays offline.
+            patch("utils.transformers_version.latest_tier_active_for", return_value = False),
             patch.object(self.route, "validate_extra_args", return_value = None),
             patch.object(
                 self.route,

@@ -19,7 +19,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import { OPTIMIZER_OPTIONS } from "@/config/training";
+import { usePlatformStore } from "@/config/env";
+import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
   useTrainingActions,
@@ -28,6 +29,7 @@ import {
 } from "@/features/training";
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import type { RunConfigOverride } from "./run-config-override";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
@@ -81,19 +83,7 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
-  configOverride?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: string;
-    maxSteps?: number;
-    contextLength?: number;
-    warmupSteps?: number;
-    optimizerType?: string;
-    loraRank?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    loraVariant?: string;
-  };
+  configOverride?: RunConfigOverride;
 }
 
 export function ProgressSection({
@@ -103,6 +93,7 @@ export function ProgressSection({
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
@@ -183,21 +174,33 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
+  // editable form store until it loads; History shows blanks, never live form values.
+  const cfg = configOverride ?? (isHistorical ? undefined : config);
+  const cfgEpochs = cfg?.epochs;
+  const cfgBatchSize = cfg?.batchSize;
+  const cfgLearningRate = cfg?.learningRate;
+  const cfgMaxSteps = cfg?.maxSteps;
+  const cfgContextLength = cfg?.contextLength;
+  const cfgWarmupSteps = cfg?.warmupSteps;
+  const cfgOptimizerType = cfg?.optimizerType;
+  const cfgLoraRank = cfg?.loraRank;
+  const cfgLoraAlpha = cfg?.loraAlpha;
+  const cfgLoraDropout = cfg?.loraDropout;
+  const cfgLoraVariant = cfg?.loraVariant;
 
+  // Mirror the training form: on Mac the CUDA/bitsandbytes optimizer names run
+  // as plain AdamW (the MLX backend normalizes them), so label them AdamW here
+  // too rather than by the requested, unnormalized name.
+  const effectiveOptimizer =
+    platformDeviceType === "mac" &&
+    OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
+      ? "adamw"
+      : cfgOptimizerType;
   const optimizerLabel =
-    OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
-    cfgOptimizerType;
+    [...OPTIMIZER_OPTIONS, ...MLX_OPTIMIZER_OPTIONS].find(
+      (o) => o.value === effectiveOptimizer,
+    )?.label ?? effectiveOptimizer;
 
   const configItems: ConfigGroup[] = [
     {
@@ -266,21 +269,21 @@ export function ProgressSection({
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${phaseColors[data.phase]}`}
+              className={`rounded-full px-2.5 py-1 text-ui-10 font-semibold ${phaseColors[data.phase]}`}
             >
               {t(phaseLabelKeys[data.phase])}
             </span>
             {data.projectName && (
-              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80">
                 {data.projectName}
               </span>
             )}
-            <span className="text-[10px] tabular-nums text-muted-foreground">
+            <span className="text-ui-10 tabular-nums text-muted-foreground">
               {t("studio.progress.epoch", {
                 value: formatNumber(data.currentEpoch, 2),
               })}
             </span>
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+            <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium tabular-nums text-muted-foreground">
               {t("studio.progress.percentComplete", { percent: pct })}
             </span>
           </div>
@@ -402,7 +405,7 @@ function LiveGpuPanel({
             <select
               value={selectedGpu}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-primary transition-colors font-medium appearance-none"
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -411,13 +414,13 @@ function LiveGpuPanel({
                   value={index}
                   className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
                 >
-                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GB` : "N/A"})
+                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GiB` : "N/A"})
                 </option>
               ))}
             </select>
           )}
         </div>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-ui-11 text-muted-foreground">
           {t("studio.progress.live")}
         </span>
       </div>
@@ -446,7 +449,7 @@ function LiveGpuPanel({
           icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
           value={
             currentGpu.vram_used_gb != null && currentGpu.vram_total_gb != null
-              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GB`
+              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GiB`
               : "--"
           }
           pct={currentGpu.vram_utilization_pct ?? 0}
@@ -535,7 +538,7 @@ function ConfigPopoverButton({
           <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                 {group.section}
               </p>
               {group.rows.map(([label, value]) => (
@@ -636,7 +639,7 @@ function MilestoneCallout({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
-            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <p className="text-ui-10 font-medium uppercase tracking-[0.12em] text-muted-foreground">
               {t("studio.training.milestone")}
             </p>
           )}
@@ -652,7 +655,7 @@ function MilestoneCallout({
           </p>
         </div>
         {!showCompletedHint && (
-          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-ui-10 font-medium text-muted-foreground">
             50%+
           </span>
         )}
@@ -682,7 +685,7 @@ function MetricStat({
 }): ReactElement {
   return (
     <div className="min-w-0">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-ui-11 text-muted-foreground">{label}</p>
       <p
         className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
       >
@@ -725,7 +728,7 @@ function GpuStat({
   const clamped = Math.max(0, Math.min(pct, max ?? 100));
   let barColor = "bg-red-500";
   if (clamped < 60) {
-    barColor = "bg-emerald-500";
+    barColor = "bg-control-accent";
   } else if (clamped < 95) {
     barColor = "bg-amber-500";
   }

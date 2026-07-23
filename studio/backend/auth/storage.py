@@ -18,6 +18,10 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
+# Single source for the password policy; models/auth.py ChangePasswordRequest
+# and the terminal prompt both enforce it. Keep the unsloth_cli mirror in sync.
+MIN_PASSWORD_LENGTH = 8
+
 # Plaintext bootstrap password file beside auth.db, deleted on first password
 # change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
@@ -79,11 +83,42 @@ def _load_bootstrap_password() -> Optional[str]:
 
 
 def clear_bootstrap_password() -> None:
-    """Delete the persisted bootstrap password file (called after password change)."""
+    """Delete the persisted bootstrap password file (after a password change).
+
+    Best-effort: the new hash is already committed, so a locked/undeletable file
+    (Windows AV, read-only auth dir) must not fail the change.
+    """
     global _bootstrap_password
     _bootstrap_password = None
     if _BOOTSTRAP_PW_PATH.is_file():
-        _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
+        try:
+            _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
+        except OSError as e:
+            # Removal failed (Windows AV, read-only auth dir). The hash is already
+            # committed, so don't fail the change -- but truncate the file so its
+            # stale plaintext can't be re-seeded by generate_bootstrap_password()
+            # if a later reset-password deletes auth.db and re-validates it.
+            try:
+                _BOOTSTRAP_PW_PATH.write_text("")
+                cleared = True
+            except OSError:
+                cleared = False
+            import sys
+
+            if cleared:
+                message = (
+                    f"Warning: could not delete {_BOOTSTRAP_PW_PATH.name} ({e}); "
+                    "cleared its contents so the old bootstrap password cannot be reused."
+                )
+            else:
+                # Neither removed nor truncated: stale plaintext is still on disk
+                # and would be reused if auth.db is reset. Don't claim otherwise.
+                message = (
+                    f"Warning: could not delete or clear {_BOOTSTRAP_PW_PATH.name} ({e}); "
+                    "its old bootstrap password is still on disk. Remove it manually to "
+                    "prevent reuse after a reset."
+                )
+            print(message, file = sys.stderr, flush = True)
 
 
 def _hash_token(token: str) -> str:
@@ -111,7 +146,7 @@ def get_connection() -> sqlite3.Connection:
             pass
     conn.row_factory = sqlite3.Row
     # WAL lets token reads run concurrently with refresh-token writes;
-    # busy_timeout bounds lock waits. Matches the other Studio SQLite stores.
+    # busy_timeout bounds lock waits. Matches the other Unsloth SQLite stores.
     # Set busy_timeout first: switching journal_mode needs a lock, so if a
     # refresh-token write already holds one, journal_mode=WAL raises SQLITE_BUSY;
     # with busy_timeout already in effect it waits instead of failing and leaving
@@ -270,8 +305,8 @@ def get_or_create_identity_secret() -> bytes:
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof
-    relayed from a Studio on a different address/port (a squatter proxying to the
-    real one, e.g. localhost resolving to ::1 while Studio is on 127.0.0.1) was
+    relayed from an Unsloth on a different address/port (a squatter proxying to the
+    real one, e.g. localhost resolving to ::1 while Unsloth is on 127.0.0.1) was
     computed for that other endpoint and won't match the one the client dialed."""
     try:
         host = ipaddress.ip_address(host).compressed  # normalise 127.0.0.1 / ::1 forms
@@ -547,8 +582,18 @@ def ensure_default_admin() -> bool:
         return False
 
 
-def update_password(username: str, new_password: str) -> bool:
-    """Update password, clear first-login requirement, rotate JWT secret."""
+def update_password(
+    username: str,
+    new_password: str,
+    *,
+    revoke_refresh_tokens: bool = False,
+) -> bool:
+    """Update password, clear first-login requirement, rotate JWT secret.
+
+    ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
+    transaction: a separate delete could fail after the password commit and
+    leave a pre-change token still able to mint access tokens.
+    """
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(new_password)
@@ -563,6 +608,8 @@ def update_password(username: str, new_password: str) -> bool:
             """,
             (salt, pwd_hash, jwt_secret, username),
         )
+        if revoke_refresh_tokens and cursor.rowcount > 0:
+            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()

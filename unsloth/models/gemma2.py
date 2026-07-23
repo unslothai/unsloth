@@ -22,6 +22,7 @@ from ..utils.attention_dispatch import (
     AttentionContext,
     run_attention,
     select_attention_backend,
+    resolve_prefix_seg_info,
     SDPA,
 )
 from .gemma import (
@@ -168,6 +169,11 @@ def Gemma2Attention_fast_forward(
             },
         )
 
+        # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse
+        # (KV cache / padding mask) raises. None => byte-identical default. gemma2 is
+        # sliding-window and softcapped: the engage gate caps spans at the window and
+        # excludes softcap models entirely, so PG never engages here.
+        _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
         context = AttentionContext(
             bsz = bsz,
             q_len = q_len,
@@ -179,6 +185,7 @@ def Gemma2Attention_fast_forward(
             attention_mask = attention_mask,
             causal_mask = causal_mask,
             sliding_window = sliding_window,
+            prefix_seg_info = _pg_seg,
         )
 
         A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
