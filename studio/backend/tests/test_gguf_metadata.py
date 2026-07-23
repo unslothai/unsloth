@@ -428,6 +428,17 @@ def test_csm_tokens_match_runtime_without_name_identity(tmp_path: Path):
     assert detect_gguf_audio_type(str(p)) == "csm"
 
 
+def test_dac_runtime_tokens_match_without_wrapper_markers(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "generic.gguf",
+        {"general.architecture": "llama"},
+        extra_string_arrays = {
+            "tokenizer.ggml.tokens": ["<s>", "<|c1_0|>", "<|c2_0|>"],
+        },
+    )
+    assert detect_gguf_audio_type(str(p)) == "dac"
+
+
 def test_qwen3_asr_projector_metadata_is_non_chat_audio(tmp_path: Path):
     p = _write_synthetic_gguf(
         tmp_path / "mmproj-qwen3-asr.gguf",

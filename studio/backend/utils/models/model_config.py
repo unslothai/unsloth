@@ -1222,7 +1222,13 @@ def _classify_audio_capability(
     if model_type in _AUDIO_CHAT_MODEL_TYPES:
         return "audio_vlm", True, True
     if model_type in _NON_CHAT_AUDIO_MODEL_TYPES:
-        classified = "asr" if model_type in _AUDIO_INPUT_MODEL_TYPES else audio_type
+        classified = (
+            "whisper"
+            if model_type == "whisper"
+            else "asr"
+            if model_type in _AUDIO_INPUT_MODEL_TYPES
+            else audio_type
+        )
         return classified, model_type in _AUDIO_INPUT_MODEL_TYPES, False
     return (
         audio_type,

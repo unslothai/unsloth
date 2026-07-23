@@ -327,9 +327,19 @@ def list_gguf_variants_from_hf_cache(
     )
     complete_variants: list[GgufVariantInfo] = []
     seen_quants: set[str] = set()
-    has_vision = False
+    newest_projector_mtime: Optional[float] = None
+    newest_variant_mtime: Optional[float] = None
     for snapshot in snapshots:
         variants, snapshot_has_vision = list_local_gguf_variants(str(snapshot))
+        try:
+            snapshot_mtime = snapshot.stat().st_mtime
+        except OSError:
+            continue
+        if snapshot_has_vision:
+            newest_projector_mtime = max(
+                newest_projector_mtime or snapshot_mtime,
+                snapshot_mtime,
+            )
         contributed = False
         for variant in variants:
             if variant.quant in seen_quants:
@@ -344,7 +354,7 @@ def list_gguf_variants_from_hf_cache(
                 expected = set(range(1, int(total_text) + 1))
                 present = {
                     int(found.group("index"))
-                    for sibling in candidate.parent.glob("*.gguf")
+                    for sibling in candidate.parent.iterdir()
                     if (found := _GGUF_SPLIT_FILE_RE.match(sibling.name))
                     and found.group("prefix").casefold() == prefix
                     and found.group("total") == total_text
@@ -356,10 +366,15 @@ def list_gguf_variants_from_hf_cache(
             complete_variants.append(variant)
             seen_quants.add(variant.quant)
             contributed = True
-        # A projector-only or partial snapshot must not hide older complete
-        # variants or claim capability for unrelated weights.
-        has_vision = has_vision or (snapshot_has_vision and contributed)
-    if complete_variants:
+        if contributed:
+            newest_variant_mtime = max(
+                newest_variant_mtime or snapshot_mtime,
+                snapshot_mtime,
+            )
+    has_vision = newest_projector_mtime is not None and (
+        newest_variant_mtime is None or newest_projector_mtime >= newest_variant_mtime
+    )
+    if complete_variants or has_vision:
         complete_variants.sort(key = lambda variant: -variant.size_bytes)
         return complete_variants, has_vision
     return None

@@ -4,6 +4,7 @@
 """Cleanup of empty leftover quant folders from interrupted split downloads."""
 
 import errno
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +43,46 @@ def test_cached_variants_merge_complete_quants_across_snapshots(tmp_path):
     assert result is not None
     variants, _has_vision = result
     assert {variant.quant for variant in variants} == {"Q8_0", "Q4_K_M"}
+
+
+def test_cached_variants_keep_newer_projector_only_snapshot(tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshots = hub_cache / "models--org--Repo-GGUF" / "snapshots"
+    older = snapshots / "older"
+    newer = snapshots / "newer"
+    older.mkdir(parents = True)
+    newer.mkdir(parents = True)
+    (older / "qwen-Q4_K_M.gguf").write_bytes(b"weights")
+    (newer / "mmproj-qwen-F16.gguf").write_bytes(b"projector")
+    os.utime(older, (1000, 1000))
+    os.utime(newer, (2000, 2000))
+
+    result = gguf.list_gguf_variants_from_hf_cache(
+        "org/Repo-GGUF",
+        root = hub_cache,
+    )
+
+    assert result is not None
+    variants, has_vision = result
+    assert [variant.quant for variant in variants] == ["Q4_K_M"]
+    assert has_vision is True
+
+
+def test_cached_uppercase_split_is_complete(tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "models--org--Repo-GGUF" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M-00001-of-00002.GGUF").write_bytes(b"one")
+    (snapshot / "model-Q4_K_M-00002-of-00002.GGUF").write_bytes(b"two")
+
+    result = gguf.list_gguf_variants_from_hf_cache(
+        "org/Repo-GGUF",
+        root = hub_cache,
+    )
+
+    assert result is not None
+    variants, _has_vision = result
+    assert [variant.quant for variant in variants] == ["Q4_K_M"]
 
 
 def test_list_empty_gguf_variant_dirs_finds_empty_leftover(tmp_path, monkeypatch):
