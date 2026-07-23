@@ -175,6 +175,7 @@ import {
 } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import {
@@ -1755,7 +1756,17 @@ export function ChatPage({
 
   useEffect(() => {
     void hydratePersistedSettings();
-  }, [hydratePersistedSettings]);
+    void (async () => {
+      try {
+        const synced = await syncExternalProvidersFromBackend(
+          useExternalProvidersStore.getState().providers,
+        );
+        setExternalProviders(synced);
+      } catch {
+        // Silent on startup — Connections settings still surfaces load errors.
+      }
+    })();
+  }, [hydratePersistedSettings, setExternalProviders]);
 
   useEffect(() => {
     // Skip while off-route: ChatPage stays mounted, and toast+navigate here would

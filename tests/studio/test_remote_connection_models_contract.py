@@ -9,7 +9,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 PROVIDERS_API = FRONTEND / "features/chat/api/providers-api.ts"
-CHAT_PROVIDERS = FRONTEND / "features/chat/chat-providers-dialog.tsx"
+SYNC_PROVIDERS = FRONTEND / "features/chat/sync-external-providers.ts"
+CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
 PROVIDERS_DB = REPO / "studio/backend/storage/providers_db.py"
 PROVIDERS_MODELS = REPO / "studio/backend/models/providers.py"
 
@@ -28,10 +29,15 @@ def test_provider_api_schemas_expose_models():
 
 
 def test_frontend_sync_prefers_server_models_on_remote_clients():
-    source = CHAT_PROVIDERS.read_text(encoding = "utf-8")
+    source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
     assert "config.models" in source
     assert "config.available_models" in source
     assert "serverModels.length > 0" in source
+
+
+def test_chat_page_hydrates_connections_on_startup():
+    source = CHAT_PAGE.read_text(encoding = "utf-8")
+    assert "syncExternalProvidersFromBackend" in source
 
 
 def test_providers_api_sends_models_to_backend():
