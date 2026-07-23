@@ -91,6 +91,8 @@ import {
   PLUS_MENU_ORDER,
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  getPreStreamRunReservationCount,
+  tryReservePreStreamRun,
   composerDraftKey,
   markThreadIncognito,
   type PromptQueueRunFailedEventDetail,
@@ -413,7 +415,9 @@ function getPromptQueueActiveGenerationCount() {
     Object.values(useChatRuntimeStore.getState().runningByThreadId).filter(
       Boolean,
     ).length,
-    promptQueueActiveRunIds.size + promptQueueDispatchingRunIds.size,
+    promptQueueActiveRunIds.size +
+      promptQueueDispatchingRunIds.size +
+      getPreStreamRunReservationCount(),
   );
 }
 
@@ -2064,6 +2068,10 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
+      if (!tryReservePreStreamRun()) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
       clearStoredDraft();
       aui.composer().send();
     }
@@ -2171,6 +2179,11 @@ const Composer: FC<{
         return;
       }
 
+      if (!tryReservePreStreamRun()) {
+        event.preventDefault();
+        toast.error("Wait for the current response to finish");
+        return;
+      }
       clearStoredDraft();
     },
     [

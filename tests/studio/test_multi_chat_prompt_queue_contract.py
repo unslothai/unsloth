@@ -24,6 +24,12 @@ CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encodi
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
+CLEAR_ALL_CHATS = (FRONTEND / "features/chat/utils/clear-all-chats.ts").read_text(
+    encoding = "utf-8"
+)
+SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").read_text(
+    encoding = "utf-8"
+)
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -53,7 +59,9 @@ def test_scheduler_reserves_global_capacity_before_async_dispatch():
     assert append.index("promptQueueActiveRunIds.add(run.id)") < append.index(
         "item.target.append(item.prompt)"
     )
-    assert "promptQueueActiveRunIds.size + promptQueueDispatchingRunIds.size" in THREAD
+    assert "promptQueueActiveRunIds.size" in THREAD
+    assert "promptQueueDispatchingRunIds.size" in THREAD
+    assert "getPreStreamRunReservationCount()" in THREAD
 
 
 def test_scheduler_pumps_when_any_generation_releases_capacity():
@@ -121,7 +129,7 @@ def test_compare_completion_wait_is_scoped_to_its_own_thread_ids():
     assert "Object.values(runningByThreadId).some(Boolean)" in compare
 
 
-def test_compare_wait_resolves_when_pre_stream_validation_fails():
+def test_compare_wait_rejects_when_pre_stream_validation_fails():
     compare = _between(
         SHARED_COMPOSER,
         "export function RegisterCompareHandle(",
@@ -129,8 +137,34 @@ def test_compare_wait_resolves_when_pre_stream_validation_fails():
     )
     assert "PRE_STREAM_RUN_FAILED_EVENT" in compare
     assert "getCompareThreadIds().includes(failedThreadId)" in compare
+    assert "reject(error);" in compare
     assert "notifyPreStreamRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
     assert "notifyPromptQueueRunFailed(threadId)" in QUEUE_BOUNDARY
+
+
+def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
+    submit = _between(
+        THREAD,
+        "const handleSubmit = useCallback(",
+        "const stopQueue = useCallback(",
+    )
+    assert "tryReservePreStreamRun()" in submit
+    assert "preStreamRunReservations" in QUEUE_BOUNDARY
+    assert "releasePreStreamRunReservation();" in CHAT_ADAPTER
+    assert "runtime.setThreadRunning(threadKey, true);" in CHAT_ADAPTER
+
+
+def test_bulk_archive_and_clear_stop_prompt_queues_first():
+    archive_all = _between(
+        SIDEBAR_ITEMS,
+        "export async function archiveAllChatItems(",
+        "export async function unarchiveChatItem(",
+    )
+    assert "requestPromptQueueStop(toArchive.map((thread) => thread.id));" in archive_all
+    assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
+    assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
+        "clearStoredChats();"
+    )
 
 
 def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():

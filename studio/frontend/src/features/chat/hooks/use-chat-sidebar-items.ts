@@ -237,6 +237,7 @@ export async function archiveAllChatItems(
   const toArchive = threads.filter((t) => !t.archived);
   if (toArchive.length === 0) return 0;
 
+  requestPromptQueueStop(toArchive.map((thread) => thread.id));
   for (const t of toArchive) cancelIfRunning(t.id);
 
   await Promise.all(

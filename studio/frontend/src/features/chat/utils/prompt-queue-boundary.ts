@@ -2,6 +2,8 @@ export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";
 export const PROMPT_QUEUE_RUN_FAILED_EVENT = "unsloth:prompt-queue-run-failed";
 export const PRE_STREAM_RUN_FAILED_EVENT = "unsloth:pre-stream-run-failed";
 
+let preStreamRunReservations = 0;
+
 export type PromptQueueStopEventDetail = {
   threadIds?: string[];
 };
@@ -21,6 +23,22 @@ export function requestPromptQueueStop(threadIds?: string[]) {
   );
 }
 
+export function tryReservePreStreamRun(): boolean {
+  if (preStreamRunReservations > 0) {
+    return false;
+  }
+  preStreamRunReservations += 1;
+  return true;
+}
+
+export function releasePreStreamRunReservation(): void {
+  preStreamRunReservations = Math.max(0, preStreamRunReservations - 1);
+}
+
+export function getPreStreamRunReservationCount(): number {
+  return preStreamRunReservations;
+}
+
 export function notifyPromptQueueRunFailed(threadId?: string | null) {
   if (typeof window === "undefined") {
     return;
@@ -36,6 +54,7 @@ export function notifyPromptQueueRunFailed(threadId?: string | null) {
 }
 
 export function notifyPreStreamRunFailed(threadId?: string | null) {
+  releasePreStreamRunReservation();
   notifyPromptQueueRunFailed(threadId);
   if (typeof window === "undefined") {
     return;

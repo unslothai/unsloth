@@ -7,7 +7,10 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
-import { notifyPreStreamRunFailed } from "../utils/prompt-queue-boundary";
+import {
+  notifyPreStreamRunFailed,
+  releasePreStreamRunReservation,
+} from "../utils/prompt-queue-boundary";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -2517,6 +2520,7 @@ export function createOpenAIStreamAdapter(
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const threadKey = resolvedThreadId || "__default";
+        releasePreStreamRunReservation();
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -2596,6 +2600,7 @@ export function createOpenAIStreamAdapter(
         if (abortSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
+      releasePreStreamRunReservation();
       runtime.setThreadRunning(threadKey, true);
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
