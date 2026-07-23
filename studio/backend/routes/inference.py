@@ -6061,6 +6061,7 @@ async def generate_audio(
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
+        _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -6079,6 +6080,7 @@ async def generate_audio(
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
         model_name = public_model_id(backend.active_model_name)
+        _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
             temperature = payload.temperature,
@@ -6089,6 +6091,13 @@ async def generate_audio(
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
         )
+
+    # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
+    # generating, so `unsloth run --temperature` (and the other pins) and per-model
+    # recommendations reach audio (TTS) generation too, not just chat. The gen lambdas read
+    # payload.* lazily at call time, so filling here takes effect; this covers both the direct
+    # /audio/generate route and the chat-completions audio branches that delegate here.
+    _fill_recommended_sampling_openai(payload, _audio_model_id)
 
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
@@ -7729,6 +7738,13 @@ async def openai_chat_completions(
             cancel_event = threading.Event()
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
+
+            # Apply recommended sampling + operator pins to the omitted fields before generating,
+            # so audio-input (non-whisper) generation honors `unsloth run --temperature` and
+            # per-model recommendations like chat does. Whisper (ASR) ignores these fields.
+            _fill_recommended_sampling_openai(
+                payload, getattr(backend, "active_model_name", None) or model_name
+            )
 
             def audio_input_generate():
                 if model_info.get("audio_type") == "whisper":
