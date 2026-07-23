@@ -106,6 +106,13 @@ API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
 DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
+_START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+
+
+def _consume_start_api_key_marker_env() -> bool:
+    """Consume the one-shot readiness marker passed across a Studio re-exec."""
+    return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
+
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
 # (either site-packages or the repo root for editable installs).
@@ -1650,6 +1657,13 @@ def _consume_legacy_short_aliases(
     return value, out
 
 
+# Help panels so `unsloth run --help` groups options instead of one long list.
+_RUN_PANEL_MODEL = "Model"
+_RUN_PANEL_SERVER = "Server & network"
+_RUN_PANEL_TOOLS = "Tool calls"
+_RUN_PANEL_ADVANCED = "Advanced"
+
+
 @studio_app.command(
     context_settings = {
         "allow_extra_args": True,
@@ -1666,6 +1680,7 @@ def run(
         # `-m` / `-hfr` removed (Click would cluster `-mg`/`-md`/...).
         # Exact-match `-m`/`-hfr` still work via the legacy shim below.
         # `-hf` stays (multi-char shorts don't cluster).
+        rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Model path or HF repo. Accepts llama.cpp-style "
             "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
@@ -1673,12 +1688,16 @@ def run(
         ),
     ),
     gguf_variant: Optional[str] = typer.Option(
-        None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
+        None,
+        "--gguf-variant",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "GGUF quant variant (e.g. UD-Q4_K_XL)",
     ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
         "-v",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
         help = "Log every API request, including the high-frequency polling that is "
         "deduplicated by default.",
     ),
@@ -1686,35 +1705,64 @@ def run(
         0,
         "--max-seq-length",
         "--context-length",
+        rich_help_panel = _RUN_PANEL_MODEL,
         help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
-    api_key_name: str = typer.Option(
-        "cli", "--api-key-name", help = "Label for the auto-generated API key"
+    load_in_4bit: bool = typer.Option(
+        True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
-    port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("127.0.0.1", "--host", "-H"),
+    api_key_name: str = typer.Option(
+        "cli",
+        "--api-key-name",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
+        help = "Label for the auto-generated API key",
+    ),
+    port: int = typer.Option(8888, "--port", "-p", rich_help_panel = _RUN_PANEL_SERVER),
+    host: str = typer.Option("127.0.0.1", "--host", "-H", rich_help_panel = _RUN_PANEL_SERVER),
     # `-f` removed (clustered `-fa`/`-fit*`); studio_default keeps it.
-    frontend: Optional[Path] = typer.Option(None, "--frontend"),
+    frontend: Optional[Path] = typer.Option(None, "--frontend", rich_help_panel = _RUN_PANEL_SERVER),
     api_only: bool = typer.Option(
         False,
         "--api-only",
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = "Serve only the API (no web UI), for a headless model server. "
         "Pairs with --secure to expose the API over the Cloudflare link alone.",
     ),
-    silent: bool = typer.Option(False, "--silent", "-q"),
+    silent: bool = typer.Option(False, "--silent", "-q", rich_help_panel = _RUN_PANEL_ADVANCED),
     enable_tools: Optional[bool] = typer.Option(
         None,
         "--enable-tools/--disable-tools",
+        rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
             "every request. Default: on for every bind."
+        ),
+    ),
+    tool_call_healing: Optional[bool] = typer.Option(
+        None,
+        "--enable-tool-call-healing/--disable-tool-call-healing",
+        rich_help_panel = _RUN_PANEL_TOOLS,
+        help = (
+            "Promote text-form tool calls (small GGUFs often emit <tool_call>...) "
+            "back into structured calls on the client-tool passthrough. Default: on. "
+            "An explicit --disable-tool-call-healing is an absolute server kill-switch."
+        ),
+    ),
+    tool_call_nudging: Optional[bool] = typer.Option(
+        None,
+        "--enable-tool-call-nudging/--disable-tool-call-nudging",
+        rich_help_panel = _RUN_PANEL_TOOLS,
+        help = (
+            "On the non-streaming client-tool passthrough, retry once with a short "
+            "nudge when the model emitted a tool signal that healing could not repair. "
+            "Default: on. No effect on streaming requests or the server-side agentic loop."
         ),
     ),
     yes: bool = typer.Option(
         False,
         "--yes",
         "-y",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
         help = "Accepted for backward compatibility; the tool policy no longer prompts.",
     ),
     parallel: int = typer.Option(
@@ -1724,6 +1772,7 @@ def run(
         "-np",
         min = _PARALLEL_MIN,
         max = _PARALLEL_MAX,
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
@@ -1733,6 +1782,7 @@ def run(
     cloudflare: Optional[bool] = typer.Option(
         None,
         "--cloudflare/--no-cloudflare",
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
         "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
@@ -1741,6 +1791,7 @@ def run(
     secure: bool = typer.Option(
         False,
         "--secure/--no-secure",
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
@@ -1754,15 +1805,23 @@ def run(
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
+        rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Split a GGUF across GPUs by tensor (--split-mode tensor) instead of "
             "by layer. Multi-GPU only (no effect on one GPU); dense models gain "
             "decode speed, MoE usually don't."
         ),
     ),
+    start_api_key_marker: bool = typer.Option(
+        False,
+        "--start-api-key-marker",
+        hidden = True,
+        help = "Emit an early API key marker for the unsloth start parent process.",
+    ),
     password: str = typer.Option(
         "",
         "--password",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
         help = "Set the INITIAL admin password non-interactively (headless setups), "
         "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
         "`--password -` to read one line from stdin. A literal value is visible in the "
@@ -1786,9 +1845,30 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
+    # A newer outer CLI can re-exec into an older Studio venv; pass this signal via
+    # env so an older child ignores it instead of treating it as a llama-server arg.
+    inherited_start_api_key_marker = _consume_start_api_key_marker_env()
+    start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
+
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # Tool-call healing/nudging are read from the env at backend import. Resolve here
+    # (before any re-exec/import) so the in-venv child inherits the decision. When the
+    # flag is omitted, respect a value the parent already set (e.g. `unsloth start`
+    # forwards its choice via the env) and otherwise apply the default: healing on,
+    # nudging on for a CLI-launched server.
+    _healing_disabled = (
+        os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING") == "1"
+        if tool_call_healing is None
+        else not tool_call_healing
+    )
+    os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "1" if _healing_disabled else "0"
+    if tool_call_nudging is not None:
+        os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if tool_call_nudging else "0"
+    elif "UNSLOTH_TOOL_CALL_NUDGE" not in os.environ:
+        os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
 
     # Set before any re-exec so the in-venv server inherits it via the env.
     # `run --verbose` used to pass through to llama-server (its own -v); keep
@@ -1991,15 +2071,21 @@ def run(
         if extra_llama_args:
             args.extend(extra_llama_args)
 
-        if sys.platform == "win32":
-            proc = subprocess.Popen(args)
-            try:
-                rc = proc.wait()
-            except KeyboardInterrupt:
-                rc = proc.wait()
-            raise typer.Exit(rc)
-        else:
-            os.execvp(str(studio_bin), args)
+        if start_api_key_marker:
+            os.environ[_START_API_KEY_MARKER_ENV] = "1"
+        try:
+            if sys.platform == "win32":
+                proc = subprocess.Popen(args)
+                try:
+                    rc = proc.wait()
+                except KeyboardInterrupt:
+                    rc = proc.wait()
+                raise typer.Exit(rc)
+            else:
+                os.execvp(str(studio_bin), args)
+        finally:
+            # execvp doesn't return on success; restore env after a Windows wait or a failed launch.
+            os.environ.pop(_START_API_KEY_MARKER_ENV, None)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
     run_mod = _load_run_module()
@@ -2045,6 +2131,10 @@ def run(
 
         # 4. Create API key in-process.
         api_key = _create_api_key_inprocess(api_key_name)
+        if start_api_key_marker:
+            # `unsloth start` reads this key from a private 0600 log to authenticate
+            # download-progress polling; the normal `unsloth run` output is unchanged.
+            typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
         # 5. Load model via HTTP.
         if not silent:
@@ -2236,7 +2326,8 @@ def stop():
     # Send SIGTERM (graceful shutdown) or TerminateProcess on Windows
     try:
         if sys.platform == "win32":
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check = True)
+            # /T also stops llama-server children, which otherwise keep GPU and port.
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check = True)
         else:
             os.kill(pid, _signal.SIGTERM)
         typer.echo(f"Sent shutdown signal to Unsloth server (PID {pid}).")

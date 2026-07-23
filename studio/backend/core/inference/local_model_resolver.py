@@ -146,6 +146,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _is_hidden_model,
     )
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
+    from utils.hf_cache_settings import known_hf_hub_caches
 
     index: dict[str, _LocalGgufEntry] = {}
     seen_hf: set[str] = set()
@@ -174,7 +175,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: ./models scan failed: %s", exc)
     try:
-        for hf_dir in (_resolve_hf_cache_dir(), legacy_hf_cache_dir(), hf_default_cache_dir()):
+        for hf_dir in (
+            *known_hf_hub_caches(),
+            _resolve_hf_cache_dir(),
+            legacy_hf_cache_dir(),
+            hf_default_cache_dir(),
+        ):
             found += _scan_hf_once(hf_dir)
     except Exception as exc:
         logger.debug("auto-switch: HF cache scan failed: %s", exc)

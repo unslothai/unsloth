@@ -39,7 +39,7 @@ export const ru = {
       returnToChat: "Вернуться к чату",
       compare: "Сравнить",
       search: "Поиск",
-      hub: "Hub",
+      hub: "Модели",
       train: "Обучение",
       recipes: "Рецепты",
       export: "Экспорт",
@@ -111,7 +111,7 @@ export const ru = {
         "Используется для загрузки закрытых моделей и публикации артефактов.",
       hideToken: "Скрыть токен",
       showToken: "Показать токен",
-      tokenSaved: "Токен сохранён",
+      tokenValidated: "Токен проверен",
       password: "Пароль",
       passwordDescription: "Изменить пароль для этого аккаунта Unsloth.",
       passwordDialog: {

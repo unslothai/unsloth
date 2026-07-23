@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "typer",
+    "typer>=0.12.0",
     "rich",
     "pydantic",
     "pyyaml",
@@ -42,7 +42,7 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
-unsloth_cli = ["codex_fallback_prompt.md"]
+unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
     "*.sh",
     "*.ps1",
@@ -74,7 +74,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -95,7 +95,7 @@ huggingfacenotorch = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -580,7 +580,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.7.4",
+    "unsloth_zoo>=2026.7.6",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",

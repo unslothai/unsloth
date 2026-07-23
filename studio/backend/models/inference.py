@@ -74,7 +74,15 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES. On a Vulkan llama.cpp build the indices are ggml's compact Vulkan ordinals (as enumerated by the Vulkan probe and pinned via --device Vulkan<i>), not CUDA physical indices; Vulkan enumerates independently of CUDA_VISIBLE_DEVICES.",
+        description = (
+            "GPU indices to use, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. The index space is backend-specific: CUDA/HIP "
+            "uses physical IDs, Intel XPU supports stable root IDs only in "
+            "COMPOSITE hierarchy, and a Vulkan GGUF build uses ggml's compact "
+            "Vulkan ordinals. UUID/MIG entries, XPU subdevice tokens, and FLAT "
+            "tile handles cannot be resolved safely. Vulkan enumerates "
+            "independently of CUDA_VISIBLE_DEVICES."
+        ),
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -209,6 +217,32 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+
+
+class TranscribeRequest(BaseModel):
+    """Speech-to-text request for the dictation STT sidecar."""
+
+    audio: str = Field(..., description = "Base64-encoded audio (any common format)")
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    language: Optional[str] = Field(None, description = "BCP-47 language, or 'auto'/None to detect")
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+
+
+class SttLoadRequest(BaseModel):
+    """Warm the STT sidecar with a model without transcribing."""
+
+    model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
+    engine: Optional[str] = Field(
+        None,
+        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
 
 
 class ValidateModelRequest(BaseModel):

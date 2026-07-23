@@ -54,13 +54,13 @@ import { NumericValueInput } from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 truncate text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const LABEL_CLASS_WRAP =
-  "min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1]";
-const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0`;
+const SELECT_TRIGGER_CLASS = `grid h-8 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-ui-13! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
+const NUMBER_INPUT_CLASS = `h-8 w-[92px] ${CONTROL_SURFACE} pl-3 pr-2 py-0 text-right text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`;
 
 const KV_CACHE_DTYPE_DEFAULT = "f16";
 const SPECULATIVE_TYPE_LABELS: Record<(typeof SPECULATIVE_TYPES)[number], string> =
@@ -108,7 +108,7 @@ function ChatTemplateSetting({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {readOnly ? null : (
-          <span className="text-[12px] text-muted-foreground">
+          <span className="text-ui-12 text-muted-foreground">
             {config.chatTemplateOverride ? "Custom" : "Default"}
           </span>
         )}
@@ -116,7 +116,7 @@ function ChatTemplateSetting({
           type="button"
           size="sm"
           variant="ghost"
-          className={`h-8 px-3 text-[13px] ${CONTROL_SURFACE}`}
+          className={`h-8 px-3 text-ui-13 ${CONTROL_SURFACE}`}
           onClick={onEditTemplate}
         >
           {readOnly ? "View" : "Edit"}
@@ -371,7 +371,7 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
+                <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GB`
@@ -851,10 +851,10 @@ export function ModelConfigPage({
             </button>
           )}
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-semibold uppercase leading-none tracking-wider text-muted-foreground">
+            <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-[14px] font-semibold leading-tight text-nav-fg">
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-nav-fg">
               {target.displayName}
             </div>
           </div>
@@ -907,7 +907,7 @@ export function ModelConfigPage({
               {isActiveModel &&
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
-                  <p className="text-[11px] text-amber-500">
+                  <p className="text-ui-11 text-amber-500">
                     Exceeds estimated VRAM capacity (
                     {loadedMaxContextLength.toLocaleString()} tokens). The model
                     may use system RAM.
@@ -929,7 +929,7 @@ export function ModelConfigPage({
 
             <div className={ROW_CLASS}>
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-muted-foreground">
+                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
                   Advanced settings
                 </span>
                 <InfoHint>
@@ -982,7 +982,7 @@ export function ModelConfigPage({
           />
           <label
             htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-[13px] text-nav-fg"
+            className="cursor-pointer select-none truncate text-ui-13 text-nav-fg"
           >
             Remember for this model
           </label>

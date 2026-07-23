@@ -39,7 +39,7 @@ export const ko = {
       returnToChat: "채팅으로 돌아가기",
       compare: "비교",
       search: "검색",
-      hub: "Hub",
+      hub: "모델",
       train: "학습",
       recipes: "레시피",
       export: "내보내기",
@@ -111,7 +111,7 @@ export const ko = {
         "게이트된 모델을 불러오고 아티팩트를 푸시하는 데 사용됩니다.",
       hideToken: "토큰 숨기기",
       showToken: "토큰 표시",
-      tokenSaved: "토큰이 저장되었습니다",
+      tokenValidated: "토큰이 확인되었습니다",
       password: "비밀번호",
       passwordDescription: "이 Unsloth 계정의 비밀번호를 변경합니다.",
       passwordDialog: {

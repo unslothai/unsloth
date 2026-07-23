@@ -661,6 +661,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
                 variant,
                 plan.main_hashes,
                 hf_token,
+                hub_cache = Path(snapshot_path).parents[2],
             )
         except Exception as e:
             print(
