@@ -1364,9 +1364,7 @@ class TestGfx906LegacyReroute:
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx906")
-        monkeypatch.setenv(
-            "UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3"
-        )
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/rocm6.3")
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"\n"  # cpu torch -> reinstall from the pinned index

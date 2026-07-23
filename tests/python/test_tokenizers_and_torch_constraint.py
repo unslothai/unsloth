@@ -97,12 +97,12 @@ class TestStructuralTorchConstraint:
         hits = [ln for ln in self._sh.splitlines() if '"torch>=2.4,<2.11.0"' in ln]
         assert hits, "default constraint literal missing from install.sh"
         for ln in hits:
-            assert "TORCH_CONSTRAINT=" in ln, (
-                f"torch>=2.4,<2.11.0 hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
-            )
-            assert "pip install" not in ln, (
-                f"torch>=2.4,<2.11.0 hardcoded on a pip install line: {ln.strip()!r}"
-            )
+            assert (
+                "TORCH_CONSTRAINT=" in ln
+            ), f"torch>=2.4,<2.11.0 hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
+            assert (
+                "pip install" not in ln
+            ), f"torch>=2.4,<2.11.0 hardcoded on a pip install line: {ln.strip()!r}"
 
     def test_tightening_guarded_by_skip_torch(self):
         """The block must check SKIP_TORCH=false."""
