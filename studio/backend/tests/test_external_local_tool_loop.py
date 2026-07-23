@@ -739,3 +739,80 @@ def test_parallel_calls_respect_per_message_budget(monkeypatch):
 
     asyncio.run(_run())
     assert len(calls) == 1
+
+
+def test_tool_events_carry_local_provenance(monkeypatch):
+    client = _FakeClient([_one_call_stream("c1"), [_sse_chunk(content = "x", finish_reason = "stop"), "data: [DONE]"]])
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", lambda *a, **k: "hit")
+
+    async def _run():
+        out = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+        ):
+            out.append(line)
+        return out
+
+    events = _parse_events(asyncio.run(_run()))
+    for kind in ("tool_start", "tool_end"):
+        ev = next(e for e in events if e.get("type") == kind)
+        assert ev.get("provenance", {}).get("source") == "local"
+
+
+def test_forced_tool_choice_downgraded_after_first_round(monkeypatch):
+    client = _FakeClient([_one_call_stream("c1"), [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]])
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", lambda *a, **k: "hit")
+    forced = {"type": "function", "function": {"name": "web_search"}}
+
+    async def _run():
+        async for _ in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            tool_choice = forced,
+        ):
+            pass
+
+    asyncio.run(_run())
+    assert client.requests[0]["tool_choice"] == forced
+    # Second round must be freed to synthesize the answer.
+    assert client.requests[1]["tool_choice"] == "auto"
+
+
+def test_stop_during_prefill_unblocks(monkeypatch):
+    import threading as _t
+
+    cancel = _t.Event()
+
+    class _StallClient:
+        requests: list = []
+
+        async def stream_chat_completion(self, **kwargs):
+            self.requests.append(kwargs)
+            cancel.set()  # simulate Stop while we are blocked awaiting the next line
+            # Never yields a line: the loop must abandon this read via cancel.
+            while True:
+                await asyncio.sleep(0.05)
+            yield ""  # pragma: no cover
+
+    client = _StallClient()
+
+    async def _run():
+        out = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            cancel_event = cancel,
+        ):
+            out.append(line)
+        return out
+
+    # Must return promptly rather than hang on the stalled read.
+    out = asyncio.run(asyncio.wait_for(_run(), timeout = 5))
+    assert isinstance(out, list)

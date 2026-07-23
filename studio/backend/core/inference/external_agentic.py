@@ -27,7 +27,10 @@ import time
 import uuid
 from typing import Any, AsyncGenerator, Optional
 
-from core.inference.tool_loop_controller import strip_result_for_model
+from core.inference.tool_loop_controller import (
+    strip_result_for_model,
+    tool_event_provenance,
+)
 from core.inference.tools import (
     execute_tool,
     is_always_safe_tool,
@@ -179,6 +182,9 @@ async def stream_external_local_tool_loop(
     # Total tool calls executed across all rounds must not exceed the caller's
     # per-message budget, even when a single completion returns parallel calls.
     calls_remaining = max_tool_iterations
+    # A forced tool_choice must only apply to the first round; after a tool
+    # runs, later rounds are freed to synthesize the answer.
+    active_tool_choice = tool_choice
 
     enabled_names = {
         (t.get("function") or {}).get("name")
@@ -207,27 +213,46 @@ async def stream_external_local_tool_loop(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             tools = tools,
-            tool_choice = tool_choice,
+            tool_choice = active_tool_choice,
             stream = True,
         )
+        # Stop may fire while the remote is still in prefill and the read is
+        # blocked awaiting the next SSE line. Drive the generator one item at a
+        # time via a cancellable task raced against the cancel event, so Stop
+        # abandons the in-flight read immediately (calling aclose() on a
+        # generator that is mid-await raises RuntimeError, so it cannot be used
+        # to interrupt from another task).
+        async def _wait_cancel() -> None:
+            while not cancel_event.is_set():
+                await asyncio.sleep(0.1)
 
-        # Watcher: Stop may fire while the remote is still in prefill and the
-        # iterator is blocked awaiting the next SSE line. Close the generator
-        # so the `async for` unblocks immediately instead of waiting for a
-        # chunk or the read timeout.
-        async def _watch_cancel(active_gen) -> None:
-            try:
-                while not cancel_event.is_set():
-                    await asyncio.sleep(0.1)
-                await active_gen.aclose()
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-
-        watcher = asyncio.ensure_future(_watch_cancel(gen))
         try:
-            async for line in gen:
+            while True:
+                if cancel_event.is_set():
+                    break
+                next_task = asyncio.ensure_future(gen.__anext__())
+                cancel_task = asyncio.ensure_future(_wait_cancel())
+                done, _pending = await asyncio.wait(
+                    {next_task, cancel_task},
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
+                if next_task not in done:
+                    # Cancelled while the read was still blocked: abandon it.
+                    next_task.cancel()
+                    try:
+                        await next_task
+                    except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                        pass
+                    break
+                cancel_task.cancel()
+                try:
+                    await cancel_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                try:
+                    line = next_task.result()
+                except StopAsyncIteration:
+                    break
                 if cancel_event.is_set():
                     break
                 payload = _parse_sse_data_line(line)
@@ -284,11 +309,6 @@ async def stream_external_local_tool_loop(
                     if isinstance(tc_delta, dict):
                         _merge_tool_call_delta(tool_calls_acc, tc_delta)
         finally:
-            watcher.cancel()
-            try:
-                await watcher
-            except (asyncio.CancelledError, Exception):
-                pass
             try:
                 await gen.aclose()
             except Exception:
@@ -351,11 +371,16 @@ async def stream_external_local_tool_loop(
             arguments = _coerce_tool_arguments(raw_args)
             tool_call_id = tc["id"]
 
+            _prov = tool_event_provenance()
+            # Later rounds must be free to answer; a forced choice only applies
+            # to the first round.
+            active_tool_choice = "auto"
+
             # Skip tools the caller did not enable (defense in depth).
             if enabled_names and name not in enabled_names:
                 result = f"Error: tool '{name}' is not enabled for this request."
-                yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': name, 'tool_call_id': tool_call_id, 'arguments': arguments})}"
-                yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result})}"
+                yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': name, 'tool_call_id': tool_call_id, 'arguments': arguments, 'provenance': _prov})}"
+                yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result, 'provenance': _prov})}"
                 conversation.append(
                     {
                         "role": "tool",
@@ -383,6 +408,7 @@ async def stream_external_local_tool_loop(
                 "tool_name": name,
                 "tool_call_id": tool_call_id,
                 "arguments": arguments,
+                "provenance": _prov,
             }
             if approval_id:
                 start_event["approval_id"] = approval_id
@@ -426,7 +452,7 @@ async def stream_external_local_tool_loop(
                     abort_tool_decision(decision_slot, approval_id)
 
             model_result = result if isinstance(result, str) else str(result)
-            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': model_result}, ensure_ascii = False)}"
+            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': model_result, 'provenance': _prov}, ensure_ascii = False)}"
             conversation.append(
                 {
                     "role": "tool",
