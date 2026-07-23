@@ -1590,8 +1590,13 @@ def disable_torchcodec_if_broken():
     """
     mismatch_hint = _torchcodec_version_mismatch_hint()
     if mismatch_hint is not None:
-        import warnings
-        warnings.warn(mismatch_hint, stacklevel = 2)
+        try:
+            import warnings
+            warnings.warn(mismatch_hint, stacklevel = 2)
+        except Exception:
+            # Warning filters promoted to errors must not abort the disable
+            # fallback below (e.g. PYTHONWARNINGS=error, pytest -W error).
+            pass
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:

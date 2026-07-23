@@ -1142,7 +1142,8 @@ intelgputorch210 = [
     "torchvision @ https://download.pytorch.org/whl/xpu/torchvision-0.25.0%2Bxpu-cp313-cp313-win_amd64.whl#sha256=1c4b44b36a557f7381e3076fb8843366742238648441d607c8d049c6da0f8886 ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 intel-gpu-torch210 = [
-    "unsloth[intelgputorch210]"
+    "unsloth[intelgputorch210]",
+    "unsloth[audio-torch210]",
 ]
 intelgputorch2110 = [
     "unsloth_zoo[intelgpu]",
