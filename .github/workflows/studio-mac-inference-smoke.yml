@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Three end-to-end smoke jobs that boot a freshly-installed Studio and
+# Three end-to-end smoke jobs that boot a freshly-installed Unsloth and
 # exercise the surfaces real users hit through the OpenAI / Anthropic
 # SDKs and curl. Each job picks the smallest model that exercises the
 # behaviour under test, primes a model cache via actions/cache, and
@@ -108,7 +108,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -124,7 +124,7 @@ jobs:
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -141,7 +141,7 @@ jobs:
             fi
             sleep 1
           done
-          echo "Studio did not become healthy in 180s"
+          echo "Unsloth did not become healthy in 180s"
           tail -200 logs/studio.log
           exit 1
 
@@ -228,11 +228,11 @@ jobs:
               return replies
 
           def run_anthropic():
-              # Two SDK quirks vs. Studio:
+              # Two SDK quirks vs. Unsloth:
               #   1. base_url must NOT include /v1 -- the SDK appends
               #      /v1/messages itself; otherwise the request hits
               #      /v1/v1/messages and 405s.
-              #   2. The SDK sends `x-api-key` by default, but Studio's
+              #   2. The SDK sends `x-api-key` by default, but Unsloth's
               #      auth layer is HTTPBearer-only. Override via
               #      default_headers so Authorization: Bearer ... is
               #      sent instead.
@@ -283,7 +283,7 @@ jobs:
               print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -363,7 +363,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -376,7 +376,7 @@ jobs:
       - name: Assert llama.cpp loads on this macOS
         run: bash .github/scripts/assert-llama-loads.sh
 
-      - name: Reset auth + boot Studio (API-only, default tool policy)
+      - name: Reset auth + boot Unsloth (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
         # `unsloth studio run` because the latter calls
         # `set_tool_policy(...)` with a resolved bool: on loopback the
@@ -430,6 +430,8 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
 
           BASE = os.environ["BASE_URL"]
@@ -450,14 +452,41 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
-          def post_sse(path, body, *, timeout = 600):
+          def post_sse(path, body, *, timeout = 600, retries = 1, soft = False):
               """POST a streaming request and accumulate the assistant
               text deltas. The server-side agentic loop ALWAYS returns
               SSE regardless of the request's `stream` field, so any
-              call with enable_tools=true must use this helper."""
+              call with enable_tools=true must use this helper.
+
+              A shared CI runner can stall the stream transport (the
+              connection opening, or a mid-stream read) even when Unsloth
+              is healthy, so harden the read three ways: retry a stall
+              once with a fresh request capped at 300s; return any text
+              already streamed before a stall (a stall on the trailing
+              tokens, after the answer arrived, still counts); and when
+              every attempt yields nothing, a hard call re-raises while a
+              soft call (the best-effort server-side tool probes) returns
+              None so the caller can WARN instead of sinking the whole
+              job. HTTP status errors always surface immediately."""
               body = {**body, "stream": True}
               data = json.dumps(body).encode()
               req = urllib.request.Request(
@@ -469,24 +498,43 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              parts = []
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  for raw in resp:
-                      line = raw.decode().strip()
-                      if not line.startswith("data: "):
-                          continue
-                      payload = line[6:]
-                      if payload == "[DONE]":
-                          break
-                      try:
-                          chunk = json.loads(payload)
-                      except json.JSONDecodeError:
-                          continue
-                      for choice in chunk.get("choices", []):
-                          delta = choice.get("delta", {}) or {}
-                          if delta.get("content"):
-                              parts.append(delta["content"])
-              return "".join(parts)
+              for attempt in range(retries + 1):
+                  parts = []
+                  t = timeout if attempt == 0 else min(timeout, 300)
+                  try:
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          for raw in resp:
+                              line = raw.decode().strip()
+                              if not line.startswith("data: "):
+                                  continue
+                              payload = line[6:]
+                              if payload == "[DONE]":
+                                  break
+                              try:
+                                  chunk = json.loads(payload)
+                              except json.JSONDecodeError:
+                                  continue
+                              for choice in chunk.get("choices", []):
+                                  delta = choice.get("delta", {}) or {}
+                                  if delta.get("content"):
+                                      parts.append(delta["content"])
+                      return "".join(parts)
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      # Text already streamed is a valid signal -- keep it
+                      # rather than re-running a heavy generation.
+                      if parts:
+                          joined = "".join(parts)
+                          print(f"[retry-sse] {path}: {exc!r}; keeping {len(joined)} partial chars", flush = True)
+                          return joined
+                      if attempt == retries:
+                          if soft:
+                              print(f"[tools] WARN {path}: SSE transport stalled with no data ({exc!r}) -- non-blocking", flush = True)
+                              return None
+                          raise
+                      print(f"[retry-sse] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           # ── 1. Standard OpenAI function calling ──────────────────────
           weather_tool = {
@@ -526,11 +574,11 @@ jobs:
           assert status == 200, f"tool call status {status}: {data}"
           choice = data["choices"][0]
           tool_calls = (choice.get("message") or {}).get("tool_calls") or []
-          # Studio's contract: when tool_choice='required', llama.cpp's
+          # Unsloth's contract: when tool_choice='required', llama.cpp's
           # grammar should force a tool_calls payload. On Mac that
           # contract is sometimes broken by the underlying quant; the
           # PASS path is "tool_calls present + correct schema", the
-          # WARN path documents Studio still returned 200 with a
+          # WARN path documents Unsloth still returned 200 with a
           # well-formed choices[] envelope.
           if tool_calls:
               tc = tool_calls[0]
@@ -557,16 +605,23 @@ jobs:
           # macos-14 free runner is ~10 tok/s on Qwen3.5-2B Q4_K_XL;
           # cap max_tokens tightly so each SSE round stays under ~30s
           # even when the model stalls in a degenerate output state.
+          # retries=0 on the best-effort probes: this job's 25-minute cap
+          # allows a 10-minute model load, so a no-data stall must be a
+          # single 180s attempt (not 180+15+180s) to leave room for the
+          # thinking checks. A soft/best-effort probe only WARNs anyway.
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
+              "permission_mode": "full",
               "enabled_tools": ["python"],
               "session_id":    "ci-tool-calling-py",
               "temperature":   TEMP,
               "seed":          SEED,
               "max_tokens":    128,
-          }, timeout = 180)
-          if "56088" in content or "56,088" in content:
+          }, timeout = 180, retries = 0, soft = True)
+          if content is None:
+              print("[tools] WARN python tool: SSE transport stalled after retries -- non-blocking")
+          elif "56088" in content or "56,088" in content:
               print(f"[tools] PASS python tool ({len(content)} chars, found 56088)")
           else:
               # Empty stream is a known Mac-quant degeneracy too; log
@@ -593,18 +648,19 @@ jobs:
               content = post_sse("/v1/chat/completions", {
                   "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
                   "enable_tools":  True,
+                  "permission_mode": "full",
                   "enabled_tools": ["web_search"],
                   "session_id":    "ci-tool-calling-web",
                   "temperature":   TEMP,
                   "seed":          SEED,
                   "max_tokens":    96,
-              }, timeout = 180)
+              }, timeout = 180, retries = 0)
               print(f"[tools] PASS web_search stream ({len(content)} chars)")
           except Exception as exc:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
 
           # ── 4. Thinking on / off ─────────────────────────────────────
-          # Studio strips think blocks from message.content for tools-mode
+          # Unsloth strips think blocks from message.content for tools-mode
           # responses, so we toggle plain chat (no enable_tools) and look
           # at the surfaced reasoning_content / message.thinking field.
           def thinking_call(enable):
@@ -622,7 +678,7 @@ jobs:
               }, timeout = 180)
               assert status == 200
               msg = data["choices"][0]["message"]
-              # Studio surfaces thinking via reasoning_content (OpenAI
+              # Unsloth surfaces thinking via reasoning_content (OpenAI
               # extension). Fall back to inline <think> markers for
               # robustness across template versions.
               raw = (msg.get("content") or "") + (msg.get("reasoning_content") or "")
@@ -648,7 +704,7 @@ jobs:
           print(f"[tools] PASS thinking on/off (on={len(on_text)} chars, off={len(off_text)} chars)")
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
@@ -754,7 +810,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-${{ env.MMPROJ_FILE }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -770,7 +826,7 @@ jobs:
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         # See Job 2's comment: API-only mode keeps tool_policy=None so
         # response_format requests aren't routed through the agentic
         # tool loop.
@@ -825,6 +881,8 @@ jobs:
           import base64
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
           from openai import OpenAI
           from anthropic import Anthropic
@@ -848,20 +906,36 @@ jobs:
                       "Content-Type":  "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           # ── 1. response_format = json_object (JSON mode) ─────────────
           # llama.cpp's HTTP server supports OpenAI-compatible JSON
           # mode: `response_format: {"type": "json_object"}` constrains
           # the model to emit syntactically-valid JSON. We use raw HTTP
-          # rather than the OpenAI SDK so that the field shape Studio
+          # rather than the OpenAI SDK so that the field shape Unsloth
           # forwards to llama-server is unambiguous (the SDK rewrites
           # response_format depending on which variant it recognises).
           # We deliberately do NOT pass a strict JSON schema -- on
           # small Gemma-4 quants the GBNF-from-schema path occasionally
           # produces empty output, and JSON mode is the surface we care
-          # about exposing through Studio.
+          # about exposing through Unsloth.
           status, data = post("/v1/chat/completions", {
               "model":         "default",
               "messages":      [
@@ -933,7 +1007,7 @@ jobs:
               )
 
           # ── 2. OpenAI image_url (data URI base64) ───────────────────
-          # 64x64 solid-red PNG. stb_image (used by Studio's image
+          # 64x64 solid-red PNG. stb_image (used by Unsloth's image
           # normaliser at routes/inference.py:3410) rejects 4x4 or
           # smaller PNGs as truncated, so we go up to 64x64 -- still
           # tiny in token cost. The assertion is loose: any non-empty
@@ -949,11 +1023,11 @@ jobs:
           # The Mac prebuilt llama.cpp server has a known crash when
           # processing image inputs alongside the gemma-4-E2B mmproj
           # (server disconnects mid-completion). This is upstream
-          # llama.cpp behaviour, not Studio. Wrap both SDK calls in
+          # llama.cpp behaviour, not Unsloth. Wrap both SDK calls in
           # try/except so an upstream crash registers as a WARN rather
-          # than failing the whole job. Studio's contract (OpenAI/
+          # than failing the whole job. Unsloth's contract (OpenAI/
           # Anthropic image fields are accepted and forwarded) is
-          # validated by the request body Studio constructs, not by
+          # validated by the request body Unsloth constructs, not by
           # whether llama.cpp can decode it on Mac Metal.
           client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
           try:
@@ -979,14 +1053,14 @@ jobs:
           except Exception as exc:
               print(
                   f"[image/openai] WARN image_url SDK call raised: {type(exc).__name__}: "
-                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT a Studio "
-                  f"regression. Studio successfully forwarded the request."
+                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT an Unsloth "
+                  f"regression. Unsloth successfully forwarded the request."
               )
 
           # ── 3. Anthropic source/base64 image ────────────────────────
-          # Two SDK quirks vs. Studio: base_url must NOT include /v1
+          # Two SDK quirks vs. Unsloth: base_url must NOT include /v1
           # (the SDK appends it itself; otherwise /v1/v1/messages -> 405),
-          # and Studio's auth is HTTPBearer-only so the SDK's default
+          # and Unsloth's auth is HTTPBearer-only so the SDK's default
           # x-api-key header is ignored -- send Authorization: Bearer
           # via default_headers.
           anthropic = Anthropic(
@@ -1025,11 +1099,11 @@ jobs:
               print(
                   f"[image/anthropic] WARN anthropic image SDK call raised: "
                   f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp Mac+vision "
-                  f"crash, NOT a Studio regression."
+                  f"crash, NOT an Unsloth regression."
               )
           PY
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true

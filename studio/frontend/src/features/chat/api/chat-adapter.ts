@@ -2,12 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -40,13 +42,24 @@ import {
 import {
   type PendingImageEditReference,
   type RagAutoInject,
+  GPU_LAYERS_AUTO,
+  loadedGpuMemoryFields,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
+  persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import {
+  shouldPreserveFullOutput,
+  toolOutputKey,
+  toolPaneScope,
+} from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -63,11 +76,17 @@ import {
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import {
+  readLastLocalModelLoad,
+  recordLastLocalModelLoad,
+  type LastLocalModelKind,
+} from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   hasClosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
   listCachedGguf,
@@ -75,6 +94,7 @@ import {
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  StreamInterruptedError,
   validateModel,
 } from "./chat-api";
 import {
@@ -163,6 +183,7 @@ interface ResponseDetailsMetadata {
     artifacts: boolean;
     confirmToolCalls: boolean;
     bypassPermissions: boolean;
+    permissionMode?: string;
   };
 }
 
@@ -215,6 +236,49 @@ const pendingFirstThreadSaves = new Map<string, Promise<void>>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Best-effort partial parse of a live tool_args stream into a tool part's
+ * `args`, so cards render the payload while the model is still writing it. The
+ * structured path streams raw arguments JSON; the text path wraps it in call
+ * markup, unwrapped here. Returns null until something parses; never throws.
+ */
+function parseLiveToolArgs(
+  raw: string,
+): { args: Record<string, unknown>; argsText: string } | null {
+  let candidate = raw.trimStart();
+  if (!candidate.startsWith("{")) {
+    const brace = candidate.indexOf("{");
+    if (brace < 0) return null;
+    candidate = candidate.slice(brace);
+  }
+  const parsed = parsePartialJsonObject(candidate) as
+    | Record<string, unknown>
+    | undefined;
+  if (!parsed || typeof parsed !== "object") return null;
+  // Call envelope from the text path: unwrap to the arguments payload.
+  const inner = parsed.arguments ?? parsed.parameters;
+  if (typeof parsed.name === "string" && inner !== undefined) {
+    if (typeof inner === "string") {
+      // Stringified arguments: partial-parse the inner JSON string.
+      const innerParsed = parsePartialJsonObject(inner) as
+        | Record<string, unknown>
+        | undefined;
+      if (innerParsed && typeof innerParsed === "object") {
+        return { args: innerParsed, argsText: inner };
+      }
+      return null;
+    }
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+      return {
+        args: inner as Record<string, unknown>,
+        argsText: JSON.stringify(inner),
+      };
+    }
+    return null;
+  }
+  return { args: parsed, argsText: candidate };
 }
 
 function parseSystemVariablesMap(raw: string): Record<string, unknown> {
@@ -891,6 +955,33 @@ function serializeAssistantToolCallPart(
   return entry;
 }
 
+export interface McpImageToolResult {
+  text: string;
+  images: { data: string; mimeType: string }[];
+}
+
+export function isMcpImageToolResult(
+  val: unknown,
+): val is McpImageToolResult {
+  if (typeof val !== "object" || val === null) {
+    return false;
+  }
+  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  return (
+    typeof v.text === "string" &&
+    v.sessionId === undefined &&
+    Array.isArray(v.images) &&
+    v.images.length > 0 &&
+    v.images.every(
+      (img: unknown) =>
+        typeof img === "object" &&
+        img !== null &&
+        typeof (img as { data?: unknown }).data === "string" &&
+        typeof (img as { mimeType?: unknown }).mimeType === "string",
+    )
+  );
+}
+
 function serializeToolResultPart(
   part: ToolCallMessagePart,
 ): SerializedToolResult | null {
@@ -910,6 +1001,8 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else if (isMcpImageToolResult(result)) {
+    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1309,6 +1402,31 @@ const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
 
+type AutoLoadCandidate = {
+  id: string;
+  loadId?: string | null;
+  kind: LastLocalModelKind;
+  ggufVariant: string | null;
+  maxSeqLength: number;
+  successLabel: string;
+};
+
+function autoLoadCandidateKey(
+  kind: LastLocalModelKind,
+  id: string,
+  ggufVariant?: string | null,
+): string {
+  return `${kind}:${id.toLowerCase()}:${(ggufVariant ?? "").toLowerCase()}`;
+}
+
+function findCachedRepo<T extends { repo_id: string }>(
+  repos: T[],
+  id: string,
+): T | undefined {
+  const normalized = id.toLowerCase();
+  return repos.find((repo) => repo.repo_id.toLowerCase() === normalized);
+}
+
 function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
   const normalized = filename.replace(/\\/g, "/").toLowerCase();
   const separatorIndex = normalized.lastIndexOf("/");
@@ -1357,20 +1475,31 @@ async function autoLoadSmallestModel(): Promise<{
   const hfToken = store.hfToken || null;
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
+  const lastLoaded = readLastLocalModelLoad();
   const toastId = toast("Loading a model…", {
-    description: "Auto-selecting the smallest downloaded model.",
+    description: lastLoaded
+      ? "Loading last used model."
+      : "Auto-selecting the smallest downloaded model.",
     duration: 5000,
     closeButton: true,
   });
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  const skippedAutoLoadCandidates = new Set<string>();
 
   async function canAutoLoad(payload: {
     model_path: string;
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
+    // GGUF-only: scopes the training guard to the same placement policy /load
+    // will use. Manual mode must match because it makes placement user-owned.
+    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
+    // guard sizes conservatively, while Manual mode bypasses that estimate.
+    // The safetensors fallback omits both fields and uses HF auto-placement.
+    gpu_ids?: number[];
+    gpu_memory_mode?: "auto" | "manual";
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1387,6 +1516,229 @@ async function autoLoadSmallestModel(): Promise<{
       blockedByTrustRemoteCode = true;
       return false;
     }
+    // Never install packages from a background load; explicit loads raise the upgrade dialog.
+    if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
+      return false;
+    }
+    return true;
+  }
+
+  async function loadAutoLoadCandidate(
+    candidate: AutoLoadCandidate,
+  ): Promise<boolean> {
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+      return false;
+    }
+    const currentStore = useChatRuntimeStore.getState();
+    const modelPath = candidate.loadId ?? candidate.id;
+    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
+    const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+      modelId: candidate.id,
+      ggufVariant: candidate.ggufVariant,
+      isGguf: candidate.kind === "gguf",
+      customContextLength: config.customContextLength,
+      ggufContextLength: null,
+      currentCheckpoint: currentStore.params.checkpoint,
+      activeGgufVariant: currentStore.activeGgufVariant,
+      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
+      presetSource: currentStore.activePresetSource,
+    });
+    // The GPU knobs are per-model, so read them from the same per-model config
+    // that fed effectiveMaxSeqLength -- on a background auto-load the live store
+    // holds session defaults, not the saved Manual mode / layer pin / GPU pick.
+    // Absent fields fall back like the interactive restore: the mode to the store
+    // (a persisted standing preference), the per-model knobs to their defaults.
+    // The saved GPU pick is reconciled against the GPUs present now.
+    const effectiveGpuMemoryMode =
+      config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
+    const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
+    const effectiveNCpuMoe = config.nCpuMoe ?? 0;
+    if (config.selectedGpuIds != null) {
+      // Warm the device cache first: on a cold cache the reconcile passes the
+      // saved pick through unvalidated, and a stale cross-host pick then fails
+      // the load with the picker hidden.
+      await ensureGpuDeviceCache();
+    }
+    const effectiveGpuIds =
+      config.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        : null;
+    // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
+    // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
+    // The context pin is per-model too, so it comes from the saved config, not
+    // the live store.
+    const fitMaxSeqLength = resolveFitMaxSeqLength(
+      candidate.kind === "gguf",
+      effectiveGpuMemoryMode,
+      effectiveGpuLayers,
+      config.customContextLength ?? null,
+      effectiveMaxSeqLength,
+    );
+    const effectiveSpeculativeType =
+      config.speculativeType ?? specSettings.speculativeType;
+    const effectiveSpecDraftNMax =
+      config.specDraftNMax ?? specSettings.specDraftNMax;
+    const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
+      ? config.chatTemplateOverride
+      : null;
+    if (
+      !(await canAutoLoad({
+        model_path: modelPath,
+        max_seq_length: fitMaxSeqLength,
+        is_lora: false,
+        gguf_variant: candidate.ggufVariant,
+        // The same remembered-derived GPU pick the load below sends.
+        ...(candidate.kind === "gguf"
+          ? {
+              gpu_ids: effectiveGpuIds ?? undefined,
+              gpu_memory_mode: effectiveGpuMemoryMode,
+            }
+          : {}),
+      }))
+    ) {
+      skippedAutoLoadCandidates.add(
+        autoLoadCandidateKey(candidate.kind, candidate.id, candidate.ggufVariant),
+      );
+      return false;
+    }
+    loadAttempts += 1;
+    const loadResp = await loadModel({
+      model_path: modelPath,
+      hf_token: hfToken,
+      max_seq_length: fitMaxSeqLength,
+      load_in_4bit: true,
+      is_lora: false,
+      gguf_variant: candidate.ggufVariant,
+      trust_remote_code: trustRemoteCode,
+      chat_template_override: effectiveChatTemplateOverride,
+      cache_type_kv: config.kvCacheDtype,
+      speculative_type: effectiveSpeculativeType,
+      spec_draft_n_max: effectiveSpecDraftNMax,
+      tensor_parallel: config.tensorParallel,
+      // GGUF-only: the safetensors fallback loads via HF auto-placement (no
+      // explicit pins). The split ratio is deliberately never remembered
+      // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
+      // free-VRAM default in charge rather than sending a stale store value.
+      ...(candidate.kind === "gguf"
+        ? {
+            gpu_memory_mode: effectiveGpuMemoryMode,
+            gpu_layers: effectiveGpuLayers,
+            n_cpu_moe: effectiveNCpuMoe,
+            gpu_ids: effectiveGpuIds ?? undefined,
+          }
+        : {}),
+    });
+    // Only persist the global preference when the value came from the global
+    // settings. A per-model config's choice must stay load-local, or autoloading
+    // a remembered model on startup would rewrite the global default.
+    if (config.speculativeType == null) {
+      saveSpeculativeType(effectiveSpeculativeType);
+    }
+    // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
+    persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+    const loadedModelId = loadResp.model || modelPath;
+    useChatRuntimeStore
+      .getState()
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
+    const store = useChatRuntimeStore.getState();
+    store.setModelRequiresTrustRemoteCode(
+      loadResp.requires_trust_remote_code ?? false,
+    );
+    store.setParams({
+      ...store.params,
+      ...(candidate.kind === "gguf"
+        ? {}
+        : { maxSeqLength: effectiveMaxSeqLength }),
+      maxTokens:
+        candidate.kind === "gguf"
+          ? loadResp.context_length ?? 131072
+          : effectiveMaxSeqLength,
+    });
+    const autoModel: ChatModelSummary = {
+      id: loadedModelId,
+      name: loadResp.display_name ?? candidate.id,
+      isVision: loadResp.is_vision ?? false,
+      isLora: loadResp.is_lora ?? false,
+      isGguf: loadResp.is_gguf ?? candidate.kind === "gguf",
+      isAudio: loadResp.is_audio ?? false,
+      audioType: loadResp.audio_type ?? null,
+      hasAudioInput: loadResp.has_audio_input ?? false,
+    };
+    if (!store.models.some((m) => m.id === loadedModelId)) {
+      store.setModels([...store.models, autoModel]);
+    }
+    if (candidate.kind === "gguf") {
+      // Keep an explicit Manual+Auto context pin the load just applied (so a
+      // later Apply doesn't silently revert it to auto-fit sizing), mirroring
+      // the interactive path's keepCustomCtx; other cases baseline on
+      // ggufContextLength.
+      const keepCustomCtx = resolveManualAutoCtxPin(
+        effectiveGpuMemoryMode,
+        effectiveGpuLayers,
+        config.customContextLength ?? null,
+      );
+      useChatRuntimeStore.setState({
+        ggufContextLength: loadResp.context_length ?? 131072,
+        ggufMaxContextLength:
+          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+        ggufNativeContextLength: loadResp.native_context_length ?? null,
+        supportsReasoning: loadResp.supports_reasoning ?? false,
+        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+        reasoningEnabled: loadResp.supports_reasoning ?? false,
+        ...reasoningCapsFromLoad(loadResp),
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        supportsTools: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFields(loadResp),
+        loadedCustomContextLength: keepCustomCtx,
+        defaultChatTemplate: loadResp.chat_template ?? null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        // Retain the saved requested context so re-saving the config keeps the
+        // override; null stays null (auto/VRAM-fit).
+        customContextLength: config.customContextLength,
+        loadedIsMultimodal: isMultimodalResponse(loadResp),
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
+        ...resolveLoadedSpeculativeSettings(loadResp),
+      });
+    } else {
+      useChatRuntimeStore.setState({
+        supportsReasoning: loadResp.supports_reasoning ?? false,
+        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+        reasoningEnabled: loadResp.supports_reasoning ?? false,
+        ...reasoningCapsFromLoad(loadResp),
+        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        supportsTools: loadResp.supports_tools ?? false,
+        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+        kvCacheDtype: loadResp.cache_type_kv ?? null,
+        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        tensorParallel: loadResp.tensor_parallel ?? false,
+        loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
+        // GGUF load left, matching the interactive/status sibling load paths.
+        ...loadedGpuMemoryFields(loadResp),
+        defaultChatTemplate: loadResp.chat_template ?? null,
+        chatTemplateOverride: effectiveChatTemplateOverride,
+        loadedChatTemplateOverride: effectiveChatTemplateOverride,
+        customContextLength: null,
+        ...resolveLoadedSpeculativeSettings(loadResp),
+        loadedIsMultimodal: isMultimodalResponse(loadResp),
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
+      });
+    }
+    if (!(loadResp.is_lora ?? false)) {
+      recordLastLocalModelLoad({
+        id: candidate.id,
+        kind: candidate.kind,
+        ggufVariant: candidate.ggufVariant,
+      });
+    }
+    toast.success(candidate.successLabel, { id: toastId });
     return true;
   }
   try {
@@ -1395,95 +1747,118 @@ async function autoLoadSmallestModel(): Promise<{
       listCachedModels().catch(() => []),
     ]);
 
+    if (lastLoaded) {
+      if (lastLoaded.kind === "gguf") {
+        const repo = findCachedRepo(ggufRepos, lastLoaded.id);
+        if (repo && lastLoaded.ggufVariant) {
+          try {
+            const variants = await listGgufVariants(repo.repo_id, undefined, {
+              preferLocalCache: true,
+              localPath: repo.cache_path,
+            });
+            const variant = variants.variants.find(
+              (entry) =>
+                entry.downloaded &&
+                entry.quant?.toLowerCase() ===
+                  lastLoaded.ggufVariant?.toLowerCase() &&
+                isAutoLoadableGgufVariant(entry),
+            );
+            if (variant) {
+              toast("Loading last used model…", {
+                id: toastId,
+                description: `${repo.repo_id} (${variant.quant})`,
+                duration: 5000,
+              });
+              if (
+                await loadAutoLoadCandidate({
+                  id: repo.repo_id,
+                  loadId: repo.load_id,
+                  kind: "gguf",
+                  ggufVariant: variant.quant,
+                  maxSeqLength: 0,
+                  successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+                })
+              ) {
+                return { loaded: true, blockedByTrustRemoteCode: false };
+              }
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey("gguf", repo.repo_id, lastLoaded.ggufVariant),
+            );
+          }
+        }
+      } else {
+        const repo = findCachedRepo(modelRepos, lastLoaded.id);
+        if (repo) {
+          try {
+            toast("Loading last used model…", {
+              id: toastId,
+              description: repo.repo_id,
+              duration: 5000,
+            });
+            if (
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                loadId: repo.load_id,
+                kind: "model",
+                ggufVariant: null,
+                maxSeqLength: store.params.maxSeqLength,
+                successLabel: `Loaded ${repo.repo_id}`,
+              })
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey("model", repo.repo_id),
+            );
+          }
+        }
+      }
+      toast("Loading a model…", {
+        id: toastId,
+        description: "Auto-selecting the smallest downloaded model.",
+        duration: 5000,
+      });
+    }
+
     // GGUF first: smallest-total-size repo, then its smallest variant.
     if (ggufRepos.length > 0) {
       const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
             if (
-              !(await canAutoLoad({
-                model_path: repo.repo_id,
-                max_seq_length: 0,
-                is_lora: false,
-                gguf_variant: variant.quant,
-              }))
+              skippedAutoLoadCandidates.has(
+                autoLoadCandidateKey("gguf", repo.repo_id, variant.quant),
+              )
             ) {
               continue;
             }
-            loadAttempts += 1;
-            const loadResp = await loadModel({
-              model_path: repo.repo_id,
-              hf_token: hfToken,
-              max_seq_length: 0,
-              load_in_4bit: true,
-              is_lora: false,
-              gguf_variant: variant.quant,
-              trust_remote_code: trustRemoteCode,
-              speculative_type: specSettings.speculativeType,
-              spec_draft_n_max: specSettings.specDraftNMax,
-            });
-            saveSpeculativeType(specSettings.speculativeType);
-            useChatRuntimeStore
-              .getState()
-              .setCheckpoint(repo.repo_id, variant.quant);
-            const store = useChatRuntimeStore.getState();
-            store.setModelRequiresTrustRemoteCode(
-              loadResp.requires_trust_remote_code ?? false,
-            );
-            store.setParams({
-              ...store.params,
-              maxTokens: loadResp.context_length ?? 131072,
-            });
-            // Add to store so the selector shows the name.
-            const autoModel: ChatModelSummary = {
-              id: repo.repo_id,
-              name: loadResp.display_name ?? repo.repo_id,
-              isVision: loadResp.is_vision ?? false,
-              isLora: loadResp.is_lora ?? false,
-              isGguf: loadResp.is_gguf ?? false,
-              isAudio: loadResp.is_audio ?? false,
-              audioType: loadResp.audio_type ?? null,
-              hasAudioInput: loadResp.has_audio_input ?? false,
-            };
-            const existingModels = store.models;
-            if (!existingModels.some((m) => m.id === repo.repo_id)) {
-              store.setModels([...existingModels, autoModel]);
+            if (
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                loadId: repo.load_id,
+                kind: "gguf",
+                ggufVariant: variant.quant,
+                maxSeqLength: 0,
+                successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+              })
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
             }
-            useChatRuntimeStore.setState({
-              ggufContextLength: loadResp.context_length ?? 131072,
-              ggufMaxContextLength:
-                loadResp.max_context_length ??
-                loadResp.context_length ??
-                131072,
-              supportsReasoning: loadResp.supports_reasoning ?? false,
-              reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-              reasoningEnabled: loadResp.supports_reasoning ?? false,
-              ...reasoningCapsFromLoad(loadResp),
-              supportsPreserveThinking:
-                loadResp.supports_preserve_thinking ?? false,
-              supportsTools: loadResp.supports_tools ?? false,
-              ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-              kvCacheDtype: loadResp.cache_type_kv ?? null,
-              loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-              tensorParallel: loadResp.tensor_parallel ?? false,
-              loadedTensorParallel: loadResp.tensor_parallel ?? false,
-              defaultChatTemplate: loadResp.chat_template ?? null,
-              chatTemplateOverride: null,
-              loadedChatTemplateOverride: null,
-              loadedIsMultimodal: isMultimodalResponse(loadResp),
-              ...resolveLoadedSpeculativeSettings(loadResp),
-            });
-            toast.success(`Loaded ${repo.repo_id} (${variant.quant})`, {
-              id: toastId,
-            });
-            return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
           hadNonTrustFailure = true;
@@ -1501,64 +1876,24 @@ async function autoLoadSmallestModel(): Promise<{
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
           if (
-            !(await canAutoLoad({
-              model_path: repo.repo_id,
-              max_seq_length: 4096,
-              is_lora: false,
-              gguf_variant: null,
-            }))
+            skippedAutoLoadCandidates.has(
+              autoLoadCandidateKey("model", repo.repo_id),
+            )
           ) {
             continue;
           }
-          loadAttempts += 1;
-          const sfLoadResp = await loadModel({
-            model_path: repo.repo_id,
-            hf_token: hfToken,
-            max_seq_length: 4096,
-            load_in_4bit: true,
-            is_lora: false,
-            gguf_variant: null,
-            trust_remote_code: trustRemoteCode,
-            speculative_type: specSettings.speculativeType,
-            spec_draft_n_max: specSettings.specDraftNMax,
-          });
-          saveSpeculativeType(specSettings.speculativeType);
-          useChatRuntimeStore.getState().setCheckpoint(repo.repo_id);
-          const store = useChatRuntimeStore.getState();
-          store.setModelRequiresTrustRemoteCode(
-            sfLoadResp.requires_trust_remote_code ?? false,
-          );
-          store.setParams({ ...store.params, maxTokens: 4096 });
-          useChatRuntimeStore.setState({
-            supportsReasoning: sfLoadResp.supports_reasoning ?? false,
-            reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
-            reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
-            ...reasoningCapsFromLoad(sfLoadResp),
-            supportsPreserveThinking:
-              sfLoadResp.supports_preserve_thinking ?? false,
-            supportsTools: sfLoadResp.supports_tools ?? false,
-            // Parity with the GGUF branch above.
-            ...resolveToolsEnabledOnLoad(sfLoadResp.supports_tools ?? false),
-            defaultChatTemplate: sfLoadResp.chat_template ?? null,
-            chatTemplateOverride: null,
-            loadedChatTemplateOverride: null,
-            ...resolveLoadedSpeculativeSettings(sfLoadResp),
-          });
-          const sfModel: ChatModelSummary = {
-            id: repo.repo_id,
-            name: sfLoadResp.display_name ?? repo.repo_id,
-            isVision: sfLoadResp.is_vision ?? false,
-            isLora: sfLoadResp.is_lora ?? false,
-            isGguf: sfLoadResp.is_gguf ?? false,
-          };
-          if (!store.models.some((m) => m.id === repo.repo_id)) {
-            store.setModels([...store.models, sfModel]);
+          if (
+            await loadAutoLoadCandidate({
+              id: repo.repo_id,
+              loadId: repo.load_id,
+              kind: "model",
+              ggufVariant: null,
+              maxSeqLength: 4096,
+              successLabel: `Loaded ${repo.repo_id}`,
+            })
+          ) {
+            return { loaded: true, blockedByTrustRemoteCode: false };
           }
-          useChatRuntimeStore.setState({
-            loadedIsMultimodal: isMultimodalResponse(sfLoadResp),
-          });
-          toast.success(`Loaded ${repo.repo_id}`, { id: toastId });
-          return { loaded: true, blockedByTrustRemoteCode: false };
         } catch {
           hadNonTrustFailure = true;
           continue;
@@ -1585,12 +1920,17 @@ async function autoLoadSmallestModel(): Promise<{
       duration: 30000,
     });
     try {
+      const rt = useChatRuntimeStore.getState();
       if (
         !(await canAutoLoad({
           model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
+          // The same live-store GPU pick the load below sends (a fresh default
+          // model has no remembered settings to prefer).
+          gpu_ids: rt.selectedGpuIds ?? undefined,
+          gpu_memory_mode: rt.gpuMemoryMode,
         }))
       ) {
         toast.dismiss(toastId);
@@ -1600,6 +1940,9 @@ async function autoLoadSmallestModel(): Promise<{
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
+        // Model default under both modes: Auto layers + no pin means
+        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+        // preflight above sends the same).
         max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
@@ -1607,8 +1950,20 @@ async function autoLoadSmallestModel(): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        // GPU Memory mode is a standing preference, so honor it on auto-load.
+        // The layer/MoE/split knobs and the context pin are per-model: the live
+        // store may hold edits drafted for a staged pick, and a fresh default
+        // model has no remembered settings, so those stay at their defaults like
+        // the cached-candidate path. The GPU pick deliberately differs (it's the
+        // picker's current on-screen selection, which the canAutoLoad preflight
+        // above already committed to).
+        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_layers: GPU_LAYERS_AUTO,
+        n_cpu_moe: 0,
+        gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
+      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
@@ -1645,10 +2000,19 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        ...loadedGpuMemoryFields(loadResp),
+        // Drives the GPU Memory controls' diffusion gate; set alongside the
+        // GPU fields on every load path so the gate can't read stale.
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         ...resolveLoadedSpeculativeSettings(loadResp),
+      });
+      recordLastLocalModelLoad({
+        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
+        kind: "gguf",
+        ggufVariant: "UD-Q4_K_XL",
       });
       toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
       return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1687,6 +2051,16 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
+      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
+      // turns and concurrent panes (compare mode). Track this run's keys so
+      // cleanup can't wipe another pane's.
+      const toolOutputPaneScope = toolPaneScope(
+        options.modelType,
+        options.pairId,
+      );
+      const scopedToolOutputKey = (id: string) =>
+        toolOutputKey(toolOutputPaneScope, id);
+      const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1762,6 +2136,7 @@ export function createOpenAIStreamAdapter(
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
+        permissionMode,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2235,6 +2610,34 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Raw tool_args accumulator per card: the backend forwards arguments while
+      // the model is still WRITING them, and the partial parse below feeds the
+      // card's args so the code renders live.
+      const liveArgsTextById = new Map<string, string>();
+      // Backend tool ids ("call_0", ...) restart every response, so a bare id as
+      // store key lets a later turn's stream overwrite the preserved output an
+      // earlier still-mounted finished card reads (the tool_start stale-clear
+      // only guards the forward direction). Mint one per-run-unique part id per
+      // backend id (confirmation ids already synthesize their own) so each card
+      // key is unique; every tool_start/output/args/end resolves the same id via
+      // this map, dropped at tool_end.
+      const toolPartIdByBackendId = new Map<string, string>();
+      const resolveToolPartId = (backendToolCallId: string): string => {
+        if (!backendToolCallId) {
+          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
+        }
+        const confirmationId =
+          toolConfirmationIdsByBackendId.get(backendToolCallId);
+        if (confirmationId) {
+          return confirmationId;
+        }
+        let partId = toolPartIdByBackendId.get(backendToolCallId);
+        if (!partId) {
+          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
+          toolPartIdByBackendId.set(backendToolCallId, partId);
+        }
+        return partId;
+      };
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -2453,6 +2856,7 @@ export function createOpenAIStreamAdapter(
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
+            permissionMode,
           },
         });
         const externalCapabilities = getProviderCapabilities(
@@ -2738,6 +3142,7 @@ export function createOpenAIStreamAdapter(
             audio_base64: audioBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+            ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
@@ -2763,6 +3168,16 @@ export function createOpenAIStreamAdapter(
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
+            // Permission level for local tool calls is sent for every local
+            // chat, not only when a tool pill is on: a process policy
+            // (unsloth run --enable-tools) can open the tool loop with no pill,
+            // and the backend must still see the selected gate. ask/auto request
+            // the confirm gate ("auto" only pauses calls flagged unsafe); off
+            // and full never prompt, full also drops the sandbox.
+            permission_mode: permissionMode,
+            confirm_tool_calls:
+              permissionMode === "ask" || permissionMode === "auto",
+            bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
@@ -2784,10 +3199,6 @@ export function createOpenAIStreamAdapter(
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Bypass Permissions wins: never request the confirm gate
-                  // while bypassing, and tell the backend to drop the sandbox.
-                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
-                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
@@ -2961,6 +3372,66 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "tool_output") {
+                  // Incremental stdout from a running tool: append to the live
+                  // store so the card renders it while the spinner runs. Final
+                  // result arrives via tool_end.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId = resolveToolPartId(backendToolCallId);
+                  const liveText =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && liveText) {
+                    const liveKey = scopedToolOutputKey(liveId);
+                    runToolLiveOutputKeys.add(liveKey);
+                    useChatRuntimeStore
+                      .getState()
+                      .appendToolLiveOutput(liveKey, liveText);
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "tool_args") {
+                  // The model is still WRITING this call's arguments: accumulate
+                  // the raw stream and feed a partial parse into the part's args
+                  // so the card shows the code live. tool_start later replaces
+                  // args with the authoritative parse.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId = resolveToolPartId(backendToolCallId);
+                  const fragment =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && fragment) {
+                    const accum =
+                      (liveArgsTextById.get(liveId) ?? "") + fragment;
+                    liveArgsTextById.set(liveId, accum);
+                    const partial = parseLiveToolArgs(accum);
+                    const idx = toolCallParts.findIndex(
+                      (p) => p.toolCallId === liveId,
+                    );
+                    if (partial && idx !== -1) {
+                      const existing = toolCallParts[
+                        idx
+                      ] as PositionedToolCallPart;
+                      toolCallParts[idx] = {
+                        ...existing,
+                        args: partial.args as ToolCallMessagePart["args"],
+                        argsText: partial.argsText,
+                      };
+                      yield {
+                        content: buildAssistantContent(cumulativeText),
+                        metadata: {
+                          timing: buildTiming(
+                            streamStartTime,
+                            totalChunks,
+                            firstTokenTime,
+                          ),
+                          custom: { reasoningDuration },
+                        },
+                      };
+                    }
+                  }
+                  continue;
+                }
                 closeReasoningContent();
                 const toolProvenance = parseToolProvenance(
                   toolEvent.provenance,
@@ -2974,12 +3445,18 @@ export function createOpenAIStreamAdapter(
                   const id =
                     awaitingConfirmation && approvalId
                       ? `${toolConfirmationScopeId}:${approvalId}`
-                      : backendToolCallId ||
-                        approvalId ||
-                        `${toolEvent.tool_name}_${Date.now()}`;
+                      : backendToolCallId
+                        ? resolveToolPartId(backendToolCallId)
+                        : approvalId ||
+                          `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
+                  // "call_0" restarts every response: drop stale live/preserved
+                  // output under this key, else the card shows the previous call's.
+                  const staleKey = scopedToolOutputKey(id);
+                  useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
+                  useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -3023,17 +3500,35 @@ export function createOpenAIStreamAdapter(
                 } else if (toolEvent.type === "tool_end") {
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const id =
-                    (backendToolCallId
-                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
-                      : undefined) ||
-                    backendToolCallId ||
-                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
-                    "";
+                  const id = resolveToolPartId(backendToolCallId);
                   if (backendToolCallId) {
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                    toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
+                  // The result replaces the live output, but if the stream
+                  // captured MORE than the truncated result, preserve it so the
+                  // finished card keeps everything. Uses the shared predicate,
+                  // not a length compare (footer / "Exit code N:" / __IMAGES__
+                  // tail can make the result longer by byte).
+                  const liveKey = scopedToolOutputKey(id);
+                  const liveOutput =
+                    useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
+                    "";
+                  if (
+                    id &&
+                    shouldPreserveFullOutput(
+                      liveOutput,
+                      (toolEvent.result as string) ?? "",
+                    )
+                  ) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolFullOutput(liveKey, liveOutput);
+                  }
+                  useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
+                  runToolLiveOutputKeys.delete(liveKey);
+                  liveArgsTextById.delete(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -3041,9 +3536,12 @@ export function createOpenAIStreamAdapter(
                     const rawResult = (toolEvent.result as string) ?? "";
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    const mcpImgMarker = "\n__MCP_IMAGES__:";
+                    const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
                       | { text: string; images: string[]; sessionId: string }
+                      | McpImageToolResult
                       | {
                           image_b64: string;
                           image_mime: string;
@@ -3053,6 +3551,24 @@ export function createOpenAIStreamAdapter(
                           prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
+                    // A valid MCP image envelope wins; an invalid marker falls
+                    // through so a sandbox __IMAGES__ suffix still renders and
+                    // legit text round-trips unchanged.
+                    let mcpImages: McpImageToolResult | null = null;
+                    if (mcpImgIdx !== -1) {
+                      try {
+                        const images = JSON.parse(
+                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
+                        );
+                        const candidate = {
+                          text: rawResult.slice(0, mcpImgIdx),
+                          images,
+                        };
+                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                      } catch {
+                        // Not a valid envelope; fall through below.
+                      }
+                    }
                     if (
                       toolCallParts[idx].toolName === "image_generation" &&
                       typeof imageB64 === "string" &&
@@ -3070,6 +3586,8 @@ export function createOpenAIStreamAdapter(
                         background: toolEvent.background as string | undefined,
                         prompt: toolEvent.prompt as string | undefined,
                       };
+                    } else if (mcpImages !== null) {
+                      parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox
@@ -3575,7 +4093,16 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (isContextLimitError(msg)) {
+          if (err instanceof StreamInterruptedError) {
+            // Connection dropped mid-turn: surface it explicitly (the rethrow
+            // below also marks the message with an inline error + Retry).
+            toast.error("Response interrupted", {
+              description:
+                "The connection dropped before the model finished. " +
+                "The partial answer is kept. Use Retry to regenerate.",
+              duration: 8000,
+            });
+          } else if (isContextLimitError(msg)) {
             // llama-server runs with --no-context-shift, returning a hard
             // error instead of silently dropping old KV-cache turns. Point
             // the user at the control that raises the ceiling.
@@ -3601,6 +4128,19 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Clear only this run's live keys (a concurrent pane owns its own). A
+        // key still here streamed stdout but never reached tool_end (SSE drop or
+        // cancel), so promote it to full output first, else the partial
+        // diagnostics the user was watching vanish from the card.
+        for (const liveKey of runToolLiveOutputKeys) {
+          const store = useChatRuntimeStore.getState();
+          const liveOutput = store.toolLiveOutput[liveKey] ?? "";
+          if (liveOutput) {
+            store.setToolFullOutput(liveKey, liveOutput);
+          }
+          store.clearToolLiveOutput(liveKey);
+        }
+        runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only
         // the committed markdown answer (cancellation/error included).
         runtime.setActiveDiffusionCanvas(null);

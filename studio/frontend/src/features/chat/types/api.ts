@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -63,6 +65,18 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
+   *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
+   *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
+  gpu_memory_mode?: "auto" | "manual";
+  /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
+  gpu_layers?: number;
+  /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
+  n_cpu_moe?: number;
+  /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
+  tensor_split?: number[] | null;
+  /** Picked physical GPU indices (omit/empty = automatic). */
+  gpu_ids?: number[];
 }
 
 export interface ValidateModelResponse {
@@ -78,6 +92,20 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
+  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (llama.cpp counts the output layer as offloadable too); null
+   *  until downloaded. */
+  layer_count?: number | null;
+  /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
+   *  0 for dense models, null until downloaded. */
+  moe_layer_count?: number | null;
+  /** Embedded GGUF chat template, returned when include_chat_template is set
+   *  (native lease-backed picks); null for non-GGUF, over-cap, or not read. */
+  chat_template?: string | null;
+  /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
+  requires_transformers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgrade. */
+  transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 
 export interface GgufVariantDetail {
@@ -153,6 +181,14 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  gpu_memory_mode?: "auto" | "manual";
+  gpu_layers?: number;
+  n_cpu_moe?: number;
+  tensor_split?: number[] | null;
+  n_layers?: number | null;
+  /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
+  n_moe_layers?: number;
+  gpu_ids?: number[] | null;
 }
 
 export interface UnloadModelRequest {
@@ -197,6 +233,17 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  gpu_memory_mode?: "auto" | "manual";
+  gpu_layers?: number;
+  n_cpu_moe?: number;
+  tensor_split?: number[] | null;
+  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
+   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  requested_context_length?: number | null;
+  gpu_ids?: number[] | null;
+  n_layers?: number | null;
+  /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
+  n_moe_layers?: number;
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
@@ -343,6 +390,15 @@ export interface OpenAIChatCompletionsRequest {
   mcp_enabled?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
+  /**
+   * Local models + enable_tools only. Gate level for local tool calls: "ask"
+   * prompts on every call, "auto" prompts only on calls flagged unsafe, "off"
+   * never prompts, "full" never prompts and drops the sandbox. Unset behaves
+   * as "ask".
+   */
+  permission_mode?: "ask" | "auto" | "off" | "full";
+  /** Local models + enable_tools only. Full-access escape hatch. */
+  bypass_permissions?: boolean;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

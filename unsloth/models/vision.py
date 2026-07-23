@@ -41,7 +41,11 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
+from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
+    _get_fp8_mode_and_check_settings,
+    _restore_dropped_fp8_scales,
+)
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -735,7 +739,7 @@ class FastBaseModel:
 
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
-                "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
+                "Unsloth: `unsloth_vllm_standby` is True, but environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
             )
 
         if model_types is None:
@@ -1191,6 +1195,17 @@ class FastBaseModel:
                     load_in_8bit = load_in_8bit,
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
+                )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = local_files_only,
+                    token = token,
+                    revision = kwargs.get("revision"),
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)

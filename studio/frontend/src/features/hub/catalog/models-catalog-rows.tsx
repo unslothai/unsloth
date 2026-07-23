@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ModelDeleteAction } from "@/components/assistant-ui/model-selector/model-delete-action";
 import {
   Tooltip,
   TooltipContent,
@@ -9,18 +8,26 @@ import {
 } from "@/components/ui/tooltip";
 import {
   type GgufVariantDetail,
-  deleteCachedModel,
   deleteCachedDataset,
+  deleteCachedModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
-} from "@/features/hub/inventory";
-import { classifyUnslothSupport } from "@/features/hub/hooks/use-hub-model-search";
-import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
-import { ggufVariantDisplayLabel } from "@/features/hub/lib/gguf-variant-sort";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+} from "../inventory";
+import {
+  classifyUnslothSupport,
+  formatBytes,
+  formatRelativeShort,
+  ggufVariantDisplayLabel,
+  useHfTokenStore,
+} from "@/features/hub";
+import { modelIdsMatch } from "../lib/model-identity";
+import {
+  ModelRowMenu,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import { cn, formatCompact } from "@/lib/utils";
-import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   Download01Icon,
   FavouriteIcon,
@@ -39,6 +46,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { paramLabelFromId } from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -46,7 +54,6 @@ import type {
 } from "../types";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
-import { paramLabelFromId } from "../lib/view-models";
 
 const COARSE_POINTER =
   typeof window !== "undefined" &&
@@ -142,15 +149,15 @@ function CachedSizeChipLive({
   );
 
   const rows: Array<{ label: string; size_bytes: number }> | null =
-    !needsVariantFetch
-      ? [{ label: repoId, size_bytes: totalBytes }]
-      : currentVariantState.status === "loaded" &&
-          currentVariantState.variants.length > 0
+    needsVariantFetch
+      ? currentVariantState.status === "loaded" &&
+        currentVariantState.variants.length > 0
         ? currentVariantState.variants.map((variant) => ({
             label: ggufVariantDisplayLabel(variant),
             size_bytes: variant.size_bytes,
           }))
-        : null;
+        : null
+      : [{ label: repoId, size_bytes: totalBytes }];
   const variantMessage =
     currentVariantState.status === "loading"
       ? "Loading downloaded variants..."
@@ -181,14 +188,14 @@ function CachedSizeChipLive({
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-[11px] text-white/70"
+                    className="text-ui-11 text-white/70"
                   />
                 </span>
               </li>
             ))}
           </ul>
         ) : (
-          <span className="block max-w-52 text-[11px] leading-4 text-muted-foreground">
+          <span className="block max-w-52 text-ui-11 leading-4 text-muted-foreground">
             {variantMessage}
           </span>
         )}
@@ -218,7 +225,7 @@ export function StatChip({
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none tabular-nums text-muted-foreground/75",
+        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-ui-10 font-medium leading-none tabular-nums text-muted-foreground/75",
         className,
       )}
     >
@@ -270,12 +277,14 @@ function CatalogRow({
         aria-label={label}
         onClick={onClick}
         className={cn(
-          "absolute inset-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          "absolute inset-0 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
           card ? "rounded-[16px]" : "rounded-[14px]",
         )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
-        <div className={cn("pointer-events-none relative", card && "z-[1] w-full")}>
+        <div
+          className={cn("pointer-events-none relative", card && "z-[1] w-full")}
+        >
           {children}
         </div>
       </CatalogRowInteractiveContext.Provider>
@@ -473,7 +482,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
-              <p className="truncate text-[12px] font-medium leading-[18px] tracking-[-0.005em] text-foreground">
+              <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
               </p>
               <AccessGlyphs
@@ -509,17 +518,17 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-[11.5px] leading-[16px] text-muted-foreground/85">
+          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-3.5 shrink-0 text-primary"
+                  className="hub-verified-badge size-3.5 shrink-0 text-verified"
                 />
               )}
             </span>
-            <span className="shrink-0 text-[10.5px] tabular-nums">
+            <span className="shrink-0 text-ui-10p5 tabular-nums">
               {formatRelativeShort(row.result.updatedAt)}
             </span>
           </div>
@@ -653,9 +662,11 @@ export const InventoryRow = memo(function InventoryRow({
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
         {/* Format already shows as the status dot, so the pill stays neutral. */}
         {formatLabel && <span className="hub-chip">{formatLabel}</span>}
-        {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
+        {paramLabel && (
+          <span className="hub-chip tabular-nums">{paramLabel}</span>
+        )}
         {quantLabel && (
-          <span className="hub-chip font-mono text-[10.5px] uppercase">
+          <span className="hub-chip font-mono text-ui-10p5 uppercase">
             {quantLabel}
           </span>
         )}
@@ -697,9 +708,7 @@ export const InventoryRow = memo(function InventoryRow({
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && (
-          <StatusDot tone="warning" label="Partial download" />
-        )}
+        {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
@@ -707,48 +716,92 @@ export const InventoryRow = memo(function InventoryRow({
     ) : null;
 
   const ownerLine = (
-    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
       <span className="truncate">{subLabel}</span>
       {subLabel.toLowerCase() === "unsloth" && (
         <span
           aria-label="Verified Unsloth"
-          className="hub-verified-badge size-3.5 shrink-0 text-primary"
+          className="hub-verified-badge size-3.5 shrink-0 text-verified"
         />
       )}
     </span>
   );
 
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const rowPinned =
+    cacheDeletableRepoId != null &&
+    pinnedKeys.includes(pinKey(cacheDeletableRepoId));
   const deleteAction =
     canDelete && cacheDeletableRepoId ? (
-      <ModelDeleteAction
-        ariaLabel={`Delete ${cacheDeletableRepoId}`}
-        title={isDataset ? "Delete cached dataset?" : "Delete cached model?"}
-        description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">
-              {cacheDeletableRepoId}
-            </span>{" "}
-            {isDataset
-              ? "and its downloaded files"
-              : row.isGguf
-                ? "and all of its downloaded quantizations"
-                : "and all of its downloaded files"}
-            {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
-            disk. You can re-download it later.
-          </>
-        }
-        successMessage={`Deleted ${cacheDeletableRepoId}`}
+      <ModelRowMenu
+        ariaLabel={`More options for ${cacheDeletableRepoId}`}
         buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         iconClassName="size-4"
-        onConfirm={async () => {
-          if (isDataset) {
-            await deleteCachedDataset(cacheDeletableRepoId);
-          } else {
-            await deleteCachedModel(cacheDeletableRepoId);
-          }
+        pin={
+          isDataset
+            ? undefined
+            : {
+                pinned: rowPinned,
+                pinLabel: "Pin to top",
+                unpinLabel: "Unpin",
+                onToggle: () => togglePinned(cacheDeletableRepoId),
+              }
+        }
+        cachePath={isDataset ? undefined : { repoId: cacheDeletableRepoId }}
+        del={{
+          title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
+          description: (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">
+                {cacheDeletableRepoId}
+              </span>{" "}
+              {isDataset
+                ? "and its downloaded files"
+                : row.isGguf
+                  ? "and all of its downloaded quantizations"
+                  : "and all of its downloaded files"}
+              {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
+              disk. You can re-download it later.
+            </>
+          ),
+          successMessage: `Deleted ${cacheDeletableRepoId}`,
+          onConfirm: async () => {
+            // Delete only the copy this row shows: cache rows carry the owning
+            // cache path, so pass it through and leave other caches untouched.
+            const rowCachePath =
+              row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
+            if (isDataset) {
+              await deleteCachedDataset(cacheDeletableRepoId, rowCachePath);
+            } else {
+              await deleteCachedModel(
+                cacheDeletableRepoId,
+                undefined,
+                undefined,
+                rowCachePath,
+              );
+              // Deleted repos can't stay pinned: drop the repo pin and any of
+              // its per-quant pins so stale rows don't linger up top.
+              const { pinned, togglePinned: toggle } =
+                usePinnedModelsStore.getState();
+              for (const key of pinned) {
+                if (
+                  key === pinKey(cacheDeletableRepoId) ||
+                  key.startsWith(`${cacheDeletableRepoId}::`)
+                ) {
+                  toggle(
+                    cacheDeletableRepoId,
+                    key.includes("::")
+                      ? key.slice(key.indexOf("::") + 2)
+                      : undefined,
+                  );
+                }
+              }
+            }
+          },
+          onDeleted: onChange,
         }}
-        onDeleted={onChange}
       />
     ) : null;
 
@@ -773,23 +826,23 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-8 shrink-0 rounded-[9px] text-[12px]"
+            className="size-8 shrink-0 rounded-[9px] text-ui-12"
             remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+              <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
                 {title}
               </span>
               {compactMarkers}
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] leading-[14px] text-muted-foreground/75">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-10p5 leading-ui-14 text-muted-foreground/75">
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate">{subLabel}</span>
                 {subLabel.toLowerCase() === "unsloth" && (
                   <span
                     aria-label="Verified Unsloth"
-                    className="hub-verified-badge size-3 shrink-0 text-primary"
+                    className="hub-verified-badge size-3 shrink-0 text-verified"
                   />
                 )}
               </span>
@@ -807,7 +860,7 @@ export const InventoryRow = memo(function InventoryRow({
               )}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-2 text-[10.5px] tabular-nums text-muted-foreground/70">
+          <div className="flex shrink-0 items-center gap-2 text-ui-10p5 tabular-nums text-muted-foreground/70">
             {row.kind === "cache" ? (
               <CachedSizeChip
                 repoId={row.repoId}
@@ -850,7 +903,7 @@ export const InventoryRow = memo(function InventoryRow({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
+              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
                 {title}
               </span>
               {statusMarkers}
@@ -871,11 +924,11 @@ export const InventoryRow = memo(function InventoryRow({
               cachePath={row.cachePath}
             />
           ) : trailing ? (
-            <span className="truncate text-[11.5px] tabular-nums text-muted-foreground/70">
+            <span className="truncate text-ui-11p5 tabular-nums text-muted-foreground/70">
               {trailing}
             </span>
           ) : sourceLabel ? (
-            <span className="truncate text-[11.5px] text-muted-foreground/55">
+            <span className="truncate text-ui-11p5 text-muted-foreground/55">
               {sourceLabel}
             </span>
           ) : null}

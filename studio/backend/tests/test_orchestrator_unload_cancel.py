@@ -34,6 +34,70 @@ def _bare_orchestrator():
     return o
 
 
+def test_adapter_control_raises_stream_errors(monkeypatch):
+    o = _bare_orchestrator()
+    monkeypatch.setattr(
+        o,
+        "_generate_dispatched",
+        lambda **_kwargs: iter([orch_mod.GenStreamError("Error: adapter failed")]),
+    )
+
+    with pytest.raises(RuntimeError, match = "adapter failed"):
+        list(o.generate_with_adapter_control(use_adapter = False))
+
+    closed = []
+
+    def _stream(**_kwargs):
+        try:
+            yield "token"
+            yield "late token"
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(o, "_generate_dispatched", _stream)
+    generator = o.generate_with_adapter_control(use_adapter = False)
+    assert next(generator) == "token"
+    generator.close()
+    assert closed == [True]
+
+
+def test_worker_closes_cancelled_generator_before_gen_done():
+    from core.inference.worker import _handle_generate
+
+    events = []
+
+    class _Backend:
+        last_generation_stats = None
+
+        def generate_with_adapter_control(self, **_kwargs):
+            try:
+                yield "token"
+                yield "late token"
+            finally:
+                events.append("closed")
+
+    class _Responses:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            if item["type"] == "gen_done":
+                assert events == ["closed"]
+            self.items.append(item)
+
+    responses = _Responses()
+    cancel = threading.Event()
+    cancel.set()
+    _handle_generate(
+        _Backend(),
+        {"request_id": "r1", "messages": [], "use_adapter": False},
+        responses,
+        cancel,
+    )
+
+    assert [item["type"] for item in responses.items] == ["gen_done"]
+
+
 def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -872,6 +936,35 @@ def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
     assert ok is False
     assert o.active_model_name is None
     assert o.models == {}
+
+
+def test_load_model_aborts_when_old_worker_survives_shutdown(monkeypatch):
+    # A wedged worker that outlives terminate/kill makes _shutdown_subprocess return
+    # False. load_model must not spawn a second worker over it (double GPU allocation +
+    # the survivor's handle is lost); it aborts so the load can retry once it exits.
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = "old"
+    o.models = {"old": {}}
+    o.loading_models = set()
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([0], "sel"))
+    monkeypatch.setattr(orch_mod.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_cancel_generation", lambda: None)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: False)  # survivor
+    monkeypatch.setattr(
+        o, "_spawn_subprocess", lambda cfg: pytest.fail("must not spawn over a live survivor")
+    )
+
+    with pytest.raises(RuntimeError, match = "did not exit"):
+        o.load_model(types.SimpleNamespace(identifier = "new", gguf_variant = None))
+    # The except path cleared the loading marker and mirrors.
+    assert "new" not in o.loading_models
+    assert o.active_model_name is None
 
 
 def test_load_model_proceeds_when_not_cancelled(monkeypatch):

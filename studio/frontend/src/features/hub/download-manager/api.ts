@@ -12,14 +12,14 @@ function parseErrorText(status: number, body: unknown): string {
     const detail = (body as { detail?: unknown }).detail;
     const formatted = formatFastApiDetail(detail);
     if (status === 405) {
-      return `${formatted || "Method Not Allowed"} - the Studio backend did not accept this API method. Restart Studio so the frontend and backend are on the same build.`;
+      return `${formatted || "Method Not Allowed"} - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.`;
     }
     if (formatted) return formatted;
     const message = (body as { message?: unknown }).message;
     if (typeof message === "string" && message) return message;
   }
   if (status === 405) {
-    return "Method Not Allowed - the Studio backend did not accept this API method. Restart Studio so the frontend and backend are on the same build.";
+    return "Method Not Allowed - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.";
   }
   return `Request failed (${status})`;
 }
@@ -137,7 +137,7 @@ const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabilities = 
   http: { available: true, reason: null },
   xet: {
     available: null,
-    reason: "Couldn't verify Xet support with the Studio backend.",
+    reason: "Couldn't verify Xet support with the Unsloth backend.",
   },
 };
 let downloadTransportCapabilitiesCache: DownloadTransportCapabilities | null =

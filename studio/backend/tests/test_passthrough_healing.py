@@ -515,6 +515,7 @@ class ScriptedClient:
         _url,
         json = None,
         timeout = None,
+        headers = None,
     ):
         self.posts.append(json)
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
@@ -1421,6 +1422,7 @@ class TestHealerSignalAlignment:
             "<|tool_call>",
             "<function=",
             "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
         }
 
     def test_prose_with_bare_args_marker_streams_through(self):

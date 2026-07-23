@@ -502,7 +502,7 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
     def test_load_model_gates_env_spec_type_on_off_mode(self):
-        # LLAMA_ARG_SPEC_TYPE only reaches the child when Studio emits no spec
+        # LLAMA_ARG_SPEC_TYPE only reaches the child when Unsloth emits no spec
         # flag (UI mode "off", no user --spec-type); otherwise the emitted
         # --spec-type/--spec-default overrides the env, so the reserve must not
         # consult it or a stale MTP env over-reserves (Finding F3). Whitespace-
@@ -530,8 +530,8 @@ class TestExtraArgsMtpDetection:
 
     def test_load_model_drafter_budget_precedence(self):
         # The budget sizes the drafter the launch actually loads: CLI extras win,
-        # then Studio's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
-        # then the env drafter -- not the env before Studio's (reviewer.py R3).
+        # then Unsloth's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
+        # then the env drafter -- not the env before Unsloth's (reviewer.py R3).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
         assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)" in compact
@@ -732,7 +732,7 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "notint"}) is None
 
     def test_env_main_cache_type_for_budget(self):
-        # The child inherits LLAMA_ARG_CACHE_TYPE_K/_V, but Studio emits no
+        # The child inherits LLAMA_ARG_CACHE_TYPE_K/_V, but Unsloth emits no
         # --cache-type when neither param nor extras set it -> a heavier env
         # main KV (f32) must be adopted so the reserve matches the child.
         assert _env_main_cache_type_for_budget(env = {}) is None
@@ -765,7 +765,7 @@ class TestExtraArgsMtpDetection:
         assert "cache_type_kv=_env_main_cache_type_for_budget()" in compact
 
     def test_env_split_mode_is_tensor(self):
-        # The child inherits LLAMA_ARG_SPLIT_MODE, but Studio emits --split-mode
+        # The child inherits LLAMA_ARG_SPLIT_MODE, but Unsloth emits --split-mode
         # only on its tensor branch -> a tensor env must flip the budget so the
         # heavier per-device compute buffer is reserved (not layer overhead).
         assert _env_split_mode_is_tensor(env = {}) is False
@@ -918,7 +918,7 @@ class TestExtraArgsMtpDetection:
         # Cluster A: when the final decision is layer split, an inherited
         # non-layer LLAMA_ARG_SPLIT_MODE (and paired LLAMA_ARG_TENSOR_SPLIT) must
         # be popped from the child env so the child cannot run tensor/row/none
-        # against Studio's layer budget. Whitespace-stripped for formatter.
+        # against Unsloth's layer budget. Whitespace-stripped for formatter.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert 'env.get("LLAMA_ARG_SPLIT_MODE")' in compact
         assert '_inherited_sm!="layer"' in compact
@@ -936,10 +936,10 @@ class TestExtraArgsMtpDetection:
         assert "env.pop(_ct_var,None)" in compact
 
     def test_load_model_clears_tensor_split_env_in_tensor_mode(self):
-        # review run3 #2: Studio owns the tensor split. When it emits no
+        # review run3 #2: Unsloth owns the tensor split. When it emits no
         # --tensor-split (even split), a stale inherited LLAMA_ARG_TENSOR_SPLIT must
         # be cleared in the TENSOR branch too (not just the layer downgrade), or the
-        # child runs a split Studio didn't budget. The else (tensor) branch pops it.
+        # child runs a split Unsloth didn't budget. The else (tensor) branch pops it.
         src = inspect.getsource(LlamaCppBackend.load_model)
         compact = "".join(src.split())
         # appears in both the layer branch and the tensor branch.
@@ -1005,14 +1005,14 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
 
 def test_mtp_draft_budget_prefers_user_extras_drafter():
     # A user --model-draft in extras is appended last and wins at launch, so the
-    # VRAM budget must size it first; then Studio's emitted mtp_draft_path (which
+    # VRAM budget must size it first; then Unsloth's emitted mtp_draft_path (which
     # overrides LLAMA_ARG_SPEC_DRAFT_MODEL), then the env drafter (load_model is too
     # entangled to drive end-to-end; assert the precedence at the source level).
     # Whitespace-stripped so the check survives any formatter line-wrapping.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    # CLI extras sized first (env={} so the env doesn't pre-empt Studio's drafter).
+    # CLI extras sized first (env={} so the env doesn't pre-empt Unsloth's drafter).
     assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
-    # Order: CLI extras, then Studio's mtp_draft_path, then the env drafter.
+    # Order: CLI extras, then Unsloth's mtp_draft_path, then the env drafter.
     assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
-    # The env must not be consulted before Studio's resolved drafter.
+    # The env must not be consulted before Unsloth's resolved drafter.
     assert "_extra_args_mtp_draft_path(extra_args)ormtp_draft_path" not in compact

@@ -55,7 +55,7 @@ export function ExecutionSidebar({
                 className={cn(
                   "w-full rounded-xl corner-squircle border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
                   selectedExecutionId === execution.id
-                    ? "border-primary/35 bg-primary/[0.045]"
+                    ? "border-ring-strong bg-primary/[0.045]"
                     : "hover:bg-muted/25",
                   statusRightBorder(execution.status),
                 )}
@@ -66,7 +66,7 @@ export function ExecutionSidebar({
                   </p>
                   <Badge
                     variant="outline"
-                    className={cn("capitalize text-[11px]", statusTone(execution.status))}
+                    className={cn("capitalize text-ui-11", statusTone(execution.status))}
                   >
                     {formatStatus(execution.status)}
                   </Badge>

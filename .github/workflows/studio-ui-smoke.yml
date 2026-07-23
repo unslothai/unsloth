@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# End-to-end Studio chat UI smoke via Playwright + Chromium against a
-# headless Linux runner. Boots Studio with the smallest GGUF
+# End-to-end Unsloth chat UI smoke via Playwright + Chromium against a
+# headless Linux runner. Boots Unsloth with the smallest GGUF
 # (gemma-3-270m-it UD-Q4_K_XL, ~254 MiB), drives the actual frontend
 # bundle, and asserts the full bootstrap-password / change-password /
 # send-message / persist-on-reload journey works end to end.
@@ -14,7 +14,7 @@
 # frontend-only CI happily pass while the actual user-visible UI is
 # broken (cf. the 2026.5.1 chat-history release).
 
-name: Studio UI CI
+name: Unsloth UI CI
 
 on:
   pull_request:
@@ -27,6 +27,7 @@ on:
       # The Playwright test files themselves -- a PR that ONLY edits
       # the test must still trigger UI CI.
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-ui-smoke.yml'
   push:
     branches: [main, pip]
@@ -97,7 +98,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -107,15 +108,12 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
-      - name: Install Playwright + Chromium
+      - name: Install Playwright browsers
         run: |
           pip install 'playwright>=1.45'
-          # --with-deps installs the OS-level runtime libs Chromium
-          # needs (libnss3, libxkbcommon, etc.). About 30 s on a
-          # warm runner.
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium firefox webkit
 
-      - name: Reset auth + boot Studio
+      - name: Reset auth + boot Unsloth
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -147,7 +145,7 @@ jobs:
         # NEW + NEW2 are generated freshly per CI run via secrets.token_urlsafe
         # rather than hardcoded. If a workflow gets compromised, the
         # attacker can't replay a known-good rotated password against
-        # any future / parallel Studio install -- the rotated value
+        # any future / parallel Unsloth install -- the rotated value
         # only ever exists for the lifetime of this single job, masked
         # in the log via ::add-mask::.
         run: |
@@ -165,29 +163,35 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:18892
           # The test file lives in the repo so it can be run locally
-          # against a freshly-installed Studio (BASE_URL=...; STUDIO_OLD_PW=
+          # against a freshly-installed Unsloth (BASE_URL=...; STUDIO_OLD_PW=
           # $(cat ~/.unsloth/studio/auth/.bootstrap_password); python ...).
           PW_ART_DIR: logs/playwright
           # Strict mode: in CI a missing button / nav / dialog must
           # FAIL the test. Locally the test still runs against partial
-          # Studio installs without STUDIO_UI_STRICT.
+          # Unsloth installs without STUDIO_UI_STRICT.
           STUDIO_UI_STRICT: '1'
         run: |
           mkdir -p logs/playwright
           python tests/studio/playwright_chat_ui.py
 
-      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
+      - name: Cross-browser permission controls
+        run: |
+          bash .github/scripts/run-studio-permission-browser.sh 18893 firefox
+          bash .github/scripts/run-studio-permission-browser.sh 18893 webkit
+          bash .github/scripts/run-studio-permission-browser.sh 18893 chromium chrome
+
       # The chat UI test ends by clicking the Shutdown menuitem, which
       # leaves the server dead. The extra UI test (Compare / Recipes /
-      # Export / Studio / Settings) needs a fresh Studio, so we boot a
+      # Export / Unsloth / Settings) needs a fresh Unsloth, so we boot a
       # second one on a different port. Boot is fast (~3-5s on the
       # warm install we already did) so this adds little wall time.
-      - name: Reset auth + boot Studio for extra UI tests (port 18894)
+      - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -214,7 +218,7 @@ jobs:
           echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
-      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -227,16 +231,73 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
-      - name: Stop second Studio
+      - name: UI font size scaling regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_fontscale
+        run: |
+          mkdir -p logs/playwright_fontscale
+          python tests/studio/playwright_ui_font_scale.py
+
+      - name: Stop second Unsloth
         if: always()
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
+      # Model-picker per-model-config regression (PR #7207 re-land of #6647).
+      # Fourth Unsloth on its own port; loads the tiny GGUF and drives the
+      # picker's run-settings surface: Context Length persists across a reload,
+      # Reset clears the stored override (never pins it), and the infra models
+      # (RAG embedder + llama.cpp probe) stay hidden from the picker.
+      - name: Reset auth + boot Unsloth for model-config tests (port 18898)
+        run: |
+          unsloth studio reset-password
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18898 \
+            > logs/studio_modelcfg.log 2>&1 &
+          echo "STUDIO_MODELCFG_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health on 18898
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:18898/api/health" > /tmp/health4.json; then
+              jq -e '.status == "healthy"' /tmp/health4.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health4.json
+
+      - name: Pass bootstrap pw for model-config test
+        run: |
+          NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Drive model-picker per-model-config with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_modelcfg
+          STUDIO_UI_STRICT: '1'
+          GGUF_REPO: ${{ env.GGUF_REPO }}
+          GGUF_VARIANT: ${{ env.GGUF_VARIANT }}
+          STUDIO_MODEL_HINT: gemma-3-270m
+        run: |
+          mkdir -p logs/playwright_modelcfg
+          python tests/studio/playwright_model_config.py
+
+      - name: Stop fourth Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_MODELCFG_PID}" 2>/dev/null || true
+          sleep 2
+
       # IME + multilingual paste regression (issue #5318 / PR #5327).
-      # Third Studio on its own port so a hang here cannot poison the
+      # Third Unsloth on its own port so a hang here cannot poison the
       # earlier UI tests. No GGUF -- the bug surface is the composer.
-      - name: Reset auth + boot Studio for IME / i18n tests (port 18896)
+      - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -256,7 +317,7 @@ jobs:
 
       - name: Pass bootstrap pw for IME / i18n test
         # IME smoke does the change-password against the bootstrap that
-        # Studio's frontend injects into the page, so it only needs the
+        # Unsloth's frontend injects into the page, so it only needs the
         # NEW password.
         run: |
           NEW="CIIme-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -273,7 +334,7 @@ jobs:
           mkdir -p logs/playwright_ime
           python tests/studio/playwright_chat_ime_i18n.py
 
-      - name: Stop third Studio
+      - name: Stop third Unsloth
         if: always()
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
@@ -293,10 +354,15 @@ jobs:
           path: |
             logs/studio.log
             logs/studio_extra.log
+            logs/studio_modelcfg.log
             logs/studio_ime.log
             logs/install.log
             logs/server-logs/
             logs/playwright
+            logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_fontscale
+            logs/playwright_modelcfg
             logs/playwright_ime
+            logs/studio-permissions-*.log
           retention-days: 7

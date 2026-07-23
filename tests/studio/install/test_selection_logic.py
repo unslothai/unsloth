@@ -31,17 +31,8 @@ PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 LinuxCudaSelection = INSTALL_LLAMA_PREBUILT.LinuxCudaSelection
 UPSTREAM_REPO = INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO
 
-normalize_compute_cap = INSTALL_LLAMA_PREBUILT.normalize_compute_cap
-normalize_compute_caps = INSTALL_LLAMA_PREBUILT.normalize_compute_caps
-parse_cuda_visible_devices = INSTALL_LLAMA_PREBUILT.parse_cuda_visible_devices
-supports_explicit_visible_device_matching = (
-    INSTALL_LLAMA_PREBUILT.supports_explicit_visible_device_matching
-)
-select_visible_gpu_rows = INSTALL_LLAMA_PREBUILT.select_visible_gpu_rows
-compatible_linux_runtime_lines = INSTALL_LLAMA_PREBUILT.compatible_linux_runtime_lines
 pick_windows_cuda_runtime = INSTALL_LLAMA_PREBUILT.pick_windows_cuda_runtime
 compatible_windows_runtime_lines = INSTALL_LLAMA_PREBUILT.compatible_windows_runtime_lines
-runtime_line_from_cuda_version = INSTALL_LLAMA_PREBUILT.runtime_line_from_cuda_version
 apply_approved_hashes = INSTALL_LLAMA_PREBUILT.apply_approved_hashes
 linux_cuda_choice_from_release = INSTALL_LLAMA_PREBUILT.linux_cuda_choice_from_release
 windows_cuda_attempts = INSTALL_LLAMA_PREBUILT.windows_cuda_attempts
@@ -67,6 +58,14 @@ _windows_cuda_attempt_covers_blackwell = (
 resolve_release_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_release_asset_choice
 pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
 resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
+
+
+@pytest.fixture(autouse = True)
+def _disable_download_host_fast_path(monkeypatch):
+    # This module exercises the GitHub API enumeration and asset selection against
+    # mocked releases; keep the download-host fast path (real CDN) out of the way.
+    # test_download_host_resolve.py covers the fast path itself.
+    monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
 
 
 def load_studio_run_module(monkeypatch):
@@ -262,13 +261,13 @@ def mock_windows_runtime(monkeypatch, lines):
 
 
 # ===========================================================================
-# Studio run.py localhost warning
+# Unsloth run.py localhost warning
 # ===========================================================================
 
 
 class TestStudioLocalhostIpv6Warning:
     def _prepare_loopback(self, run_module, monkeypatch):
-        # Studio confirmed answering on the IPv4 loopback.
+        # Unsloth confirmed answering on the IPv4 loopback.
         monkeypatch.setattr(
             run_module,
             "_working_local_url",
@@ -319,7 +318,7 @@ class TestStudioLocalhostIpv6Warning:
         assert "http://localhost:8888" in captured.out
 
     def test_ipv6_listener_does_not_suppress_warning(self, monkeypatch):
-        # A process on ::1 is NOT Studio (binds 127.0.0.1 only), so the warning must
+        # A process on ::1 is NOT Unsloth (binds 127.0.0.1 only), so the warning must
         # still fire -- that is exactly when http://localhost opens the wrong service.
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
@@ -348,7 +347,7 @@ class TestStudioLocalhostIpv6Warning:
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", port) is None
 
     def test_ipv4_not_answering_suppresses_warning(self, monkeypatch):
-        # Studio not confirmed on 127.0.0.1 -> no warning.
+        # Unsloth not confirmed on 127.0.0.1 -> no warning.
         run_module = load_studio_run_module(monkeypatch)
         monkeypatch.setattr(run_module, "_working_local_url", lambda port: None)
         self._set_getaddrinfo(monkeypatch, [self._ipv6()])
@@ -444,165 +443,25 @@ class TestStudioLocalhostIpv6Warning:
 
 
 # ===========================================================================
-# A. normalize_compute_cap
+# A-F, H. Component-independent GPU/token helpers: the behavior tables live in
+# tests/studio/install/test_prebuilt_core.py (they are pure prebuilt_core
+# functions). This pin proves the installer still re-exports them from core, so
+# the master tables keep covering the names this module and its callers use.
 # ===========================================================================
 
 
-class TestNormalizeComputeCap:
-    def test_dotted_86(self):
-        assert normalize_compute_cap("8.6") == "86"
-
-    def test_dotted_leading_zero(self):
-        assert normalize_compute_cap("07.05") == "75"
-
-    def test_already_normalized(self):
-        assert normalize_compute_cap("75") == "75"
-
-    def test_int_input(self):
-        assert normalize_compute_cap(86) == "86"
-
-    def test_empty_string(self):
-        assert normalize_compute_cap("") is None
-
-    def test_whitespace(self):
-        assert normalize_compute_cap("  ") is None
-
-    def test_non_numeric(self):
-        assert normalize_compute_cap("x.y") is None
-
-    def test_triple_part(self):
-        assert normalize_compute_cap("8.6.0") is None
-
-    def test_zero_minor(self):
-        assert normalize_compute_cap("9.0") == "90"
-
-
-# ===========================================================================
-# B. normalize_compute_caps
-# ===========================================================================
-
-
-class TestNormalizeComputeCaps:
-    def test_deduplication(self):
-        assert normalize_compute_caps(["8.6", "86", "8.6"]) == ["86"]
-
-    def test_numeric_sort(self):
-        assert normalize_compute_caps(["9.0", "7.5", "8.6"]) == ["75", "86", "90"]
-
-    def test_drops_invalid(self):
-        assert normalize_compute_caps(["8.6", "bad", "", "7.5"]) == ["75", "86"]
-
-    def test_empty_input(self):
-        assert normalize_compute_caps([]) == []
-
-
-# ===========================================================================
-# C. parse_cuda_visible_devices
-# ===========================================================================
-
-
-class TestParseCudaVisibleDevices:
-    def test_none(self):
-        assert parse_cuda_visible_devices(None) is None
-
-    def test_empty(self):
-        assert parse_cuda_visible_devices("") == []
-
-    def test_minus_one(self):
-        assert parse_cuda_visible_devices("-1") == []
-
-    def test_single(self):
-        assert parse_cuda_visible_devices("0") == ["0"]
-
-    def test_multi(self):
-        assert parse_cuda_visible_devices("0,1,2") == ["0", "1", "2"]
-
-    def test_whitespace_stripped(self):
-        assert parse_cuda_visible_devices(" 0 , 1 ") == ["0", "1"]
-
-
-# ===========================================================================
-# D. supports_explicit_visible_device_matching
-# ===========================================================================
-
-
-class TestSupportsExplicitVisibleDeviceMatching:
-    def test_all_digits(self):
-        assert supports_explicit_visible_device_matching(["0", "1", "2"]) is True
-
-    def test_gpu_prefix(self):
-        assert supports_explicit_visible_device_matching(["GPU-abc123"]) is True
-
-    def test_none(self):
-        assert supports_explicit_visible_device_matching(None) is False
-
-    def test_empty(self):
-        assert supports_explicit_visible_device_matching([]) is False
-
-    def test_mixed_invalid(self):
-        assert supports_explicit_visible_device_matching(["0", "MIG-device"]) is False
-
-
-# ===========================================================================
-# E. select_visible_gpu_rows
-# ===========================================================================
-
-
-class TestSelectVisibleGpuRows:
-    ROWS = [
-        ("0", "GPU-aaa", "8.6"),
-        ("1", "GPU-bbb", "7.5"),
-        ("2", "GPU-ccc", "8.9"),
-    ]
-
-    def test_none_returns_all(self):
-        assert select_visible_gpu_rows(self.ROWS, None) == list(self.ROWS)
-
-    def test_empty_returns_empty(self):
-        assert select_visible_gpu_rows(self.ROWS, []) == []
-
-    def test_filter_by_index(self):
-        result = select_visible_gpu_rows(self.ROWS, ["0", "2"])
-        assert result == [("0", "GPU-aaa", "8.6"), ("2", "GPU-ccc", "8.9")]
-
-    def test_filter_by_uuid_case_insensitive(self):
-        result = select_visible_gpu_rows(self.ROWS, ["gpu-bbb"])
-        assert result == [("1", "GPU-bbb", "7.5")]
-
-    def test_dedup_same_device(self):
-        result = select_visible_gpu_rows(self.ROWS, ["0", "0"])
-        assert result == [("0", "GPU-aaa", "8.6")]
-
-    def test_missing_token(self):
-        result = select_visible_gpu_rows(self.ROWS, ["99"])
-        assert result == []
-
-
-# ===========================================================================
-# F. compatible_linux_runtime_lines
-# ===========================================================================
-
-
-class TestCompatibleLinuxRuntimeLines:
-    def test_no_driver(self):
-        host = make_host(driver_cuda_version = None)
-        assert compatible_linux_runtime_lines(host) == []
-
-    def test_driver_11_8(self):
-        host = make_host(driver_cuda_version = (11, 8))
-        assert compatible_linux_runtime_lines(host) == []
-
-    def test_driver_12_4(self):
-        host = make_host(driver_cuda_version = (12, 4))
-        assert compatible_linux_runtime_lines(host) == ["cuda12"]
-
-    def test_driver_13_0(self):
-        host = make_host(driver_cuda_version = (13, 0))
-        assert compatible_linux_runtime_lines(host) == ["cuda13", "cuda12"]
-
-    def test_future_major_derives_lines(self):
-        host = make_host(driver_cuda_version = (14, 0))
-        assert compatible_linux_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
+def test_core_helper_aliases_bound_to_prebuilt_core():
+    import prebuilt_core as _core
+    for name in (
+        "normalize_compute_cap",
+        "normalize_compute_caps",
+        "parse_cuda_visible_devices",
+        "supports_explicit_visible_device_matching",
+        "select_visible_gpu_rows",
+        "compatible_linux_runtime_lines",
+        "runtime_line_from_cuda_version",
+    ):
+        assert getattr(INSTALL_LLAMA_PREBUILT, name) is getattr(_core, name), name
 
 
 # ===========================================================================
@@ -659,28 +518,6 @@ class TestCompatibleWindowsRuntimeLines:
     def test_future_major_derives_lines(self):
         host = make_host(driver_cuda_version = (14, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
-
-
-# ===========================================================================
-# H. runtime_line_from_cuda_version
-# ===========================================================================
-
-
-class TestRuntimeLineFromCudaVersion:
-    def test_cuda_12(self):
-        assert runtime_line_from_cuda_version("12.6") == "cuda12"
-
-    def test_cuda_13(self):
-        assert runtime_line_from_cuda_version("13.0") == "cuda13"
-
-    def test_cuda_11(self):
-        assert runtime_line_from_cuda_version("11.8") is None
-
-    def test_none(self):
-        assert runtime_line_from_cuda_version(None) is None
-
-    def test_empty(self):
-        assert runtime_line_from_cuda_version("") is None
 
 
 # ===========================================================================
@@ -1629,7 +1466,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1674,7 +1511,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1739,7 +1576,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1771,7 +1608,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1820,7 +1657,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1911,7 +1748,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1980,7 +1817,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2030,7 +1867,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2093,7 +1930,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2156,7 +1993,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         requested_tag, plans = _fork_manifest_release_plans(
@@ -2190,7 +2029,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         _requested_tag, plans = _fork_manifest_release_plans(
@@ -2682,68 +2523,6 @@ class TestBlackwellCuda124Exclusion:
             self._bw_host(), [self._upstream_cuda("12.4"), cpu]
         )
         assert kept == [cpu]
-
-
-# N.1c3. direct_linux_release_plan -- no silent CPU on NVIDIA hosts
-
-
-class TestDirectLinuxNvidiaCpuGate:
-    """A linux-cpu-only release on an NVIDIA host must raise (caller walks back to a usable CUDA line), not silently CPU-install. CPU-only hosts keep the CPU bundle."""
-
-    def _bundle_cpu_only(self):
-        return make_release(
-            [
-                make_artifact(
-                    "llama-b8508-bin-ubuntu-x64.tar.gz",
-                    install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                ),
-            ]
-        )
-
-    def _patch(self, monkeypatch):
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "parse_direct_linux_release_bundle",
-            lambda repo, release: self._bundle_cpu_only(),
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detected_linux_runtime_lines",
-            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
-        )
-
-    def test_nvidia_host_without_cuda_line_raises_for_walkback(self, monkeypatch):
-        self._patch(monkeypatch)
-        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
-        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt"):
-            INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-                {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
-            )
-
-    def test_cpu_host_still_gets_cpu_bundle(self, monkeypatch):
-        self._patch(monkeypatch)
-        host = make_host(
-            nvidia_smi = None,
-            driver_cuda_version = None,
-            compute_caps = [],
-            has_physical_nvidia = False,
-            has_usable_nvidia = False,
-        )
-        plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-            {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
-        )
-        assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
 class TestLinuxPublishedAttemptsNvidiaCpuGate:
@@ -3718,7 +3497,7 @@ class TestCpuFallback:
 # ===========================================================================
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Studio installer tests")
+@pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Unsloth installer tests")
 class TestCudaDriverToolkitMismatchMessage:
     _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
     _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
@@ -3923,7 +3702,7 @@ class TestCudaDriverToolkitMismatchMessage:
             "or install a CUDA $driverMajor.x toolkit." in source
         )
         assert (
-            "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit."
+            "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit."
         ) in source
         assert (
             "Write-CudaDriverToolkitMismatch -ToolkitVersion $IncompatibleToolkit "

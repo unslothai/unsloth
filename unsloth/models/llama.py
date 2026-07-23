@@ -28,7 +28,11 @@ from ._utils import (
     is_bfloat16_supported,
     get_quant_type,
 )
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
+from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
+    _get_fp8_mode_and_check_settings,
+    _restore_dropped_fp8_scales,
+)
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -1651,6 +1655,26 @@ def _rope_scaling_as_dict(rope_scaling):
         return {}
 
 
+def _extended_rope_scaling(config, factor):
+    """RoPE scaling to extend a model past its native window. Keeps native llama3 as-is
+    (linear extension is far worse for long context); everything else gets linear. Returns
+    (scaling_or_None, type): None keeps llama3. The linear dict carries rope_theta so
+    transformers v5 (which stores it under rope_parameters) keeps the real base, not 10000.
+    Only llama3 is preserved because patch_llama_rope_scaling can only rebuild linear/llama3/
+    longrope and its longrope branch needs a top-level original_max_position_embeddings."""
+    existing = _rope_scaling_as_dict(
+        getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
+    )
+    existing_type = existing.get("rope_type") or existing.get("type")
+    if existing_type == "llama3":
+        return None, existing_type
+    return {
+        "type": "linear",
+        "factor": factor,
+        "rope_theta": _get_rope_theta(config),
+    }, existing_type
+
+
 def _llama3_inv_freq_from_config(
     config,
     rope_scaling,
@@ -2518,34 +2542,33 @@ class FastLlamaModel:
             max_seq_length = model_max_seq_length
 
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
-            rope_scaling = max_seq_length / model_max_seq_length
+            factor = max_seq_length / model_max_seq_length
 
             if fast_inference:
                 raise NotImplementedError(
                     "Unsloth: Fast inference does not yet work with RoPE Scaling."
                 )
 
-            logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of at most "
-                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
-                f"{round(rope_scaling, 3)}, it can be magically be extended to "
-                f"{max_seq_length}!"
-            )
-
-            # Warn RoPE scaling isn't allowed
-            if not has_rope_scaling:
-                raise RuntimeError(
-                    f"However, {model_name} doesn't support RoPE Scaling!\n"
-                    "Please file a feature request at https://github.com/unslothai/unsloth."
+            linear_scaling, native_type = _extended_rope_scaling(model_config, factor)
+            if linear_scaling is not None:
+                logger.warning_once(
+                    f"Unsloth: {model_name} can only handle sequence lengths of at most "
+                    f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
+                    f"{round(factor, 3)}, it can be magically be extended to "
+                    f"{max_seq_length}!"
                 )
-
-            rope_scaling = {
-                "type": "linear",
-                "factor": rope_scaling,
-            }
-
-            # Add to kwargs
-            kwargs["rope_scaling"] = rope_scaling
+                if not has_rope_scaling:
+                    raise RuntimeError(
+                        f"However, {model_name} doesn't support RoPE Scaling!\n"
+                        "Please file a feature request at https://github.com/unslothai/unsloth."
+                    )
+                kwargs["rope_scaling"] = linear_scaling
+            else:
+                # Native llama3 scaling already handles long context; just widen the window.
+                logger.warning_once(
+                    f"Unsloth: extending {model_name} to {max_seq_length} using its native "
+                    f"{native_type} RoPE scaling."
+                )
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
@@ -2659,6 +2682,18 @@ class FastLlamaModel:
                     offload_embedding = False,
                     fast_inference = fast_inference,
                 )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    token = token,
+                    # Weights load from the default branch (revision not forwarded), so read scales from there too.
+                    revision = None,
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
+                )
             elif not fast_inference:
                 if user_config is not None:
                     # Transformers 5.x @strict model init rejects extra kwargs next
@@ -2696,6 +2731,18 @@ class FastLlamaModel:
                     load_in_8bit = kwargs.get("load_in_8bit", False),
                     offload_embedding = False,
                     fast_inference = False,
+                )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    token = token,
+                    # Weights load from the default branch (revision not forwarded), so read scales from there too.
+                    revision = None,
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
                 )
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None

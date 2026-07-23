@@ -54,6 +54,24 @@ class TestBuildUvCmdTorchBackend:
             a.startswith("--torch-backend") for a in cmd
         ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
 
+    def test_uv_torch_backend_skipped_for_pinned_index(self):
+        """A pinned-index command must NOT get --torch-backend: uv's torch backend
+        redirects torch resolution to its own per-backend index even when
+        --index-url is given (verified: cu128 pin + backend cpu installs
+        torch+cpu), defeating the pin."""
+        for pin_flag in ("--index-url", "--default-index"):
+            with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
+                cmd = self._call(("torch", pin_flag, "https://download.pytorch.org/whl/cu128"))
+            assert not any(
+                a.startswith("--torch-backend") for a in cmd
+            ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
+
+    def test_uv_torch_backend_kept_for_unpinned(self):
+        """Non-pinned commands still honour UV_TORCH_BACKEND."""
+        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
+            cmd = self._call(("somepackage",))
+        assert "--torch-backend=cpu" in cmd
+
 
 class TestUvSafePath:
     """_uv_safe_path hands uv a space-free `-c`/`-r` path (issue #6503)."""
@@ -148,3 +166,119 @@ class TestUvSafePathHardening:
 
         assert " " not in value
         assert Path(value).read_text() == "transformers>=4.57.6\n"
+
+
+class TestPinnedIndexClearsUvEnv:
+    """A pinned torch install (--index-url / --default-index) must neutralise an
+    inherited UV_INDEX / UV_EXTRA_INDEX_URL so the pinned wheel index wins.
+
+    uv treats the default index (--index-url / --default-index) as LOWEST priority,
+    so an inherited UV_INDEX / UV_EXTRA_INDEX_URL (a corporate/CPU mirror) would be
+    searched first and, under uv's default first-index strategy, resolve torch from
+    the wrong mirror -- after which the marker records a wheel index that was never
+    used. install.sh (#6898), install.ps1 and setup.ps1 already clear these for
+    pinned installs; install_python_stack must match (parity across all installers).
+    """
+
+    UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
+
+    def test_pinned_index_url_strips_uv_index_vars(self):
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu128",
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {
+                "UV_INDEX": "https://mirror.corp/simple",
+                "UV_EXTRA_INDEX_URL": "https://mirror.corp/extra",
+                "UV_INDEX_URL": "https://mirror.corp/root",
+                "UV_DEFAULT_INDEX": "https://mirror.corp/default",
+            },
+        ):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is not None, "a --index-url install must run with a scrubbed env"
+        for var in self.UV_VARS:
+            assert var not in env, f"{var} must be cleared for a pinned-index install"
+
+    def test_pinned_default_index_strips_uv_index_vars(self):
+        # --default-index must be gated too (matches install.sh / install.ps1).
+        cmd = ["uv", "pip", "install", "torch", "--default-index", "https://x/cu126"]
+        with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert "UV_INDEX" not in env
+
+    def test_non_pinned_install_keeps_user_mirror(self):
+        # A plain install (no --index-url) must NOT scrub the env, so a user's mirror
+        # still applies to base packages.
+        cmd = ["uv", "pip", "install", "unsloth", "unsloth-zoo"]
+        with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is None, "non-pinned installs must inherit the caller env unchanged"
+
+    def test_scrubbed_env_preserves_other_vars(self):
+        cmd = ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        with mock.patch.dict(
+            os.environ,
+            {"UV_INDEX": "https://mirror.corp/simple", "PATH_SENTINEL_XYZ": "keepme"},
+        ):
+            env = ips._install_env_for_cmd(cmd)
+        assert env is not None
+        assert env.get("PATH_SENTINEL_XYZ") == "keepme", "only uv index vars are removed"
+
+    def test_pinned_cmd_strips_pip_extra_index_url(self):
+        """PIP_EXTRA_INDEX_URL is stripped for pinned commands so the pip
+        fallback cannot satisfy torch from an inherited extra index."""
+        with mock.patch.dict(os.environ, {"PIP_EXTRA_INDEX_URL": "https://mirror/simple"}):
+            env = ips._install_env_for_cmd(
+                ["pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None and "PIP_EXTRA_INDEX_URL" not in env
+
+    def test_pinned_cmd_strips_uv_torch_backend(self):
+        """UV_TORCH_BACKEND is stripped for pinned commands so uv cannot read it
+        from the environment and reroute torch off the pinned index."""
+        with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None and "UV_TORCH_BACKEND" not in env
+
+    def test_pinned_cmd_disables_uv_config_discovery(self):
+        """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin too
+        (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
+        [[index]] both resolve torch+cpu against an explicit --index-url /
+        --default-index cu126 pin). Pinned commands must run with UV_NO_CONFIG=1
+        and without an inherited UV_CONFIG_FILE."""
+        with mock.patch.dict(os.environ, {"UV_CONFIG_FILE": "/etc/uv/uv.toml"}):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert env.get("UV_NO_CONFIG") == "1"
+        assert "UV_CONFIG_FILE" not in env
+
+    def test_pinned_cmd_disables_pip_config_files(self):
+        """The pip FALLBACK honours user/site pip config files (pip config set
+        global.extra-index-url) even with the PIP_* env vars stripped; pip loads
+        NO configuration files when PIP_CONFIG_FILE is os.devnull. Harmless for
+        uv, decisive for the fallback."""
+        env = ips._install_env_for_cmd(
+            ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        )
+        assert env is not None
+        assert env.get("PIP_CONFIG_FILE") == os.devnull
+
+    def test_non_pinned_cmd_keeps_uv_config_discovery(self):
+        """Non-pinned installs inherit the caller env unchanged, so a user's uv
+        configuration still applies to base packages."""
+        env = ips._install_env_for_cmd(["uv", "pip", "install", "unsloth"])
+        assert env is None

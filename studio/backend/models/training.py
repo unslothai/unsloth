@@ -446,7 +446,7 @@ class TrainingStartRequest(BaseModel):
     random_seed: int = Field(
         3407,
         description = (
-            "Random seed; matches the Studio backend / MLX worker default "
+            "Random seed; matches the Unsloth backend / MLX worker default "
             "and unsloth's historical recommended value."
         ),
     )
@@ -512,6 +512,13 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
+
+    @field_validator("target_modules", mode = "before")
+    @classmethod
+    def _normalize_target_modules(cls, value: Any) -> Any:
+        # Sanitized non-LoRA history stores the unused value as null; treat it as a
+        # fresh request's omitted/default empty list on resume.
+        return [] if value is None else value
 
     @model_validator(mode = "after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
