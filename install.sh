@@ -266,7 +266,7 @@ run_install_cmd_retry() {
 # normalized (gfx906:sramecc-:xnack- -> gfx906) so a copied HIP gcnArchName counts.
 _is_gfx906_bnb_skip() {
     [ "${_gfx906_target:-false}" = true ] && return 0
-    _bnb_gfx_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    _bnb_gfx_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
     _bnb_gfx_env=${_bnb_gfx_env%%:*}
     [ "$_bnb_gfx_env" = "gfx906" ] && return 0
     # A pinned index (UNSLOTH_TORCH_INDEX_URL/_FAMILY) skips the reroute block that
@@ -3235,9 +3235,10 @@ case "$_torch_index_leaf" in
         # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
         # MI50 / Radeon VII path and must win over Strix probe-order detection on a
         # mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set.
-        # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) so the
-        # feature-flag suffix does not defeat the exact gfx906 comparisons below.
-        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) and
+        # trim whitespace (mirrors the Python .strip()) so the feature-flag suffix or
+        # a stray newline does not defeat the exact gfx906 comparisons below.
+        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
         _gfx906_env=${_gfx906_env%%:*}
         _strix_gfx=""
         if [ "$_gfx906_env" != "gfx906" ]; then

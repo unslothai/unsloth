@@ -1436,9 +1436,11 @@ class TestGfx906LegacyReroute:
         target -- not only when the >=6.4 reroute fires -- so a Radeon VII already on
         rocm6.3 does not divert to the repo.radeon.com branch."""
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
-        # Override normalization (both the reroute block and the bnb-skip helper).
+        # Override normalization (both the reroute block and the bnb-skip helper):
+        # strip the gfx906:… feature suffix and trim whitespace (mirror py .strip()).
         assert "_gfx906_env=${_gfx906_env%%:*}" in source
         assert "_bnb_gfx_env=${_bnb_gfx_env%%:*}" in source
+        assert source.count("tr -d '[:space:]'") >= 2
         # Radeon flag cleared as soon as gfx906 is the target, before the leaf gate.
         block = self._gfx906_reroute_block(source)
         clear_pos = block.find("_amd_gpu_radeon=false")
