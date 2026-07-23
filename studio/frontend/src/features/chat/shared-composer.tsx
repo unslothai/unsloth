@@ -71,7 +71,10 @@ import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "./permission-mode-select";
-import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import {
+  reasoningCapsFromLoad,
+  resolveInferenceCheckpointId,
+} from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
@@ -86,7 +89,12 @@ import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
-import { loadModel, unloadModel, validateModel } from "./api/chat-api";
+import {
+  getInferenceStatus,
+  loadModel,
+  unloadModel,
+  validateModel,
+} from "./api/chat-api";
 import {
   CompareRunOwnership,
   isCompareCancellation,
@@ -1054,9 +1062,12 @@ export function SharedComposer({
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
-      // Set before an unload request starts: if cancellation drops the client
-      // response, the server may still have completed it.
-      let modelSwitchMayHaveUnloaded = false;
+      // Once /load starts, the backend may replace the active model after its
+      // prechecks. Remember the origin so failures can preserve it when status
+      // proves the backend never reached the unload step.
+      const modelSwitchState: { originCheckpoint: string | null } = {
+        originCheckpoint: null,
+      };
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -1215,21 +1226,17 @@ export function SharedComposer({
         const preLoadStore = useChatRuntimeStore.getState();
         const previousCheckpoint = preLoadStore.params.checkpoint;
         const previousVariant = preLoadStore.activeGgufVariant ?? null;
-        if (
+        const switchingModels =
           previousCheckpoint &&
           (previousCheckpoint !== sel.id ||
-            previousVariant !== (sel.ggufVariant ?? null))
-        ) {
-          // Deliberately not abortable: once /unload reaches the backend, losing
-          // the response would make it impossible to know whether the old model
-          // still backs the checkpoint.
-          modelSwitchMayHaveUnloaded = true;
-          await unloadModel({ model_path: previousCheckpoint });
-          throwIfCompareCancelled(compareSignal);
-        }
+            previousVariant !== (sel.ggufVariant ?? null));
         // Only expose a backend cancellation target once /load is about to
-        // start. During validation/unload there is no target load to cancel.
+        // start. Let /load own the switch: its download/training prechecks run
+        // before it unloads the resident model.
         compareRunsRef.current.setLoadingModel(run, sel);
+        modelSwitchState.originCheckpoint = switchingModels
+          ? previousCheckpoint
+          : null;
         const resp = await loadModel(
           {
             model_path: sel.id,
@@ -1267,7 +1274,7 @@ export function SharedComposer({
         // so an applied manual choice survives a restart.
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
         upgradeUnloadedActive = false;
-        modelSwitchMayHaveUnloaded = false;
+        modelSwitchState.originCheckpoint = null;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1447,12 +1454,24 @@ export function SharedComposer({
         if (run.cleanup) await run.cleanup;
         if (compareRunsRef.current.owns(run)) {
           compareStepSucceededRef.current = false;
+          let originalModelStillActive = false;
+          if (modelSwitchState.originCheckpoint && !run.cleanup) {
+            try {
+              const status = await getInferenceStatus();
+              originalModelStillActive =
+                resolveInferenceCheckpointId(status)?.toLowerCase() ===
+                modelSwitchState.originCheckpoint.toLowerCase();
+            } catch {
+              // If status cannot prove the old model survived, clear the stale
+              // client checkpoint below.
+            }
+          }
           // A server-side install or explicit switch may have unloaded the
           // checkpoint even when cancellation hid the response. Fail closed,
           // while restoring the prompt's per-turn tool/reasoning choices.
           if (
             upgradeUnloadedActive ||
-            modelSwitchMayHaveUnloaded ||
+            (modelSwitchState.originCheckpoint && !originalModelStillActive) ||
             run.cleanup
           ) {
             useChatRuntimeStore.getState().clearCheckpoint();
