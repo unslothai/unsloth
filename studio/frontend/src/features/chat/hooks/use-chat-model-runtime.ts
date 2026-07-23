@@ -62,6 +62,7 @@ import {
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
+  normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker";
 import type {
@@ -604,12 +605,19 @@ export function useChatModelRuntime() {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;
+          const pendingLoadConfig =
+            typeof selection !== "string" ? selection.config : undefined;
+          if (pendingLoadConfig) {
+            applyPerModelConfigToRuntime(pendingLoadConfig);
+          }
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
-          const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
+          const maxSeqLength =
+            normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
+            stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
           const previousIsGguf =
@@ -643,34 +651,54 @@ export function useChatModelRuntime() {
           const previousActiveNativePathExpiresAtMs =
             stateBeforeUnload.activeNativePathExpiresAtMs;
           // Snapshot the load settings at click time, before the awaits below
-          // (validation, the trust dialog, unload).
-          const loadChatTemplateOverride = stateBeforeUnload.chatTemplateOverride;
-          const loadKvCacheDtype = stateBeforeUnload.kvCacheDtype;
+          // (validation, the trust dialog, unload). When the picker staged a
+          // config payload, prefer it over the store: React may not have
+          // flushed NumericValueInput's blur commit into state yet.
+          const loadChatTemplateOverride =
+            pendingLoadConfig?.chatTemplateOverride?.trim()
+              ? pendingLoadConfig.chatTemplateOverride
+              : stateBeforeUnload.chatTemplateOverride;
+          const loadKvCacheDtype =
+            pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
           // gpuMemoryMode is a standing preference (kept across a model switch);
           // the rest are per-model knobs the reset below clears, so they are
           // re-baselined there in lock-step with the store.
-          let loadCustomContextLength = stateBeforeUnload.customContextLength;
+          let loadCustomContextLength =
+            pendingLoadConfig?.customContextLength ??
+            stateBeforeUnload.customContextLength;
           const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
-          const loadTensorParallel = stateBeforeUnload.tensorParallel;
+          const loadTensorParallel =
+            pendingLoadConfig?.tensorParallel ?? stateBeforeUnload.tensorParallel;
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
-          const loadGpuMemoryMode = stateBeforeUnload.gpuMemoryMode;
-          let loadGpuLayers = stateBeforeUnload.gpuLayers;
-          let loadNCpuMoe = stateBeforeUnload.nCpuMoe;
+          const loadGpuMemoryMode =
+            pendingLoadConfig?.gpuMemoryMode ?? stateBeforeUnload.gpuMemoryMode;
+          let loadGpuLayers =
+            pendingLoadConfig?.gpuLayers ?? stateBeforeUnload.gpuLayers;
+          let loadNCpuMoe =
+            pendingLoadConfig?.nCpuMoe ?? stateBeforeUnload.nCpuMoe;
           let loadSplitRatio = stateBeforeUnload.splitRatio;
           // Reconcile the persisted pick against the GPUs present now, so a stale
           // cross-host / now-hidden pick is dropped before /load rather than
           // rejected there. Warm the device cache first: load-on-selection can
           // run before any GPU hook mounted, and a cold cache would pass the
           // pick through unvalidated. validateGpuIds derives from this too.
-          if (stateBeforeUnload.selectedGpuIds != null) {
+          if (
+            pendingLoadConfig?.selectedGpuIds !== undefined ||
+            stateBeforeUnload.selectedGpuIds != null
+          ) {
             await ensureGpuDeviceCache();
           }
-          let loadSelectedGpuIds = reconcilePersistedGpuIds(
-            stateBeforeUnload.selectedGpuIds,
-          );
-          let loadSpeculativeType = stateBeforeUnload.speculativeType;
-          let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
+          let loadSelectedGpuIds =
+            pendingLoadConfig?.selectedGpuIds !== undefined
+              ? reconcilePersistedGpuIds(pendingLoadConfig.selectedGpuIds)
+              : reconcilePersistedGpuIds(stateBeforeUnload.selectedGpuIds);
+          let loadSpeculativeType =
+            pendingLoadConfig?.speculativeType != null
+              ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
+              : stateBeforeUnload.speculativeType;
+          let loadSpecDraftNMax =
+            pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).

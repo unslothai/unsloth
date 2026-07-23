@@ -12,6 +12,7 @@ export {
 export { hfModelFitsDevice } from "./components/model-selector/recommended-fit";
 export {
   NumericValueInput,
+  type NumericValueInputHandle,
   snapToStep,
 } from "./components/numeric-value-input";
 export { SidebarModelConfig } from "./components/sidebar-model-config";

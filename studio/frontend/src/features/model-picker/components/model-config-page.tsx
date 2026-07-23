@@ -24,7 +24,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -50,7 +50,10 @@ import {
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
-import { NumericValueInput } from "./numeric-value-input";
+import {
+  NumericValueInput,
+  type NumericValueInputHandle,
+} from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -596,6 +599,7 @@ export function ModelConfigPage({
   const [showAdvanced, setShowAdvanced] = useState(() =>
     hasNonDefaultAdvanced(config),
   );
+  const contextInputRef = useRef<NumericValueInputHandle>(null);
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
@@ -743,11 +747,6 @@ export function ModelConfigPage({
       ? { ...config, customContextLength: activeLoadedContext }
       : config
     : config;
-  // Load request needs a concrete max length; substitute the fallback here only,
-  // never in the persisted runtimeConfig.
-  const loadConfig = target.isGguf
-    ? runtimeConfig
-    : { ...runtimeConfig, maxSeqLength: maxSeqLengthValue };
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
@@ -759,13 +758,19 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
-    const defaultConfig = isDefaultConfig(runtimeConfig);
+    const committedContext =
+      target.isGguf ? contextInputRef.current?.commit() : undefined;
+    const effectiveRuntimeConfig =
+      committedContext != null
+        ? { ...runtimeConfig, customContextLength: committedContext }
+        : runtimeConfig;
+    const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
     let saveFailed = false;
     if (remember) {
       saveFailed = !savePerModelConfig(
         target.id,
         target.ggufVariant,
-        runtimeConfig,
+        effectiveRuntimeConfig,
       );
     } else {
       saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
@@ -790,7 +795,10 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    onRun(loadConfig);
+    const effectiveLoadConfig = target.isGguf
+      ? effectiveRuntimeConfig
+      : { ...effectiveRuntimeConfig, maxSeqLength: maxSeqLengthValue };
+    onRun(effectiveLoadConfig);
   };
 
   return (
@@ -837,6 +845,7 @@ export function ModelConfigPage({
                   </InfoHint>
                 </div>
                 <NumericValueInput
+                  ref={contextInputRef}
                   value={contextValue}
                   min={minContext}
                   max={maxContext}
