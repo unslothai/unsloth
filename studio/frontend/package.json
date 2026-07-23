@@ -85,10 +85,10 @@
     "@tanstack/router-core": "1.169.2",
     "@tanstack/history": "1.161.6",
     "mermaid": "11.15.0",
-    "hono": "4.12.25",
+    "hono": "4.12.27",
     "qs": "6.15.2",
     "ip-address": "10.1.1",
-    "brace-expansion@5.0.5": "5.0.6"
+    "brace-expansion@^5.0.0": "5.0.7"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
