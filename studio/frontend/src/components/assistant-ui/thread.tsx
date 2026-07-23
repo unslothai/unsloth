@@ -34,6 +34,11 @@ import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html"
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
+import {
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
@@ -1435,6 +1440,7 @@ const Composer: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
+  const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -1856,79 +1862,101 @@ const Composer: FC<{
 
   const composerContent = (
     <>
-      <ComposerAttachments />
-      <PendingAudioChip />
-      <ThreadDocumentsBar
-        threadId={referenceThreadId}
-        onIndexingChange={handleIndexingChange}
-      />
-      <ToolStatusDisplay />
+      {!isDictating ? (
+        <>
+          <ComposerAttachments />
+          <PendingAudioChip />
+        </>
+      ) : null}
+      {/* Keep indexing state subscribed while dictating, but hide its chips so
+          the waveform stays the composer's only status indicator. */}
+      <div className={isDictating ? "hidden" : "contents"}>
+        <ThreadDocumentsBar
+          threadId={referenceThreadId}
+          onIndexingChange={handleIndexingChange}
+        />
+      </div>
+      {!isDictating ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
         // The permission pill is always visible, so keep the two-row layout
-        // expanded and leave the primary tool toggles accessible in every mode.
-        data-expanded="true"
+        // expanded whenever not dictating; dictation collapses to the bar.
+        data-expanded={!isDictating ? "true" : "false"}
+        data-dictating={isDictating ? "true" : undefined}
       >
         <div
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Permission-level pill: always visible and opens the permission
-              level dropdown. */}
-          <PermissionModeComposerPill side={effectiveMenuSide} />
-          <WebSearchToggle />
-          <CodeToolsToggle />
-          <ImagesToggle />
-          <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-          {artifactsEnabled ? <ArtifactsToggle /> : null}
-          {mcpEnabledForChat ? (
-            <McpComposerButton side={effectiveMenuSide} />
+          {/* While dictating, show only the "+"; hide the pill and tool toggles
+              so the waveform is the sole status indicator. */}
+          {!isDictating ? (
+            <>
+              {/* Permission-level pill: always visible, opens the level dropdown. */}
+              <PermissionModeComposerPill side={effectiveMenuSide} />
+              <WebSearchToggle />
+              <CodeToolsToggle />
+              <ImagesToggle />
+              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+              {artifactsEnabled ? <ArtifactsToggle /> : null}
+              {mcpEnabledForChat ? (
+                <McpComposerButton side={effectiveMenuSide} />
+              ) : null}
+            </>
           ) : null}
         </div>
-        <ComposerPrimitive.Input
-          placeholder={
-            overlay ? "Type your edits for your image" : "Ask anything"
-          }
-          ref={inputRef}
-          className="aui-composer-input unsloth-composer-input"
-          minRows={1}
-          maxRows={12}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label={overlay ? "Image edit instructions" : "Message input"}
-          // dir="auto": browser picks LTR/RTL from the first strong char;
-          // no effect on Latin / CJK / Devanagari.
-          dir="auto"
-          {...inputProps}
-        />
-        <ComposerRightControls
-          disabled={
-            disabled ||
-            !hasSendableContent ||
-            isComposing ||
-            hasPendingAttachments
-          }
-          // disableQueue (project new-chat composer) also blocks the queue
-          // button, so a running thread shows Stop instead of Queue.
-          queueDisabled={disableQueue || !canQueueCurrentPrompt}
-          onQueueClick={() => {
-            if (disableQueue) return;
-            const queuedPrompt = composerText.trim();
-            if (queuedPrompt.length === 0) {
-              return;
-            }
-            flushResourcesSync(() => {
-              aui.composer().setText("");
-            });
-            startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
-          }}
-          onSendClick={interceptSend}
-          onStopClick={stopQueue}
-          pendingSend={pendingSend}
-          menuSide={effectiveMenuSide}
-          queueThreadIds={promptQueueThreadIds}
-        />
+        {isDictating ? (
+          // The recording UI replaces the input and send controls; only the
+          // left plus stays visible alongside it.
+          <ChatDictationBar />
+        ) : (
+          <>
+            <ComposerPrimitive.Input
+              placeholder={
+                overlay ? "Type your edits for your image" : "Ask anything"
+              }
+              ref={inputRef}
+              className="aui-composer-input unsloth-composer-input"
+              minRows={1}
+              maxRows={12}
+              autoFocus={!disabled}
+              disabled={disabled}
+              aria-label={overlay ? "Image edit instructions" : "Message input"}
+              // dir="auto": browser picks LTR/RTL from the first strong char;
+              // no effect on Latin / CJK / Devanagari.
+              dir="auto"
+              {...inputProps}
+            />
+            <ComposerRightControls
+              disabled={
+                disabled ||
+                !hasSendableContent ||
+                isComposing ||
+                hasPendingAttachments
+              }
+              // disableQueue (project new-chat composer) also blocks the queue
+              // button, so a running thread shows Stop instead of Queue.
+              queueDisabled={disableQueue || !canQueueCurrentPrompt}
+              onQueueClick={() => {
+                if (disableQueue) return;
+                const queuedPrompt = composerText.trim();
+                if (queuedPrompt.length === 0) {
+                  return;
+                }
+                flushResourcesSync(() => {
+                  aui.composer().setText("");
+                });
+                startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
+              }}
+              onSendClick={interceptSend}
+              onStopClick={stopQueue}
+              pendingSend={pendingSend}
+              menuSide={effectiveMenuSide}
+              queueThreadIds={promptQueueThreadIds}
+            />
+          </>
+        )}
       </div>
     </>
   );
@@ -3362,32 +3390,36 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  const aui = useAui();
+  // Keep the mic clickable: if the engine can't run here, explain and point to
+  // the local model instead of disabling the button.
+  const startDictation = () => {
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    try {
+      aui.composer().startDictation();
+    } catch {
+      notifyStudioDictationUnavailable();
+    }
+  };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
+      {/* Starts dictation; the recording bar then covers the input row and owns
+          the stop and discard actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <ComposerPrimitive.Dictate asChild={true}>
-          <TooltipIconButton
-            tooltip="Dictate"
-            aria-label="Dictate"
-            variant="ghost"
-            className="size-8 rounded-full text-foreground"
-          >
-            <MicIcon className="size-5" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Dictate>
-      </ComposerPrimitive.If>
-      <ComposerPrimitive.If dictation={true}>
-        <ComposerPrimitive.StopDictation asChild={true}>
-          <TooltipIconButton
-            tooltip="Stop dictation"
-            aria-label="Stop dictation"
-            variant="ghost"
-            className="size-8 rounded-full text-destructive"
-          >
-            <SquareIcon className="size-3 animate-pulse fill-current" />
-          </TooltipIconButton>
-        </ComposerPrimitive.StopDictation>
+        <TooltipIconButton
+          tooltip="Dictate"
+          aria-label="Dictate"
+          type="button"
+          variant="ghost"
+          className="size-8 rounded-full text-foreground"
+          onClick={startDictation}
+        >
+          <MicIcon className="size-5" />
+        </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>

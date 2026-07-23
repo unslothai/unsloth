@@ -1674,6 +1674,12 @@ html[data-chat-font] .aui-root {
 		@apply flex w-full flex-wrap items-center gap-0.5 px-1;
 	}
 
+	/* Recording is a dedicated one-line mode. Active tool pills must not force
+	   the composer back into the normal two-row layout. */
+	.unsloth-composer-line[data-dictating="true"] {
+		@apply flex-nowrap;
+	}
+
 	.unsloth-composer-left {
 		@apply flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;

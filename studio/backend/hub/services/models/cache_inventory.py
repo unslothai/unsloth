@@ -517,6 +517,19 @@ def _read_json_object(path: Path) -> dict:
         return {}
 
 
+def _is_whisper_model_config(config: object) -> bool:
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type.strip().lower() == "whisper":
+        return True
+    architectures = config.get("architectures")
+    return isinstance(architectures, list) and any(
+        isinstance(name, str) and name == "WhisperForConditionalGeneration"
+        for name in architectures
+    )
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
@@ -547,6 +560,8 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 
     result: dict = {}
     config = _read_json_object(snapshot / "config.json")
+    if _is_whisper_model_config(config):
+        result["_hidden_stt"] = True
     quant_method = (
         config.get("quantization_config", {}).get("quant_method")
         if isinstance(config.get("quantization_config"), dict)
@@ -581,6 +596,7 @@ def _scan_cached_models() -> list[dict]:
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
+    skipped_stt = 0
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             inspected += 1
@@ -608,6 +624,10 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
+                local_metadata = _cached_model_local_metadata(repo_path)
+                if local_metadata.pop("_hidden_stt", False):
+                    skipped_stt += 1
+                    continue
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
@@ -627,7 +647,7 @@ def _scan_cached_models() -> list[dict]:
                         if snapshot_partial
                         else None
                     ),
-                    **_cached_model_local_metadata(repo_path),
+                    **local_metadata,
                 }
                 last_modified = max(
                     payload.last_modified,
@@ -655,10 +675,12 @@ def _scan_cached_models() -> list[dict]:
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
-        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
+        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d "
+        "skipped_stt=%d returned=%d",
         inspected,
         skipped_gguf,
         skipped_no_weights,
+        skipped_stt,
         len(cached),
     )
     return cached

@@ -400,6 +400,53 @@ def test_cached_gguf_scan_keeps_download_timestamp(monkeypatch, tmp_path):
     assert rows[0]["last_modified"] == 5_000.0
 
 
+def test_cached_model_scan_hides_custom_whisper_repo(monkeypatch, tmp_path):
+    repo_path = tmp_path / "models--Org--CustomWhisper"
+    snapshot = repo_path / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
+    )
+    repo = SimpleNamespace(
+        repo_id = "Org/CustomWhisper",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "config.json",
+                        size_on_disk = 10,
+                        blob_path = None,
+                    ),
+                    SimpleNamespace(
+                        file_name = "model.safetensors",
+                        size_on_disk = 100,
+                        blob_path = str(repo_path / "blobs" / "modelsha"),
+                    ),
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        CI,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [repo])],
+    )
+    monkeypatch.setattr(
+        CI,
+        "_cached_model_snapshot_path",
+        lambda _repo_path: snapshot,
+    )
+    monkeypatch.setattr(
+        CI.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *args, **kwargs: False,
+    )
+
+    assert CI._scan_cached_models() == []
+
+
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
 
 

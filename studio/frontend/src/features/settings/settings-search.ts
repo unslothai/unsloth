@@ -108,7 +108,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.dictation.sectionTitle",
     "settings.voice.dictation.microphoneLabel",
     "settings.voice.dictation.languageLabel",
-    "settings.voice.dictation.testLabel",
     "settings.voice.dictionary.sectionTitle",
     "settings.voice.recents.sectionTitle",
     "settings.voice.readAloud.sectionTitle",
