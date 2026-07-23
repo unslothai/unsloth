@@ -112,6 +112,10 @@ import {
 } from "./stores/chat-runtime-store";
 import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import {
+  PRE_STREAM_RUN_FAILED_EVENT,
+  type PromptQueueRunFailedEventDetail,
+} from "./utils/prompt-queue-boundary";
+import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -388,6 +392,7 @@ export function RegisterCompareHandle({
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
           let wasRunning = false;
+          let settled = false;
           const isHandleRunning = (
             runningByThreadId: Record<string, boolean>,
           ) => {
@@ -397,14 +402,38 @@ export function RegisterCompareHandle({
             }
             return threadIds.some((threadId) => runningByThreadId[threadId]);
           };
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            unsub();
+            window.removeEventListener(
+              PRE_STREAM_RUN_FAILED_EVENT,
+              onPreStreamFailure,
+            );
+            resolve();
+          };
+          const onPreStreamFailure = (event: Event) => {
+            const failedThreadId = (
+              event as CustomEvent<PromptQueueRunFailedEventDetail>
+            ).detail?.threadId;
+            if (
+              failedThreadId &&
+              getCompareThreadIds().includes(failedThreadId)
+            ) {
+              finish();
+            }
+          };
           const unsub = useChatRuntimeStore.subscribe((state) => {
             const running = isHandleRunning(state.runningByThreadId);
             if (running) wasRunning = true;
             if (wasRunning && !running) {
-              unsub();
-              resolve();
+              finish();
             }
           });
+          window.addEventListener(
+            PRE_STREAM_RUN_FAILED_EVENT,
+            onPreStreamFailure,
+          );
           if (isHandleRunning(useChatRuntimeStore.getState().runningByThreadId)) {
             wasRunning = true;
           }

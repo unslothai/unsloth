@@ -7,7 +7,7 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
-import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
+import { notifyPreStreamRunFailed } from "../utils/prompt-queue-boundary";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -2091,7 +2091,7 @@ export function createOpenAIStreamAdapter(
         // model-load gates run. Release only that failed dispatch; do not pulse
         // running state, because queues treat a real running on->off transition
         // as a completed generation and would advance remaining prompts.
-        notifyPromptQueueRunFailed(resolvedThreadId ?? null);
+        notifyPreStreamRunFailed(resolvedThreadId ?? null);
       };
 
       // Wait for in-progress model load before inferring.
