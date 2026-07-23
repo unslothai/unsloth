@@ -474,6 +474,53 @@ class TestPyYamlDeserialization:
                 "s(yaml.SafeLoader, 'yaml_constructors', {'!run': run})\n"
                 "yaml.safe_load('!run x')"
             ),
+            (
+                "import yaml\n"
+                "add = getattr(yaml.SafeLoader, 'add_constructor')\n"
+                "add('!run', run)\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "constructors, _ = (yaml.SafeLoader.yaml_constructors, None)\n"
+                "constructors['!run'] = run\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import pydoc\n"
+                "getattr(pydoc, 'locate')('yaml.unsafe_load')(payload)"
+            ),
+            (
+                "import operator, yaml\n"
+                "operator.ior(yaml.SafeLoader.yaml_constructors, {'!run': run})\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "getattr(__import__, '__call__')('yaml').unsafe_load(payload)"
+            ),
+            (
+                "load = print\n"
+                "def enable():\n"
+                "    global load\n"
+                "    from yaml import unsafe_load as load\n"
+                "enable()\n"
+                "load(payload)"
+            ),
+            (
+                "from builtins import setattr as s\n"
+                "import yaml\n"
+                "s(yaml.SafeLoader, 'yaml_constructors', {'!run': run})\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "import yaml\n"
+                "type.__setattr__(yaml.SafeLoader, 'yaml_constructors', {'!run': run})\n"
+                "yaml.safe_load('!run x')"
+            ),
+            (
+                "__builtins__.__dict__['__import__']('yaml')"
+                ".unsafe_load(payload)"
+            ),
         ],
     )
     def test_unsafe_pyyaml_loaders_blocked(self, code):

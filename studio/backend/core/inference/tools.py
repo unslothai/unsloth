@@ -753,6 +753,15 @@ def _is_dynamic_import_callable(
         ) in {"import_module", "__import__"}
     if not isinstance(node, ast.Call):
         return False
+    reflected = _reflected_member(node)
+    if reflected is not None:
+        base, member = reflected
+        if member == "__call__":
+            return _is_dynamic_import_callable(
+                base, dynamic_import_aliases, dynamic_namespace_aliases
+            )
+        if member in {"import_module", "__import__"}:
+            return True
     if isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
         return _subscript_key(node.args[1]) in {"import_module", "__import__"}
     return (
@@ -766,6 +775,12 @@ def _is_dynamic_import_callable(
 def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset()) -> bool:
     if isinstance(node, ast.Name):
         return node.id in dynamic_namespace_aliases
+    if (
+        isinstance(node, ast.Attribute)
+        and node.attr == "__dict__"
+        and _is_dynamic_namespace(node.value, dynamic_namespace_aliases)
+    ):
+        return True
     if isinstance(node, ast.Attribute) and node.attr == "modules":
         return True  # sys.modules (including an aliased sys import)
     if (
@@ -841,12 +856,14 @@ def _pyyaml_resolver_target(node, resolver_aliases: set[str]) -> str | None:
 
 def _is_pyyaml_resolver_call(node, resolver_aliases: set[str]) -> bool:
     """Whether ``node`` calls a stdlib string-to-object resolver."""
+    reflected = _reflected_member(node.func) if isinstance(node, ast.Call) else None
     return bool(
         isinstance(node, ast.Call)
         and node.args
         and (
             (isinstance(node.func, ast.Attribute) and node.func.attr in {"locate", "resolve_name"})
             or (isinstance(node.func, ast.Name) and node.func.id in resolver_aliases)
+            or (reflected is not None and reflected[1] in {"locate", "resolve_name"})
         )
     )
 
@@ -986,6 +1003,37 @@ def _pyyaml_module_mutator_reference(
     return path is not None and len(path) == 1 and path[0] in _PYYAML_SAFE_LOADER_MUTATORS
 
 
+def _pyyaml_safe_loader_mutator_reference(
+    node,
+    yaml_aliases: set[str],
+    safe_loader_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+    dynamic_namespace_aliases: set[str] = frozenset(),
+) -> bool:
+    """Whether ``node`` is a bound SafeLoader registry mutator."""
+    reflected = _reflected_member(node)
+    if reflected is not None:
+        base, member = reflected
+        return member in _PYYAML_SAFE_LOADER_MUTATORS and _pyyaml_loader_is_safe(
+            base,
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
+    return bool(
+        isinstance(node, ast.Attribute)
+        and node.attr in _PYYAML_SAFE_LOADER_MUTATORS
+        and _pyyaml_loader_is_safe(
+            node.value,
+            yaml_aliases,
+            safe_loader_aliases,
+            dynamic_import_aliases,
+            dynamic_namespace_aliases,
+        )
+    )
+
+
 def _pyyaml_safe_loader_registry_mutation(
     node,
     yaml_aliases: set[str],
@@ -1051,7 +1099,16 @@ def _pyyaml_safe_loader_mutation_call(
     dynamic_namespace_aliases: set[str] = frozenset(),
 ) -> bool:
     """Whether a bound, reflected, or unbound call mutates SafeLoader state."""
-    mapping_mutators = {"update", "setdefault", "pop", "clear", "setitem", "__setitem__"}
+    mapping_mutators = {
+        "update",
+        "setdefault",
+        "pop",
+        "clear",
+        "setitem",
+        "__setitem__",
+        "ior",
+        "__ior__",
+    }
     func = call.func
     if (
         isinstance(func, ast.Call)
@@ -5089,7 +5146,7 @@ def _check_signal_escape_patterns(code: str):
             self.pyyaml_registry_setter_aliases = {"setattr", "delattr"}
             self.dynamic_import_aliases = {"__import__", "import_module"}
             self.dynamic_import_module_aliases = {"__builtins__", "builtins", "importlib"}
-            self.dynamic_namespace_aliases: set[str] = set()
+            self.dynamic_namespace_aliases: set[str] = {"__builtins__", "builtins"}
             self.pyyaml_resolver_aliases: set[str] = set()
             self.function_parameter_aliases: set[str] = set()
             # Direct yaml.load(..., SafeLoader) calls are allowed. References to
@@ -5120,6 +5177,8 @@ def _check_signal_escape_patterns(code: str):
                     self.subprocess_aliases.add(alias.asname or "subprocess")
                 elif alias.name in {"builtins", "importlib"}:
                     self.dynamic_import_module_aliases.add(alias.asname or alias.name)
+                    if alias.name == "builtins":
+                        self.dynamic_namespace_aliases.add(alias.asname or alias.name)
                 elif alias.name.split(".", 1)[0] == "yaml":
                     self.yaml_aliases.add(alias.asname or "yaml")
             self.generic_visit(node)
@@ -5178,6 +5237,8 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name in {"import_module", "__import__"}:
                         self.dynamic_import_aliases.add(alias.asname or alias.name)
+                    elif alias.name in {"setattr", "delattr"}:
+                        self.pyyaml_registry_setter_aliases.add(alias.asname or alias.name)
             elif node.module == "sys":
                 for alias in node.names:
                     if alias.name == "modules":
@@ -5190,16 +5251,12 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Assign(self, node):
             self.visit(node.value)
-            if (
-                isinstance(node.value, ast.Attribute)
-                and node.value.attr in _PYYAML_SAFE_LOADER_MUTATORS
-                and _pyyaml_loader_is_safe(
-                    node.value.value,
-                    self.yaml_aliases,
-                    self.yaml_safe_loader_aliases,
-                    self.dynamic_import_aliases,
-                    self.dynamic_namespace_aliases,
-                )
+            if _pyyaml_safe_loader_mutator_reference(
+                node.value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
             ):
                 self._record_unsafe_pyyaml(
                     node.value,
@@ -5227,16 +5284,12 @@ def _check_signal_escape_patterns(code: str):
                 self.visit(node.annotation)
             if node.value is not None:
                 self.visit(node.value)
-                if (
-                    isinstance(node.value, ast.Attribute)
-                    and node.value.attr in _PYYAML_SAFE_LOADER_MUTATORS
-                    and _pyyaml_loader_is_safe(
-                        node.value.value,
-                        self.yaml_aliases,
-                        self.yaml_safe_loader_aliases,
-                        self.dynamic_import_aliases,
-                        self.dynamic_namespace_aliases,
-                    )
+                if _pyyaml_safe_loader_mutator_reference(
+                    node.value,
+                    self.yaml_aliases,
+                    self.yaml_safe_loader_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
                 ):
                     self._record_unsafe_pyyaml(
                         node.value,
@@ -5280,6 +5333,16 @@ def _check_signal_escape_patterns(code: str):
             self.visit(node.target)
 
         def _update_pyyaml_bindings(self, targets, value):
+            if (
+                len(targets) == 1
+                and isinstance(targets[0], (ast.Tuple, ast.List))
+                and isinstance(value, (ast.Tuple, ast.List))
+                and len(targets[0].elts) == len(value.elts)
+            ):
+                for target_element, value_element in zip(targets[0].elts, value.elts):
+                    self._update_pyyaml_bindings([target_element], value_element)
+                return
+
             def target_names(target):
                 if isinstance(target, ast.Name):
                     return {target.id}
@@ -5564,6 +5627,35 @@ def _check_signal_escape_patterns(code: str):
                 names.add(args.kwarg.arg)
             return names
 
+        @staticmethod
+        def _function_scope_declarations(node):
+            class DeclarationVisitor(ast.NodeVisitor):
+                def __init__(self):
+                    self.names: set[str] = set()
+
+                def visit_Global(self, declaration):
+                    self.names.update(declaration.names)
+
+                def visit_Nonlocal(self, declaration):
+                    self.names.update(declaration.names)
+
+                def visit_FunctionDef(self, nested):
+                    return None
+
+                def visit_AsyncFunctionDef(self, nested):
+                    return None
+
+                def visit_Lambda(self, nested):
+                    return None
+
+                def visit_ClassDef(self, nested):
+                    return None
+
+            visitor = DeclarationVisitor()
+            for statement in getattr(node, "body", ()):
+                visitor.visit(statement)
+            return visitor.names
+
         def _visit_function_scope(self, node):
             # Decorators/defaults/annotations are evaluated in the enclosing
             # scope, before parameters become local bindings.
@@ -5590,6 +5682,8 @@ def _check_signal_escape_patterns(code: str):
 
             state = self._pyyaml_scope_state()
             parameter_alias_state = self.function_parameter_aliases.copy()
+            declared_outer_names = self._function_scope_declarations(node)
+            body_state = None
             try:
                 arg_names = self._argument_names(node.args)
                 self._update_pyyaml_bindings(
@@ -5604,9 +5698,27 @@ def _check_signal_escape_patterns(code: str):
                 else:
                     for statement in node.body:
                         self.visit(statement)
+                body_state = self._pyyaml_scope_state()
             finally:
                 self.function_parameter_aliases = parameter_alias_state
                 self._restore_pyyaml_scope_state(state)
+                if body_state is not None and declared_outer_names:
+                    dangerous_scopes = (
+                        (self.yaml_aliases, 0),
+                        (self.yaml_load_aliases, 1),
+                        (self.yaml_unsafe_load_aliases, 2),
+                        (self.yaml_unsafe_loader_aliases, 3),
+                        (self.yaml_safe_loader_registry_aliases, 5),
+                        (self.yaml_module_mutator_aliases, 6),
+                        (self.pyyaml_registry_setter_aliases, 7),
+                        (self.dynamic_import_aliases, 8),
+                        (self.dynamic_import_module_aliases, 9),
+                        (self.dynamic_namespace_aliases, 10),
+                    )
+                    for outer_aliases, state_index in dangerous_scopes:
+                        outer_aliases.update(
+                            declared_outer_names.intersection(body_state[state_index])
+                        )
 
         def visit_FunctionDef(self, node):
             self._visit_function_scope(node)
@@ -5953,7 +6065,11 @@ def _check_signal_escape_patterns(code: str):
             if (
                 (
                     (isinstance(func, ast.Name) and func.id in self.pyyaml_registry_setter_aliases)
-                    or (isinstance(func, ast.Attribute) and func.attr in {"setattr", "delattr"})
+                    or (
+                        isinstance(func, ast.Attribute)
+                        and func.attr
+                        in {"setattr", "delattr", "__setattr__", "__delattr__"}
+                    )
                 )
                 and node.args
                 and _pyyaml_safe_loader_registry_mutation(
