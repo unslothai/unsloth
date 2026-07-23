@@ -2828,6 +2828,7 @@ export function HubModelPicker({
                   ggufVariant: entry.quant,
                   isDownloaded: true,
                   isGguf: true,
+                  isVision: pinnedVisionHint,
                 })
               }
             />
