@@ -7671,7 +7671,6 @@ async def openai_chat_completions(
         )
         if system_prompt:
             from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
-
             system_prompt = neutralize_non_assistant_control_markup(system_prompt)
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
