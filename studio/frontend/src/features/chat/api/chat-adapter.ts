@@ -2,6 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import {
+  type CachedGgufRepo,
+  type CachedModelRepo,
+  type LocalModelInfo,
+  listCachedGguf,
+  listCachedModels,
+  listLocalModels,
+} from "@/features/hub/inventory/api";
+import {
+  ensureHiddenModelMatchers,
+  isHiddenModelId,
+} from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
@@ -77,9 +89,12 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
+  isManagedCacheSource,
   readLastLocalModelLoad,
   recordLastLocalModelLoad,
   type LastLocalModelKind,
+  type LastLocalModelLoad,
+  type LastLocalModelSource,
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
@@ -89,8 +104,6 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
-  listCachedGguf,
-  listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
@@ -1391,11 +1404,6 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   });
 }
 
-/**
- * Auto-load the smallest downloaded model when the user chats without
- * selecting one. Prefers GGUF (smallest cached variant), then smallest
- * cached safetensors model.
- */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
@@ -1409,6 +1417,8 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
+  inventoryId?: string | null;
+  source: LastLocalModelSource;
 };
 
 function autoLoadCandidateKey(
@@ -1425,6 +1435,95 @@ function findCachedRepo<T extends { repo_id: string }>(
 ): T | undefined {
   const normalized = id.toLowerCase();
   return repos.find((repo) => repo.repo_id.toLowerCase() === normalized);
+}
+
+/**
+ * Managed-cache rows eligible for background auto-load: complete, not
+ * hidden infrastructure, and not declared non-chat by the backend.
+ */
+function isAutoLoadableCachedRepo(repo: {
+  repo_id: string;
+  partial?: boolean;
+  capabilities?: { can_chat?: boolean } | null;
+}): boolean {
+  if (repo.partial) return false;
+  if (repo.capabilities?.can_chat === false) return false;
+  return !isHiddenModelId(repo.repo_id);
+}
+
+// Same on-device scan sources the unified picker exposes
+// (use-chat-picker-inventory's PICKER_LOCAL_SOURCES). hf_cache rows are
+// covered by the cached lists; ollama links are not directly loadable.
+const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
+  "models_dir",
+  "lmstudio",
+  "custom",
+]);
+
+/**
+ * Backend-indexed local rows eligible for background auto-load: same policy
+ * as the on-device picker (complete, chat-capable, not hidden infra), plus
+ * no variant requirement, since a background load cannot ask for a quant.
+ */
+function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
+  if (!AUTO_LOAD_LOCAL_SOURCES.has(row.source)) return false;
+  if (row.capabilities?.can_chat !== true) return false;
+  if (row.partial) return false;
+  if (isHiddenModelId(row.model_id, row.id, row.path)) return false;
+  if (
+    row.model_format === "gguf" &&
+    hasBigEndianGgufMarker(row.path, row.format_variant)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function localRowLoadTarget(row: LocalModelInfo): string {
+  return row.load_id || row.id;
+}
+
+function localRowToCandidate(
+  row: LocalModelInfo,
+  ggufVariant: string | null = null,
+): AutoLoadCandidate {
+  const isGguf = row.model_format === "gguf";
+  return {
+    id: row.id,
+    loadId: localRowLoadTarget(row),
+    kind: isGguf ? "gguf" : "model",
+    // The backend load target identifies the GGUF itself; no Hub quant is
+    // required (a remembered quant is passed through for multi-quant dirs).
+    ggufVariant: isGguf ? ggufVariant : null,
+    maxSeqLength: isGguf ? 0 : 4096,
+    successLabel: `Loaded ${row.display_name || row.id}`,
+    inventoryId: row.inventory_id ?? null,
+    source: AUTO_LOAD_LOCAL_SOURCES.has(row.source)
+      ? (row.source as LastLocalModelSource)
+      : "local",
+  };
+}
+
+/** Resolve a remembered local model against current backend inventory. */
+function matchesRememberedLocalRow(
+  row: LocalModelInfo,
+  remembered: LastLocalModelLoad,
+): boolean {
+  if (
+    remembered.inventoryId &&
+    row.inventory_id &&
+    row.inventory_id.toLowerCase() === remembered.inventoryId.toLowerCase()
+  ) {
+    return true;
+  }
+  const targets = new Set(
+    [remembered.loadId, remembered.id]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase()),
+  );
+  return [row.load_id, row.id, row.path, row.model_id].some(
+    (value) => !!value && targets.has(value.toLowerCase()),
+  );
 }
 
 function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
@@ -1463,9 +1562,19 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
-async function autoLoadSmallestModel(): Promise<{
+/**
+ * Auto-load a model already on this device when the user chats without
+ * selecting one: adopt the server-active model, then the last successfully
+ * loaded on-device model (managed HF caches, models dir, LM Studio, custom
+ * scan folders), then the smallest complete chat-capable on-device model
+ * (GGUF first, then safetensors). Never downloads: with no valid on-device
+ * candidate the caller shows the actionable "no model" error instead.
+ */
+async function autoLoadOnDeviceModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
+  /** True when an inventory failure was already surfaced to the user. */
+  inventoryErrorSurfaced?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
     return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1479,7 +1588,7 @@ async function autoLoadSmallestModel(): Promise<{
   const toastId = toast("Loading a model…", {
     description: lastLoaded
       ? "Loading last used model."
-      : "Auto-selecting the smallest downloaded model.",
+      : "Auto-selecting the smallest on-device model.",
     duration: 5000,
     closeButton: true,
   });
@@ -1736,21 +1845,97 @@ async function autoLoadSmallestModel(): Promise<{
         id: candidate.id,
         kind: candidate.kind,
         ggufVariant: candidate.ggufVariant,
+        loadId: candidate.loadId ?? null,
+        inventoryId: candidate.inventoryId ?? null,
+        source: candidate.source,
       });
     }
     toast.success(candidate.successLabel, { id: toastId });
     return true;
   }
+  // An inventory failure is NOT an empty inventory: surface it and stop the
+  // automatic selection path instead of concluding nothing is on device.
+  let allGgufRepos: CachedGgufRepo[];
+  let allModelRepos: CachedModelRepo[];
+  let allLocalRows: LocalModelInfo[];
   try {
-    const [ggufRepos, modelRepos] = await Promise.all([
-      listCachedGguf().catch(() => []),
-      listCachedModels().catch(() => []),
+    // Dynamic hidden-model matchers are best-effort; the static needles
+    // still filter the built-in infra models when the fetch fails.
+    await ensureHiddenModelMatchers().catch(() => undefined);
+    const [cachedGguf, cachedModels, localList] = await Promise.all([
+      listCachedGguf(hfToken),
+      listCachedModels(hfToken),
+      listLocalModels(),
     ]);
+    allGgufRepos = cachedGguf;
+    allModelRepos = cachedModels;
+    allLocalRows = localList.models;
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Could not read the on-device model inventory.";
+    toast.error("Couldn't check on-device models", {
+      id: toastId,
+      description: message,
+    });
+    return {
+      loaded: false,
+      blockedByTrustRemoteCode: false,
+      inventoryErrorSurfaced: true,
+    };
+  }
 
+  const ggufRepos = allGgufRepos.filter(isAutoLoadableCachedRepo);
+  const modelRepos = allModelRepos.filter(isAutoLoadableCachedRepo);
+  const localRows = allLocalRows.filter(isAutoLoadableLocalRow);
+  // Dedupe candidates that appear in both the cached and the local
+  // inventory (e.g. a custom scan folder pointing into an HF cache).
+  const seenLoadTargets = new Set<string>();
+  const markSeen = (...values: (string | null | undefined)[]): void => {
+    for (const value of values) {
+      if (value) seenLoadTargets.add(value.toLowerCase());
+    }
+  };
+  const isSeen = (...values: (string | null | undefined)[]): boolean =>
+    values.some((value) => !!value && seenLoadTargets.has(value.toLowerCase()));
+
+  try {
     if (lastLoaded) {
-      if (lastLoaded.kind === "gguf") {
+      if (!isManagedCacheSource(lastLoaded.source)) {
+        const row = localRows.find((candidateRow) =>
+          matchesRememberedLocalRow(candidateRow, lastLoaded),
+        );
+        if (row) {
+          markSeen(row.load_id, row.id, row.path, row.model_id);
+          try {
+            toast("Loading last used model…", {
+              id: toastId,
+              description: row.display_name || row.id,
+              duration: 5000,
+            });
+            if (
+              await loadAutoLoadCandidate(
+                localRowToCandidate(row, lastLoaded.ggufVariant),
+              )
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey(
+                row.model_format === "gguf" ? "gguf" : "model",
+                row.id,
+                lastLoaded.ggufVariant,
+              ),
+            );
+          }
+        }
+      } else if (lastLoaded.kind === "gguf") {
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
+          markSeen(repo.repo_id, repo.load_id, repo.cache_path);
           try {
             const variants = await listGgufVariants(repo.repo_id, undefined, {
               preferLocalCache: true,
@@ -1759,6 +1944,7 @@ async function autoLoadSmallestModel(): Promise<{
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
+                !entry.partial &&
                 entry.quant?.toLowerCase() ===
                   lastLoaded.ggufVariant?.toLowerCase() &&
                 isAutoLoadableGgufVariant(entry),
@@ -1777,6 +1963,8 @@ async function autoLoadSmallestModel(): Promise<{
                   ggufVariant: variant.quant,
                   maxSeqLength: 0,
                   successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+                  inventoryId: repo.inventory_id ?? null,
+                  source: "hf_cache",
                 })
               ) {
                 return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1792,6 +1980,7 @@ async function autoLoadSmallestModel(): Promise<{
       } else {
         const repo = findCachedRepo(modelRepos, lastLoaded.id);
         if (repo) {
+          markSeen(repo.repo_id, repo.load_id, repo.cache_path);
           try {
             toast("Loading last used model…", {
               id: toastId,
@@ -1806,6 +1995,8 @@ async function autoLoadSmallestModel(): Promise<{
                 ggufVariant: null,
                 maxSeqLength: store.params.maxSeqLength,
                 successLabel: `Loaded ${repo.repo_id}`,
+                inventoryId: repo.inventory_id ?? null,
+                source: "hf_cache",
               })
             ) {
               return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1820,23 +2011,70 @@ async function autoLoadSmallestModel(): Promise<{
       }
       toast("Loading a model…", {
         id: toastId,
-        description: "Auto-selecting the smallest downloaded model.",
+        description: "Auto-selecting the smallest on-device model.",
         duration: 5000,
       });
     }
 
-    // GGUF first: smallest-total-size repo, then its smallest variant.
-    if (ggufRepos.length > 0) {
-      const sorted = [...ggufRepos].sort((a, b) => a.size_bytes - b.size_bytes);
-      for (const repo of sorted) {
-        if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+    // Deterministic on-device fallback: complete/loadable GGUF models first,
+    // then complete/loadable non-GGUF models, smallest first within each
+    // group, merging managed-cache repos with backend-indexed local rows.
+    type FallbackCandidate =
+      | { type: "cached-gguf"; repo: CachedGgufRepo; sizeBytes: number }
+      | { type: "cached-model"; repo: CachedModelRepo; sizeBytes: number }
+      | { type: "local"; row: LocalModelInfo; sizeBytes: number };
+    // Unknown sizes (0) sort last so a sizeless row can't shadow a real one.
+    const sizeOrUnknown = (bytes?: number | null): number =>
+      bytes && bytes > 0 ? bytes : Number.MAX_SAFE_INTEGER;
+    const bySizeAsc = (a: FallbackCandidate, b: FallbackCandidate): number =>
+      a.sizeBytes - b.sizeBytes;
+    // Background loads cannot ask which quant/variant to use.
+    const cascadeLocalRows = localRows.filter(
+      (row) => row.capabilities?.requires_variant !== true,
+    );
+    const ggufGroup: FallbackCandidate[] = [
+      ...ggufRepos.map((repo) => ({
+        type: "cached-gguf" as const,
+        repo,
+        sizeBytes: sizeOrUnknown(repo.size_bytes),
+      })),
+      ...cascadeLocalRows
+        .filter((row) => row.model_format === "gguf")
+        .map((row) => ({
+          type: "local" as const,
+          row,
+          sizeBytes: sizeOrUnknown(row.size_bytes),
+        })),
+    ].sort(bySizeAsc);
+    const modelGroup: FallbackCandidate[] = [
+      ...modelRepos.map((repo) => ({
+        type: "cached-model" as const,
+        repo,
+        sizeBytes: sizeOrUnknown(repo.size_bytes),
+      })),
+      ...cascadeLocalRows
+        .filter((row) => row.model_format !== "gguf")
+        .map((row) => ({
+          type: "local" as const,
+          row,
+          sizeBytes: sizeOrUnknown(row.size_bytes),
+        })),
+    ].sort(bySizeAsc);
+
+    for (const candidate of [...ggufGroup, ...modelGroup]) {
+      if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      if (candidate.type === "cached-gguf") {
+        const repo = candidate.repo;
+        markSeen(repo.repo_id, repo.load_id, repo.cache_path);
         try {
           const variants = await listGgufVariants(repo.repo_id, undefined, {
             preferLocalCache: true,
             localPath: repo.cache_path,
           });
           const downloaded = variants.variants
-            .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
+            .filter(
+              (v) => v.downloaded && !v.partial && isAutoLoadableGgufVariant(v),
+            )
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
@@ -1855,6 +2093,8 @@ async function autoLoadSmallestModel(): Promise<{
                 ggufVariant: variant.quant,
                 maxSeqLength: 0,
                 successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
+                inventoryId: repo.inventory_id ?? null,
+                source: "hf_cache",
               })
             ) {
               return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1862,26 +2102,20 @@ async function autoLoadSmallestModel(): Promise<{
           }
         } catch {
           hadNonTrustFailure = true;
+        }
+        continue;
+      }
+      if (candidate.type === "cached-model") {
+        const repo = candidate.repo;
+        markSeen(repo.repo_id, repo.load_id, repo.cache_path);
+        if (
+          skippedAutoLoadCandidates.has(
+            autoLoadCandidateKey("model", repo.repo_id),
+          )
+        ) {
           continue;
         }
-      }
-    }
-
-    // Fall back to safetensors models.
-    if (modelRepos.length > 0) {
-      const sorted = [...modelRepos].sort(
-        (a, b) => a.size_bytes - b.size_bytes,
-      );
-      for (const repo of sorted) {
-        if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          if (
-            skippedAutoLoadCandidates.has(
-              autoLoadCandidateKey("model", repo.repo_id),
-            )
-          ) {
-            continue;
-          }
           if (
             await loadAutoLoadCandidate({
               id: repo.repo_id,
@@ -1890,141 +2124,52 @@ async function autoLoadSmallestModel(): Promise<{
               ggufVariant: null,
               maxSeqLength: 4096,
               successLabel: `Loaded ${repo.repo_id}`,
+              inventoryId: repo.inventory_id ?? null,
+              source: "hf_cache",
             })
           ) {
             return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
           hadNonTrustFailure = true;
-          continue;
         }
+        continue;
       }
-    }
-
-    // Cap also gates the default download, so total /api/inference/load
-    // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
-      toast.dismiss(toastId);
-      return {
-        loaded: false,
-        blockedByTrustRemoteCode:
-          blockedByTrustRemoteCode && !hadNonTrustFailure,
-      };
-    }
-
-    // No cached models — try downloading a small default GGUF.
-    toast("Downloading a small model…", {
-      id: toastId,
-      description:
-        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
-      duration: 30000,
-    });
-    try {
-      const rt = useChatRuntimeStore.getState();
+      const row = candidate.row;
+      if (isSeen(row.load_id, row.id, row.path, row.model_id)) {
+        continue;
+      }
+      const localCandidate = localRowToCandidate(row);
       if (
-        !(await canAutoLoad({
-          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
-          max_seq_length: 0,
-          is_lora: false,
-          gguf_variant: "UD-Q4_K_XL",
-          // The same live-store GPU pick the load below sends (a fresh default
-          // model has no remembered settings to prefer).
-          gpu_ids: rt.selectedGpuIds ?? undefined,
-          gpu_memory_mode: rt.gpuMemoryMode,
-        }))
+        skippedAutoLoadCandidates.has(
+          autoLoadCandidateKey(
+            localCandidate.kind,
+            localCandidate.id,
+            localCandidate.ggufVariant,
+          ),
+        )
       ) {
-        toast.dismiss(toastId);
-        return { loaded: false, blockedByTrustRemoteCode };
+        continue;
       }
-      loadAttempts += 1;
-      const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        hf_token: hfToken,
-        // Model default under both modes: Auto layers + no pin means
-        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
-        // preflight above sends the same).
-        max_seq_length: 0,
-        load_in_4bit: true,
-        is_lora: false,
-        gguf_variant: "UD-Q4_K_XL",
-        trust_remote_code: trustRemoteCode,
-        speculative_type: specSettings.speculativeType,
-        spec_draft_n_max: specSettings.specDraftNMax,
-        // GPU Memory mode is a standing preference, so honor it on auto-load.
-        // The layer/MoE/split knobs and the context pin are per-model: the live
-        // store may hold edits drafted for a staged pick, and a fresh default
-        // model has no remembered settings, so those stay at their defaults like
-        // the cached-candidate path. The GPU pick deliberately differs (it's the
-        // picker's current on-screen selection, which the canAutoLoad preflight
-        // above already committed to).
-        gpu_memory_mode: rt.gpuMemoryMode,
-        gpu_layers: GPU_LAYERS_AUTO,
-        n_cpu_moe: 0,
-        gpu_ids: rt.selectedGpuIds ?? undefined,
-      });
-      saveSpeculativeType(specSettings.speculativeType);
-      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
-      useChatRuntimeStore
-        .getState()
-        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
-      const store = useChatRuntimeStore.getState();
-      store.setModelRequiresTrustRemoteCode(
-        loadResp.requires_trust_remote_code ?? false,
-      );
-      store.setParams({
-        ...store.params,
-        maxTokens: loadResp.context_length ?? 131072,
-      });
-      const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
-        isVision: loadResp.is_vision ?? false,
-        isLora: false,
-        isGguf: true,
-      };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
-        store.setModels([...store.models, defaultModel]);
+      markSeen(row.load_id, row.id, row.path, row.model_id);
+      try {
+        if (await loadAutoLoadCandidate(localCandidate)) {
+          return { loaded: true, blockedByTrustRemoteCode: false };
+        }
+      } catch {
+        hadNonTrustFailure = true;
       }
-      useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
-          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFields(loadResp),
-        // Drives the GPU Memory controls' diffusion gate; set alongside the
-        // GPU fields on every load path so the gate can't read stale.
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
-        ...resolveLoadedSpeculativeSettings(loadResp),
-      });
-      recordLastLocalModelLoad({
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        kind: "gguf",
-        ggufVariant: "UD-Q4_K_XL",
-      });
-      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
-      return { loaded: true, blockedByTrustRemoteCode: false };
-    } catch {
-      toast.dismiss(toastId);
-      hadNonTrustFailure = true;
-      return {
-        loaded: false,
-        blockedByTrustRemoteCode:
-          blockedByTrustRemoteCode && !hadNonTrustFailure,
-      };
     }
+
+    // No auto-loadable on-device model (or the attempt cap was hit). Never
+    // fall back to a remote download from the send path: the caller shows
+    // the actionable "no model" error and any download stays an explicit
+    // user action.
+    toast.dismiss(toastId);
+    return {
+      loaded: false,
+      blockedByTrustRemoteCode: blockedByTrustRemoteCode && !hadNonTrustFailure,
+    };
   } catch {
     toast.dismiss(toastId);
     hadNonTrustFailure = true;
@@ -2101,24 +2246,27 @@ export function createOpenAIStreamAdapter(
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
+        let inventoryErrorSurfaced: boolean | undefined;
         try {
-          ({ loaded, blockedByTrustRemoteCode } =
-            await autoLoadSmallestModel());
+          ({ loaded, blockedByTrustRemoteCode, inventoryErrorSurfaced } =
+            await autoLoadOnDeviceModel());
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
         }
         if (!loaded) {
-          toast.error(
-            blockedByTrustRemoteCode
-              ? "This model needs custom code approval"
-              : "No model loaded",
-            {
-              description: blockedByTrustRemoteCode
-                ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                : "Pick a model in the top bar, then retry.",
-            },
-          );
+          if (!inventoryErrorSurfaced) {
+            toast.error(
+              blockedByTrustRemoteCode
+                ? "This model needs custom code approval"
+                : "No model loaded",
+              {
+                description: blockedByTrustRemoteCode
+                  ? "Select it from the top bar to review and approve its custom code, or pick another model."
+                  : "Select a model in the top bar, or download one from the Hub, then retry.",
+              },
+            );
+          }
           clearSelectedImageEditReference();
           throw new Error("Load a model first.");
         }

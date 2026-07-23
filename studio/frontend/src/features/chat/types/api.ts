@@ -115,6 +115,8 @@ export interface GgufVariantDetail {
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
+  /** True while an in-progress (.incomplete) blob exists for this variant. */
+  partial?: boolean;
 }
 
 export interface GgufVariantsResponse {

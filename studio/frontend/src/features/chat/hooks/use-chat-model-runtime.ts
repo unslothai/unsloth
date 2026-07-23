@@ -1044,21 +1044,39 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            // Native-picked files are never remembered: their access depends
+            // on a signed, expiring path lease that a raw remembered path
+            // would bypass. Backend-indexed local rows (models dir, LM
+            // Studio, custom scan folders; selection source "local") are
+            // remembered and re-resolved through inventory on auto-load.
+            // Other arbitrary paths keep the isLocalModelPath protection.
+            const indexedLocalSelection =
+              typeof selection !== "string" && selection.source === "local";
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&
               !nativePathToken &&
-              !isLocalModelPath(modelId) &&
-              !isExternalModelId(modelId)
+              !isExternalModelId(modelId) &&
+              (indexedLocalSelection || !isLocalModelPath(modelId))
             ) {
-              if (loadResponse.is_gguf || isGguf || ggufVariant) {
+              const kind =
+                loadResponse.is_gguf || isGguf || ggufVariant
+                  ? ("gguf" as const)
+                  : ("model" as const);
+              if (isLocalModelPath(modelId)) {
                 recordLastLocalModelLoad({
                   id: modelId,
-                  kind: "gguf",
+                  kind,
                   ggufVariant: ggufVariant ?? null,
+                  loadId: modelId,
+                  source: "local",
                 });
               } else {
-                recordLastLocalModelLoad({ id: modelId, kind: "model" });
+                recordLastLocalModelLoad({
+                  id: modelId,
+                  kind,
+                  ggufVariant: ggufVariant ?? null,
+                });
               }
             }
           } catch (error) {

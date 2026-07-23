@@ -265,7 +265,7 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     """Autoload must probe the exact cache row it will load, including rows
     retained from a previously selected Hugging Face cache."""
     src = _read("features/chat/api/chat-adapter.ts")
-    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert auto_load.count("preferLocalCache: true") >= 2
     assert auto_load.count("localPath: repo.cache_path") >= 2
 
@@ -442,3 +442,178 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+# ---------------------------------------------------------------------------
+# Send-with-no-model auto-load (issue #7374): on-device discovery must cover
+# every picker inventory source, the remembered model must survive local
+# (non-cache) loads, and the send path must never start a remote download.
+# ---------------------------------------------------------------------------
+
+
+def _autoload_section() -> str:
+    src = _read("features/chat/api/chat-adapter.ts")
+    return src.split("async function autoLoadOnDeviceModel", 1)[1]
+
+
+def test_send_path_cannot_reach_hardcoded_default_download():
+    """Pressing Send with no model loaded must never fetch the hard-coded
+    default repo from Hugging Face (the unconsented download in the bug
+    report). Any recommended download must stay an explicit user action."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "Qwen3.5-4B-MTP-GGUF" not in src
+    assert "Downloading a small model" not in src
+    assert "No downloaded models found" not in src
+    # The old entry point must not linger anywhere.
+    assert "autoLoadSmallestModel" not in src
+    # The renamed entry point runs exactly once per send, so the submitted
+    # prompt executes exactly once after a successful load.
+    assert src.count("await autoLoadOnDeviceModel())") == 1
+
+
+def test_autoload_no_model_error_is_actionable():
+    """With no valid on-device candidate the user is told to select or
+    explicitly download a model instead of getting a silent remote load."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert (
+        "Select a model in the top bar, or download one from the Hub, then retry."
+        in src
+    )
+
+
+def test_autoload_inventory_failure_is_not_empty_inventory():
+    """A failed cached/local inventory request must stop the automatic
+    selection path, not be swallowed into an empty list that used to fall
+    through to the remote default download."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert ".catch(() => [])" not in src
+    auto_load = _autoload_section()
+    assert "inventoryErrorSurfaced: true" in auto_load
+    # All three inventory sources are queried together and fail closed.
+    for needle in (
+        "listCachedGguf(hfToken)",
+        "listCachedModels(hfToken)",
+        "listLocalModels()",
+    ):
+        assert needle in auto_load, needle
+
+
+def test_autoload_uses_unified_backend_inventory():
+    """Auto-load must consume the same non-React backend inventory the
+    unified picker uses (no second frontend filesystem scanner), covering
+    the models dir, LM Studio dirs, and custom scan folders."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert re.search(
+        r'import \{[^}]*listLocalModels[^}]*\} from "@/features/hub/inventory/api"',
+        src,
+        re.S,
+    )
+    sources = re.search(
+        r"const AUTO_LOAD_LOCAL_SOURCES[^;]*;", src, re.S
+    )
+    assert sources, "AUTO_LOAD_LOCAL_SOURCES not found"
+    for source in ('"models_dir"', '"lmstudio"', '"custom"'):
+        assert source in sources.group(0), source
+
+
+def test_autoload_filters_match_picker_policy():
+    """Only complete, chat-capable, non-hidden rows may auto-load: partial
+    downloads, weightless/non-chat folders, and infrastructure models are
+    excluded with the same policy the picker applies."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    local_fn = src.split("function isAutoLoadableLocalRow", 1)[1]
+    local_fn = local_fn.split("\nfunction ", 1)[0]
+    assert "row.capabilities?.can_chat !== true" in local_fn
+    assert "row.partial" in local_fn
+    assert "isHiddenModelId(row.model_id, row.id, row.path)" in local_fn
+    assert "hasBigEndianGgufMarker(row.path, row.format_variant)" in local_fn
+    cached_fn = src.split("function isAutoLoadableCachedRepo", 1)[1]
+    cached_fn = cached_fn.split("\nconst ", 1)[0]
+    assert "repo.partial" in cached_fn
+    assert "repo.capabilities?.can_chat === false" in cached_fn
+    assert "isHiddenModelId(repo.repo_id)" in cached_fn
+
+
+def test_autoload_local_rows_load_via_backend_target():
+    """Indexed local rows (models dir, LM Studio, custom scan folders) must
+    load through the backend-provided target and record their stable
+    inventory identity, never a reconstructed path or synthetic variant."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "function localRowLoadTarget" in src
+    assert "row.load_id || row.id" in src
+    candidate_fn = src.split("function localRowToCandidate", 1)[1]
+    candidate_fn = candidate_fn.split("\n/**", 1)[0]
+    assert "loadId: localRowLoadTarget(row)" in candidate_fn
+    assert "inventoryId: row.inventory_id ?? null" in candidate_fn
+    # Inactive-cache rows keep loading by their backend load_id.
+    auto_load = _autoload_section()
+    assert auto_load.count("loadId: repo.load_id") >= 3
+
+
+def test_autoload_remembers_last_model_across_all_sources():
+    """The remembered model resolves against managed caches AND the indexed
+    local inventory; a stale entry only falls through to other on-device
+    candidates (there is no remote branch left to reach)."""
+    auto_load = _autoload_section()
+    assert "isManagedCacheSource(lastLoaded.source)" in auto_load
+    assert "matchesRememberedLocalRow(candidateRow, lastLoaded)" in auto_load
+    assert "localRowToCandidate(row, lastLoaded.ggufVariant)" in auto_load
+    # Managed-cache candidates record their provenance for later resolution.
+    assert auto_load.count('source: "hf_cache"') >= 4
+
+
+def test_autoload_deduplicates_cached_and_local_candidates():
+    """A model visible in both the cached lists and the local inventory
+    (e.g. a custom scan folder pointing into an HF cache) must not be tried
+    twice."""
+    auto_load = _autoload_section()
+    assert "const seenLoadTargets = new Set<string>()" in auto_load
+    assert "markSeen(repo.repo_id, repo.load_id, repo.cache_path)" in auto_load
+    assert "isSeen(row.load_id, row.id, row.path, row.model_id)" in auto_load
+
+
+def test_autoload_trust_guard_still_blocks_background_loads():
+    """A model needing custom-code approval or a security review is never
+    silently auto-loaded, and a blocked candidate can only cascade to other
+    on-device candidates."""
+    auto_load = _autoload_section()
+    assert "validation.requires_trust_remote_code" in auto_load
+    assert "validation.requires_security_review" in auto_load
+    assert "MAX_AUTO_LOAD_ATTEMPTS" in auto_load
+
+
+def test_remembered_model_record_supports_local_sources():
+    """last-local-model-load must represent managed-cache models AND
+    backend-indexed local models: a local GGUF is valid with a null variant,
+    legacy v1 records keep resolving as managed-cache entries, and no
+    secrets (tokens/leases) are ever persisted."""
+    src = _read("features/chat/utils/last-local-model-load.ts")
+    # Same storage key: v1 records parse backward-compatibly, no migration.
+    assert 'const STORAGE_KEY = "unsloth.last-local-model-load.v1";' in src
+    # Legacy records carry no source and default to the managed cache.
+    assert 'isLastLocalModelSource(parsed.source)' in src
+    assert ': "hf_cache";' in src
+    # The GGUF-variant requirement is scoped to managed-cache records; a
+    # local GGUF's load target identifies the file, so null stays valid.
+    assert src.count('source === "hf_cache" && !ggufVariant') == 2
+    # Indexed local scan sources are representable.
+    for source in ('"models_dir"', '"lmstudio"', '"custom"'):
+        assert source in src, source
+    # Identity only: never tokens, native path leases, or approvals.
+    assert "nativePath" not in src
+    assert "hfToken" not in src and "hf_token" not in src
+    assert "fingerprint" not in src
+
+
+def test_interactive_local_loads_are_remembered_without_lease_bypass():
+    """A successful interactive load of a backend-indexed local model
+    (picker source "local") must be remembered so auto-load can reuse it,
+    while native-picked files (signed, expiring path lease) and other
+    arbitrary paths must never be recorded."""
+    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    record_block = src.split("const indexedLocalSelection", 1)[1]
+    record_block = record_block.split("} catch (error) {", 1)[0]
+    assert 'selection.source === "local"' in src
+    assert "!nativePathToken &&" in record_block
+    assert "(indexedLocalSelection || !isLocalModelPath(modelId))" in record_block
+    assert 'source: "local",' in record_block
