@@ -559,7 +559,10 @@ class TrainingStartRequest(BaseModel):
                 f"Only one LoRA variant may be enabled at a time; got {active}. "
                 "use_rslora, use_loftq, and use_dora are mutually exclusive."
             )
-        if self.training_type == "Full Finetuning" and active:
+        # getattr, not self.training_type: model_construct() (used by tests that
+        # validate a single field in isolation) leaves required fields unset, and
+        # this is a mode="after" validator so it still runs on that partial instance.
+        if getattr(self, "training_type", None) == "Full Finetuning" and active:
             raise ValueError(
                 f"{active[0]} requires an adapter method (LoRA/QLoRA or "
                 "Continued Pretraining); it has no effect under Full Finetuning."

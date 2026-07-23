@@ -707,23 +707,30 @@ export function ParamsSection(): ReactElement {
                           desc: t("studio.params.weightDecomposed"),
                         },
                       ] as const
-                    ).map((opt) => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        onClick={() => store.setLoraVariant(opt.value)}
-                        className={`corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
-                          store.loraVariant === opt.value
-                            ? "border-ring-strong bg-primary/5"
-                            : "border-border hover:border-foreground/20"
-                        }`}
-                      >
-                        <p className="text-xs font-medium">{opt.label}</p>
-                        <p className="text-[10px] text-muted-foreground">
-                          {opt.desc}
-                        </p>
-                      </button>
-                    ))}
+                    ).map((opt) => {
+                      const disabled =
+                        platformDeviceType === "mac" && opt.value === "dora";
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          disabled={disabled}
+                          onClick={() => store.setLoraVariant(opt.value)}
+                          className={`corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
+                            store.loraVariant === opt.value
+                              ? "border-ring-strong bg-primary/5"
+                              : "border-border hover:border-foreground/20"
+                          }`}
+                        >
+                          <p className="text-xs font-medium">{opt.label}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {disabled
+                              ? "Not supported on Apple Silicon"
+                              : opt.desc}
+                          </p>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </CollapsibleContent>
