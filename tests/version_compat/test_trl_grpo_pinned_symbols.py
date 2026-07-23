@@ -16,7 +16,7 @@ import re
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import fetch_text, first_match, has_def, is_bound
 
 
 # Every stable TRL release from 0.18.2 (pyproject floor) onwards, plus `main`.
@@ -81,7 +81,7 @@ def test_trl_top_level_grpo_sft(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/__init__.py")
     assert src is not None, f"trl/__init__.py missing in {tag}"
     for name in ("GRPOTrainer", "GRPOConfig", "SFTTrainer", "SFTConfig"):
-        assert name in src, (
+        assert is_bound(src, name), (
             f"{tag}: `from trl import {name}` will fail; "
             f"unsloth/trainer.py + unsloth/models/rl.py rely on this re-export"
         )
@@ -127,9 +127,9 @@ def test_data_collator_for_preference_resolvable(tag: str):
     new_path = fetch_text("huggingface/trl", tag, "trl/trainer/dpo_trainer.py")
     old_path = fetch_text("huggingface/trl", tag, "trl/trainer/utils.py")
     have = []
-    if new_path is not None and "DataCollatorForPreference" in new_path:
+    if new_path is not None and is_bound(new_path, "DataCollatorForPreference"):
         have.append("trl.trainer.dpo_trainer")
-    if old_path is not None and "DataCollatorForPreference" in old_path:
+    if old_path is not None and is_bound(old_path, "DataCollatorForPreference"):
         have.append("trl.trainer.utils")
     assert have, (
         f"{tag}: DataCollatorForPreference defined in NEITHER "
@@ -149,7 +149,7 @@ def test_trl_trainer_utils_pad(tag: str):
         # Some TRL versions split utils into a package.
         src = fetch_text("huggingface/trl", tag, "trl/trainer/utils/__init__.py")
     assert src is not None, f"{tag}: trl/trainer/utils[.py|/__init__.py] both missing"
-    assert has_def(src, "pad", "func") or "def pad(" in src, (
+    assert is_bound(src, "pad"), (
         f"{tag}: trl.trainer.utils.pad missing — "
         f"unsloth/models/rl_replacements.py:326 emits `from trl.trainer.utils "
         f"import pad as _unsloth_trl_pad` into the GRPO compile cell"
@@ -172,7 +172,7 @@ def test_unwrap_model_for_generation_either_path(tag: str):
         src = fetch_text("huggingface/trl", tag, path)
         if src is None:
             continue
-        if "unwrap_model_for_generation" in src:
+        if is_bound(src, "unwrap_model_for_generation"):
             return
     pytest.fail(
         f"{tag}: trl.unwrap_model_for_generation not in any known path "
@@ -378,8 +378,8 @@ def test_trl_openenv_utils_generators(tag: str):
     src = fetch_text("huggingface/trl", tag, "trl/experimental/openenv/utils.py")
     if src is None:
         pytest.skip(f"{tag}: openenv.utils not present (gated optional)")
-    legacy = "generate_rollout_completions" in src
-    new = "_generate_rollout_completions_colocate" in src
+    legacy = is_bound(src, "generate_rollout_completions")
+    new = is_bound(src, "_generate_rollout_completions_colocate")
     assert legacy or new, (
         f"{tag}: openenv.utils has neither `generate_rollout_completions` "
         f"nor `_generate_rollout_completions_colocate`; "

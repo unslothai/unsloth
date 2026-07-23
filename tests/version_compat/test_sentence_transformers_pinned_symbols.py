@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from tests.version_compat._fetch import fetch_text, first_match, has_def
+from tests.version_compat._fetch import fetch_text, first_match, has_def, is_bound
 
 
 # ST is unpinned in pyproject.toml; track the last few minors plus main.
@@ -31,7 +31,7 @@ def test_st_top_level_exports(tag: str):
     src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert src is not None, f"{tag}: sentence_transformers/__init__.py missing"
     needed = ("SentenceTransformer", "SentenceTransformerTrainer")
-    missing = [n for n in needed if n not in src]
+    missing = [n for n in needed if not is_bound(src, n)]
     assert not missing, (
         f"{tag}: sentence_transformers top-level missing {missing}; "
         f"unsloth.models.sentence_transformer:1467,2154 will ImportError"
@@ -53,7 +53,7 @@ def test_st_models_re_exports(tag: str):
     needed = ("Transformer", "Pooling", "Normalize")
     if legacy_hit is not None:
         _path, src = legacy_hit
-        missing = [n for n in needed if n not in src]
+        missing = [n for n in needed if not is_bound(src, n)]
         assert not missing, (
             f"{tag}: legacy sentence_transformers/models layout missing "
             f"{missing}; unsloth.models.sentence_transformer:1016,1206,1467 "
@@ -171,9 +171,7 @@ def test_st_util_helpers(tag: str):
     assert hit is not None, f"{tag}: sentence_transformers/util[.py|/__init__.py] both missing"
     _path, src = hit
     for fn in ("import_from_string", "load_dir_path"):
-        defined_here = has_def(src, fn, "func")
-        reexported = bool(re.search(rf"\b{re.escape(fn)}\b", src))
-        if not (defined_here or reexported):
+        if not is_bound(src, fn):
             # Modular-layout subfiles.
             subpaths = [
                 "sentence_transformers/util/import_utils.py",
@@ -184,7 +182,7 @@ def test_st_util_helpers(tag: str):
             found = False
             for sp in subpaths:
                 sub = fetch_text("UKPLab/sentence-transformers", tag, sp)
-                if sub and (has_def(sub, fn, "func") or fn in sub):
+                if sub and is_bound(sub, fn):
                     found = True
                     break
             assert found, (
