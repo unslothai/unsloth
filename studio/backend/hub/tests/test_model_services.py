@@ -85,6 +85,11 @@ class TestExtractQuantToken:
     def test_ud_prefix_preserved(self):
         assert gguf.extract_quant_token("Foo-BF16-UD-Q4_K_XL.gguf") == "UD-Q4_K_XL"
 
+    def test_packed_and_grouped_quant_variants_do_not_collapse(self):
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-PQ2_0.gguf") == "PQ2_0"
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0.gguf") == "Q2_0"
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0_g64.gguf") == "Q2_0_g64"
+
     def test_precision_infix_variants_do_not_collapse(self):
         labels = {
             gguf.extract_quant_label("Foo-BF16-Q4_K_M.gguf"),
@@ -1084,6 +1089,21 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
         "model-Q4_K_M-00002-of-00002.gguf",
         "mmproj-F16.gguf",
     )
+
+
+def test_gguf_variant_requirements_keep_packed_q2_files_separate():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Ternary-Bonsai-1.7B-PQ2_0.gguf", 10, "pq"),
+            _sibling("Ternary-Bonsai-1.7B-Q2_0.gguf", 20, "q2"),
+            _sibling("Ternary-Bonsai-1.7B-Q2_0_g64.gguf", 30, "q2g64"),
+        ]
+    )
+
+    assert set(requirements) == {"pq2_0", "q2_0", "q2_0_g64"}
+    assert requirements["pq2_0"].target_filenames == ("Ternary-Bonsai-1.7B-PQ2_0.gguf",)
+    assert requirements["q2_0"].target_filenames == ("Ternary-Bonsai-1.7B-Q2_0.gguf",)
+    assert requirements["q2_0_g64"].target_filenames == ("Ternary-Bonsai-1.7B-Q2_0_g64.gguf",)
 
 
 def test_gguf_variant_requirements_skip_big_endian_sibling():
