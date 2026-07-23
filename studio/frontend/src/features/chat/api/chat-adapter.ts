@@ -1569,8 +1569,10 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
  * scan folders), then the smallest complete chat-capable on-device model
  * (GGUF first, then safetensors). Never downloads: with no valid on-device
  * candidate the caller shows the actionable "no model" error instead.
+ *
+ * Exported for tests.
  */
-async function autoLoadOnDeviceModel(): Promise<{
+export async function autoLoadOnDeviceModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
   /** True when an inventory failure was already surfaced to the user. */
