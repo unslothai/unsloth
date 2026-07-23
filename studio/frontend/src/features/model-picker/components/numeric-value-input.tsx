@@ -65,6 +65,7 @@ export const NumericValueInput = forwardRef<
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
   const cancelBlurCommitRef = useRef(false);
+  const draftRef = useRef("");
 
   const commitDraft = (raw: string): number => {
     const parsed = Number.parseFloat(raw);
@@ -82,12 +83,19 @@ export const NumericValueInput = forwardRef<
     ref,
     () => ({
       commit: () => {
-        if (!focused) {
-          return value;
+        const raw = draftRef.current;
+        if (focused) {
+          const final = commitDraft(raw);
+          setFocused(false);
+          return final;
         }
-        const final = commitDraft(draft);
-        setFocused(false);
-        return final;
+        // Load can blur the input in the same click turn before React re-renders
+        // onChange from onBlur — still flush a pending draft here.
+        const parsed = Number.parseFloat(raw);
+        if (Number.isFinite(parsed)) {
+          return commitDraft(raw);
+        }
+        return value;
       },
     }),
     [draft, focused, max, min, onChange, step, value],
@@ -109,7 +117,9 @@ export const NumericValueInput = forwardRef<
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
-        setDraft(String(value));
+        const next = String(value);
+        draftRef.current = next;
+        setDraft(next);
         setFocused(true);
         const target = e.currentTarget;
         requestAnimationFrame(() => target.select());
@@ -118,19 +128,23 @@ export const NumericValueInput = forwardRef<
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
         } else {
-          commitDraft(draft);
+          commitDraft(draftRef.current);
         }
         setFocused(false);
       }}
-      onChange={(e) =>
-        setDraft(sanitizeNumeric(e.target.value, (min ?? 0) < 0))
-      }
+      onChange={(e) => {
+        const next = sanitizeNumeric(e.target.value, (min ?? 0) < 0);
+        draftRef.current = next;
+        setDraft(next);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.currentTarget.blur();
         } else if (e.key === "Escape") {
           cancelBlurCommitRef.current = true;
-          setDraft(String(value));
+          const next = String(value);
+          draftRef.current = next;
+          setDraft(next);
           e.currentTarget.blur();
         }
       }}
