@@ -3721,10 +3721,7 @@ async def _maybe_auto_switch_model(
         # the loop, like the resolver above.
         if require_vision and (
             stashed_load_mmproj is False
-            or (
-                resolved is not None
-                and not await asyncio.to_thread(_target_is_vision, target_id)
-            )
+            or (resolved is not None and not await asyncio.to_thread(_target_is_vision, target_id))
         ):
             raise HTTPException(
                 status_code = 400,
