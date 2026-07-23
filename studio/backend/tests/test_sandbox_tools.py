@@ -457,9 +457,7 @@ class TestSandboxEnvIsolation:
             alias.symlink_to(real_prog, target_is_directory = True)
         except (OSError, NotImplementedError):
             pytest.skip("symlink unsupported in this environment")
-        monkeypatch.setattr(
-            tools_mod, "_windows_program_roots", lambda: [str(real_prog)]
-        )
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(real_prog)])
         git_via_alias = alias / "Git" / "cmd" / "git.exe"
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_via_alias))
         env = _build_safe_env(str(tmp_path))
