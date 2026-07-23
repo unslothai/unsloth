@@ -2739,6 +2739,8 @@ class LlamaCppBackend:
         supports_metrics = False
         supports_slot_save = False
         saw_spec_type = False
+        probe_ok = False
+        help_text = ""
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
@@ -2750,6 +2752,7 @@ class LlamaCppBackend:
                 check = False,
                 env = probe_env,
             )
+            probe_ok = result.returncode == 0
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks (each --flag line + its indented
             # continuation), so the "argument has been removed" description
@@ -2849,16 +2852,17 @@ class LlamaCppBackend:
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
+            probe_ok = False
             help_text = ""
 
         help_nonempty = bool(help_text.strip())
-        # Confirmed MTP only when --help listed a --spec-type block with mtp/draft-mtp.
-        # Nonempty --help without --spec-type is a definitive pre-spec binary.
-        # Empty/crash probes stay inconclusive so startup does not falsely warn (#7302).
-        if saw_spec_type:
+        # Confirmed MTP only when a successful --help listed a --spec-type block
+        # with mtp/draft-mtp. Nonempty successful --help without --spec-type is a
+        # definitive pre-spec binary. Failed/empty probes stay inconclusive (#7302).
+        if saw_spec_type and probe_ok:
             supports_mtp = mtp_token is not None
             mtp_probe_inconclusive = False
-        elif help_nonempty:
+        elif help_nonempty and probe_ok:
             supports_mtp = False
             mtp_probe_inconclusive = False
         else:

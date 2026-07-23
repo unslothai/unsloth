@@ -730,6 +730,24 @@ def test_probe_server_capabilities_no_spec_type_is_definitive(tmp_path):
 
 
 @_NEEDS_BASH
+def test_probe_server_capabilities_failed_help_with_output_is_inconclusive(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$1\" = \"--help\" ]; then\n"
+        "  echo 'illegal instruction'\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
     fake = tmp_path / "llama-server"
     fake.write_text("#!/usr/bin/env bash\nkill -SEGV $$\n")
