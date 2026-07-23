@@ -18,6 +18,7 @@ import queue
 import random
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import sys
@@ -328,24 +329,6 @@ def _find_blocked_commands(command: str) -> set[str]:
 # Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
 # path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
-
-# Git for Windows installs live outside System32 (e.g. Program Files\Git\cmd).
-# Only those host PATH dirs are inherited on Windows so bare ``git`` resolves
-# without appending user-writable dirs (venv, node_modules/.bin) that could
-# shadow auto-safe terminal commands (#7317).
-_WINDOWS_GIT_PATH_RE = re.compile(
-    r"[\\/]git[\\/](?:cmd|bin|mingw64[\\/]bin)(?:[\\/]|$)",
-    re.IGNORECASE,
-)
-
-
-def _is_windows_git_path_entry(entry: str) -> bool:
-    """True when ``entry`` looks like a Git-for-Windows install directory."""
-    if sys.platform != "win32":
-        return False
-    norm = os.path.normcase(os.path.normpath(entry.strip().strip('"')))
-    return bool(_WINDOWS_GIT_PATH_RE.search(norm))
-
 
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
@@ -2544,15 +2527,15 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
-    # Windows Git installs live outside System32; inherit only those host PATH
-    # dirs so bare `git` resolves without pulling in user-writable PATH (#7317).
+    # Windows Git installs live outside System32; inherit only the dir of the
+    # git the HOST shell resolves (never a name-matched, possibly user-writable
+    # dir) so bare `git` resolves without weakening the sandbox PATH (#7317).
     if sys.platform == "win32":
-        for entry in os.environ.get("PATH", "").split(os.pathsep):
-            entry = entry.strip().strip('"')
-            if not entry or entry in (".",) or not os.path.isabs(entry):
-                continue
-            if _is_windows_git_path_entry(entry):
-                path_entries.append(entry)
+        git_exe = shutil.which("git")
+        if git_exe:
+            git_dir = os.path.dirname(git_exe)
+            if os.path.isabs(git_dir):
+                path_entries.append(git_dir)
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
@@ -2575,6 +2558,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         env["PATHEXT"] = ".EXE;.COM"
+        # cmd/CreateProcess search cwd before PATH for bare names; disable so
+        # a workdir rg.exe/git.exe cannot shadow auto-approved commands.
+        env["NoDefaultCurrentDirectoryInExePath"] = "1"
     return env
 
 

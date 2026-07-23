@@ -298,6 +298,7 @@ class TestSandboxEnvIsolation:
             "VIRTUAL_ENV",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
+            "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
@@ -306,70 +307,58 @@ class TestSandboxEnvIsolation:
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
 
-    def test_host_path_absolute_dirs_appended_after_curated(self, monkeypatch, tmp_path):
-        # #7317: Windows Git lives under Program Files, not System32. Sandbox PATH
-        # must still resolve bare `git` by appending Git install dirs from the
-        # host PATH after the curated interpreter / system prefix.
+    def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
+        # #7317: Windows Git lives under Program Files, not System32. Sandbox
+        # PATH resolves bare `git` by appending the dir of the git the HOST
+        # shell resolves (shutil.which), after the curated prefix.
+        import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "win32")
-        git_dir = tmp_path / "Git" / "cmd"
+        git_dir = tmp_path / "Program Files" / "Git" / "cmd"
         git_dir.mkdir(parents = True)
-        junk_rel = "relative-bin"
-        user_bin = tmp_path / "user-bin"
-        user_bin.mkdir()
-        monkeypatch.setenv(
-            "PATH",
-            os.pathsep.join(
-                [
-                    str(git_dir),
-                    ".",
-                    junk_rel,
-                    str(user_bin),
-                    os.environ.get("PATH", ""),
-                ]
-            ),
+        monkeypatch.setattr(
+            tools_mod.shutil, "which", lambda name: str(git_dir / "git.exe")
         )
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
         assert str(git_dir) in parts
         # Curated prefix stays ahead of host Git so Studio python/pip win.
         assert parts.index(str(git_dir)) > 0
-        assert "." not in parts
-        assert junk_rel not in parts
-        # User-writable dirs must not be inherited (PATH hijack / auto-safe shadow).
-        assert str(user_bin) not in parts
 
-    def test_host_path_quoted_windows_style_entries_stripped(self, monkeypatch, tmp_path):
-        from core.inference.tools import _build_safe_env
-
-        monkeypatch.setattr(sys, "platform", "win32")
-        quoted = tmp_path / "Program Files" / "Git" / "cmd"
-        quoted.mkdir(parents = True)
-        # Windows PATH entries are sometimes quoted when they contain spaces.
-        monkeypatch.setenv("PATH", f'"{quoted}"{os.pathsep}{os.environ.get("PATH", "")}')
-        env = _build_safe_env(str(tmp_path))
-        parts = env["PATH"].split(os.pathsep)
-        assert str(quoted) in parts
-        assert f'"{quoted}"' not in parts
-
-    def test_user_writable_host_path_not_inherited(self, monkeypatch, tmp_path):
-        """venv/node_modules-style dirs must not shadow auto-safe terminal cmds."""
+    def test_host_path_dirs_not_inherited(self, monkeypatch, tmp_path):
+        """Host PATH dirs (user-writable, git-lookalike) are never inherited;
+        only the resolved git dir is. No git resolved -> nothing appended."""
+        import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "win32")
         venv_scripts = tmp_path / "venv" / "Scripts"
         venv_scripts.mkdir(parents = True)
-        node_bin = tmp_path / "project" / "node_modules" / ".bin"
-        node_bin.mkdir(parents = True)
+        fake_git = tmp_path / "scratch" / "Git" / "cmd"
+        fake_git.mkdir(parents = True)
         monkeypatch.setenv(
             "PATH",
-            os.pathsep.join([str(venv_scripts), str(node_bin), os.environ.get("PATH", "")]),
+            os.pathsep.join([str(venv_scripts), str(fake_git), os.environ.get("PATH", "")]),
         )
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
         assert str(venv_scripts) not in parts
-        assert str(node_bin) not in parts
+        # A git-suffixed but unresolved (user-writable) dir is NOT trusted.
+        assert str(fake_git) not in parts
+
+    def test_no_default_current_directory_in_exe_path_set_on_windows(
+        self, monkeypatch, tmp_path
+    ):
+        """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        env = _build_safe_env(str(tmp_path))
+        assert env["NoDefaultCurrentDirectoryInExePath"] == "1"
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
