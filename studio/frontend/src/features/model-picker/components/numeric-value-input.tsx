@@ -2,7 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 
 export function snapToStep(
   value: number,
@@ -29,7 +35,7 @@ function sanitizeNumeric(raw: string, allowNegative: boolean): string {
 }
 
 export type NumericValueInputHandle = {
-  /** Commit a focused draft; returns a value only when the user edited the field. */
+  /** Commit a focused/same-click draft; null when the user did not edit. */
   commit: () => number | null;
 };
 
@@ -67,6 +73,15 @@ export const NumericValueInput = forwardRef<
   const cancelBlurCommitRef = useRef(false);
   const draftRef = useRef("");
   const dirtyRef = useRef(false);
+  // Same-click Load: blur commits via onChange and clears dirtyRef before the
+  // button onClick runs, while parent `value` is still stale. Keep the blur
+  // result for one imperative commit(); clear when `value` catches up or on
+  // focus / external edits (Reset, slider).
+  const lastBlurCommittedRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    lastBlurCommittedRef.current = null;
+  }, [value]);
 
   const commitDraft = (raw: string): number => {
     const parsed = Number.parseFloat(raw);
@@ -84,27 +99,37 @@ export const NumericValueInput = forwardRef<
     ref,
     () => ({
       commit: () => {
-        if (!dirtyRef.current) {
-          if (focused) {
-            setFocused(false);
+        if (dirtyRef.current) {
+          const raw = draftRef.current;
+          const parsed = Number.parseFloat(raw);
+          if (!Number.isFinite(parsed)) {
+            dirtyRef.current = false;
+            lastBlurCommittedRef.current = null;
+            if (focused) {
+              setFocused(false);
+            }
+            return null;
           }
-          return null;
-        }
-        const raw = draftRef.current;
-        const parsed = Number.parseFloat(raw);
-        if (!Number.isFinite(parsed)) {
+          const final = commitDraft(raw);
           dirtyRef.current = false;
+          lastBlurCommittedRef.current = null;
           if (focused) {
             setFocused(false);
           }
-          return null;
+          return final;
         }
-        const final = commitDraft(raw);
-        dirtyRef.current = false;
+        const blurCommitted = lastBlurCommittedRef.current;
+        if (blurCommitted != null) {
+          lastBlurCommittedRef.current = null;
+          if (focused) {
+            setFocused(false);
+          }
+          return blurCommitted;
+        }
         if (focused) {
           setFocused(false);
         }
-        return final;
+        return null;
       },
     }),
     [draft, focused, max, min, onChange, step, value],
@@ -127,6 +152,7 @@ export const NumericValueInput = forwardRef<
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
         dirtyRef.current = false;
+        lastBlurCommittedRef.current = null;
         const next = String(value);
         draftRef.current = next;
         setDraft(next);
@@ -137,15 +163,18 @@ export const NumericValueInput = forwardRef<
       onBlur={() => {
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
+          lastBlurCommittedRef.current = null;
         } else if (dirtyRef.current) {
           const final = commitDraft(draftRef.current);
           dirtyRef.current = false;
           draftRef.current = String(final);
+          lastBlurCommittedRef.current = final;
         }
         setFocused(false);
       }}
       onChange={(e) => {
         dirtyRef.current = true;
+        lastBlurCommittedRef.current = null;
         const next = sanitizeNumeric(e.target.value, (min ?? 0) < 0);
         draftRef.current = next;
         setDraft(next);
@@ -156,6 +185,7 @@ export const NumericValueInput = forwardRef<
         } else if (e.key === "Escape") {
           cancelBlurCommitRef.current = true;
           dirtyRef.current = false;
+          lastBlurCommittedRef.current = null;
           const next = String(value);
           draftRef.current = next;
           setDraft(next);

@@ -338,12 +338,14 @@ def test_initial_load_uses_staged_config_payload():
     assert "commit:" in numeric
     # Codex P1: commit returns null unless the user actually edited the field,
     # so Load/Save with untouched Auto does not pin native context.
-    assert "if (!dirtyRef.current)" in numeric
+    assert "dirtyRef.current" in numeric
     assert "return null;" in numeric
     # Codex P2: blur clears dirtyRef after commit so Reset/slider cannot be
     # overwritten by a stale draft on a later Load.
     assert "dirtyRef.current = false;" in numeric
     assert "draftRef.current = String(final);" in numeric
+    # Codex follow-up: same-click Load after blur still sees the committed draft.
+    assert "lastBlurCommittedRef" in numeric
     # handleRun only promotes commit() when non-null.
     assert "committedContext != null" in page
     assert "customContextLength: committedContext" in page
