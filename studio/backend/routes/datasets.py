@@ -23,40 +23,6 @@ def _is_valid_repo_id(repo_id: str) -> bool:
     return bool(_VALID_REPO_ID.fullmatch(repo_id))
 
 
-_dataset_size_cache: dict[str, int] = {}
-
-
-def _get_dataset_size_cached(repo_id: str) -> int:
-    if repo_id in _dataset_size_cache:
-        return _dataset_size_cache[repo_id]
-    try:
-        from huggingface_hub import dataset_info as hf_dataset_info
-
-        info = hf_dataset_info(repo_id, token = None, files_metadata = True)
-        total = sum(s.size for s in info.siblings if getattr(s, "size", None))
-        _dataset_size_cache[repo_id] = total
-        return total
-    except Exception:
-        return 0
-
-
-def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Resolved realpath for a HF cache repo dir: most-recent snapshot, else cache root.
-
-    Mirrors routes/models.py; duplicated here to keep this module self-contained.
-    """
-    try:
-        snapshots_dir = repo_dir / "snapshots"
-        if snapshots_dir.is_dir():
-            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
-            if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
-                return str(latest.resolve())
-        return str(repo_dir.resolve())
-    except Exception:
-        return None
-
-
 backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
@@ -64,6 +30,7 @@ if str(backend_path) not in sys.path:
 from utils.datasets import check_dataset_format
 from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
+from hub.dependencies import get_hf_token
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -292,11 +259,13 @@ def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | N
 
     try:
         from huggingface_hub import hf_hub_download
+        from utils.hf_cache_settings import active_hf_hub_cache
         local_path = hf_hub_download(
             repo_id = repo_id,
             filename = metadata_file,
             repo_type = "dataset",
             token = token,
+            cache_dir = active_hf_hub_cache(),
         )
     except Exception as exc:
         logger.warning(f"Could not read HF dataset metadata for {repo_id}: {exc}")
@@ -485,7 +454,7 @@ async def upload_dataset(
 
     # Stream to disk in chunks to avoid holding the whole file in memory. The
     # route-level cap gives a clear training-dataset error and avoids leaving
-    # oversized partial files in the Studio uploads directory.
+    # oversized partial files in the Unsloth uploads directory.
     upload_limit_bytes = get_upload_limit_bytes()
     total_bytes = 0
     upload_complete = False
@@ -525,77 +494,15 @@ def list_local_datasets(
 @router.get("/download-progress")
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Return download progress for a HuggingFace dataset repo.
-
-    Mirrors ``GET /api/models/download-progress`` but scans the
-    ``datasets--owner--name`` cache dir under HF_HUB_CACHE, where in-progress
-    download bytes are visible. Returns ``cache_path`` so the UI can show it.
-    """
-    _empty = {
-        "downloaded_bytes": 0,
-        "expected_bytes": 0,
-        "progress": 0,
-        "cache_path": None,
-    }
-    try:
-        if not _is_valid_repo_id(repo_id):
-            return _empty
-
-        from huggingface_hub import constants as hf_constants
-
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        target = f"datasets--{repo_id.replace('/', '--')}".lower()
-        completed_bytes = 0
-        in_progress_bytes = 0
-        cache_path: Optional[str] = None
-
-        if cache_dir.is_dir():
-            for entry in cache_dir.iterdir():
-                if entry.name.lower() != target:
-                    continue
-                cache_path = _resolve_hf_cache_realpath(entry)
-                blobs_dir = entry / "blobs"
-                if not blobs_dir.is_dir():
-                    break
-                for f in blobs_dir.iterdir():
-                    if not f.is_file():
-                        continue
-                    if f.name.endswith(".incomplete"):
-                        in_progress_bytes += f.stat().st_size
-                    else:
-                        completed_bytes += f.stat().st_size
-                break
-
-        downloaded_bytes = completed_bytes + in_progress_bytes
-        if downloaded_bytes == 0:
-            return {**_empty, "cache_path": cache_path}
-
-        expected_bytes = _get_dataset_size_cached(repo_id)
-        if expected_bytes <= 0:
-            return {
-                "downloaded_bytes": downloaded_bytes,
-                "expected_bytes": 0,
-                "progress": 0,
-                "cache_path": cache_path,
-            }
-
-        # 95% threshold (as in the model endpoint): HF blob dedup makes
-        # completed_bytes drift under expected_bytes; inter-file gaps look "done".
-        if completed_bytes >= expected_bytes * 0.95:
-            progress = 1.0
-        else:
-            progress = min(downloaded_bytes / expected_bytes, 0.99)
-        return {
-            "downloaded_bytes": downloaded_bytes,
-            "expected_bytes": expected_bytes,
-            "progress": round(progress, 3),
-            "cache_path": cache_path,
-        }
-    except Exception as e:
-        logger.warning(f"Error checking dataset download progress for {repo_id}: {e}")
-        return _empty
+    """Compatibility route backed by the shared multi-cache progress service."""
+    from hub.services.datasets import downloads
+    return await downloads.get_dataset_download_progress_response(
+        repo_id,
+        hf_token = hf_token,
+    )
 
 
 @router.post("/check-format", response_model = CheckFormatResponse)

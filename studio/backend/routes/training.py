@@ -109,7 +109,9 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization
-    return get_visible_gpu_utilization()
+
+    # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this route.
+    return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
 @router.post("/start")
@@ -127,9 +129,9 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
-        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # When Unsloth is driven as an inference API (API-key auth), refuse to start
         # training while a request is in flight: training frees VRAM by unloading
-        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # the chat model, which would kill the stream. The Unsloth UI (session auth)
         # still starts training and coexists/frees VRAM as before. (A mixed UI+API
         # session is not yet special-cased.)
         if via_api_key is True:
@@ -139,12 +141,22 @@ async def start_training(
                     status_code = 409,
                     detail = (
                         "Cannot start training over the API while an inference request is in "
-                        "progress. Wait for it to finish, or start training from the Studio UI."
+                        "progress. Wait for it to finish, or start training from the Unsloth UI."
                     ),
                 )
 
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
+
+        # A consented latest-transformers install stage-and-swaps .venv_t5_latest;
+        # a worker spawned mid-swap could activate a half-replaced sidecar.
+        from utils.transformers_latest import is_install_in_progress
+
+        if is_install_in_progress():
+            raise HTTPException(
+                status_code = 409,
+                detail = ("A transformers installation is in progress. Retry when it completes."),
+            )
 
         backend = get_training_backend()
 
@@ -186,6 +198,7 @@ async def start_training(
                 request.local_eval_datasets, "Local eval dataset"
             )
         resume_output_dir: Optional[str] = None
+        resume_run: Optional[dict] = None
         if request.resume_from_checkpoint:
             try:
                 resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
@@ -198,7 +211,7 @@ async def start_training(
             if not resume_run or not can_resume_run(resume_run):
                 raise HTTPException(
                     status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped run with saved trainer state.",
+                    detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
             resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
             if not resume_checkpoint:
@@ -341,6 +354,24 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
+        # Latest-sidecar models size and train 16-bit (same flip as chat load):
+        # 4-bit is disabled for brand-new architectures, so VRAM coexistence
+        # checks must not underestimate against a load the worker will refuse.
+        if training_kwargs["load_in_4bit"]:
+            from utils.transformers_version import latest_tier_active_for
+            if await asyncio.to_thread(
+                latest_tier_active_for,
+                training_kwargs["model_name"],
+                training_kwargs["hf_token"] or None,
+            ):
+                training_kwargs["load_in_4bit"] = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - sizing and "
+                    "training in 16-bit (4-bit is disabled for brand-new "
+                    "architectures)",
+                    training_kwargs["model_name"],
+                )
+
         # Training page has no trust_remote_code toggle, so honor the YAML default
         # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
         # local path or a name merely starting with "unsloth/".
@@ -384,51 +415,44 @@ async def start_training(
             try:
                 from routes.training_vram import (
                     can_keep_chat_during_training,
-                    free_chat_models_for_training,
-                    summarize_resident_chat,
+                    coordinate_models_for_training,
                 )
 
-                resident = summarize_resident_chat()
-                if not resident["any"]:
-                    return
-                if resident.get("loading"):
-                    # In-flight load can't be sized -> free rather than risk OOM.
-                    freed = free_chat_models_for_training(reason = "chat model still loading")
-                    logger.info("Freed in-flight chat load for training: %s", freed)
-                    return
-                keep, info = can_keep_chat_during_training(
-                    model_name = training_kwargs["model_name"],
-                    hf_token = training_kwargs["hf_token"],
-                    training_type = training_kwargs["training_type"],
-                    load_in_4bit = training_kwargs["load_in_4bit"],
-                    batch_size = training_kwargs["batch_size"],
-                    max_seq_length = training_kwargs["max_seq_length"],
-                    lora_rank = training_kwargs["lora_r"],
-                    target_modules = training_kwargs["target_modules"],
-                    gradient_checkpointing = training_kwargs["gradient_checkpointing"],
-                    optimizer = training_kwargs["optim"],
-                    gpu_ids = training_kwargs["gpu_ids"],
-                )
-                if keep:
-                    logger.info(
-                        "Keeping chat model(s) loaded during training "
-                        "(free ~%s GB, needs ~%s GB): %s",
-                        info.get("usable_gb"),
-                        info.get("required_gb"),
-                        resident,
+                def _can_keep_resident_models():
+                    return can_keep_chat_during_training(
+                        model_name = training_kwargs["model_name"],
+                        hf_token = training_kwargs["hf_token"],
+                        training_type = training_kwargs["training_type"],
+                        load_in_4bit = training_kwargs["load_in_4bit"],
+                        batch_size = training_kwargs["batch_size"],
+                        max_seq_length = training_kwargs["max_seq_length"],
+                        lora_rank = training_kwargs["lora_r"],
+                        target_modules = training_kwargs["target_modules"],
+                        gradient_checkpointing = training_kwargs["gradient_checkpointing"],
+                        optimizer = training_kwargs["optim"],
+                        gpu_ids = training_kwargs["gpu_ids"],
                     )
-                else:
-                    freed = free_chat_models_for_training(
-                        reason = "insufficient VRAM to run training alongside chat",
-                    )
-                    logger.info("Freed chat model(s) for training: %s", freed)
+
+                freed = coordinate_models_for_training(_can_keep_resident_models)
+                if freed:
+                    logger.info("Freed models for training: %s", freed)
             except Exception as e:
-                logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
+                logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        success = backend.start_training(
-            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
-        )
+        from utils.transformers_version import SidecarSwapInProgress
+
+        try:
+            success = backend.start_training(
+                job_id = job_id,
+                before_spawn = _free_vram_for_training,
+                resume_source_run_id = resume_run["id"] if resume_run else None,
+                **training_kwargs,
+            )
+        except SidecarSwapInProgress as exc:
+            # Expected loss of the race against a sidecar install: a retryable
+            # 409 matching the route-entry guard, not an internal error.
+            raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
             progress_error = backend.trainer.training_progress.error
@@ -486,7 +510,10 @@ async def stop_training(
                 status = "idle", message = "No training job is currently running"
             )
 
-        backend.stop_training(save = body.save)
+        if not backend.stop_training(save = body.save):
+            return TrainingStopResponse(
+                status = "idle", message = "No training job is currently running"
+            )
 
         return TrainingStopResponse(
             status = "stopped",
@@ -602,9 +629,9 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 "loss": getattr(progress, "loss", None),
                 "learning_rate": getattr(progress, "learning_rate", None),
             }
-            output_dir = getattr(backend, "_output_dir", None)
-            if output_dir:
-                details["output_dir"] = output_dir
+            # Always present: an explicit null tells the client to drop a cached
+            # path (stop without save clears the run's output_dir).
+            details["output_dir"] = getattr(backend, "_output_dir", None) or None
 
         # Metric history for chart recovery after SSE reconnection.
         metric_history = None
@@ -698,7 +725,9 @@ async def stream_training_progress(
     if last_event_id is not None:
         try:
             resume_from_step = int(last_event_id)
-            logger.info(f"SSE reconnect: resuming from step {resume_from_step}")
+            # Fires on every reconnect (each tab switch); the meaningful signal is
+            # the "replayed N missed steps" line below, logged only when N > 0.
+            logger.debug(f"SSE reconnect: resuming from step {resume_from_step}")
         except ValueError:
             logger.warning(f"Invalid Last-Event-ID: {last_event_id}")
 

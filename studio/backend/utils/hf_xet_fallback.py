@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio shim over the shared ``unsloth_zoo.hf_xet_fallback`` Xet -> HTTP stall fallback.
+"""Unsloth shim over the shared ``unsloth_zoo.hf_xet_fallback`` Xet -> HTTP stall fallback.
 
-Re-exports the shared API and injects Studio's marker-aware cache purge
+Re-exports the shared API and injects Unsloth's marker-aware cache purge
 (``prepare_cache_for_transport``) so the download manager keeps its ``.transport``
 marker semantics on the HTTP retry.
 
@@ -21,6 +21,8 @@ never triggers the heavy load.
 from __future__ import annotations
 
 import threading
+from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 # Defaults mirror unsloth_zoo.hf_xet_fallback; plain literals so they resolve (including as
@@ -68,7 +70,7 @@ def _load_shared() -> bool:
                 _shared_available = True
                 _shared_import_error = None
                 return True
-            except Exception as exc2:  # noqa: BLE001 - degrade so Studio still boots with plain HF
+            except Exception as exc2:  # noqa: BLE001 - degrade so Unsloth still boots with plain HF
                 _shared_import_error = exc2
                 _shared_available = False
                 import logging as _logging
@@ -262,18 +264,28 @@ __all__ = [
 ]
 
 
-def _studio_prepare_for_http(repo_type: str, repo_id: str) -> None:
-    """Studio's marker-aware purge before an HTTP resume, keeping the download manager's ``.transport``
+def _studio_prepare_for_http(
+    repo_type: str,
+    repo_id: str,
+    *,
+    cache_dir: Optional[str] = None,
+) -> None:
+    """Unsloth's marker-aware purge before an HTTP resume, keeping the download manager's ``.transport``
     accounting consistent (vs unsloth_zoo's generic default). Guarded: a purge failure is logged,
     not fatal to the retry."""
     try:
         from hub.utils.download_registry import prepare_cache_for_transport
-        prepare_cache_for_transport(repo_type, repo_id, "http")
+        prepare_cache_for_transport(
+            repo_type,
+            repo_id,
+            "http",
+            root = Path(cache_dir) if cache_dir else None,
+        )
     except Exception as exc:
         try:
             from loggers import get_logger
             get_logger(__name__).debug(
-                "Studio prepare_cache_for_transport failed for %s: %s", repo_id, exc
+                "Unsloth prepare_cache_for_transport failed for %s: %s", repo_id, exc
             )
         except ModuleNotFoundError as logger_exc:
             if logger_exc.name != "loggers":
@@ -293,9 +305,13 @@ def hf_hub_download_with_xet_fallback(
     grace_period: float = DEFAULT_GRACE_PERIOD,
     on_status: Optional[Callable[[str], None]] = None,
     force_download: bool = False,
+    cache_dir: Optional[str] = None,
 ) -> str:
-    """Single-file download via the shared fallback with Studio's marker-aware HTTP-retry prep.
-    ``force_download`` re-fetches a newer blob over a cached one (Studio's model-update path)."""
+    """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
+    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path)."""
+    if cache_dir is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        cache_dir = str(get_hf_cache_paths().hub_cache)
     return _shared_hf_hub_download_with_xet_fallback(
         repo_id,
         filename,
@@ -308,11 +324,18 @@ def hf_hub_download_with_xet_fallback(
         grace_period = grace_period,
         on_status = on_status,
         force_download = force_download,
-        prepare_for_http_fn = _studio_prepare_for_http,
+        cache_dir = cache_dir,
+        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
     )
 
 
 def snapshot_download_with_xet_fallback(repo_id: str, **kwargs: Any) -> str:
-    """Whole-repo download via the shared fallback with Studio's marker-aware HTTP-retry prep."""
-    kwargs.setdefault("prepare_for_http_fn", _studio_prepare_for_http)
+    """Whole-repo download via the shared fallback with Unsloth's marker-aware HTTP-retry prep."""
+    if kwargs.get("cache_dir") is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        kwargs["cache_dir"] = str(get_hf_cache_paths().hub_cache)
+    kwargs.setdefault(
+        "prepare_for_http_fn",
+        partial(_studio_prepare_for_http, cache_dir = kwargs["cache_dir"]),
+    )
     return _shared_snapshot_download_with_xet_fallback(repo_id, **kwargs)

@@ -90,6 +90,79 @@ _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
 # run_training_process() and isn't GC'd mid-run.
 _WINDOWS_ROCM_GROUPED_MM_LIB = None
 
+
+def _install_grouped_mm_cpu_fallback(torch_mod, logger, label):
+    """Register a Python mm/bmm fallback for torch._grouped_mm and return the Library.
+
+    RDNA4 (gfx1200/gfx1201) ships a null HIP _grouped_mm kernel on ROCm <= 7.12
+    (fixed in 7.13; ROCm/TheRock #5284). JitDecomp dispatches _grouped_mm to the
+    null kernel and crashes; overriding the CUDA dispatch key bypasses it. Shared
+    by the Windows and Linux ROCm guards. Keep the returned Library referenced so
+    the registration outlives the caller.
+    """
+    import warnings as _warnings
+
+    _gm_lib = torch_mod.library.Library("aten", "IMPL")
+
+    def _grouped_mm_safe_impl(
+        self,
+        mat2,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+    ):
+        """Python mm/bmm fallback for _grouped_mm on gfx120X (null HIP kernel, ROCm <= 7.12)."""
+        _t = torch_mod
+        if offs is None:
+            # No offsets: 2-D -> mm, 3-D batched -> bmm (unconditional mm broke 3-D MoE).
+            if self.dim() == 3 and mat2.dim() == 3:
+                result = _t.bmm(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 3 and mat2.dim() == 2:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            elif self.dim() == 2 and mat2.dim() == 3:
+                result = _t.matmul(self.contiguous(), mat2.contiguous())
+            else:
+                result = _t.mm(self.contiguous(), mat2.contiguous())
+        else:
+            # Grouped: offs[i] is the exclusive end-row of group i.
+            offs_list = offs.tolist()
+            pieces = []
+            prev = 0
+            for idx, end in enumerate(offs_list):
+                end = int(end)
+                a_part = self[prev:end].contiguous()
+                b_part = mat2[idx].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_part, b_part))
+                prev = end
+            # Include trailing rows not covered by offs.
+            if prev < self.shape[0]:
+                a_tail = self[prev:].contiguous()
+                b_tail = mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
+                pieces.append(_t.mm(a_tail, b_tail))
+            result = (
+                _t.cat(pieces, dim = 0)
+                if pieces
+                else _t.zeros(0, mat2.shape[-1], device = self.device, dtype = self.dtype)
+            )
+        if bias is not None:
+            result = result + bias
+        if out_dtype is not None:
+            result = result.to(out_dtype)
+        elif result.dtype != self.dtype:
+            result = result.to(self.dtype)
+        return result
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
+    logger.info(
+        "%s: patched _grouped_mm CUDA dispatch (null HIP kernel on gfx120X, "
+        "ROCm <= 7.12 -- bypassed with Python mm fallback)",
+        label,
+    )
+    return _gm_lib
+
+
 # Subprocesses don't inherit os.add_dll_directory registrations. Replicate
 # main.py's Windows ROCm DLL setup so the first `import torch` finds
 # amdhip64.dll. Handles retained at module scope so they aren't GC'd.
@@ -702,8 +775,9 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     3. Device-name substring match (last resort when all arch attrs absent;
        AMD SDK / Radeon wheels may not populate them):
          - gfx1150 Strix Point: ``Radeon 890M``, ``Radeon 880M``
-         - gfx1151 Strix Halo:  ``Radeon 8060S`` (Ryzen AI MAX+ 395),
-                                ``Radeon 8050S`` (cut-down SKU)
+         - gfx1151 Strix Halo / Gorgon Halo:  ``Radeon 8065S`` (Ryzen AI
+                                Max+ 495), ``Radeon 8060S`` (Ryzen AI MAX+
+                                395), ``Radeon 8050S`` (cut-down SKU)
     """
     gcn_arch = ""
     for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
@@ -728,7 +802,11 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     # Arch attrs absent — fall back to device-name matching.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
-        "890m" in dev_lower or "880m" in dev_lower or "8060s" in dev_lower or "8050s" in dev_lower
+        "890m" in dev_lower
+        or "880m" in dev_lower
+        or "8065s" in dev_lower
+        or "8060s" in dev_lower
+        or "8050s" in dev_lower
     )
     return gcn_arch, is_unified
 
@@ -1100,7 +1178,7 @@ _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE = {}
 
 
 def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
-    """Return the numpy image layout expected after Studio-side VLM resizing."""
+    """Return the numpy image layout expected after Unsloth-side VLM resizing."""
     image_processor = getattr(processor, "image_processor", None)
     if image_processor is None:
         return None
@@ -1257,7 +1335,7 @@ _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
 # Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
-# only when mlx (Apple Silicon) is not importable so Studio config validation
+# only when mlx (Apple Silicon) is not importable so Unsloth config validation
 # still works on non-MLX hosts. The zoo function stays the source of truth.
 _MLX_STUDIO_ADAMW_ALIASES = frozenset(
     (
@@ -1309,7 +1387,7 @@ def _normalize_mlx_studio_scheduler(value):
 
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
-    """Resolve CLI paths and Studio local dataset uploads without importing the GPU trainer."""
+    """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
     from utils.paths import resolve_dataset_path
 
     all_files: list[str] = []
@@ -1731,6 +1809,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    dataset_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1796,6 +1875,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -1838,8 +1918,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import ensure_dir
 
-    output_dir = _resolve_mlx_output_dir(config, model_name)
+    # Resume must land in the original run dir even when config lacks output_dir.
+    resume_dir = config.get("output_dir", "") or _output_dir_from_resume_checkpoint(
+        resume_from_checkpoint
+    )
+    output_dir = _resolve_mlx_output_dir(
+        {**config, "output_dir": resume_dir} if resume_dir else config, model_name
+    )
     ensure_dir(Path(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
@@ -1894,6 +1981,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
+    # Also gates the masking skip below, so defined outside the feature-detect block.
+    raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+
     # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
@@ -1907,8 +1997,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
-        # Studio SFT formatting owns rendered examples; raw/CPT text still
+        # Unsloth SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
@@ -1928,29 +2017,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    if config.get("train_on_completions", False):
+    # Auto-detect markers from the chat template first, manual table as
+    # fallback. Mirror the CUDA skips: raw/CPT text has no chat turns and
+    # Alpaca-rendered text lacks the chat markers. Also check the resolved
+    # format, since format_type="auto" can land on alpaca or raw text.
+    if (
+        config.get("train_on_completions", False)
+        and not raw_text_mode
+        and format_type != "alpaca"
+        and dataset_final_format not in ("alpaca", "raw_text")
+    ):
         _send("status", status_message = "Configuring response-only training...")
-        try:
-            from utils.datasets import (
-                MODEL_TO_TEMPLATE_MAPPER,
-                TEMPLATE_TO_RESPONSES_MAPPER,
-            )
-
-            template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
-            if markers:
-                trainer = train_on_responses_only(
-                    trainer,
-                    instruction_part = markers["instruction"],
-                    response_part = markers["response"],
-                )
-            else:
-                _send(
-                    "status",
-                    status_message = f"train_on_completions skipped (no template for {model_name})",
-                )
-        except Exception as e:
-            _send("status", status_message = f"train_on_completions failed: {e}")
+        # No catch: the helper handles detection failures and double misses, so
+        # an exception here is a real masking failure that must fail the run,
+        # not silently train on full sequences.
+        from utils.datasets.completion_masking import apply_completion_masking
+        trainer, _masking_applied = apply_completion_masking(
+            trainer,
+            model_name,
+            train_on_responses_only,
+            notify = lambda level, message: _send("status", status_message = message),
+        )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -2065,6 +2152,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     trainer.add_eval_callback(_on_eval)
 
+    _opt_ref = [None]
+    _orig_build_optimizer = getattr(trainer, "_build_optimizer", None)
+
+    if callable(_orig_build_optimizer):
+
+        def _capture_optimizer(total_steps):
+            _opt_ref[0] = _orig_build_optimizer(total_steps)
+            return _opt_ref[0]
+
+        trainer._build_optimizer = _capture_optimizer
+
     # ── 11. Run training ──
     gc.collect()
     mx.synchronize()
@@ -2080,31 +2178,58 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
-    if trainer.stop_requested:
-        if not _stop_save[0]:
-            # Cancel (save=False): skip saving.
-            _send("complete", output_dir = None, status_message = "Training cancelled")
+    def _finish_tracking() -> None:
+        # Runs on every save/finalize exit so TB/W&B never leak on early return.
+        if tb_writer is not None:
+            try:
+                tb_writer.close()
+            except Exception:
+                pass
+        if wandb_run is not None:
+            try:
+                wandb_run.finish()
+            except Exception:
+                pass
+
+    def _stop_checkpoint_ok() -> bool:
+        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+            return True
+        _send(
+            "error",
+            error = (
+                "Failed to save a resumable checkpoint after stop. "
+                "Model files were saved, but this run cannot be resumed."
+            ),
+            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
+            keep_error_status = True,
+            # Older checkpoints are stale; resuming would roll back past this stop.
+            resume_blocked = True,
+        )
+        return False
+
+    try:
+        if trainer.stop_requested:
+            if not _stop_save[0]:
+                # Cancel (save=False): skip saving.
+                _send("complete", output_dir = None, status_message = "Training cancelled")
+            else:
+                _send("status", status_message = "Saving stopped model...")
+                mx.synchronize()
+                trainer.save_model(output_dir)
+                # Stop-and-save promises a resumable checkpoint, not just model files.
+                if not _stop_checkpoint_ok():
+                    return
+                _send("complete", output_dir = output_dir, status_message = "Training stopped")
         else:
-            _send("status", status_message = "Saving stopped model...")
+            _send("status", status_message = "Saving model...")
             mx.synchronize()
             trainer.save_model(output_dir)
-            _send("complete", output_dir = output_dir, status_message = "Training stopped")
-    else:
-        _send("status", status_message = "Saving model...")
-        mx.synchronize()
-        trainer.save_model(output_dir)
-        _send("complete", output_dir = output_dir, status_message = "Training completed")
-
-    if tb_writer is not None:
-        try:
-            tb_writer.close()
-        except Exception:
-            pass
-    if wandb_run is not None:
-        try:
-            wandb_run.finish()
-        except Exception:
-            pass
+            # A save-stop can race the natural final save; it made the same promise.
+            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
+                return
+            _send("complete", output_dir = output_dir, status_message = "Training completed")
+    finally:
+        _finish_tracking()
 
 
 def _is_current_process_apple_silicon() -> bool:
@@ -2119,7 +2244,7 @@ def run_mlx_training_process(
     config: dict,
     transformers_activated: bool = False,
 ) -> None:
-    """MLX worker entrypoint shared by Studio subprocesses and the CLI adapter."""
+    """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
     model_name = config["model_name"]
 
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -2188,7 +2313,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
+    # platforms map() is in-process, so keep tokenizer threads on for faster prep.
+    os.environ["TOKENIZERS_PARALLELISM"] = (
+        "true" if sys.platform in ("win32", "darwin") else "false"
+    )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
@@ -2577,6 +2706,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _bnb_rocm_ver,
                     )
 
+            # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override
+            # notice on import; drop only that record so real errors and mismatch
+            # warnings still show.
+            if os.environ.get("BNB_ROCM_VERSION"):
+                import logging as _logging
+                _logging.getLogger("bitsandbytes.cextension").addFilter(
+                    lambda _r: "environment variable detected" not in _r.getMessage()
+                )
+
             # Parse HIP version for the kernel-fix gate below, falling back to
             # the rocm version embedded in torch.__version__ when version.hip is
             # unset (AMD SDK / Radeon wheels).
@@ -2629,80 +2767,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             # so 7.13+ uses the real GPU kernel.
             if not _hip_ver_at_least(7, 13):
                 try:
-                    import warnings as _warnings
-
-                    _gm_lib = _torch_for_rocm.library.Library("aten", "IMPL")
-
-                    def _grouped_mm_safe_impl(
-                        self,
-                        mat2,
-                        offs = None,
-                        bias = None,
-                        out_dtype = None,
-                    ):
-                        """Python mm/bmm fallback for _grouped_mm on gfx1200 (null HIP kernel, ROCm ≤ 7.12)."""
-                        _t = _torch_for_rocm
-                        if offs is None:
-                            # No offsets: 2-D -> mm, 3-D batched -> bmm
-                            # (unconditional mm broke 3-D MoE).
-                            if self.dim() == 3 and mat2.dim() == 3:
-                                result = _t.bmm(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 3 and mat2.dim() == 2:
-                                # Broadcast 2-D mat2 across the batch dim.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            elif self.dim() == 2 and mat2.dim() == 3:
-                                # Broadcast 2-D self across batch via matmul.
-                                result = _t.matmul(self.contiguous(), mat2.contiguous())
-                            else:
-                                result = _t.mm(self.contiguous(), mat2.contiguous())
-                        else:
-                            # Grouped: offs[i] is the exclusive end-row of group i.
-                            offs_list = offs.tolist()
-                            pieces = []
-                            prev = 0
-                            for idx, end in enumerate(offs_list):
-                                end = int(end)
-                                a_part = self[prev:end].contiguous()
-                                if mat2.dim() == 3:
-                                    b_part = mat2[idx].contiguous()
-                                else:
-                                    b_part = mat2.contiguous()
-                                pieces.append(_t.mm(a_part, b_part))
-                                prev = end
-                            # Include trailing rows not covered by offs.
-                            if prev < self.shape[0]:
-                                a_tail = self[prev:].contiguous()
-                                b_tail = (
-                                    mat2[-1].contiguous() if mat2.dim() == 3 else mat2.contiguous()
-                                )
-                                pieces.append(_t.mm(a_tail, b_tail))
-                            result = (
-                                _t.cat(pieces, dim = 0)
-                                if pieces
-                                else _t.zeros(
-                                    0,
-                                    mat2.shape[-1],
-                                    device = self.device,
-                                    dtype = self.dtype,
-                                )
-                            )
-                        if bias is not None:
-                            result = result + bias
-                        if out_dtype is not None:
-                            result = result.to(out_dtype)
-                        elif result.dtype != self.dtype:
-                            result = result.to(self.dtype)
-                        return result
-
-                    with _warnings.catch_warnings():
-                        _warnings.simplefilter("ignore")
-                        _gm_lib.impl("_grouped_mm", _grouped_mm_safe_impl, "CUDA")
-
-                    _WINDOWS_ROCM_GROUPED_MM_LIB = _gm_lib  # prevent GC
-                    logger.info(
-                        "Windows ROCm: patched _grouped_mm CUDA dispatch "
-                        "(null HIP kernel on gfx1200, ROCm ≤ 7.12 — "
-                        "bypassed with Python mm fallback)"
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_for_rocm, logger, "Windows ROCm"
                     )
                 except Exception as _patch_exc:
                     logger.warning(
@@ -2715,6 +2781,44 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "Windows ROCm: HIP >= 7.13 — _grouped_mm kernel is functional, "
                     "skipping Python fallback (AMD fixed gfx1200 null kernel in ROCm 7.13)"
                 )
+
+    # ── 1f-linux. Linux ROCm RDNA4 _grouped_mm null kernel ──
+    # The win32 guard above misses Linux: RDNA4 (gfx1200/gfx1201) hits the same null
+    # HIP _grouped_mm kernel at ROCm <= 7.12 (fixed 7.13, ROCm/TheRock #5284). Gate on
+    # arch + HIP < 7.13 so NVIDIA/CUDA and non-RDNA4 AMD are untouched; no-op if fixed.
+    if sys.platform.startswith("linux") and _hw.IS_ROCM:
+        try:
+            _torch_lin = sys.modules.get("torch")
+            if _torch_lin is not None and _torch_lin.cuda.is_available():
+                # Prefer torch.version.hip, else rocmX.Y from torch.__version__ (AMD
+                # SDK / Radeon wheels leave version.hip unset). Unknown version on a
+                # gfx120X build -> assume affected unless it is a post-fix rocmsdk wheel.
+                _hip_str = str(getattr(getattr(_torch_lin, "version", None), "hip", "") or "")
+                _ver = getattr(_torch_lin, "__version__", "").lower()
+                _m = re.match(r"(\d+)\.(\d+)", _hip_str) or re.search(r"rocm(\d+)\.(\d+)", _ver)
+                if _m:
+                    _hip_lt_713 = (int(_m.group(1)), int(_m.group(2))) < (7, 13)
+                else:
+                    _hip_lt_713 = "rocmsdk" not in _ver
+                # Scan every visible GPU (device_map="balanced" can place layers on a
+                # later RDNA4 card, so device 0 is not enough). Match gfx120X by arch,
+                # or by RX 9000 / R9700 name when the wheel omits gcnArchName.
+                _rdna4 = False
+                for _i in range(_torch_lin.cuda.device_count()):
+                    _props = _torch_lin.cuda.get_device_properties(_i)
+                    _lin_arch, _ = _rocm_classify_unified_memory(_props)
+                    _lin_name = (getattr(_props, "name", "") or "").lower()
+                    if _lin_arch.lower() in ("gfx1200", "gfx1201") or (
+                        not _lin_arch and re.search(r"rx\s*90[0-9]0|r9700", _lin_name)
+                    ):
+                        _rdna4 = True
+                        break
+                if _rdna4 and _hip_lt_713:
+                    _WINDOWS_ROCM_GROUPED_MM_LIB = _install_grouped_mm_cpu_fallback(
+                        _torch_lin, logger, "Linux ROCm gfx120X"
+                    )
+        except Exception as _gm_lin_exc:
+            logger.warning("Linux ROCm gfx120X: could not patch _grouped_mm: %s", _gm_lin_exc)
 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
@@ -2765,7 +2869,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but
                 # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume a Studio bug. Say where the limit
+                # 96 GB machine and assume an Unsloth bug. Say where the limit
                 # comes from and how to raise it.
                 if _is_unified and sys.platform == "win32":
                     try:
@@ -3008,11 +3112,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (same flip as the chat worker).
+        _train_load_in_4bit = config["load_in_4bit"]
+        if _train_load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(model_name, hf_token):
+                _train_load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "training load (4-bit is disabled for brand-new architectures)",
+                    model_name,
+                )
+
         try:
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
-                load_in_4bit = config["load_in_4bit"],
+                load_in_4bit = _train_load_in_4bit,
                 full_finetuning = not use_lora,
                 hf_token = hf_token,
                 is_dataset_image = config.get("is_dataset_image", False),
@@ -3149,6 +3266,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3266,6 +3384,61 @@ def _send_status(event_queue: Any, message: str) -> None:
             "ts": time.time(),
         }
     )
+
+
+def _emit_output_dir(event_queue: Any, output_dir: str) -> None:
+    try:
+        event_queue.put({"type": "output_dir", "output_dir": output_dir, "ts": time.time()})
+    except Exception:
+        pass
+
+
+def _mlx_has_checkpoint_at_step(output_dir, step: int) -> bool:
+    if step <= 0:
+        return False
+    from core.training.resume import is_resume_checkpoint_valid
+    return is_resume_checkpoint_valid(
+        Path(output_dir) / f"checkpoint-{step}", expected_step = step, backend = "mlx"
+    )
+
+
+def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
+    """Write a full resume checkpoint for a stopped MLX run.
+
+    Returns True when a checkpoint for the current training step exists.
+    """
+    step = int(getattr(trainer, "_global_step", 0) or 0)
+    # A periodic save or a resumed run may already cover the current step.
+    if _mlx_has_checkpoint_at_step(output_dir, step):
+        return True
+    if step <= 0 or optimizer is None:
+        return False
+    ckpt_dir = Path(output_dir) / f"checkpoint-{step}"
+    if ckpt_dir.is_symlink():
+        # Refuse a symlinked dir: it could redirect writes outside output_dir.
+        logger.error("Refusing to write MLX stop checkpoint through symlink: %s", ckpt_dir)
+        return False
+    try:
+        ckpt_dir.mkdir(parents = True, exist_ok = True)
+        from unsloth_zoo.mlx.utils import (
+            save_optimizer_state,
+            save_trainable_adapters,
+            save_trainer_state,
+        )
+
+        save_trainable_adapters(trainer.model, str(ckpt_dir))
+        save_optimizer_state(optimizer, str(ckpt_dir))
+        save_trainer_state(
+            {
+                "global_step": step,
+                "train_loss_history": list(getattr(trainer, "_train_loss_history", [])),
+            },
+            str(ckpt_dir),
+        )
+        logger.info("Saved stop checkpoint to %s", ckpt_dir)
+    except Exception:
+        logger.exception("Failed to write stop checkpoint under %s", output_dir)
+    return _mlx_has_checkpoint_at_step(output_dir, step)
 
 
 def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> None:
@@ -3632,6 +3805,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             config.get("project_name"),
         )
     output_dir = str(resolve_output_dir(output_dir))
+    _emit_output_dir(event_queue, output_dir)
 
     num_epochs = config.get("num_epochs", 2)
     batch_size = config.get("batch_size", 256)

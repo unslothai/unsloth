@@ -9,6 +9,7 @@ the _already_in_target_state mirror that prevents needless reloads.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import struct
@@ -345,8 +346,60 @@ def test_windows_full_offload_flags_use_current_llama_server_args():
     stale_checkpoint_flag = "--checkpoint-" + "every-n-tokens"
     assert '"--cache-ram"' in src
     assert '"--ctx-checkpoints"' in src
-    assert '"--no-cache-prompt"' in src
+    # Prompt caching stays on (in-VRAM prefix reuse); #5692 only needed the host-RAM
+    # checkpoints (--cache-ram / --ctx-checkpoints) disabled, not prompt reuse.
+    assert '"--no-cache-prompt"' not in src
     assert stale_checkpoint_flag not in src
+
+
+# Backend-wide guard: Unsloth must never inject --no-cache-prompt into a llama-server
+# command. It disables in-VRAM prompt-prefix reuse, re-prefilling every repeated prompt
+# (#5692 only needed --cache-ram / --ctx-checkpoints off; #7260 dropped the stray flag).
+# Detecting it (_is_real) or honouring a user-supplied one (_prompt_cache_off) is fine.
+_NO_CACHE_PROMPT_FLAG = "--no-cache-prompt"
+_LIST_MUTATORS = frozenset({"append", "extend", "insert"})
+
+
+def _has_flag_literal(node: ast.AST) -> bool:
+    return any(
+        isinstance(n, ast.Constant) and n.value == _NO_CACHE_PROMPT_FLAG for n in ast.walk(node)
+    )
+
+
+def _no_cache_prompt_injections(source: str, filename: str) -> list[tuple[str, int]]:
+    """(file, lineno) for each spot adding --no-cache-prompt to a list."""
+    hits: list[tuple[str, int]] = []
+    for node in ast.walk(ast.parse(source, filename = filename)):
+        # cmd.append/extend/insert(... flag ...) or cmd += [... flag ...]
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _LIST_MUTATORS
+            and any(_has_flag_literal(a) for a in node.args)
+        ) or (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.Add)
+            and _has_flag_literal(node.value)
+        ):
+            hits.append((filename, node.lineno))
+    return hits
+
+
+def test_unsloth_never_injects_no_cache_prompt_into_any_command():
+    root = Path(_BACKEND_DIR)
+    files = [p for p in root.rglob("*.py") if "tests" not in p.relative_to(root).parts]
+    violations: list[tuple[str, int]] = []
+    for path in files:
+        try:
+            violations += _no_cache_prompt_injections(path.read_text(encoding = "utf-8"), str(path))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+    assert files, "no backend source files were scanned"
+    assert violations == [], (
+        "Unsloth must never add --no-cache-prompt to a llama-server command "
+        "(it disables prompt-prefix reuse); detecting or honouring a user-supplied "
+        f"one is fine. Offending sites: {violations}"
+    )
 
 
 def test_load_model_sets_threads_once():
@@ -741,6 +794,25 @@ def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
     assert caps["supports_no_cache_prompt"] is False
 
 
+@_NEEDS_BASH
+def test_probe_detects_slot_save_path(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--slot-save-path PATH  path to save slot kv cache\n--threads N\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_slot_save"] is True
+
+
+@_NEEDS_BASH
+def test_probe_reports_slot_save_absent_for_older_binary(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--threads N\n")
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_slot_save"] is False
+
+
 def test_build_ngram_mod_flags_new():
     flags = _build_ngram_mod_flags({"ngram_mod_flavor": "new"})
     assert flags == [
@@ -1014,7 +1086,7 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
     )
 
 
-# usage backfill from timings (Studio UI t/s widget fix).
+# usage backfill from timings (Unsloth UI t/s widget fix).
 
 
 def test_backfill_usage_from_timings_fills_when_completion_tokens_zero():
@@ -1606,7 +1678,7 @@ def test_reload_forced_mtp_bounces_auto_mla():
     )
 
 
-# ── Full named-repo resolver matrix (the shipping Studio families) ─────
+# ── Full named-repo resolver matrix (the shipping Unsloth families) ─────
 #
 # Locks auto / off / forced-mtp routing for every Qwen3.5 (MTP + plain) and
 # gemma-4 (regular + QAT) GGUF repo, including the giant MoEs that stay

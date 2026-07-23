@@ -2,13 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus } from "../api/chat-api";
-import { mergeBackendRecommendedInference } from "../presets/preset-policy";
+import {
+  mergeBackendRecommendedInference,
+  resolveManualAutoCtxPin,
+} from "../presets/preset-policy";
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
   type ReasoningEffort,
   type ReasoningStyle,
   loadOptionalBool,
+  loadedGpuMemoryFields,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -19,6 +23,10 @@ import {
 import type { ChatModelSummary } from "../types/runtime";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 // Canonicalises backend / persisted speculative mode values onto the UI modes.
 export function normalizeSpeculativeType(
@@ -119,6 +127,10 @@ function ensureActiveModelInStoreList(
 
 export type ApplyInferenceStatusOptions = {
   previousCheckpoint?: string;
+  /** activeGgufVariant BEFORE the caller's setCheckpoint synced it to the
+   * status -- without it a variant-only switch underneath the tab reads as
+   * steady state and the hydration reseed keeps the old quant's baselines. */
+  previousGgufVariant?: string | null;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -144,9 +156,13 @@ export function applyActiveModelStatusToStore(
     );
   }
 
+  const previousGgufVariant =
+    options.previousGgufVariant !== undefined
+      ? options.previousGgufVariant
+      : store.activeGgufVariant;
   const hydratingExistingModel =
     previousCheckpoint !== checkpointId ||
-    store.activeGgufVariant !== (status.gguf_variant ?? null);
+    previousGgufVariant !== (status.gguf_variant ?? null);
   const supportsReasoning = status.supports_reasoning ?? false;
   const reasoningAlwaysOn = status.reasoning_always_on ?? false;
   const reasoningStyle = status.reasoning_style ?? "enable_thinking";
@@ -171,7 +187,8 @@ export function applyActiveModelStatusToStore(
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
-    reasoningStyle === "enable_thinking_effort"
+    reasoningStyle === "enable_thinking_effort" ||
+    reasoningStyle === "reasoning_effort"
       ? clampReasoningEffortToLevels(
           prevState.reasoningEffort,
           reasoningEffortLevels,
@@ -184,6 +201,66 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
+  // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
+  // and status only exposes the RESOLVED context; re-seed the pin from the
+  // requested value (parity with the load paths' keepCustomCtx). Baselines
+  // unconditionally: anything but an applicable pin is null, so a previous
+  // model's pin can't survive a model change underneath and reload at the old length.
+  const gpuPin = status.is_gguf
+    ? resolveManualAutoCtxPin(
+        status.gpu_memory_mode ?? "auto",
+        status.gpu_layers ?? -1,
+        status.requested_context_length ?? null,
+      )
+    : null;
+  const incomingGpuMode = status.is_gguf
+    ? (status.gpu_memory_mode ?? "auto")
+    : null;
+  const incomingGpuLayers =
+    incomingGpuMode === "manual" ? (status.gpu_layers ?? null) : null;
+  const incomingNCpuMoe =
+    incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
+  const incomingSplit =
+    incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
+  const incomingGpuIds = status.is_gguf ? (status.gpu_ids ?? null) : null;
+  const gpuStatusChanged =
+    prevState.loadedGpuMemoryMode !== incomingGpuMode ||
+    prevState.loadedGpuLayers !== incomingGpuLayers ||
+    prevState.loadedNCpuMoe !== incomingNCpuMoe ||
+    !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
+    !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
+    prevState.loadedCustomContextLength !== gpuPin;
+  const gpuMemoryEditsPending =
+    (prevState.loadedGpuMemoryMode !== null &&
+      prevState.gpuMemoryMode !== prevState.loadedGpuMemoryMode) ||
+    (prevState.loadedGpuMemoryMode === "manual" &&
+      (prevState.gpuLayers !== prevState.loadedGpuLayers ||
+        prevState.nCpuMoe !== prevState.loadedNCpuMoe ||
+        !sameArray(prevState.splitRatio, prevState.loadedSplitRatio))) ||
+    prevState.customContextLength !== prevState.loadedCustomContextLength;
+  const gpuIdsEditPending = !sameArray(
+    prevState.selectedGpuIds,
+    prevState.loadedGpuIds,
+  );
+  const incomingGpuFields = loadedGpuMemoryFields(status);
+  // A same-model reload from another client advances every loaded baseline.
+  // Preserve each editable group only when this tab has an unapplied change.
+  const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
+  const gpuStatusFields = {
+    ...incomingGpuFields,
+    customContextLength: gpuPin,
+    loadedCustomContextLength: gpuPin,
+    ...(preserveSameModelEdits &&
+      gpuMemoryEditsPending && {
+        gpuMemoryMode: prevState.gpuMemoryMode,
+        gpuLayers: prevState.gpuLayers,
+        nCpuMoe: prevState.nCpuMoe,
+        splitRatio: prevState.splitRatio,
+        customContextLength: prevState.customContextLength,
+      }),
+    ...(preserveSameModelEdits &&
+      gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
+  };
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -203,41 +280,54 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    // A non-GGUF status must also drop a stale native-path token: without this the
-    // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
-    // stays true after switching from a native GGUF to a transformers model, so a
-    // Codex-only detection would auto-select for a model its preflight rejects. A real
-    // GGUF load reports is_gguf: true, so its token is preserved (the load path owns it).
-    ...(status.is_gguf ? {} : { activeNativePathToken: null }),
+    ...(status.is_gguf
+      ? {}
+      : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    // The spec / KV seeds share the GPU-fields reseed mechanism below: a
+    // non-GGUF status leaves their loaded baselines null, so the "unseeded"
+    // guard re-fires every refresh -- hold them too while a staged pick's
+    // settings are being edited, or the refresh resets the staged edit.
+    // hydratingExistingModel reopens every load-param seed: when the active
+    // model changed underneath this tab (auto-switch, another client), the
+    // old model's baselines are stale and must adopt the new status.
     ...(seedLoadParams &&
-      prevState.loadedSpeculativeType === null && {
+      (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
         speculativeType: currentSpecType,
         loadedSpeculativeType: currentSpecType,
       }),
     ...(seedLoadParams &&
       status.spec_draft_n_max !== undefined &&
-      prevState.loadedSpecDraftNMax === null &&
-      prevState.specDraftNMax === null && {
+      (hydratingExistingModel ||
+        (prevState.loadedSpecDraftNMax === null &&
+          prevState.specDraftNMax === null)) && {
         specDraftNMax: status.spec_draft_n_max ?? null,
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
     ...(seedLoadParams &&
       status.cache_type_kv !== undefined &&
-      prevState.loadedKvCacheDtype === null && {
+      (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
     ...(seedLoadParams &&
       status.tensor_parallel !== undefined &&
-      prevState.loadedTensorParallel === null && {
+      (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    // Re-seed on first hydration, model/variant changes, or a same-model backend
+    // placement change. gpuStatusFields preserves dirty local edits in the last
+    // case while advancing their loaded baselines.
+    ...(seedLoadParams &&
+      (prevState.loadedGpuMemoryMode === null ||
+        hydratingExistingModel ||
+        gpuStatusChanged) &&
+      gpuStatusFields),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {
@@ -297,7 +387,11 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   if (previousCheckpoint) {
     return true;
   }
+  const previousGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
   store.setCheckpoint(checkpointId, status.gguf_variant);
-  applyActiveModelStatusToStore(status, { previousCheckpoint });
+  applyActiveModelStatusToStore(status, {
+    previousCheckpoint,
+    previousGgufVariant,
+  });
   return true;
 }

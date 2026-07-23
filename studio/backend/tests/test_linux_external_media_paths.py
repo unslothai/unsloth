@@ -252,10 +252,19 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
         outputs_root = lambda: tmp_path / "missing-outputs",
         exports_root = lambda: tmp_path / "missing-exports",
     )
-    fake_external_media = SimpleNamespace(linux_run_media_mount_roots = lambda: [media_root])
+    fake_external_media = SimpleNamespace(
+        linux_run_media_mount_roots = lambda: [media_root],
+        macos_volume_roots = lambda: [],
+        windows_drive_roots = lambda: [],
+    )
+    fake_paths.external_media = fake_external_media
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = studio_db.contains_sensitive_path_component,
+        # The media root is a legitimate mount, not denied; the .ssh 403 below
+        # comes from the credential check. A False stub keeps this OS-independent
+        # (on macOS tmp_path lives under the denied /private/var).
+        is_denied_system_path = lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)

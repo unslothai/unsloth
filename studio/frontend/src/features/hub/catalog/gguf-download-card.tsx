@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -12,49 +19,55 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  downloadManager,
-  useDownloadManagerStore,
-  useRepoDownload,
-} from "../download-manager";
-import {
-  type GgufVariantDetail,
-  deleteCachedModel,
-} from "../inventory";
-import { formatBytes } from "../lib/format";
-import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
-import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
-import {
-  ggufVariantsMatch,
-  normalizeGgufVariantIdentity,
-} from "../lib/model-identity";
+import { usePlatformStore } from "@/config/env";
+import { getCachedModelPath, revealCachedModel } from "@/features/chat";
+import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useHfTokenStore } from "../stores/hf-token-store";
-import { useOnlineStatus } from "../hooks/use-online-status";
 import {
   ArrowReloadHorizontalIcon,
+  Copy01Icon,
   Delete02Icon,
   Download01Icon,
+  Folder01Icon,
   InformationCircleIcon,
-  PencilEdit02Icon,
+  MoreVerticalIcon,
+  PinIcon,
+  PinOffIcon,
   PlayIcon,
+  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type KeyboardEventHandler,
   memo,
   useCallback,
   useEffect,
   useMemo,
   useState,
-  type KeyboardEventHandler,
-  type MouseEventHandler,
 } from "react";
+import {
+  downloadManager,
+  useDownloadManagerStore,
+  useRepoDownload,
+} from "../download-manager";
+import { useOnlineStatus } from "../hooks/use-online-status";
+import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
+import { formatBytes } from "../lib/format";
+import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
+import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
+import {
+  ggufVariantsMatch,
+  normalizeGgufVariantIdentity,
+} from "../lib/model-identity";
+import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import { DownloadCancelIndicator } from "./download-cancel-indicator";
 import {
@@ -72,7 +85,6 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
-import { PathInfoButton } from "./path-info-button";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
@@ -116,11 +128,11 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
 const CHIP_BASE =
-  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
-  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  "border-control-accent/40 bg-control-accent/10 text-control-accent";
 
 function QuantBadge({
   quant,
@@ -172,8 +184,8 @@ function QuantBadge({
       // group's `overflow-hidden` sacrifices the trailing status tags instead.
       <span
         className={cn(
-          "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-[12.5px] font-medium tracking-tight tabular-nums",
-          active ? "text-emerald-600 dark:text-emerald-400" : "text-foreground",
+          "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-ui-12p5 font-medium tracking-tight tabular-nums",
+          active ? "text-control-accent" : "text-foreground",
         )}
       >
         {showFit && (
@@ -204,7 +216,7 @@ function QuantBadge({
       onOpenChange={tooltipMode === "lazy" ? setTooltipOpen : undefined}
     >
       <TooltipTrigger
-        asChild
+        asChild={true}
         onFocusCapture={tooltipMode === "lazy" ? armTooltip : undefined}
         onPointerEnter={tooltipMode === "lazy" ? armTooltip : undefined}
       >
@@ -245,7 +257,181 @@ function createGgufVariantMenuItems(
   }));
 }
 
+// Shared options menu: used on every variant row, the run bar, and the
+// single-model (non-GGUF) run bar. Omit `quant` for a repo-level model. The
+// identifier uses llama.cpp's repo:quant syntax so it pastes into `-hf`.
+export function QuantOptionsMenu({
+  repoId,
+  quant,
+  label,
+  downloaded,
+  canDelete,
+  onDelete,
+  showPin = true,
+  buttonClassName,
+  iconClassName,
+}: {
+  repoId: string;
+  quant?: string;
+  label: string;
+  downloaded: boolean;
+  canDelete: boolean;
+  onDelete: (quant?: string) => void;
+  // Hidden in the run bar; pinning belongs to the On Device list.
+  showPin?: boolean;
+  buttonClassName?: string;
+  iconClassName?: string;
+}) {
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const pinned = pinnedKeys.includes(pinKey(repoId, quant));
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const revealLabel =
+    deviceType === "mac"
+      ? "Reveal in Finder"
+      : deviceType === "windows"
+        ? "Reveal in File Explorer"
+        : "Reveal in File Manager";
+  const handleCopyPath = useCallback(async () => {
+    try {
+      const { path } = await getCachedModelPath(repoId, quant);
+      if (await copyToClipboard(path)) {
+        toast.success("Copied path");
+      } else {
+        toast.error("Failed to copy");
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to resolve model path",
+      );
+    }
+  }, [repoId, quant]);
+  const handleCopyId = useCallback(async () => {
+    const id = quant ? `${repoId}:${quant}` : repoId;
+    if (await copyToClipboard(id)) {
+      toast.success("Copied identifier");
+    } else {
+      toast.error("Failed to copy");
+    }
+  }, [repoId, quant]);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild={true}>
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`More options for ${label}`}
+          className={cn(
+            "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full",
+            "text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+            "data-[state=open]:bg-muted data-[state=open]:text-foreground",
+            buttonClassName,
+          )}
+        >
+          <HugeiconsIcon
+            icon={MoreVerticalIcon}
+            strokeWidth={1.75}
+            className={cn("size-3.5", iconClassName)}
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="bottom"
+        align="end"
+        sideOffset={2}
+        className="unsloth-plus-menu menu-flat-destructive w-48"
+      >
+        {showPin && downloaded && (
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.stopPropagation();
+              togglePinned(repoId, quant);
+            }}
+          >
+            <HugeiconsIcon
+              icon={pinned ? PinOffIcon : PinIcon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+            <span>{pinned ? "Unpin" : "Pin to top"}</span>
+          </DropdownMenuItem>
+        )}
+        {downloaded && (
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.stopPropagation();
+              revealCachedModel(repoId, quant).catch((err) => {
+                toast.error(
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to open file manager",
+                );
+              });
+            }}
+          >
+            <HugeiconsIcon
+              icon={Folder01Icon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+            <span>{revealLabel}</span>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem
+          onSelect={(e) => {
+            e.stopPropagation();
+            void handleCopyId();
+          }}
+        >
+          <HugeiconsIcon
+            icon={Copy01Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+          <span>Copy identifier</span>
+        </DropdownMenuItem>
+        {downloaded && (
+          <DropdownMenuItem
+            onSelect={(e) => {
+              e.stopPropagation();
+              void handleCopyPath();
+            }}
+          >
+            <HugeiconsIcon
+              icon={Copy01Icon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+            <span>Copy path</span>
+          </DropdownMenuItem>
+        )}
+        {canDelete && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={(e) => {
+                e.stopPropagation();
+                onDelete(quant);
+              }}
+            >
+              <HugeiconsIcon
+                icon={Delete02Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              <span>Delete</span>
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
+  repoId,
   item,
   selected,
   loaded,
@@ -254,6 +440,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   onSelect,
   onDelete,
 }: {
+  repoId: string;
   item: GgufVariantMenuItem;
   selected: boolean;
   loaded: boolean;
@@ -274,13 +461,6 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       }
     },
     [selectVariant],
-  );
-  const handleDelete = useCallback<MouseEventHandler<HTMLButtonElement>>(
-    (e) => {
-      e.stopPropagation();
-      onDelete(item.quant);
-    },
-    [item.quant, onDelete],
   );
   const canDelete = (item.downloaded || item.partial) && !loaded && !liveActive;
 
@@ -317,7 +497,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
         )}
         {!item.downloaded && item.partial && (
           <Tooltip>
-            <TooltipTrigger asChild>
+            <TooltipTrigger asChild={true}>
               <span className="inline-flex">
                 <DotTag
                   tone="warning"
@@ -334,30 +514,23 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
         )}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        <span className="relative">
-          <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
-            {item.downloadSizeLabel}
-          </span>
-          {canDelete && (
-            <button
-              type="button"
-              onClick={handleDelete}
-              aria-label={`Delete ${item.label}${item.partial && !item.downloaded ? " (partial)" : ""}`}
-              className={cn(
-                "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-full",
-                "bg-popover text-foreground/70 ring-1 ring-border transition-colors",
-                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-                "hover:text-destructive hover:ring-destructive/40",
-              )}
-            >
-              <HugeiconsIcon
-                icon={Delete02Icon}
-                strokeWidth={1.75}
-                className="size-3"
-              />
-            </button>
-          )}
+        <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
+          {item.downloadSizeLabel}
         </span>
+        {/* Options only apply to files on disk; placeholder keeps the size
+            chips column-aligned across rows. */}
+        {item.downloaded || item.partial ? (
+          <QuantOptionsMenu
+            repoId={repoId}
+            quant={item.quant}
+            label={item.label}
+            downloaded={Boolean(item.downloaded)}
+            canDelete={canDelete}
+            onDelete={(q) => q && onDelete(q)}
+          />
+        ) : (
+          <span aria-hidden={true} className="size-6 shrink-0" />
+        )}
       </span>
     </div>
   );
@@ -374,7 +547,7 @@ export function GgufDownloadCard({
   preferLocalCache = false,
   isPartial = false,
   onLoad,
-  onUseInChat,
+  onEject,
   onChange,
 }: {
   repoId: string;
@@ -387,7 +560,9 @@ export function GgufDownloadCard({
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
+  /** Accepted for API parity; the run bar ejects instead of opening chat. */
   onUseInChat?: () => void;
+  onEject?: () => void;
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
@@ -422,7 +597,9 @@ export function GgufDownloadCard({
     () => createLiveGgufVariantStatesSelector(repoId),
     [repoId],
   );
-  const liveVariantStates = useDownloadManagerStore(selectLiveGgufVariantStates);
+  const liveVariantStates = useDownloadManagerStore(
+    selectLiveGgufVariantStates,
+  );
   const sortedVariants = useMemo(() => {
     if (!rawSortedVariants) return null;
     const withLive = applyLiveGgufVariantStates(
@@ -499,12 +676,7 @@ export function GgufDownloadCard({
     if (expectedBytes > progress.expectedBytes) {
       setExpectedBytes(expectedBytes, progress.variant);
     }
-  }, [
-    variants,
-    progress?.variant,
-    progress?.expectedBytes,
-    setExpectedBytes,
-  ]);
+  }, [variants, progress?.variant, progress?.expectedBytes, setExpectedBytes]);
 
   useEffect(() => {
     setCompletedVariantKeys(new Set<string>());
@@ -593,9 +765,15 @@ export function GgufDownloadCard({
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
-      await deleteCachedModel(repoId, deleteTarget, hfToken || undefined);
+      await deleteCachedModel(
+        repoId,
+        deleteTarget,
+        hfToken || undefined,
+        cachePath ?? undefined,
+      );
     },
-    successMessage: () => `Deleted ${repoId} ${deleteTargetLabel ?? deleteTarget}`,
+    successMessage: () =>
+      `Deleted ${repoId} ${deleteTargetLabel ?? deleteTarget}`,
     errorToast: (err) => ({
       title: err instanceof Error ? err.message : "Failed to delete",
     }),
@@ -654,7 +832,7 @@ export function GgufDownloadCard({
     return (
       <GgufDownloadStatusCard
         job={job}
-        loading
+        loading={true}
         message="Loading available quantizations…"
       />
     );
@@ -666,7 +844,7 @@ export function GgufDownloadCard({
         <GgufDownloadStatusCard
           job={job}
           tone="muted"
-          partial
+          partial={true}
           message="Partial download present. Couldn't load quantizations."
           actionLabel="Reload"
           onAction={() => void refresh()}
@@ -729,7 +907,7 @@ export function GgufDownloadCard({
         }
       >
         <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>
+          <PopoverTrigger asChild={true}>
             <button
               type="button"
               onClick={(e) => {
@@ -741,7 +919,7 @@ export function GgufDownloadCard({
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags;
                   only the chevron pins right, the standard select affordance. */}
-              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-[12px] text-muted-foreground">
+              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -750,7 +928,7 @@ export function GgufDownloadCard({
                     active={Boolean(selectedIsActive)}
                   />
                 ) : (
-                  <span className="text-[12.5px] text-muted-foreground">
+                  <span className="text-ui-12p5 text-muted-foreground">
                     Select quantization
                   </span>
                 )}
@@ -762,7 +940,7 @@ export function GgufDownloadCard({
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
-                    <TooltipTrigger asChild>
+                    <TooltipTrigger asChild={true}>
                       <span className="inline-flex">
                         <DotTag
                           tone="warning"
@@ -806,6 +984,7 @@ export function GgufDownloadCard({
                 return (
                   <GgufVariantMenuRow
                     key={item.filename}
+                    repoId={repoId}
                     item={item}
                     selected={item.key === selectedVariantKey}
                     loaded={isActive && item.key === activeVariantKey}
@@ -820,14 +999,29 @@ export function GgufDownloadCard({
           </PopoverContent>
         </Popover>
 
-        {selected?.downloaded && cachePath && (
-          <PathInfoButton
-            path={cachePath}
-            title="On-device location"
-            description={`Where ${repoId} (${selectedLabel}) lives on disk.`}
-            className="ml-0.5"
-          />
-        )}
+        {/* TODO: inference settings gear hidden for now, work on it in a future PR. */}
+        {/* Options only resolve managed HF-cache repos, so skip local paths;
+            they also only apply to quants actually on disk. */}
+        {selected &&
+          Boolean(selected.downloaded || selected.partial) &&
+          !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
+            <QuantOptionsMenu
+              repoId={repoId}
+              quant={selected.quant}
+              label={`${repoId} ${selectedLabel}`}
+              downloaded={Boolean(selected.downloaded)}
+              canDelete={
+                Boolean(selected.downloaded || selected.partial) &&
+                !selectedIsActive &&
+                !downloadingThisVariant &&
+                !isLoadingThisModel
+              }
+              onDelete={(q) => q && handleDeleteVariant(q)}
+              showPin={false}
+              buttonClassName="ml-0.5 size-7"
+              iconClassName="size-4"
+            />
+          )}
 
         {!isGgufRunCta && <CardDivider />}
 
@@ -859,7 +1053,7 @@ export function GgufDownloadCard({
               return;
             }
             if (selectedIsActive) {
-              onUseInChat?.();
+              onEject?.();
               return;
             }
             if (!selected) return;
@@ -874,7 +1068,7 @@ export function GgufDownloadCard({
           }}
           aria-label={downloadAction.ariaLabel}
           className={cn(
-            isGgufRunCta ? "hub-run-action-btn w-28" : "hub-action-btn w-28",
+            isGgufRunCta ? "hub-run-action-btn w-24" : "hub-action-btn w-24",
             isGgufRunCta && "ml-2",
             ctaDisabled &&
               !selectedIsActive &&
@@ -917,8 +1111,8 @@ export function GgufDownloadCard({
             </span>
           ) : selectedIsActive ? (
             <>
-              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
-              New Chat
+              <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
+              Eject
             </>
           ) : selected?.downloaded ? (
             <>
@@ -937,7 +1131,7 @@ export function GgufDownloadCard({
         <button
           type="button"
           onClick={() => void refresh()}
-          className="self-start px-1 text-[11px] text-status-warning underline-offset-2 transition-colors hover:underline"
+          className="self-start px-1 text-ui-11 text-status-warning underline-offset-2 transition-colors hover:underline"
         >
           Couldn't refresh quantizations. Retry
         </button>

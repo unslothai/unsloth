@@ -64,7 +64,7 @@ jobs:
       - name: Install backend test dependencies (CPU only)
         run: |
           python -m pip install --upgrade pip
-          # Studio's declared backend deps:
+          # Unsloth's declared backend deps:
           pip install -r studio/backend/requirements/studio.txt
           # Extras that studio.txt does not list but the import chain needs
           # (python-multipart for FastAPI form/file uploads, sqlalchemy/cryptography

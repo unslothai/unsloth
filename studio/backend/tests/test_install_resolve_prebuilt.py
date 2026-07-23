@@ -200,14 +200,9 @@ def _gpu_linux_host(caps):
     )
 
 
-def test_host_is_blackwell_includes_datacenter_parts():
-    assert ilp._host_is_blackwell(_gpu_linux_host(["10.0"])) is True  # B200 sm_100
-    assert ilp._host_is_blackwell(_gpu_linux_host(["10.3"])) is True  # B300 sm_103
-    assert ilp._host_is_blackwell(_gpu_linux_host(["12.0"])) is True  # RTX 50 sm_120
-    assert ilp._host_is_blackwell(_gpu_linux_host(["12.1"])) is True  # DGX Spark sm_121
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0"])) is False  # Hopper
-    assert ilp._host_is_blackwell(_gpu_linux_host(["8.0"])) is False  # Ampere
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0", "10.0"])) is True  # highest cap wins
+# _host_is_blackwell / _blackwell_min_toolkit_for_host are prebuilt_core
+# re-exports; their value tables moved verbatim to
+# tests/studio/install/test_prebuilt_core.py.
 
 
 def _linux_cuda_artifact(runtime_line, supported_sms, min_sm, max_sm, profile):
@@ -283,16 +278,6 @@ def test_drop_blackwell_incapable_windows_cuda_applies_to_datacenter():
     )
     kept = ilp._drop_blackwell_incapable_windows_cuda(host, [cuda124, cuda13])
     assert [a.name for a in kept] == [cuda13.name]
-
-
-def test_blackwell_min_toolkit_is_sm_aware():
-    # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
-    f = ilp._blackwell_min_toolkit_for_host
-    assert f(_gpu_linux_host(["10.0"])) == (12, 8)  # B200
-    assert f(_gpu_linux_host(["12.0"])) == (12, 8)  # RTX 50
-    assert f(_gpu_linux_host(["10.3"])) == (12, 9)  # B300
-    assert f(_gpu_linux_host(["12.1"])) == (12, 9)  # DGX Spark
-    assert f(_gpu_linux_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
 
 
 def test_sm103_host_drops_cuda128_windows_build():
@@ -445,6 +430,101 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert routed is host
 
 
+@pytest.mark.parametrize("cpu_flag", ["--cpu-fallback", "--force-cpu"])
+def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys, cpu_flag):
+    """Either CPU flag via CLI must suppress Vulkan even on an Intel GPU host: both
+    drop GPU detection (--force-cpu additionally persists, on the install path)."""
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen = {}
+
+    def _resolver(tag, host, repo, published_release_tag):
+        seen["host"] = host
+        seen["repo"] = repo
+        raise ilp.PrebuiltFallback("no asset")
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            cpu_flag,
+            "--output-format",
+            "json",
+        ],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    # The CPU flag must suppress Intel GPU, route to fork (not upstream Vulkan)
+    assert seen["host"].has_intel_gpu is False
+    assert seen["repo"] == FORK
+
+
+@pytest.mark.parametrize(
+    "flags, expect_force, expect_persist",
+    [
+        ([], False, False),
+        # Automatic/transient last resort (arm64 GPU-build recovery): drops GPU but
+        # does NOT persist, so a later update heals to a GPU bundle (#6097).
+        (["--cpu-fallback"], True, False),
+        # Deliberate CPU-only (UNSLOTH_LLAMA_CPP_BACKEND=cpu): drops GPU AND persists so
+        # the updater re-asserts it and never revives the Intel iGPU crash (#7213).
+        (["--force-cpu"], True, True),
+        (["--cpu-fallback", "--force-cpu"], True, True),
+    ],
+)
+def test_cli_cpu_flags_thread_force_and_persist(
+    monkeypatch, tmp_path, flags, expect_force, expect_persist
+):
+    captured = {}
+    monkeypatch.setattr(ilp, "install_prebuilt", lambda **kw: captured.update(kw))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--install-dir", str(tmp_path / "llama.cpp"), *flags],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    assert captured["force_cpu"] is expect_force
+    assert captured["persist_force_cpu"] is expect_persist
+
+
+@pytest.mark.parametrize(
+    "existing, requested, expected",
+    [
+        # A deliberate --force-cpu on top of a naturally-installed CPU bundle (same
+        # asset, install skipped) must still flip the marker to true (#7213).
+        (False, True, True),
+        (None, True, True),
+        # No spurious writes when already in sync, and a released force syncs down.
+        (True, True, True),
+        (False, False, False),
+        (True, False, False),
+    ],
+)
+def test_sync_marker_force_cpu(tmp_path, existing, requested, expected):
+    marker = {"tag": "b9585", "asset": "llama-b9585-bin-ubuntu-x64.tar.gz"}
+    if existing is not None:
+        marker["force_cpu"] = existing
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps(marker))
+    ilp.sync_marker_force_cpu(tmp_path, requested)
+    written = json.loads(marker_path.read_text())
+    assert written["force_cpu"] is expected
+    # Unrelated fields are preserved.
+    assert written["asset"] == "llama-b9585-bin-ubuntu-x64.tar.gz"
+
+
+def test_sync_marker_force_cpu_missing_marker_is_noop(tmp_path):
+    # No marker (or unreadable) must not crash the reuse path.
+    ilp.sync_marker_force_cpu(tmp_path, True)
+    assert not (tmp_path / "UNSLOTH_PREBUILT_INFO.json").exists()
+
+
 def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():
     # A mixed NVIDIA+Intel host that hid NVIDIA (CUDA_VISIBLE_DEVICES=""/-1):
     # physical NVIDIA present but not usable. Must NOT auto-route to Vulkan, or
@@ -483,3 +563,237 @@ def test_resolve_prebuilt_intel_host_routes_to_upstream(monkeypatch, capsys):
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == UPSTREAM
     assert out["repo"] == UPSTREAM
+
+
+# ---------------------------------------------------------------------------
+# windows_intel_gpu_in_registry: the in-process Windows Intel probe. A fake
+# winreg module stands in for the real registry so the walk runs anywhere.
+# ---------------------------------------------------------------------------
+
+
+class _FakeRegKey:
+    def __init__(
+        self,
+        subkeys = None,
+        values = None,
+        denied = False,
+    ):
+        self.subkeys = subkeys or {}
+        self.values = values or {}
+        self.denied = denied
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeWinreg:
+    HKEY_LOCAL_MACHINE = object()
+
+    def __init__(self, root_key):
+        self._root_key = root_key
+
+    def OpenKey(self, parent, name):
+        if parent is self.HKEY_LOCAL_MACHINE:
+            # Pin the production constant: a typo'd class GUID must fail here,
+            # not silently return the fake tree.
+            if name != ilp._WINDOWS_DISPLAY_CLASS_KEY:
+                raise FileNotFoundError(name)
+            if self._root_key is None:
+                raise FileNotFoundError(name)
+            return self._root_key
+        key = parent.subkeys.get(name)
+        if key is None:
+            # Real winreg raises OSError, never KeyError, for a missing key.
+            raise FileNotFoundError(name)
+        if key.denied:
+            raise PermissionError(name)
+        return key
+
+    def QueryInfoKey(self, key):
+        return (len(key.subkeys), len(key.values), 0)
+
+    def EnumKey(self, key, index):
+        return list(key.subkeys)[index]
+
+    def QueryValueEx(self, key, value_name):
+        if value_name not in key.values:
+            raise FileNotFoundError(value_name)
+        return (key.values[value_name], 1)
+
+
+def _probe_with_display_class(monkeypatch, adapters):
+    # The helper lazily does `import winreg`; plant the fake in sys.modules the
+    # same way unsloth_cli/tests/test_start.py fakes it for _refresh_windows_path.
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(_FakeRegKey(subkeys = adapters)))
+    return ilp.windows_intel_gpu_in_registry()
+
+
+def test_windows_intel_registry_matches_vendor_id(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0&SUBSYS_12345678",
+                        "DriverDesc": "Intel(R) Arc(TM) A770 Graphics",
+                    }
+                ),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_matches_driver_desc_without_device_id(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(values = {"DriverDesc": "Intel(R) UHD Graphics 630"}),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_ignores_non_intel_adapters(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684",
+                        "DriverDesc": "NVIDIA GeForce RTX 4090",
+                    }
+                ),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_1002&DEV_744C",
+                        "DriverDesc": "AMD Radeon RX 7900 XTX",
+                    }
+                ),
+            },
+        )
+        is False
+    )
+
+
+def test_windows_intel_registry_skips_restricted_properties_subkey(monkeypatch):
+    # The real class key carries an ACL-restricted "Properties" subkey and can
+    # deny access to individual adapter keys; neither may abort the walk.
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "Properties": _FakeRegKey(denied = True),
+                "0000": _FakeRegKey(denied = True),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0",
+                    }
+                ),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_missing_class_key_is_false(monkeypatch):
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(None))
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def _detect_windows_host(
+    monkeypatch,
+    winreg_fake,
+    powershell_stdout = "",
+):
+    """Drive the real detect_host() as a GPU-less Windows host with a fake
+    registry, recording every run_capture invocation. Pins the wiring the
+    unit tests above cannot see: registry-first, CIM only on a registry miss."""
+    monkeypatch.setitem(sys.modules, "winreg", winreg_fake)
+    monkeypatch.setattr(ilp.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ilp.platform, "machine", lambda: "AMD64")
+    for _env in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_PATH",
+        "ROCM_PATH",
+    ):
+        monkeypatch.delenv(_env, raising = False)
+    monkeypatch.setattr(
+        ilp.shutil,
+        "which",
+        lambda name: "powershell" if name in ("powershell", "pwsh") else None,
+    )
+    captured = []
+
+    def _fake_run_capture(command, **kwargs):
+        captured.append(command[0])
+        if command[0] == "powershell":
+            return SimpleNamespace(returncode = 0, stdout = powershell_stdout, stderr = "")
+        return SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+
+    monkeypatch.setattr(ilp, "run_capture", _fake_run_capture)
+    return ilp.detect_host(), captured
+
+
+def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(monkeypatch, winreg)
+    assert host.has_intel_gpu is True
+    assert "powershell" not in captured
+
+
+def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(
+        monkeypatch, winreg, powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured
+
+
+def test_windows_intel_registry_unexpected_error_is_false(monkeypatch):
+    # The probe is advisory: even a non-OSError bug in the walk must return
+    # False (deferring to the CIM fallback), never crash detect_host.
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    monkeypatch.setitem(sys.modules, "winreg", _ExplodingWinreg())
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def test_detect_host_cim_rescues_exploding_registry(monkeypatch):
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    host, captured = _detect_windows_host(
+        monkeypatch, _ExplodingWinreg(), powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured

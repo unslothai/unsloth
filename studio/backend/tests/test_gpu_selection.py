@@ -854,7 +854,13 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertIn("only supported on CUDA and Intel XPU", str(exc_info.exception))
 
-    def test_inference_route_rejects_gpu_ids_for_gguf(self):
+    def test_inference_route_validates_gpu_ids_for_gguf(self):
+        # gpu_ids is now SUPPORTED for GGUF (the GPU picker), but still
+        # validated: a rejected pick surfaces as a clean 400, not the old
+        # "not supported for GGUF" rejection. Patch the validator so the test
+        # is deterministic regardless of the host's (or a prior test's) GPU env.
+        import utils.hardware.hardware as hardware_mod
+
         inference_route = _load_route_module(
             "inference_route_module_for_gguf_gpu_ids_test",
             "routes/inference.py",
@@ -888,6 +894,11 @@ class TestRouteErrors(unittest.TestCase):
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(
+                hardware_mod,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("Invalid gpu_ids [0, 1]: rejected by test"),
+            ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -902,8 +913,11 @@ class TestRouteErrors(unittest.TestCase):
                     )
                 )
 
+        # The validator's ValueError becomes a clean 400 (not the removed
+        # "not supported for GGUF" rejection).
         self.assertEqual(exc_info.exception.status_code, 400)
-        self.assertIn("GGUF", exc_info.exception.detail)
+        self.assertIn("gpu_ids", exc_info.exception.detail.lower())
+        self.assertNotIn("not supported", exc_info.exception.detail.lower())
 
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(

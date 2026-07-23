@@ -4,12 +4,12 @@
 """Resolve the caller's IP for rate limiting.
 
 Trust model, in order:
-  1. If the operator opts in via ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (Studio behind
+  1. If the operator opts in via ``UNSLOTH_STUDIO_TRUST_FORWARDED`` (Unsloth behind
      their own reverse proxy), honor the *rightmost* ``X-Forwarded-For`` hop -- the
      one the trusted proxy appended. The leftmost entry is client-controlled and
      spoofable, so this assumes a proxy that appends (or overwrites) the header;
      only enable the env var behind such a proxy.
-  2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Studio's managed
+  2. If the socket peer is loopback, honor ``CF-Connecting-IP``. Unsloth's managed
      Cloudflare tunnel terminates at 127.0.0.1, so every tunneled visitor would
      otherwise collapse onto the same socket peer (the local cloudflared process)
      and share one rate-limit bucket. ``CF-Connecting-IP`` is set by Cloudflare's

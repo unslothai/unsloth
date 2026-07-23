@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 from typing import Literal, Optional
 from urllib.parse import unquote, urlsplit
 
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
 from auth.storage import rotate_preview_link_secret
+from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -34,9 +36,10 @@ from utils.helper_precache_settings import (
 )
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
-    DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
+    DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
     get_auto_unload_idle_seconds,
+    get_auto_unload_keep_kv,
     get_model_overrides,
     get_openai_auto_switch_enabled,
     get_stored_auto_unload_idle_seconds,
@@ -57,6 +60,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 
 router = APIRouter()
 
@@ -86,9 +90,28 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class HuggingFaceCachePayload(BaseModel):
+    cache_home: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class HuggingFaceCacheResponse(BaseModel):
+    cache_home: str
+    hub_cache: str
+    xet_cache: str
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    is_custom: bool
+    available: bool
+    writable: bool
+    free_bytes: Optional[int] = None
+    environment_variable: Optional[str] = None
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
-    auto_unload_idle_seconds: int = Field(default = DEFAULT_AUTO_UNLOAD_IDLE_SECONDS, ge = 0)
+    # None leaves the stored value untouched (partial updates can't clobber it).
+    auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    auto_unload_keep_kv: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -99,6 +122,7 @@ class OpenAIAutoSwitchResponse(BaseModel):
     # UNSLOTH_MODEL_IDLE_TTL set and nothing stored, this is true even while enabled
     # is false, so the UI can show idle-unload as active instead of "needs enable".
     idle_unload_active: bool = False
+    auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
 
 
 class ModelOverridePayload(BaseModel):
@@ -127,6 +151,30 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
     )
+
+
+def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
+    return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
+
+
+@router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def get_hugging_face_cache(
+    current_subject: str = Depends(get_current_subject),
+) -> HuggingFaceCacheResponse:
+    return _hugging_face_cache_response()
+
+
+@router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def update_hugging_face_cache(
+    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
+) -> HuggingFaceCacheResponse:
+    try:
+        set_hf_cache_home(payload.cache_home)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _hugging_face_cache_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -196,6 +244,7 @@ def get_openai_auto_switch(
         enabled = get_openai_auto_switch_enabled(),
         auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        auto_unload_keep_kv = get_auto_unload_keep_kv(),
     )
 
 
@@ -204,8 +253,8 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds = set_openai_auto_switch(
-            payload.enabled, payload.auto_unload_idle_seconds
+        enabled, idle_seconds, keep_kv = set_openai_auto_switch(
+            payload.enabled, payload.auto_unload_idle_seconds, payload.auto_unload_keep_kv
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -215,10 +264,16 @@ def update_openai_auto_switch(
             event = "settings.update_openai_auto_switch_failed",
             log = logger,
         ) from exc
+    idle_unload_active = get_auto_unload_idle_seconds() > 0
+    if not keep_kv or not idle_unload_active:
+        # Keep-KV off or idle unload disabled: drop already-saved chat context too.
+        from core.inference.llama_keepwarm import purge_kv_resume
+        purge_kv_resume()
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,
-        idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        idle_unload_active = idle_unload_active,
+        auto_unload_keep_kv = keep_kv,
     )
 
 
@@ -262,14 +317,18 @@ class EmbeddingModelPayload(BaseModel):
 
 class EmbeddingModelResponse(BaseModel):
     embedding_model: str
+    embedding_gguf_repo: str
     default_embedding_model: str
+    default_embedding_gguf_repo: str
     is_custom: bool
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     return EmbeddingModelResponse(
         embedding_model = get_rag_embedding_model(),
+        embedding_gguf_repo = effective_gguf_repo(),
         default_embedding_model = default_embedding_model(),
+        default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
     )
 
@@ -399,6 +458,11 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
+    from utils.utils import hf_env_offline
+
+    # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
+    # to the local cache below; capture the state once.
+    local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -422,26 +486,41 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-        # one blocks instead of passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token),
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the
+        # whole cached snapshot, so no load-subdir hints are needed.
+        if local_only_load:
+            load_subdirs = ()
+        else:
+            # Include ST module dirs (0_Transformer/) so a flagged pickle directly under one
+            # blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (
+                        *security_load_subdirs(model, scan_token),
+                        *_st_module_subdirs(model, scan_token),
+                    )
                 )
             )
-        )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        if evaluate_file_security(
+            model,
+            hf_token = scan_token,
+            load_subdirs = load_subdirs,
+            local_only_load = local_only_load,
+        ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
-            raise HTTPException(
-                status_code = 403,
+            if local_only_load:
+                detail = (
+                    f"{model!r} has cached pickle weights that cannot be security-scanned "
+                    "offline and no safetensors alternative, so it cannot be used as the "
+                    "embedding model. Re-download it with safetensors weights while online."
+                )
+            else:
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
-                ),
-            )
+                )
+            raise HTTPException(status_code = 403, detail = detail)
     if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
@@ -451,15 +530,28 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Could not verify {model!r} as an embedding model on "
-                    "Hugging Face (it may be the wrong model type, gated, or "
-                    "you may be offline)."
-                ),
-            )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+            # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
+            # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
+            # metadata. If already cached and loadable, accept it rather than raising a 409 that
+            # online would not (ST can load any cached encoder). Uncached -> 409.
+            from utils.utils import hf_cache_snapshot_is_loadable
+
+            # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
+            # so a metadata-only partial cache still gets the forceable 409.
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            if not offline_cached:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Could not verify {model!r} as an embedding model on "
+                        "Hugging Face (it may be the wrong model type, gated, or "
+                        "you may be offline)."
+                    ),
+                )
+        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error is None and not local_only_load:
+            gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)
@@ -551,6 +643,7 @@ class PersonalizationProfile(BaseModel):
     nickname: str = Field("", max_length = 200)
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
+    showGreetingSloth: bool = True
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -562,11 +655,179 @@ class PersonalizationProfile(BaseModel):
         return value
 
 
+class PersonalizationCustomColors(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    accent: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    background: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    foreground: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+
+
+class PersonalizationCustomColorModes(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    light: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+    dark: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+
+
+MAX_IMPORTED_FONTS = 3
+# ~1.5 MB font file as base64; matches MAX_IMPORTED_FONT_DATA_URL_LENGTH in
+# the frontend appearance-custom-store.
+MAX_FONT_DATA_URL_LENGTH = 2_200_000
+# Aggregate cap across all imported fonts; matches
+# MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH in the frontend so a synced payload
+# always fits the browser's localStorage quota.
+MAX_TOTAL_FONT_DATA_URL_LENGTH = 4_400_000
+
+# Characters that could terminate a CSS declaration, escape the quoted
+# font-family value (backslash), or smuggle extra fallbacks/comments (comma,
+# slash) if a stored name ever reached a stylesheet. The server is the
+# authoritative gate; the frontend strips the same set before use.
+_FONT_NAME_FORBIDDEN = set(";{}()<>\"'\\/,`")
+
+
+def _check_font_name(value: str) -> str:
+    if any(c in _FONT_NAME_FORBIDDEN or ord(c) < 0x20 for c in value):
+        raise ValueError("Font name contains invalid characters.")
+    return value
+
+
+# Matches FONT_DATA_URL_PATTERN in the frontend appearance-custom-store.
+_FONT_DATA_URL_PATTERN = re.compile(
+    r"^data:(?:font/(?:woff2?|ttf|otf|sfnt)"
+    r"|application/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$"
+)
+
+
+class PersonalizationImportedFont(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    name: str = Field(..., min_length = 1, max_length = 100)
+    dataUrl: str = Field(..., max_length = MAX_FONT_DATA_URL_LENGTH)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_font_name(cls, value: str) -> str:
+        return _check_font_name(value)
+
+    @field_validator("dataUrl")
+    @classmethod
+    def _validate_font_data_url(cls, value: str) -> str:
+        # fullmatch, not match: re's ``$`` also matches just before a trailing
+        # newline, so ``match`` would accept "data:font/woff2;base64,AAAA\n",
+        # which the frontend's JS pattern (``$`` = end of string) rejects.
+        if not _FONT_DATA_URL_PATTERN.fullmatch(value):
+            raise ValueError("dataUrl must be a base64 font data URL.")
+        return value
+
+
+# Optional user-menu items; the boolean is each id's default visibility.
+# Settings-tab shortcuts ship hidden.
+SIDEBAR_MENU_ITEM_DEFAULTS = {
+    "api": True,
+    "darkMode": True,
+    "guidedTour": True,
+    "profile": False,
+    "appearance": False,
+    "resources": False,
+    "chat": False,
+    "connections": False,
+}
+
+# The sidebarMenu validator below dedupes ids and re-fills any missing ones, so
+# the stored list is always exactly one entry per id. Cap the *incoming* list at
+# a generous multiple rather than len(defaults): a stale or duplicated payload
+# (more items than distinct ids) must reach the validator so it can normalize,
+# instead of being rejected by the length constraint before dedupe runs. A
+# pathologically long list is still refused.
+MAX_SIDEBAR_MENU_INPUT_ITEMS = 4 * len(SIDEBAR_MENU_ITEM_DEFAULTS)
+
+
+class PersonalizationSidebarMenuItem(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: Literal[
+        "api",
+        "darkMode",
+        "guidedTour",
+        "profile",
+        "appearance",
+        "resources",
+        "chat",
+        "connections",
+    ]
+    visible: bool = True
+
+
+def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
+    return [
+        PersonalizationSidebarMenuItem(id = item_id, visible = visible)
+        for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items()
+    ]
+
+
+class PersonalizationCustomization(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
+    uiFont: Optional[str] = Field(None, max_length = 200)
+    headingFont: Optional[str] = Field(None, max_length = 200)
+    chatFont: Optional[str] = Field(None, max_length = 200)
+    codeFont: Optional[str] = Field(None, max_length = 200)
+    importedFonts: list[PersonalizationImportedFont] = Field(
+        default_factory = list, max_length = MAX_IMPORTED_FONTS
+    )
+
+    @field_validator("importedFonts")
+    @classmethod
+    def _validate_total_font_size(
+        cls, value: list[PersonalizationImportedFont]
+    ) -> list[PersonalizationImportedFont]:
+        if sum(len(f.dataUrl) for f in value) > MAX_TOTAL_FONT_DATA_URL_LENGTH:
+            raise ValueError("Imported fonts exceed the total size limit.")
+        return value
+
+    @field_validator("uiFont", "headingFont", "chatFont", "codeFont")
+    @classmethod
+    def _validate_selected_fonts(cls, value: Optional[str]) -> Optional[str]:
+        # Selected font names reach CSS the same way imported names do.
+        return value if value is None else _check_font_name(value)
+
+    uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
+    codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    contrast: int = Field(50, ge = 0, le = 100)
+    pointerCursors: bool = False
+    reduceMotion: Literal["system", "on", "off"] = "system"
+    fontSmoothing: bool = True
+    sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
+        default_factory = _default_sidebar_menu,
+        max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
+    )
+
+    @field_validator("sidebarMenu")
+    @classmethod
+    def _validate_sidebar_menu(
+        cls, value: list[PersonalizationSidebarMenuItem]
+    ) -> list[PersonalizationSidebarMenuItem]:
+        # Drop duplicate ids (keep the first) and re-append any missing ids so
+        # the stored list always covers every optional menu item exactly once.
+        seen: set[str] = set()
+        items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
+            if item_id not in seen:
+                items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+        return items
+
+
 class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
+    palette: Literal["standard", "classic", "minimal"] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
+    customization: PersonalizationCustomization = Field(
+        default_factory = PersonalizationCustomization
+    )
 
 
 class PersonalizationPayload(BaseModel):
@@ -579,6 +840,11 @@ class PersonalizationPayload(BaseModel):
 
 class PersonalizationResponse(PersonalizationPayload):
     saved: bool = False
+    # False when the stored record predates a field, so the client keeps local
+    # overrides instead of treating a server-filled default as an explicit value.
+    customizationSaved: bool = False
+    paletteSaved: bool = False
+    greetingSlothSaved: bool = False
 
 
 @router.get("/personalization", response_model = PersonalizationResponse)
@@ -588,7 +854,26 @@ def get_personalization_settings(
     stored = get_personalization()
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
+    appearance = stored.get("appearance") if isinstance(stored, dict) else None
+    profile = stored.get("profile") if isinstance(stored, dict) else None
+    response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
+    response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
+
+
+def _merge_personalization(base: dict, overlay: dict) -> dict:
+    # Recursively overlay only the request's set fields onto the stored record,
+    # so a stale client that omits newer keys (palette, customization) does not
+    # materialize their defaults and defeat the *Saved legacy detection.
+    merged = dict(base)
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            merged[key] = _merge_personalization(existing, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 @router.put("/personalization", response_model = PersonalizationPayload)
@@ -596,7 +881,11 @@ def update_personalization_settings(
     payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
 ) -> PersonalizationPayload:
     try:
-        set_personalization(payload.model_dump())
+        # exclude_unset so absent fields are not persisted as defaults; merge so
+        # fields the request omits keep whatever the record already stored.
+        incoming = payload.model_dump(exclude_unset = True)
+        merged = _merge_personalization(get_personalization(), incoming)
+        set_personalization(merged)
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -605,4 +894,6 @@ def update_personalization_settings(
             event = "settings.update_personalization_failed",
             log = logger,
         ) from exc
-    return payload
+    # Return the stored record, not the defaults-filled request, so the response
+    # matches storage (and the next GET) for fields the client omitted.
+    return PersonalizationPayload.model_validate(merged)

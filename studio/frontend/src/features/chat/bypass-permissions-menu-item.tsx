@@ -14,45 +14,45 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { Tick02Icon } from "@/lib/tick-icon";
+import {
+  FULL_ACCESS_WARNING,
+  PermissionModeMenuItems,
+} from "./permission-mode-select";
 
-// "Bypass permissions" entry for the composer "+" -> More menu. Mirrors the
-// settings toggle: enabling demands the danger warning, disabling is immediate.
-// The menu closes normally on select (no preventDefault) -- the warning dialog
-// lives outside the menu (BypassPermissionsConfirmDialog, mounted once at the
-// chat-page root and driven by the store), so it survives the menu unmounting
-// and the "+"/More popovers don't stay frozen.
+// Tool permissions entry for the composer "+" menu.
 export function BypassPermissionsMenuItem() {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
 
   return (
-    <DropdownMenuItem
-      className={bypassPermissions ? "text-bypass font-medium" : undefined}
-      onSelect={() => {
-        if (bypassPermissions) {
-          setBypassPermissions(false);
-        } else {
-          // Defer past Radix's menu-close focus restoration: opening the dialog
-          // synchronously here lets the dropdown grab focus back and breaks the
-          // dialog's focus trap.
-          setTimeout(() => setBypassConfirmOpen(true), 0);
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        className={
+          permissionMode === "full" ? "text-bypass font-medium" : undefined
         }
-      }}
-    >
-      <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
-      Bypass permissions
-      {bypassPermissions ? (
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
-      ) : null}
-    </DropdownMenuItem>
+      >
+        <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
+        Tool permissions
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="unsloth-plus-menu w-[300px]">
+        <PermissionModeMenuItems
+          // Defer past Radix's menu-close focus restoration: opening the
+          // dialog synchronously here lets the dropdown grab focus back and
+          // breaks the dialog's focus trap.
+          onRequestFullAccess={() =>
+            setTimeout(() => setBypassConfirmOpen(true), 0)
+          }
+        />
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 
@@ -63,19 +63,15 @@ export function BypassPermissionsMenuItem() {
 export function BypassPermissionsConfirmDialog() {
   const open = useChatRuntimeStore((s) => s.bypassConfirmOpen);
   const setOpen = useChatRuntimeStore((s) => s.setBypassConfirmOpen);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
 
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
+          <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
           <AlertDialogDescription>
-            Bypass permissions is dangerous since the AI model might delete,
-            corrupt your machine, and or cause real world damage to you or the
-            world - only accept if you are certain
+            {FULL_ACCESS_WARNING}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -84,7 +80,7 @@ export function BypassPermissionsConfirmDialog() {
             variant="destructive"
             className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
             onClick={() => {
-              setBypassPermissions(true);
+              setPermissionMode("full");
               setOpen(false);
             }}
           >

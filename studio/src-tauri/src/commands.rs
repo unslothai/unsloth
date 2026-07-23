@@ -25,12 +25,12 @@ fn should_emit_repair_failed(msg: &str) -> bool {
 fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflict) -> String {
     if conflict.reason == "desktop_owned_backend_active" {
         return format!(
-            "A desktop-owned Studio server for this install is already running on port {}. Quit the other desktop app instance, then try again.",
+            "A desktop-owned Unsloth server for this install is already running on port {}. Quit the other desktop app instance, then try again.",
             conflict.port
         );
     }
     format!(
-        "A Studio server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
+        "An Unsloth server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
         conflict.port
     )
 }
@@ -339,11 +339,21 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
 
 /// Open an existing directory in the system file manager. Validates the path
 /// up front so callers get a clean error instead of a raw OS failure.
-fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
+fn open_existing_dir_with<E>(
+    dir: &std::path::Path,
+    opener: impl FnOnce(&std::path::Path) -> Result<(), E>,
+) -> Result<(), String>
+where
+    E: std::fmt::Display,
+{
     if !dir.is_dir() {
         return Err(format!("Directory does not exist: {}", dir.display()));
     }
-    open::that(dir).map_err(|e| format!("Failed to open directory: {}", e))
+    opener(dir).map_err(|error| format!("Failed to open directory: {error}"))
+}
+
+fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
+    open_existing_dir_with(dir, |path| open::that_detached(path))
 }
 
 /// Open the Unsloth Studio directory in the system file manager.
@@ -475,7 +485,7 @@ pub async fn start_backend_update(
         .map_err(|e| format!("Update task panicked: {e}"))?
 }
 
-/// Repair a stale managed Studio install.
+/// Repair a stale managed Unsloth install.
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -522,7 +532,7 @@ pub async fn start_managed_repair(
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
         .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    let _ = app.emit("repair-progress", "Updating existing Studio install...");
+    let _ = app.emit("repair-progress", "Updating existing Unsloth install...");
     let update_app = app.clone();
     let update_state = update_state.inner().clone();
     let update_diagnostics = diagnostics_state.clone();
@@ -549,7 +559,7 @@ pub async fn start_managed_repair(
             warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
             let _ = app.emit(
                 "repair-progress",
-                "Update finished, but Studio is still not ready. Running bundled installer...",
+                "Update finished, but Unsloth is still not ready. Running bundled installer...",
             );
         }
         Err(msg) => {
@@ -627,7 +637,7 @@ pub async fn start_managed_repair(
         return Ok(());
     }
 
-    let msg = "Repair finished, but Studio install is still not desktop-ready.".to_string();
+    let msg = "Repair finished, but Unsloth install is still not desktop-ready.".to_string();
     error!("{}", msg);
     diagnostics::finish_repair_group(
         &diagnostics_state,
@@ -641,7 +651,8 @@ pub async fn start_managed_repair(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::fs;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -699,6 +710,40 @@ mod tests {
         port
     }
 
+    #[test]
+    fn existing_directory_helper_invokes_opener_and_surfaces_errors() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("unsloth-open-dir-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut opened = false;
+        super::open_existing_dir_with(&dir, |path| {
+            opened = true;
+            assert_eq!(path, dir);
+            Ok::<_, &str>(())
+        })
+        .unwrap();
+        assert!(opened);
+
+        let error = super::open_existing_dir_with(&dir, |_| Err("opener failed")).unwrap_err();
+        assert!(error.contains("opener failed"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn existing_directory_helper_rejects_missing_path_without_opening() {
+        let missing = std::env::temp_dir().join("unsloth-definitely-missing-open-dir");
+        let error = super::open_existing_dir_with(&missing, |_| {
+            panic!("opener must not run for an invalid directory");
+            #[allow(unreachable_code)]
+            Ok::<_, &str>(())
+        })
+        .unwrap_err();
+        assert!(error.contains("Directory does not exist"));
+    }
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
