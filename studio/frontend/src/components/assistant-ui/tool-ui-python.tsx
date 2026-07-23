@@ -118,22 +118,60 @@ function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string
   );
 }
 
-/** Syntax-highlighted code via Streamdown + shiki; inherits parent container. */
+/** Syntax-highlighted code via Streamdown + shiki; inherits parent container.
+ * The script is always in the DOM (a plain monospace placeholder), but shiki
+ * only tokenizes once the block scrolls near the viewport, so a long transcript
+ * with many scripts doesn't highlight every one up front. Falls back to
+ * immediate highlight when IntersectionObserver is unavailable (SSR / tests). */
 function HighlightedCode({ code: source, language }: { code: string; language: string }) {
+  const display = useMemo(() => truncate(source), [source]);
   const markdown = useMemo(
-    () => `\`\`\`${language}\n${truncate(source)}\n\`\`\``,
-    [source, language],
+    () => `\`\`\`${language}\n${display}\n\`\`\``,
+    [display, language],
   );
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [highlight, setHighlight] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+  useEffect(() => {
+    if (highlight) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setHighlight(true);
+          io.disconnect();
+        }
+      },
+      // Highlight just before the block enters view so it's colorized by the
+      // time the user reaches it, without tokenizing off-screen scripts.
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [highlight]);
   return (
-    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0">
-      <Streamdown
-        mode="static"
-        plugins={{ code: codePlugin }}
-        controls={{ code: false }}
-        shikiTheme={SHIKI_THEME}
-      >
-        {markdown}
-      </Streamdown>
+    <div
+      ref={containerRef}
+      className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0"
+    >
+      {highlight ? (
+        <Streamdown
+          mode="static"
+          plugins={{ code: codePlugin }}
+          controls={{ code: false }}
+          shikiTheme={SHIKI_THEME}
+        >
+          {markdown}
+        </Streamdown>
+      ) : (
+        // Same p-3 padding as the highlighted code block so there is no layout
+        // jump when shiki swaps in.
+        <pre className="m-0 whitespace-pre-wrap break-words p-3 font-mono text-xs text-muted-foreground">
+          {display}
+        </pre>
+      )}
     </div>
   );
 }
