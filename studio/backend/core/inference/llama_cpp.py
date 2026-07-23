@@ -11683,6 +11683,7 @@ class LlamaCppBackend:
                     from core.inference.chat_template_helpers import (
                         neutralize_message_content_for_role,
                     )
+
                     _tool_msg = dict(completion.tool_message())
                     _tool_msg["content"] = neutralize_message_content_for_role(
                         _tool_msg.get("role"), _tool_msg.get("content")
@@ -11889,11 +11890,10 @@ class LlamaCppBackend:
                                     from core.inference.chat_template_helpers import (
                                         neutralize_think_markup_streaming,
                                     )
+
                                     reasoning_markup_buffer += reasoning
                                     reasoning, reasoning_markup_buffer = (
-                                        neutralize_think_markup_streaming(
-                                            reasoning_markup_buffer
-                                        )
+                                        neutralize_think_markup_streaming(reasoning_markup_buffer)
                                     )
                                 if reasoning:
                                     reasoning_text += reasoning
