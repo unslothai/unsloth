@@ -121,6 +121,7 @@ export async function loadModel(
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/load", {
     method: "POST",
+    signal: options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...payload,
@@ -140,6 +141,7 @@ export async function validateModel(
   if (!preparedToken.proceed) throw new Error("Model load cancelled.");
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
+    signal: options?.signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model_path: payload.model_path,

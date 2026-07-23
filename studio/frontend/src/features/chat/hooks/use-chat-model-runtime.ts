@@ -674,18 +674,25 @@ export function useChatModelRuntime() {
         }
 
         // A load owned by another runtime surface cannot be safely cancelled
-        // through this hook.
+        // through this hook's local refs. Delegate to the owning hook through
+        // the shared handle instead.
         if (!activeRun) {
+          const shared = sharedModelLoadHandle;
+          if (shared) {
+            const stopped = await shared.cancel(true);
+            replacementNeedsRollback =
+              replacementNeedsRollback ||
+              shared.run.previousCheckpointWasUnloaded;
+            if (loadIntentRef.current !== loadIntentId) return;
+            if (stopped) continue;
+          }
           if (typeof selection !== "string" && selection.previousConfig) {
             applyPerModelConfigToRuntime(selection.previousConfig);
           }
           const message =
-            "Another model is already loading. Wait for it to finish or cancel it first.";
+            "The current model could not be stopped, so the new model was not loaded.";
           setModelsError(message);
           if (throwOnError) throw new Error(message);
-          toast.info("Another model is already loading", {
-            description: "Wait for it to finish or cancel it first.",
-          });
           return;
         }
 
