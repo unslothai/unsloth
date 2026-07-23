@@ -655,9 +655,7 @@ class TestListGgufVariantsFromCache:
             },
         )
 
-        out = _list_gguf_variants_from_hf_cache(
-            "unsloth/uppercase-split-GGUF"
-        )
+        out = _list_gguf_variants_from_hf_cache("unsloth/uppercase-split-GGUF")
         assert out is not None
         variants, _ = out
         assert [variant.quant for variant in variants] == ["Q4_K_M"]
