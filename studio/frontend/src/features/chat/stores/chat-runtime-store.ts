@@ -9,7 +9,6 @@ import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
-  getOrderedPresets,
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
