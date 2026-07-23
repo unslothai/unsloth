@@ -5028,7 +5028,10 @@ async def validate_model(
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "validate-model")
         )
-        config = ModelConfig.from_identifier(
+        # Resolution can inspect GGUF headers and Hugging Face metadata. Keep
+        # all synchronous filesystem/network work off FastAPI's event loop.
+        config = await asyncio.to_thread(
+            ModelConfig.from_identifier,
             model_id = model_identifier,
             hf_token = request.hf_token,
             gguf_variant = request.gguf_variant,
@@ -5236,6 +5239,10 @@ async def validate_model(
             is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
+            is_audio = getattr(config, "is_audio", False),
+            audio_type = getattr(config, "audio_type", None),
+            has_audio_input = getattr(config, "has_audio_input", False),
+            is_chat_capable = getattr(config, "is_chat_capable", True),
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,

@@ -66,6 +66,10 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+_GGUF_SPLIT_FILE_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})\.gguf$",
+    re.IGNORECASE,
+)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -321,10 +325,43 @@ def list_gguf_variants_from_hf_cache(
         if root is not None
         else iter_hf_cache_snapshots(repo_id)
     )
+    complete_variants: list[GgufVariantInfo] = []
+    seen_quants: set[str] = set()
+    has_vision = False
     for snapshot in snapshots:
-        variants, has_vision = list_local_gguf_variants(str(snapshot))
-        if variants or has_vision:
-            return variants, has_vision
+        variants, snapshot_has_vision = list_local_gguf_variants(str(snapshot))
+        contributed = False
+        for variant in variants:
+            if variant.quant in seen_quants:
+                continue
+            candidate = snapshot / variant.filename
+            match = _GGUF_SPLIT_FILE_RE.match(candidate.name)
+            if match is None:
+                complete = candidate.is_file()
+            else:
+                prefix = match.group("prefix").casefold()
+                total_text = match.group("total")
+                expected = set(range(1, int(total_text) + 1))
+                present = {
+                    int(found.group("index"))
+                    for sibling in candidate.parent.glob("*.gguf")
+                    if (found := _GGUF_SPLIT_FILE_RE.match(sibling.name))
+                    and found.group("prefix").casefold() == prefix
+                    and found.group("total") == total_text
+                    and sibling.is_file()
+                }
+                complete = present == expected
+            if not complete:
+                continue
+            complete_variants.append(variant)
+            seen_quants.add(variant.quant)
+            contributed = True
+        # A projector-only or partial snapshot must not hide older complete
+        # variants or claim capability for unrelated weights.
+        has_vision = has_vision or (snapshot_has_vision and contributed)
+    if complete_variants:
+        complete_variants.sort(key = lambda variant: -variant.size_bytes)
+        return complete_variants, has_vision
     return None
 
 

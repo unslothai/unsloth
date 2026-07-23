@@ -21,6 +21,29 @@ def _make_snapshot(root: Path) -> Path:
     return snap
 
 
+def test_cached_variants_merge_complete_quants_across_snapshots(tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshots = hub_cache / "models--org--Repo-GGUF" / "snapshots"
+    newer = snapshots / "newer"
+    older = snapshots / "older"
+    newer.mkdir(parents = True)
+    older.mkdir(parents = True)
+    (newer / "model-Q8_0.gguf").write_bytes(b"complete-q8")
+    (newer / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"partial-q4")
+    (older / "model-Q4_K_M.gguf").write_bytes(b"complete-q4")
+    older.touch()
+    newer.touch()
+
+    result = gguf.list_gguf_variants_from_hf_cache(
+        "org/Repo-GGUF",
+        root = hub_cache,
+    )
+
+    assert result is not None
+    variants, _has_vision = result
+    assert {variant.quant for variant in variants} == {"Q8_0", "Q4_K_M"}
+
+
 def test_list_empty_gguf_variant_dirs_finds_empty_leftover(tmp_path, monkeypatch):
     snap = _make_snapshot(tmp_path)
     monkeypatch.setattr(gguf, "iter_hf_cache_snapshots", lambda repo_id: iter([snap]))

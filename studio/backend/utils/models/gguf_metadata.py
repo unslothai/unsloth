@@ -51,6 +51,7 @@ _CACHE_MAX_ENTRIES = 4096
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
 _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
+_AUDIO_TYPE_CACHE: Dict[_CacheKey, Optional[str]] = {}
 
 # GGUF header dims for the staged/deferred-load UI: context_length, layer_count
 # (block_count), and moe_layer_count (block_count minus leading dense layers; 0
@@ -93,6 +94,175 @@ def read_gguf_general_metadata(path: str) -> Optional[Dict[str, str]]:
                 break
         _METADATA_CACHE[key] = result
     return result
+
+
+def detect_gguf_audio_type(path: str) -> Optional[str]:
+    """Detect known audio signatures from a bounded GGUF-header scan.
+
+    Vocabulary entries are inspected one at a time and never materialized.
+    Malformed or oversized metadata is treated as unknown, not as audio.
+    """
+    cache_key = _cache_key(path)
+    if cache_key is None:
+        return None
+    with _CACHE_LOCK:
+        if cache_key in _AUDIO_TYPE_CACHE:
+            return _AUDIO_TYPE_CACHE[cache_key]
+    result = _parse_gguf_audio_type(path)
+    with _CACHE_LOCK:
+        while len(_AUDIO_TYPE_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _AUDIO_TYPE_CACHE.pop(next(iter(_AUDIO_TYPE_CACHE)))
+            except StopIteration:
+                break
+        _AUDIO_TYPE_CACHE[cache_key] = result
+    return result
+
+
+def _parse_gguf_audio_type(path: str) -> Optional[str]:
+    exact_markers = {
+        b"<|AUDIO|>",
+        b"<|audio_eos|>",
+        b"<|startoftranscript|>",
+        b"<audio_soft_token>",
+        b"<|audio|>",
+        b"<|audio_start|>",
+        b"<|audio_end|>",
+        b"<|text_start|>",
+        b"<|text_end|>",
+    }
+    found: set[bytes] = set()
+    bicodec = False
+    qwen3_asr_identity = False
+    has_audio_encoder = False
+    has_vision_encoder: Optional[bool] = None
+    audio_projector_type: Optional[bytes] = None
+    custom_tokens = 0
+    token_bytes = 0
+    max_header_bytes = 1 << 26
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC or kv_count > 1 << 16:
+                return None
+
+            for _ in range(kv_count):
+                klen_bytes = f.read(8)
+                if len(klen_bytes) < 8:
+                    return None
+                klen = struct.unpack("<Q", klen_bytes)[0]
+                if klen > 1 << 20:
+                    return None
+                key_bytes = f.read(klen)
+                vtype_bytes = f.read(4)
+                if len(key_bytes) < klen or len(vtype_bytes) < 4:
+                    return None
+                key = key_bytes.decode("utf-8", "replace")
+                vtype = struct.unpack("<I", vtype_bytes)[0]
+
+                if key in {
+                    "general.architecture",
+                    "general.name",
+                    "general.basename",
+                    "clip.audio.projector_type",
+                }:
+                    if vtype != 8:
+                        return None
+                    slen_bytes = f.read(8)
+                    if len(slen_bytes) < 8:
+                        return None
+                    slen = struct.unpack("<Q", slen_bytes)[0]
+                    if slen > 1 << 20:
+                        return None
+                    value = f.read(slen)
+                    if len(value) < slen or f.tell() > max_header_bytes:
+                        return None
+                    identity = value.lower().replace(b"-", b"_").replace(b" ", b"_")
+                    if key == "clip.audio.projector_type":
+                        audio_projector_type = identity
+                    else:
+                        qwen3_asr_identity = qwen3_asr_identity or b"qwen3_asr" in identity
+                    continue
+
+                if key in {"clip.has_audio_encoder", "clip.has_vision_encoder"}:
+                    if vtype != 7:
+                        return None
+                    value = f.read(1)
+                    if len(value) != 1:
+                        return None
+                    if key == "clip.has_audio_encoder":
+                        has_audio_encoder = value != b"\x00"
+                    else:
+                        has_vision_encoder = value != b"\x00"
+                    continue
+
+                if key != "tokenizer.ggml.tokens":
+                    value_start = f.tell()
+                    if not _skip_gguf_value(f, vtype):
+                        return None
+                    # Seeking over a large fixed-width metadata array is cheap
+                    # but still bounded. Valid vocab-sized arrays commonly
+                    # exceed 262,144 entries.
+                    if f.tell() > max_header_bytes or f.tell() < value_start:
+                        return None
+                    continue
+
+                if vtype != 9:
+                    return None
+                array_head = f.read(12)
+                if len(array_head) < 12:
+                    return None
+                element_type, count = struct.unpack("<IQ", array_head)
+                if element_type != 8 or count > 1 << 20:
+                    return None
+                for _ in range(count):
+                    slen_bytes = f.read(8)
+                    if len(slen_bytes) < 8:
+                        return None
+                    slen = struct.unpack("<Q", slen_bytes)[0]
+                    token_bytes += 8 + slen
+                    if slen > 1 << 20 or token_bytes > max_header_bytes:
+                        return None
+                    value = f.read(slen)
+                    if len(value) < slen:
+                        return None
+                    if value in exact_markers:
+                        found.add(value)
+                    if value.startswith(b"<|bicodec_"):
+                        bicodec = True
+                    if value.startswith(b"<custom_token_"):
+                        custom_tokens += 1
+    except (OSError, struct.error, UnicodeDecodeError) as exc:
+        logger.debug(f"detect_gguf_audio_type: cannot parse {path}: {exc}")
+        return None
+
+    if qwen3_asr_identity or (
+        has_audio_encoder and has_vision_encoder is False and audio_projector_type == b"qwen3a"
+    ):
+        return "asr"
+    # Match llama.cpp runtime detection exactly: these two single-token
+    # markers are the CSM signature; no repository-name identity is required.
+    if {b"<|AUDIO|>", b"<|audio_eos|>"} <= found:
+        return "csm"
+    if b"<|startoftranscript|>" in found:
+        return "whisper"
+    if b"<audio_soft_token>" in found or b"<|audio|>" in found:
+        return "audio_vlm"
+    if bicodec:
+        return "bicodec"
+    if {
+        b"<|audio_start|>",
+        b"<|audio_end|>",
+        b"<|text_start|>",
+        b"<|text_end|>",
+    } <= found:
+        return "dac"
+    if custom_tokens > 10000:
+        return "snac"
+    return None
 
 
 def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:

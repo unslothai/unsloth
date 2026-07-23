@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from utils.models.gguf_metadata import (
+    detect_gguf_audio_type,
     is_mmproj_by_metadata,
     pairing_score,
     read_gguf_context_length,
@@ -414,3 +415,48 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
+
+
+def test_csm_tokens_match_runtime_without_name_identity(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "generic.gguf",
+        {"general.architecture": "llama"},
+        extra_string_arrays = {
+            "tokenizer.ggml.tokens": ["<s>", "<|AUDIO|>", "<|audio_eos|>"],
+        },
+    )
+    assert detect_gguf_audio_type(str(p)) == "csm"
+
+
+def test_qwen3_asr_projector_metadata_is_non_chat_audio(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "mmproj-qwen3-asr.gguf",
+        {
+            "general.type": "mmproj",
+            "clip.audio.projector_type": "qwen3a",
+        },
+        extra_bools = {
+            "clip.has_audio_encoder": True,
+            "clip.has_vision_encoder": False,
+        },
+    )
+    assert detect_gguf_audio_type(str(p)) == "asr"
+
+
+def test_vocab_sized_fixed_array_before_tokens_is_skipped(tmp_path: Path):
+    # Regression: the previous 2**18 entry cap rejected valid metadata arrays
+    # even though the token vocabulary itself allowed up to 2**20 entries.
+    fixed_count = (1 << 18) + 1
+    fixed_array = (
+        _enc_string("tokenizer.ggml.token_type")
+        + struct.pack("<I", _VTYPE_ARRAY)
+        + struct.pack("<IQ", _VTYPE_UINT32, fixed_count)
+        + (b"\x00" * (fixed_count * 4))
+    )
+    tokens = _enc_kv_string_array(
+        "tokenizer.ggml.tokens",
+        ["<|AUDIO|>", "<|audio_eos|>"],
+    )
+    p = tmp_path / "large-metadata-array.gguf"
+    p.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + fixed_array + tokens)
+    assert detect_gguf_audio_type(str(p)) == "csm"

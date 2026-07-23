@@ -6,7 +6,12 @@
 
 from __future__ import annotations
 
-from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
+from utils.models import model_config
+from utils.models.model_config import (
+    _AUDIO_TOKEN_PATTERNS,
+    _classify_audio_capability,
+    is_audio_input_type,
+)
 
 
 def _classify(tokens: list[str]) -> str | None:
@@ -41,3 +46,20 @@ def test_audio_vlm_and_whisper_accept_audio_input():
 
 def test_non_audio_tokens_classify_none():
     assert _classify(["<bos>", "<eos>", "<pad>"]) is None
+
+
+def test_structured_audio_chat_family_overrides_codec_markers(monkeypatch):
+    monkeypatch.setattr(
+        model_config,
+        "_NON_CHAT_AUDIO_MODEL_TYPES",
+        model_config._NON_CHAT_AUDIO_MODEL_TYPES | {"qwen2_audio"},
+    )
+    monkeypatch.setattr(
+        model_config, "_raw_config_model_type", lambda *args, **kwargs: "qwen2_audio"
+    )
+    assert _classify_audio_capability("model", "csm") == ("audio_vlm", True, True)
+
+
+def test_qwen3_asr_identity_wins_over_chat_like_tokens(monkeypatch):
+    monkeypatch.setattr(model_config, "_raw_config_model_type", lambda *args, **kwargs: "qwen3_asr")
+    assert _classify_audio_capability("model", "audio_vlm") == ("asr", True, False)
