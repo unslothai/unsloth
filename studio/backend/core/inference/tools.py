@@ -745,6 +745,12 @@ def _is_dynamic_namespace(node, dynamic_namespace_aliases: set[str] = frozenset(
         return node.id in dynamic_namespace_aliases
     if isinstance(node, ast.Attribute) and node.attr == "modules":
         return True  # sys.modules (including an aliased sys import)
+    if (
+        isinstance(node, ast.Attribute)
+        and node.attr in {"get", "pop", "setdefault"}
+        and _is_dynamic_namespace(node.value, dynamic_namespace_aliases)
+    ):
+        return True
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -771,20 +777,28 @@ def _is_pyyaml_module_expr(
     if isinstance(node, ast.Name):
         return node.id in yaml_aliases
     if isinstance(node, ast.Subscript):
-        return _is_dynamic_namespace(node.value, dynamic_namespace_aliases) and _is_yaml_string(
-            node.slice
-        )
+        if not _is_dynamic_namespace(node.value, dynamic_namespace_aliases):
+            return False
+        key = _subscript_key(node.slice)
+        return key is None or key.split(".", 1)[0] == "yaml"
     if not (isinstance(node, ast.Call) and node.args):
         return False
     module_name = node.args[0]
-    if not _is_yaml_string(module_name):
+    module_key = _subscript_key(module_name)
+    if module_key is not None and module_key.split(".", 1)[0] != "yaml":
         return False
     if (
         isinstance(node.func, ast.Attribute)
-        and node.func.attr == "get"
+        and node.func.attr in {"get", "pop", "setdefault"}
         and _is_dynamic_namespace(node.func.value, dynamic_namespace_aliases)
     ):
         return True
+    if isinstance(node.func, ast.Name) and _is_dynamic_namespace(
+        node.func, dynamic_namespace_aliases
+    ):
+        return True
+    if module_key is None:
+        return False
     return _is_dynamic_import_callable(node.func, dynamic_import_aliases, dynamic_namespace_aliases)
 
 
@@ -4817,6 +4831,10 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name in {"import_module", "__import__"}:
                         self.dynamic_import_aliases.add(alias.asname or alias.name)
+            elif node.module == "sys":
+                for alias in node.names:
+                    if alias.name == "modules":
+                        self.dynamic_namespace_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_Assign(self, node):
@@ -4857,11 +4875,18 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_import_aliases,
                 self.dynamic_namespace_aliases,
             )
-            yaml_alias = value is not None and _is_pyyaml_module_expr(
-                value,
-                self.yaml_aliases,
-                self.dynamic_import_aliases,
-                self.dynamic_namespace_aliases,
+            yaml_path = (
+                _pyyaml_attribute_path(
+                    value,
+                    self.yaml_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+                if value is not None
+                else None
+            )
+            yaml_alias = yaml_path is not None and all(
+                part in _PYYAML_SUBMODULE_NAMES for part in yaml_path
             )
             dynamic_import_alias = value is not None and _is_dynamic_import_callable(
                 value, self.dynamic_import_aliases, self.dynamic_namespace_aliases

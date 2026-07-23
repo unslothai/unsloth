@@ -202,6 +202,45 @@ class TestPyYamlDeserialization:
             ),
             (
                 "import yaml\n"
+                "globals().setdefault('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "globals().pop('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "lookup = globals().get\n"
+                "lookup('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import sys, yaml\n"
+                "lookup = sys.modules.get\n"
+                "lookup('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "from sys import modules as mods\n"
+                "mods['yaml'].unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import sys, yaml\n"
+                "name = 'yaml'\n"
+                "sys.modules[name].unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "globals()['ya' + 'ml'].unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
                 "loader = yaml.Loader("
                 "'!!python/object/apply:os.system [\"echo pwned\"]')\n"
                 "loader.get_single_data()"
@@ -275,6 +314,7 @@ class TestPyYamlDeserialization:
             "from yaml import cyaml as yc\nyc.load('a: 1', Loader=yc.CLoader)",
             "from yaml import cyaml\nloader = cyaml.CUnsafeLoader\nloader('a: 1')",
             "import yaml.cyaml as yc\nyc.CFullLoader('a: 1')",
+            "import yaml\nyl = yaml.loader\nyl.Loader('a: 1').get_single_data()",
             "import yaml\nyaml.full_load('a: 1')",
             "import yaml as y\nlist(y.full_load_all('a: 1'))",
             "from yaml import full_load as load_full\nload_full('a: 1')",
