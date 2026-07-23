@@ -244,6 +244,26 @@ class TestPyYamlDeserialization:
                 "        load = print\n"
                 "load('a: 1', Loader=Loader)"
             ),
+            (
+                "from project_loaders import SafeLoader\n"
+                "import yaml\n"
+                "yaml.load('a: 1', Loader=SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "namespace = globals()\n"
+                "namespace['yaml'].unsafe_load('a: 1')"
+            ),
+            (
+                "import importlib\n"
+                "getattr(importlib, 'import_module')('yaml').unsafe_load('a: 1')"
+            ),
+            (
+                "import yaml\n"
+                "SafeLoader = yaml.SafeLoader\n"
+                "[(SafeLoader := get_loader()) for _ in [0]]\n"
+                "yaml.load('a: 1', Loader=SafeLoader)"
+            ),
         ],
     )
     def test_unsafe_pyyaml_loaders_blocked(self, code):
@@ -313,6 +333,20 @@ class TestPyYamlDeserialization:
     )
     def test_safe_pyyaml_loaders_allowed(self, code):
         _ok(code)
+
+
+class TestTimeoutCatchDetection:
+    @pytest.mark.parametrize(
+        ("handler", "expect_phrase"),
+        [
+            ("except:\n        pass", "Bare except in loop"),
+            ("except TimeoutError:\n        pass", "Catches TimeoutError in loop"),
+            ("except BaseException:\n        pass", "Catches BaseException in loop"),
+        ],
+    )
+    def test_try_handlers_inside_loops_remain_blocked(self, handler, expect_phrase):
+        code = "while condition:\n    try:\n        work()\n    " + handler
+        _blocked(code, expect_phrase = expect_phrase)
 
 
 class TestMetadataHostDenylist:
