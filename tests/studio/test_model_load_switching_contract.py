@@ -147,6 +147,14 @@ def test_active_model_reload_cancellation_marks_rollback_unloaded():
     assert "run.previousCheckpointWasUnloaded = true;" in cancel
 
 
+def test_successful_rollback_requires_the_replacement_to_unload_it():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    rollback = runtime.split("const rollbackResponse = await loadModel(", 1)[1]
+    rollback = rollback.split("const rollbackSpeculativeType", 1)[0]
+    assert "previousWasUnloaded = false;" in rollback
+    assert "run.previousCheckpointWasUnloaded = false;" in rollback
+
+
 def test_abort_signal_reaches_validation_and_scan_cleanup():
     api = _read("features/chat/api/chat-api.ts")
     remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
