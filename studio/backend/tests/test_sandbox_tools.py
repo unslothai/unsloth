@@ -26,6 +26,61 @@ def _blocked(code: str, *, expect_phrase: str):
     assert expect_phrase in msg, (expect_phrase, msg)
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        (
+            "import yaml\n"
+            "add = [yaml.SafeLoader.add_multi_constructor][0]\n"
+            "add('!', lambda loader, suffix, node: suffix)\n"
+            "yaml.safe_load('a: 1')"
+        ),
+        (
+            "def parse(im, name):\n"
+            "    return getattr(im(name), 'unsafe_load')('a: 1')\n"
+            "parse(__import__, 'yaml')"
+        ),
+        (
+            "import pydoc\n"
+            "loc = pydoc.locate\n"
+            "loc('yaml.unsafe_load')('a: 1')"
+        ),
+        (
+            "import yaml\n"
+            "name = 'yaml_multi_constructors'\n"
+            "getattr(yaml.SafeLoader, name)['!run'] = lambda loader, suffix, node: suffix"
+        ),
+        (
+            "import yaml\n"
+            "constructors = {}\n"
+            "for _ in range(2):\n"
+            "    constructors['!run'] = lambda loader, suffix, node: suffix\n"
+            "    constructors = yaml.SafeLoader.yaml_multi_constructors"
+        ),
+        (
+            "import yaml\n"
+            "yaml.constructor.SafeConstructor.add_constructor("
+            "'!run', lambda loader, node: None)"
+        ),
+        (
+            "from pkgutil import resolve_name\n"
+            "resolve_name('yaml:unsafe_load')('a: 1')"
+        ),
+        (
+            "from functools import partial\n"
+            "im = partial(__import__, 'yaml')\n"
+            "im().unsafe_load('a: 1')"
+        ),
+    ],
+)
+def test_pyyaml_reflective_and_loop_carried_bypasses_are_blocked(code):
+    _blocked(code, expect_phrase = "PyYAML")
+
+
+def test_benign_lambda_remains_accepted():
+    _ok("f = lambda x: x\nassert f(2) == 2")
+
+
 class TestPyYamlDeserialization:
     @pytest.mark.parametrize(
         "code",
