@@ -3252,9 +3252,11 @@ def _request_matches_loaded_settings(
     # multi-GPU pick that resolves to the same device needlessly reloads.
     if llama_backend.is_diffusion:
         _req_gpu_ids = [sorted(request.gpu_ids)[0]] if request.gpu_ids else None
+        _loaded_gpu_ids = llama_backend.gpu_ids
     else:
         _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
-    if _req_gpu_ids != llama_backend.gpu_ids:
+        _loaded_gpu_ids = llama_backend.requested_gpu_ids
+    if _req_gpu_ids != _loaded_gpu_ids:
         return False
     # GGUF host-memory placement mode is first-class; any change must reload (#7164).
     if LlamaCppBackend._canonical_memory_mode(
@@ -3970,14 +3972,14 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
 
-    # No readable local header: fall back to the name heuristic so an uncached
-    # remote GGUF that will route to the diffusion runner isn't treated as normal.
+    # No readable local header: use only the DiffusionGemma family name as a
+    # hint. A bare "diffusion" substring is common in otherwise normal model
+    # names and must not route them to the single-GPU diffusion runner.
     identity = " ".join(
         str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
-    if "diffusion" in identity:
-        return True
-    return None
+    normalized_identity = _re.sub(r"[^a-z0-9]+", "", identity)
+    return True if "diffusiongemma" in normalized_identity else None
 
 
 def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str]) -> None:

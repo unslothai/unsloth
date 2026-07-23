@@ -552,6 +552,15 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         )
         self.assertIsNone(self.route._classify_diffusion_gguf(config))
 
+    def test_uncached_normal_model_with_diffusion_in_name_remains_unknown(self):
+        config = SimpleNamespace(
+            identifier = "owner/stable-diffusion-prompt-model-GGUF",
+            gguf_hf_repo = "owner/stable-diffusion-prompt-model-GGUF",
+            gguf_variant = "Q4_K_M",
+            gguf_file = None,
+        )
+        self.assertIsNone(self.route._classify_diffusion_gguf(config))
+
     def test_diffusion_detection_reuses_loader_metadata_probe(self):
         import tempfile
 

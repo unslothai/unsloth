@@ -141,6 +141,8 @@ def _loaded_backend(**overrides):
     backend._memory_mode = None
     for key, value in overrides.items():
         setattr(backend, key, value)
+    if "_gpu_ids" in overrides and "_requested_gpu_ids" not in overrides:
+        backend._requested_gpu_ids = list(overrides["_gpu_ids"] or []) or None
     return backend
 
 
@@ -354,10 +356,12 @@ def test_torchless_vulkan_populated_probe_uses_identity_ordinals(tmp_path):
         assert backend.load_model(
             gguf_path = str(gguf),
             model_identifier = "test",
-            gpu_ids = [1],
+            gpu_ids = [0, 1],
         )
     cmd = captured["cmd"]
     assert "--device" in cmd and cmd[cmd.index("--device") + 1] == "Vulkan1"
+    assert backend.gpu_ids == [1]
+    assert backend.requested_gpu_ids == [0, 1]
 
 
 def test_vulkan_fit_keeps_discrete_device_selected(tmp_path):
