@@ -458,7 +458,7 @@ def test_route_strip_two_level_nested_bracket_keeps_trailing_prose():
 
 
 def test_route_strip_two_level_nested_rehearsal_keeps_trailing_prose():
-    text = 'note python[ARGS]{"a":{"b":{"c":1}}} done'
+    text = 'note web_search[ARGS]{"a":{"b":{"c":1}}} done'
     cleaned = _strip_tool_xml_for_display(text, auto_heal_tool_calls = True)
     assert cleaned == "note  done"
     assert "[ARGS]" not in cleaned
@@ -896,10 +896,10 @@ def test_chained_bare_json_strip_consumes_all_calls():
     # would be replayed alongside the structured tool_calls.
     from core.inference.tool_call_parser import strip_leading_bare_json_call
 
-    enabled = {"web_search", "python"}
+    enabled = {"web_search", "get_weather"}
     chained = (
         '{"name":"web_search","parameters":{"q":"first"}};'
-        '{"name":"python","parameters":{"code":"x"}}'
+        '{"name":"get_weather","parameters":{"code":"x"}}'
     )
     assert strip_leading_bare_json_call(chained, enabled_tool_names = enabled) == ""
     assert (

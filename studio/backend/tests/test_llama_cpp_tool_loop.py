@@ -2862,7 +2862,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
@@ -2878,14 +2878,14 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "run"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
             max_tool_iterations = 1,
         )
     )
 
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
-    assert calls and calls[0][0] == "python"
+    assert calls and calls[0][0] == "web_search"
     assert len(calls[0][1].get("code", "")) > cap
 
 

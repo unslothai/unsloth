@@ -32,6 +32,12 @@ from typing import Any, Optional
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest.
 from core import tool_healing as _tool_healing
 
+# Shared with tool_healing so every markerless (bare, unwrapped) parse path applies the same
+# execution-class guard: a bare ``python``/``terminal`` call is prose, never promoted to a real
+# call. Trusted wrapped/marker forms (<|tool_call>, [TOOL_CALLS], <function=>) are unaffected.
+_EXECUTION_CLASS_TOOL_NAMES = _tool_healing.EXECUTION_CLASS_TOOL_NAMES
+_markerless_promotable = _tool_healing._markerless_promotable
+
 
 # Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
 TOOL_XML_SIGNALS = (
@@ -435,8 +441,9 @@ def _strip_mistral_closed_calls(text: str) -> str:
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
     scanning (nested arguments are removed whole). ``enabled_tool_names`` gates the
-    strip like the parser gate: a disabled/example name stays visible; ``None``
-    strips every closed call."""
+    strip like the parser gate: a name that is not markerless-promotable stays visible
+    -- a disabled/example name, or an execution-class ``python``/``terminal`` name (never
+    promotable from a bare span). ``None`` strips every closed non-execution call."""
     if _whole_content_is_json_value(text):
         return text
     n = len(text)
@@ -450,18 +457,19 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         if not m:
             out.append(text[cursor:])
             break
-        disabled = enabled_tool_names is not None and m.group(1) not in enabled_tool_names
+        keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names)
         brace = m.end() - 1  # _GEMMA_BARE_TC_RE consumes through the opening ``{``
         # Same boundary scanner as the parser: strip exactly what it consumed.
         end = _gemma_body_brace_end(text, brace)
         closed = end is not None
         next_index = (end + 1) if closed else len(text)
         if not closed:
-            # Unclosed call: drop an enabled call to EOS; keep a disabled/example name as prose.
-            out.append(text[cursor:] if disabled else text[cursor : m.start()])
+            # Unclosed call: drop a promotable call to EOS; keep a disabled/example or
+            # execution-class name as prose.
+            out.append(text[cursor:] if keep_as_prose else text[cursor : m.start()])
             break
-        if disabled:
-            # Disabled/example name is prose: keep it whole.
+        if keep_as_prose:
+            # Not promotable (disabled/example/execution-class) is prose: keep it whole.
             out.append(text[cursor:next_index])
         else:
             out.append(text[cursor : m.start()])
@@ -883,9 +891,11 @@ def _signal_inside_leading_wrapperless_gemma(
     content: str, enabled_tool_names: Optional[set]
 ) -> bool:
     """True when the first foreign tool signal is a quoted literal inside (or
-    after) a LEADING enabled wrapper-less Gemma call (sibling of the
-    Mistral/bare-JSON leading guards). Markerless form, so gated on an enabled
-    name (``None`` keeps the name-agnostic behaviour)."""
+    after) a LEADING promotable wrapper-less Gemma call (sibling of the
+    Mistral/bare-JSON leading guards). Markerless form, so a non-promotable name
+    -- disabled/example, or execution-class ``python``/``terminal`` (never
+    promotable from a bare span) -- is skipped as prose; ``None`` keeps the
+    name-agnostic behaviour for non-execution names."""
     first = _first_foreign_tool_signal(content)
     # The Mistral trigger is foreign to a Gemma call too (its parser runs first).
     trig = content.find(_MISTRAL_TRIGGER)
@@ -893,14 +903,15 @@ def _signal_inside_leading_wrapperless_gemma(
         first = trig
     if first is None:
         return False
-    # A preamble before ``call:NAME{...}`` is normal; what matters is an ENABLED balanced
+    # A preamble before ``call:NAME{...}`` is normal; what matters is a PROMOTABLE balanced
     # call beginning before the first foreign signal.
     cursor = 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None or m.start() > first:
             return False
-        if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+        if not _markerless_promotable(m.group(1), enabled_tool_names):
+            # Prose (disabled/example/execution-class) call: skip; the prose guard drops it.
             cursor = m.end()
             continue
         end = _gemma_body_brace_end(content, m.end() - 1)
@@ -908,20 +919,21 @@ def _signal_inside_leading_wrapperless_gemma(
             return False
         if m.end() - 1 < first <= end:
             return True
-        # An enabled call that CLOSES before the signal still owns the turn (inside-or-after
-        # rule, as for closed bare-JSON/Mistral envelopes), gated on an enabled name.
+        # A promotable call that CLOSES before the signal still owns the turn (inside-or-after
+        # rule, as for closed bare-JSON/Mistral envelopes); name-agnostic mode keeps the
+        # original "inside only" rule.
         return enabled_tool_names is not None and end < first
 
 
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
-    """End offset (exclusive) of the earliest DISABLED wrapper-less Gemma call
-    whose balanced body contains the first foreign signal, else None. A disabled
-    name is prose, so the quoted literal is data: the caller drops the span and
-    recurses on the tail. An ENABLED call defers to the enabled-call guard."""
-    if enabled_tool_names is None:
-        return None
+    """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less
+    Gemma call whose balanced body contains the first foreign signal, else None. A
+    prose name -- disabled/example, or execution-class ``python``/``terminal``
+    (never promotable from a bare span) -- means the quoted literal is data: the
+    caller drops the span and recurses on the tail. A promotable call defers to the
+    enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     # Mirror the enabled-call guard: the Mistral trigger is foreign here too.
     trig = content.find(_MISTRAL_TRIGGER)
@@ -934,7 +946,8 @@ def _disabled_gemma_call_end_containing_signal(
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None or m.start() > first:
             return None
-        if m.group(1) in enabled_tool_names:
+        if _markerless_promotable(m.group(1), enabled_tool_names):
+            # Promotable call: defers to the enabled-call guard, not dropped here.
             return None
         end = _gemma_body_brace_end(content, m.end() - 1)
         if end is None:
@@ -1573,9 +1586,10 @@ def _parse_llama3_bare_json(
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
-        # Markerless JSON is ambiguous: treat it as a call only when the name is an enabled
-        # tool, else it is an ordinary JSON answer.
-        if enabled_tool_names is not None and name not in enabled_tool_names:
+        # Markerless JSON is ambiguous: treat it as a call only when the name is promotable --
+        # an enabled non-execution tool. A disabled name or an execution-class name
+        # (``python``/``terminal``, never promotable from bare JSON) is an ordinary JSON answer.
+        if not _markerless_promotable(name, enabled_tool_names):
             break
         # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict or
         # JSON-string of one (OpenAI). Looser would fire on ``{"name":"x","parameters":"sentence"}``.
@@ -1834,7 +1848,10 @@ def _parse_gemma_tool_calls(
 
     ``enabled_tool_names`` gates on the parsed name: the wrapper-less shape is
     indistinguishable from prose documenting the syntax, so a disabled/example
-    name must not be stolen as a call. ``None`` keeps the name-agnostic behaviour."""
+    name must not be stolen as a call. ``None`` keeps the name-agnostic behaviour.
+    An execution-class name (``python``/``terminal``) is never promoted from this
+    markerless path regardless of ``enabled_tool_names`` -- a bare ``call:python{..}``
+    may be attacker-quoted prose, so it must carry the ``<|tool_call>`` wrapper."""
     out: list[dict] = []
     # The WRAPPED form (strict + nested-marker handling) is tool_healing's, which runs
     # first: defer content with a wrapped opener. A marker literal alone is not enough --
@@ -1859,8 +1876,9 @@ def _parse_gemma_tool_calls(
             # scanning on would promote quoted argument text.
             break
         cursor = end + 1
-        # Markerless: a disabled/example name is prose, not a call.
-        if enabled_tool_names is not None and name not in enabled_tool_names:
+        # Markerless: a disabled/example name is prose, and an execution-class name is never
+        # promotable from a bare span (``call:python{..}`` may be attacker-quoted prose).
+        if not _markerless_promotable(name, enabled_tool_names):
             continue
         body = content[body_start + 1 : end]
         try:
@@ -2040,13 +2058,15 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
             probe = probe.lstrip(" \t\n\r;")
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
             return probe.lstrip() if stripped_any else text
-        if enabled_tool_names is not None:
-            # Only suppress when the leading object's TOP-LEVEL name is an enabled tool. A
-            # nested ``"name"`` (e.g. {"result":{"name":"web_search",...}}) is data, not the
-            # call name, so it must not gate the strip. An un-extractable name is kept.
-            name = _top_level_bare_json_name(probe)
-            if name not in enabled_tool_names:
-                return probe.lstrip() if stripped_any else text
+        # Only suppress when the leading object's TOP-LEVEL name is markerless-promotable. A
+        # nested ``"name"`` (e.g. {"result":{"name":"web_search",...}}) is data, not the call
+        # name, so it must not gate the strip. A disabled name, an execution-class name (never
+        # promotable from bare JSON, mirroring _parse_llama3_bare_json so parse and strip agree),
+        # or an un-extractable name under a tool list is kept; ``None`` still strips a
+        # call-shaped non-execution object.
+        name = _top_level_bare_json_name(probe)
+        if not _markerless_promotable(name, enabled_tool_names):
+            return probe.lstrip() if stripped_any else text
         end = _balanced_brace_end(probe, 0)
         if end is None:
             return ""  # truncated bare-JSON call -- nothing recoverable

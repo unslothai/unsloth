@@ -29,6 +29,27 @@ import bisect
 import json
 import re
 
+# Execution-class tools run code on the host (python -> _python_exec, terminal ->
+# _bash_exec). Their MARKERLESS forms (bare ``call:NAME{...}`` / ``name[ARGS]{json}``) are
+# indistinguishable from prose quoting the syntax, so a model echoing attacker-controlled
+# web/RAG/user text could otherwise turn a quote into host code execution. Never promote or
+# strip a markerless execution-class call: it must carry an unambiguous wrapper
+# (``<|tool_call>``, ``[TOOL_CALLS]``, ``<function=>``) or arrive as a structured tool_call.
+# Benign tools keep the bare form.
+EXECUTION_CLASS_TOOL_NAMES = frozenset({"python", "terminal"})
+
+
+def _markerless_promotable(name, enabled_tool_names) -> bool:
+    """True when a *markerless* (bare, unwrapped) call named ``name`` may be promoted.
+
+    Execution-class names are never promotable from a markerless span -- they must carry
+    an unambiguous wrapper. Otherwise the existing enabled-name gate applies: ``None`` keeps
+    the name-agnostic behaviour, a set restricts to its members."""
+    if name in EXECUTION_CLASS_TOOL_NAMES:
+        return False
+    return enabled_tool_names is None or name in enabled_tool_names
+
+
 # One nesting level in the strip regexes; deeper may leak markup (still parsed).
 _BRACKETED_JSON_ONE_LEVEL = r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
 
@@ -109,15 +130,23 @@ def apply_tool_strip_patterns(
     enabled_tool_names = None,
 ) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
-    strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
-    ``None``); every other pattern is removed unconditionally. A closed-pair pattern whose
-    close token is absent is skipped so an unclosed-marker stream stays linear."""
+    strips only a *markerless-promotable* name -- an enabled non-execution tool (or, when
+    ``enabled_tool_names`` is ``None``, any non-execution name); an execution-class name is
+    never promotable, so it stays visible as text (parse/strip symmetry with the
+    ``_iter_bracket_spans`` guard). Every other pattern is removed unconditionally. A
+    closed-pair pattern whose close token is absent is skipped so an unclosed-marker stream
+    stays linear."""
     for pat in patterns:
         token = _PAT_REQUIRED_TOKEN.get(pat)
         if token is not None and token not in text:
             continue
-        if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
-            text = pat.sub(lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text)
+        if pat in _REHEARSAL_STRIP_PATS:
+            text = pat.sub(
+                lambda m: ""
+                if _markerless_promotable(m.group(1), enabled_tool_names)
+                else m.group(0),
+                text,
+            )
         else:
             text = pat.sub("", text)
     return text
@@ -308,9 +337,11 @@ def _iter_bracket_spans(
     [CALL_ID]/[ARGS]) or ``"rehearsal"`` (name[ARGS]{..}).
 
     ``enabled_tool_names`` (set, or None = unrestricted) gates only the ambiguous
-    bare rehearsal form: name[ARGS]{..} is a call ONLY when ``name`` is enabled, so a
-    prose ``foo[ARGS]{..}`` (foo disabled) is neither parsed nor stripped. Explicit
-    [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric.
+    bare rehearsal form: name[ARGS]{..} is a call ONLY when ``name`` is markerless-promotable
+    -- an enabled non-execution tool (or, when None, any non-execution name). A disabled
+    ``foo[ARGS]{..}`` or an execution-class ``terminal[ARGS]{..}`` (never promotable without
+    an explicit marker) is neither parsed nor stripped. Explicit [TOOL_CALLS] markers stay
+    unconditional, keeping parse/strip/detection symmetric.
 
     Balance-only (no JSON validation) so strip and parse share one scan. The cursor
     jumps past each consumed span, so a marker inside consumed JSON is never
@@ -341,12 +372,10 @@ def _iter_bracket_spans(
             # Truncated body: skip and keep scanning; the caller's catch-all strips the tail.
             cursor = m.end()
             continue
-        if (
-            kind == "rehearsal"
-            and enabled_tool_names is not None
-            and m.group(1) not in enabled_tool_names
-        ):
-            # Inactive-name rehearsal is prose: advance past its body without yielding.
+        if kind == "rehearsal" and not _markerless_promotable(m.group(1), enabled_tool_names):
+            # A bare rehearsal is prose unless promotable: an inactive name (tool list given)
+            # or an execution-class name (never promotable from a markerless span) is skipped,
+            # advancing past its body without yielding.
             cursor = end + 1
             continue
         yield (m.start(), end + 1, kind, m)
