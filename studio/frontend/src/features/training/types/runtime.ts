@@ -84,6 +84,7 @@ export interface TrainingRuntimeState {
   startError: string | null;
   startModelName: string | null;
   startDatasetName: string | null;
+  startHfToken: string | null;
   startProjectName: string | null;
   startFromResume: boolean;
   sseConnected: boolean;
@@ -124,6 +125,7 @@ export interface TrainingRuntimeActions {
     datasetName: string | null,
     fromResume?: boolean,
     projectName?: string | null,
+    hfToken?: string | null,
   ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;

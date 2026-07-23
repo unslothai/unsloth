@@ -172,8 +172,15 @@ function useModelDownloadProgress(
   return useHfDownloadProgress(modelName, fetchProgress);
 }
 
-function useDatasetDownloadProgress(datasetName: string | null): DownloadState {
-  return useHfDownloadProgress(datasetName, getDatasetDownloadProgress);
+function useDatasetDownloadProgress(
+  datasetName: string | null,
+  hfToken: string | null,
+): DownloadState {
+  const fetchProgress = useCallback(
+    (repoId: string) => getDatasetDownloadProgress(repoId, hfToken),
+    [hfToken],
+  );
+  return useHfDownloadProgress(datasetName, fetchProgress);
 }
 
 type DownloadRowProps = {
@@ -266,6 +273,7 @@ export function TrainingStartOverlay({
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
   const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
+  const startHfToken = useTrainingRuntimeStore((s) => s.startHfToken);
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
   const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
   const hfToken = useTrainingConfigStore((s) => s.hfToken);
@@ -292,12 +300,13 @@ export function TrainingStartOverlay({
     : useConfiguredResources
       ? hfDatasetName
       : null;
+  const runHfToken = hasStartResources ? startHfToken : hfToken;
   const displayMessage =
     startFromResume && !isDownloadPhase && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
-  const rawModelDownload = useModelDownloadProgress(modelName, hfToken);
-  const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
+  const rawModelDownload = useModelDownloadProgress(modelName, runHfToken ?? "");
+  const rawDatasetDownload = useDatasetDownloadProgress(datasetName, runHfToken);
   const modelDownload = isDownloadPhase
     ? rawModelDownload
     : coerceCachedStateReady(rawModelDownload);

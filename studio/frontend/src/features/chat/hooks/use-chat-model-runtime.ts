@@ -3,6 +3,7 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   confirmTransformersUpgradeIfNeeded,
@@ -600,8 +601,14 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
-      const hfToken = useChatRuntimeStore.getState().hfToken || null;
+      let hfToken = useChatRuntimeStore.getState().hfToken || null;
       try {
+        const preparedToken = await prepareHfTokenForUse(hfToken);
+        if (!preparedToken.proceed) {
+          throw new Error("Model load cancelled.");
+        }
+        hfToken = preparedToken.token;
+
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
           let previousWasUnloaded = false;

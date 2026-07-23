@@ -69,6 +69,7 @@ export function useTrainingActions() {
       getHfDatasetName(config),
       false,
       config.projectName || "",
+      preparedToken.token,
     );
     runtimeStore.setStarting(true);
 
@@ -246,6 +247,7 @@ export function useTrainingActions() {
         payload.hf_dataset,
         true,
         payload.project_name ?? "",
+        preparedToken.token,
       );
 
       // Resume goes straight to startTraining, so it runs the same consent gate as a
