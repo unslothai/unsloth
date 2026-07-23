@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any, AsyncGenerator, Optional
 
+from core.inference.tool_loop_controller import strip_result_for_model
 from core.inference.tools import (
     execute_tool,
     is_always_safe_tool,
@@ -323,7 +324,7 @@ async def stream_external_local_tool_loop(
                         "role": "tool",
                         "tool_call_id": tool_call_id,
                         "name": name,
-                        "content": result,
+                        "content": strip_result_for_model(result),
                     }
                 )
                 continue
@@ -349,53 +350,130 @@ async def stream_external_local_tool_loop(
             if approval_id:
                 start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
-            yield f"data: {json.dumps(start_event, ensure_ascii = False)}"
+            result = ""
+            try:
+                yield f"data: {json.dumps(start_event, ensure_ascii = False)}"
 
-            denied = False
-            if needs_confirm and decision_slot is not None:
-                decision = await asyncio.to_thread(
-                    wait_tool_decision,
-                    decision_slot,
-                    approval_id,
-                    cancel_event,
-                )
-                if decision != "allow":
-                    denied = True
-                    result = TOOL_REJECTED_MESSAGE
-            if not denied:
-                try:
-                    result = await asyncio.to_thread(
-                        execute_tool,
-                        name,
-                        arguments,
+                denied = False
+                if needs_confirm and decision_slot is not None:
+                    decision = await asyncio.to_thread(
+                        wait_tool_decision,
+                        decision_slot,
+                        approval_id,
                         cancel_event,
-                        tool_call_timeout,
-                        session_id,
-                        thread_id,
-                        rag_scope,
-                        bypass_permissions,
-                        None,
                     )
-                except Exception as exc:
-                    logger.exception("external_agentic.tool_failed name=%s", name)
-                    result = f"Error executing tool '{name}': {exc}"
-                    if decision_slot is not None:
-                        abort_tool_decision(decision_slot, approval_id)
+                    if decision != "allow":
+                        denied = True
+                        result = TOOL_REJECTED_MESSAGE
+                    else:
+                        decision_slot = None
+                if not denied:
+                    try:
+                        result = await asyncio.to_thread(
+                            execute_tool,
+                            name,
+                            arguments,
+                            cancel_event,
+                            tool_call_timeout,
+                            session_id,
+                            thread_id,
+                            rag_scope,
+                            bypass_permissions,
+                            None,
+                        )
+                    except Exception as exc:
+                        logger.exception("external_agentic.tool_failed name=%s", name)
+                        result = f"Error executing tool '{name}': {exc}"
+            finally:
+                if decision_slot is not None:
+                    abort_tool_decision(decision_slot, approval_id)
 
-            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': result}, ensure_ascii = False)}"
+            model_result = result if isinstance(result, str) else str(result)
+            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': model_result}, ensure_ascii = False)}"
             conversation.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call_id,
                     "name": name,
-                    "content": result if isinstance(result, str) else str(result),
+                    "content": strip_result_for_model(model_result),
                 }
             )
 
         # Continue the loop so the model can answer with tool results.
         continue
 
-    # Hit max tool iterations without a final answer.
+    # Budget exhausted after tool rounds — one final synthesis pass without tools.
+    if not cancel_event.is_set():
+        from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+        conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+        final_gen = client.stream_chat_completion(
+            messages = conversation,
+            model = model,
+            temperature = temperature,
+            top_p = top_p,
+            max_tokens = max_tokens,
+            presence_penalty = presence_penalty,
+            top_k = top_k,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            tools = None,
+            tool_choice = "none",
+            stream = True,
+        )
+        try:
+            async for line in final_gen:
+                if cancel_event.is_set():
+                    break
+                payload = _parse_sse_data_line(line)
+                if payload is None:
+                    if line and line.strip() and line.strip() != "data: [DONE]":
+                        yield line
+                    continue
+                if payload.get("error"):
+                    yield line if line.startswith("data:") else f"data: {json.dumps(payload)}"
+                    return
+
+                choices = payload.get("choices") or []
+                if not choices or not isinstance(choices[0], dict):
+                    continue
+                choice = choices[0]
+                delta = choice.get("delta") or {}
+                if not isinstance(delta, dict):
+                    delta = {}
+
+                content = delta.get("content")
+                if content:
+                    yield _openai_content_chunk_line(
+                        completion_id = completion_id,
+                        created = created,
+                        model = model,
+                        content = str(content),
+                    )
+
+                for key in ("reasoning_content", "reasoning"):
+                    reasoning = delta.get(key)
+                    if reasoning:
+                        chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"reasoning_content": str(reasoning)},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        yield f"data: {json.dumps(chunk, ensure_ascii = False)}"
+        finally:
+            try:
+                await final_gen.aclose()
+            except Exception:
+                pass
+
     yield _openai_content_chunk_line(
         completion_id = completion_id,
         created = created,
