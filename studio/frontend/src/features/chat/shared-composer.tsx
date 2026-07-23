@@ -1472,8 +1472,7 @@ export function SharedComposer({
           let originalModelStillActive = originIsExternal;
           if (
             modelSwitchState.originCheckpoint &&
-            !originIsExternal &&
-            !run.cleanup
+            !originIsExternal
           ) {
             try {
               const status = await getInferenceStatus();
@@ -1492,8 +1491,7 @@ export function SharedComposer({
           // while restoring the prompt's per-turn tool/reasoning choices.
           if (
             (!originIsExternal && upgradeUnloadedActive) ||
-            (modelSwitchState.originCheckpoint && !originalModelStillActive) ||
-            (!originIsExternal && run.cleanup)
+            (modelSwitchState.originCheckpoint && !originalModelStillActive)
           ) {
             useChatRuntimeStore.getState().clearCheckpoint();
             useChatRuntimeStore.setState(compareTurnOptions);

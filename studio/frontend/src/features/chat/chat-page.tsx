@@ -473,27 +473,12 @@ const CompareContent = memo(function CompareContent({
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
 }): ReactElement {
-  const modelRuntimeHydrated = useChatRuntimeStore(
-    (state) => state.modelRuntimeHydrated,
+  // Freeze the layout from the moment compare mounts, including while runtime
+  // hydration is pending. Generalized compare temporarily changes the global
+  // checkpoint as it visits each pane; that must never remount the pane layout.
+  const [isLoraCompare] = useState(() =>
+    getIsLoraCompareFromState(useChatRuntimeStore.getState()),
   );
-  const liveIsLoraCompare = useChatRuntimeStore(getIsLoraCompareFromState);
-  // Freeze the layout only after a successful status + LoRA refresh. Model
-  // switches during generalized compare mutate the global checkpoint and must
-  // not remount model1/model2 as base/lora halfway through a submission.
-  const [frozenIsLoraCompare, setFrozenIsLoraCompare] = useState<boolean | null>(
-    () =>
-      useChatRuntimeStore.getState().modelRuntimeHydrated
-        ? getIsLoraCompareFromState(useChatRuntimeStore.getState())
-        : null,
-  );
-  useEffect(() => {
-    if (frozenIsLoraCompare !== null || !modelRuntimeHydrated) return;
-    const timeoutId = window.setTimeout(() => {
-      setFrozenIsLoraCompare(liveIsLoraCompare);
-    }, 0);
-    return () => window.clearTimeout(timeoutId);
-  }, [frozenIsLoraCompare, liveIsLoraCompare, modelRuntimeHydrated]);
-  const isLoraCompare = frozenIsLoraCompare ?? liveIsLoraCompare;
 
   return isLoraCompare ? (
     <LoraCompareContent
