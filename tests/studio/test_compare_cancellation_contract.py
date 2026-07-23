@@ -26,14 +26,16 @@ def test_cleanup_reconciles_the_origin_checkpoint_before_clearing_it():
     assert "(!originIsExternal && run.cleanup)" not in catch
 
 
-def test_compare_layout_is_frozen_even_before_runtime_hydration():
+def test_compare_layout_waits_for_inventory_then_freezes():
     page = _read("chat-page.tsx")
     compare = page.split("const CompareContent = memo(", 1)[1]
     compare = compare.split("return isLoraCompare ?", 1)[0]
-    assert "const [isLoraCompare] = useState(" in compare
+    assert "state.modelRuntimeHydrated" in compare
+    assert "if (!modelRuntimeHydrated) return;" in compare
+    assert "const [isLoraCompare, setIsLoraCompare]" in compare
     assert "getIsLoraCompareFromState(useChatRuntimeStore.getState())" in compare
-    assert "modelRuntimeHydrated" not in compare
-    assert "liveIsLoraCompare" not in compare
+    assert "current ?? getIsLoraCompareFromState" in compare
+    assert 'aria-busy="true"' in compare
 
 
 def test_same_model_reload_retains_origin_for_stop_reconciliation():
