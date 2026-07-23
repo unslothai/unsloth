@@ -525,7 +525,11 @@ export function VoiceTab() {
         >
           {hasLabels ? (
             <Select value={micDeviceId} onValueChange={setMicDeviceId}>
-              <SelectTrigger aria-label="Microphone" className="min-w-56" size="sm">
+              <SelectTrigger
+                aria-label="Microphone"
+                className="min-w-56 max-w-72"
+                size="sm"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -564,7 +568,7 @@ export function VoiceTab() {
           >
             <SelectTrigger
               aria-label="Dictation language"
-              className="min-w-56"
+              className="min-w-56 max-w-72"
               size="sm"
             >
               <SelectValue />
@@ -747,7 +751,7 @@ export function VoiceTab() {
               >
                 <SelectTrigger
                   aria-label="TTS engine"
-                  className="min-w-56"
+                  className="min-w-56 max-w-72"
                   size="sm"
                 >
                   <SelectValue />
@@ -778,7 +782,7 @@ export function VoiceTab() {
                 <Select value={ttsVoiceURI} onValueChange={setTtsVoiceURI}>
                   <SelectTrigger
                     aria-label="Text to speech voice"
-                    className="min-w-56"
+                    className="min-w-56 max-w-72"
                     size="sm"
                   >
                     <SelectValue />
