@@ -1444,6 +1444,15 @@ class InferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
+        # Literal think/ChatML markers in request text must not reach the
+        # template as control tokens (#7066), same as the VLM paths.
+        from core.inference.chat_template_helpers import (
+            neutralize_non_assistant_control_markup,
+        )
+
+        user_text = neutralize_non_assistant_control_markup(user_text)
+        system_prompt = neutralize_non_assistant_control_markup(system_prompt)
+
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
             {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
