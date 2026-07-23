@@ -40,7 +40,7 @@ export function TransportToggle() {
   return (
     <fieldset
       aria-label="Download transport"
-      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-[11px]"
+      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-[0.6875rem]"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;

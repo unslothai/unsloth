@@ -90,22 +90,25 @@ function MetricTile({
   label: string;
   value: string;
   detail: string;
-  percent: number;
+  // null = usage unknown (e.g. Windows ROCm perf counter): show a dash and
+  // empty bar rather than a fabricated 0%.
+  percent: number | null;
 }) {
+  const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <span className="truncate text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
         </span>
         <span
           className={cn(
             "shrink-0 font-mono text-xs tabular-nums",
-            usageTextClass(safePercent),
+            percentKnown ? usageTextClass(safePercent) : "text-muted-foreground",
           )}
         >
-          {formatPercent(safePercent)}
+          {percentKnown ? formatPercent(safePercent) : "--"}
         </span>
       </div>
       <div className="min-w-0">
@@ -117,7 +120,7 @@ function MetricTile({
         </div>
       </div>
       <Progress
-        value={safePercent}
+        value={percentKnown ? safePercent : 0}
         aria-label={label}
         className="h-1.5 rounded-full bg-muted"
         indicatorClassName={usageIndicatorClass(safePercent)}
@@ -194,18 +197,30 @@ export function ResourcesTab() {
       (sum, device) => sum + (device.memory_total_gb ?? 0),
       0,
     );
-    const vramUsed = devices.reduce(
-      (sum, device) => sum + (device.vram_used_gb ?? 0),
-      0,
-    );
-    const vramFree = devices.reduce(
-      (sum, device) =>
-        sum +
-        (device.vram_free_gb ??
-          Math.max(0, (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0))),
-      0,
-    );
-    const vramPercent = vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0;
+    // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
+    // fabricates a 0-used total, so the aggregate is unknown if any device is.
+    const vramUsageKnown =
+      devices.length > 0 &&
+      devices.every((device) => isFiniteNumber(device.vram_used_gb));
+    const vramUsed = vramUsageKnown
+      ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
+      : null;
+    const vramFree = vramUsageKnown
+      ? devices.reduce(
+          (sum, device) =>
+            sum +
+            (device.vram_free_gb ??
+              Math.max(
+                0,
+                (device.memory_total_gb ?? 0) - (device.vram_used_gb ?? 0),
+              )),
+          0,
+        )
+      : null;
+    const vramPercent =
+      vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
+        ? (vramUsed / vramTotal) * 100
+        : 0;
 
     return {
       devices,
@@ -218,6 +233,7 @@ export function ResourcesTab() {
       vramUsed,
       vramFree,
       vramPercent,
+      vramUsageKnown,
     };
   }, [systemInfo]);
 
@@ -259,6 +275,7 @@ export function ResourcesTab() {
     : modelsFolderLoaded
       ? t("settings.resources.environment.unknown")
       : t("common.loading");
+  const unknownLabel = t("settings.resources.environment.unknown");
 
   return (
     <div className="flex flex-col gap-6">
@@ -327,17 +344,21 @@ export function ResourcesTab() {
             label={t("settings.resources.liveMonitor.vram")}
             value={
               hasGpu
-                ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
+                ? metrics.vramUsageKnown
+                  ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
+                  : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
                 : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
               hasGpu
-                ? t("settings.resources.liveMonitor.free", {
-                    value: formatGiB(metrics.vramFree),
-                  })
+                ? metrics.vramUsageKnown
+                  ? t("settings.resources.liveMonitor.free", {
+                      value: formatGiB(metrics.vramFree),
+                    })
+                  : unknownLabel
                 : backendLabel
             }
-            percent={metrics.vramPercent}
+            percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
       </SettingsSection>
@@ -346,13 +367,33 @@ export function ResourcesTab() {
         {hasGpu ? (
           metrics.devices.map((device, index) => {
             const ordinal = deviceOrdinal(device);
-            const total = device.memory_total_gb ?? 0;
-            const used = device.vram_used_gb ?? 0;
-            const free = device.vram_free_gb ?? Math.max(0, total - used);
+            // Preserve null (unknown, e.g. Windows ROCm perf counter); coercing
+            // to 0 would render a fabricated 0 used / full free.
+            const total = device.memory_total_gb ?? null;
+            const used = device.vram_used_gb ?? null;
+            const free =
+              device.vram_free_gb ??
+              (isFiniteNumber(total) && isFiniteNumber(used)
+                ? Math.max(0, total - used)
+                : null);
             const percent =
               device.vram_utilization_pct ??
-              (total > 0 ? (used / total) * 100 : null);
+              (isFiniteNumber(total) && total > 0 && isFiniteNumber(used)
+                ? (used / total) * 100
+                : null);
             const safePercent = clampPercent(percent);
+            const usedText = isFiniteNumber(used)
+              ? formatGiB(used)
+              : unknownLabel;
+            const freeText = isFiniteNumber(free)
+              ? formatGiB(free)
+              : unknownLabel;
+            const totalText = isFiniteNumber(total)
+              ? formatGiB(total)
+              : unknownLabel;
+            const percentText = isFiniteNumber(percent)
+              ? formatPercent(safePercent)
+              : unknownLabel;
             return (
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
@@ -374,7 +415,7 @@ export function ResourcesTab() {
                   </div>
                   <div className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
                     <span>
-                      {formatPercent(safePercent)}{" "}
+                      {percentText}{" "}
                       {t("settings.resources.gpu.vramUtilization")}
                     </span>
                   </div>
@@ -382,17 +423,17 @@ export function ResourcesTab() {
                 <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3 sm:gap-2">
                   <span className="min-w-0 truncate font-mono tabular-nums">
                     {t("settings.resources.gpu.used", {
-                      value: formatGiB(used),
+                      value: usedText,
                     })}
                   </span>
                   <span className="min-w-0 truncate font-mono tabular-nums sm:text-center">
                     {t("settings.resources.gpu.free", {
-                      value: formatGiB(free),
+                      value: freeText,
                     })}
                   </span>
                   <span className="min-w-0 truncate font-mono tabular-nums sm:text-right">
                     {t("settings.resources.gpu.total", {
-                      value: formatGiB(total),
+                      value: totalText,
                     })}
                   </span>
                 </div>
@@ -428,7 +469,7 @@ export function ResourcesTab() {
           description={t("settings.resources.storage.modelsFolderDescription")}
           className="max-sm:flex-col max-sm:items-start max-sm:gap-2"
         >
-          <div className="flex min-w-0 items-center gap-2 max-sm:max-w-[calc(100vw-5rem)]">
+          <div className="flex min-w-0 items-center gap-2 max-sm:max-w-[calc(100vw-80px)]">
             <span
               title={modelsFolder?.path}
               className="min-w-0 max-w-[280px] truncate font-mono text-xs text-muted-foreground max-sm:max-w-[180px]"

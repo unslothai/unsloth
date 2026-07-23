@@ -140,13 +140,13 @@ export function TrainingSection() {
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
-                fontSize={10}
+                fontSize="0.625rem"
               />
               <YAxis
                 tickLine={false}
                 axisLine={false}
                 tickMargin={8}
-                fontSize={10}
+                fontSize="0.625rem"
               />
               <Line
                 type="monotone"

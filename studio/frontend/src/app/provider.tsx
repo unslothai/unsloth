@@ -51,9 +51,12 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
     "@tauri-apps/api/window"
   );
+  const { invoke } = await import("@tauri-apps/api/core");
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
+  await invoke("reset_app_window_layout_initialized");
+  if (!isCurrent()) return;
   await win.setResizable(false);
   if (!isCurrent()) return;
   await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
@@ -98,18 +101,20 @@ async function applyAppWindowLayout(
   if (!isCurrent()) return;
 
   const win = getCurrentWindow();
-  // Decide first-launch vs restore from the on-disk state file BEFORE touching the
-  // window. Probing the window after restoreStateCurrent is unreliable: on GTK,
-  // set_size on a hidden window is deferred until show(), so innerSize() reads a
-  // stale value and a baseline fallback would overwrite the queued restore. On
-  // macOS the same probe works, hence the inconsistency between prior iterations.
-  const hasSavedState = await invoke<boolean>("has_saved_window_state");
+  // Setup-window activity may create plugin state before the full app is ever
+  // shown, so use a dedicated full-app marker to decide whether restoration is
+  // appropriate. Keep checking plugin state so a missing/corrupt state file
+  // falls back to a monitor-safe centered layout.
+  const [hasInitializedAppLayout, hasSavedState] = await Promise.all([
+    invoke<boolean>("has_initialized_app_window_layout"),
+    invoke<boolean>("has_saved_window_state"),
+  ]);
   if (!isCurrent()) return;
 
   await win.setResizable(true);
   if (!isCurrent()) return;
 
-  if (hasSavedState) {
+  if (hasInitializedAppLayout && hasSavedState) {
     // Subsequent launch: plugin restores size/position/maximized, with built-in
     // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
@@ -144,6 +149,9 @@ async function applyAppWindowLayout(
   });
   if (!isCurrent()) return;
   await enforceMinimumWindowSize(win, LogicalSize, isCurrent);
+
+  if (!isCurrent()) return;
+  await invoke("mark_app_window_layout_initialized");
 }
 
 async function showWindowFallback(): Promise<void> {
@@ -205,7 +213,7 @@ function TauriUpdateLayer({
   }
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-32px)] max-w-[400px] flex-col items-stretch gap-2">
       <UpdateBanner
         status={update.status}
         info={update.info}
@@ -255,8 +263,8 @@ const MAC_NATIVE_CHROME_STYLE = {
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-custom-titlebar-height": "34px",
-  "--studio-sidebar-expanded-width": "17.5rem",
-  "--studio-sidebar-collapsed-width": "3rem",
+  "--studio-sidebar-expanded-width": "280px",
+  "--studio-sidebar-collapsed-width": "48px",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",
@@ -372,7 +380,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {children}
         {/* One bottom-right stack so overlays never overlap; they stack with a
             gap, download panel anchored at the corner with banners above. */}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-32px)] max-w-[400px] flex-col items-stretch gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}

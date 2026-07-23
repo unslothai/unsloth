@@ -3,12 +3,19 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import {
+  makePinRank,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
+import {
   CubeIcon,
   DownloadCircle02Icon,
-  FolderSearchIcon,
+  PinIcon,
+  Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { RefObject } from "react";
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
   scoreInventoryRow,
@@ -61,7 +68,7 @@ export function InventoryWarningRow({
   onRetry: () => void;
 }) {
   return (
-    <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12.5px] text-muted-foreground">
+    <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[0.78125rem] text-muted-foreground">
       <div className="flex items-center justify-between gap-3">
         <span>
           Some on-device sources couldn't be scanned. Showing available{" "}
@@ -69,7 +76,7 @@ export function InventoryWarningRow({
         </span>
         <button
           type="button"
-          className="shrink-0 text-[12px] font-medium text-foreground transition-colors hover:text-primary"
+          className="shrink-0 text-[0.75rem] font-medium text-foreground transition-colors hover:text-primary"
           onClick={onRetry}
         >
           Retry
@@ -208,7 +215,7 @@ export function DiscoverList({
           <SkeletonList />
         ) : (
           <EmptyState
-            icon={query.trim() ? FolderSearchIcon : CubeIcon}
+            icon={query.trim() ? Search01Icon : CubeIcon}
             title={
               query.trim()
                 ? `No matching ${isDataset ? "datasets" : "models"}`
@@ -244,6 +251,8 @@ export function DownloadedList({
   downloadedReady,
   inventoryError,
   query,
+  typeFilterActive = false,
+  onClearFilters,
   scrollElement,
   columns = 1,
   activeCheckpoint,
@@ -262,6 +271,8 @@ export function DownloadedList({
   downloadedReady: boolean;
   inventoryError: boolean;
   query: string;
+  typeFilterActive?: boolean;
+  onClearFilters?: () => void;
   scrollElement: HTMLDivElement | null;
   columns?: number;
   activeCheckpoint: string | null;
@@ -274,11 +285,20 @@ export function DownloadedList({
   sort: InventorySort;
   onInventoryChange?: () => void;
 }) {
+  // Pinned repos surface first regardless of the active sort; the chosen sort
+  // still orders rows within the pinned and unpinned groups.
+  const pinnedIds = usePinnedModelsStore((s) => s.pinned);
+  const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
+    // Pinned rows order by pin recency (newest pin first), not the active
+    // sort, so "Pin to top" puts the row exactly where the user expects.
+    const rank = makePinRank(pinnedIds);
+    const pinRank = (item: InventoryItem) =>
+      item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
     if (inventoryTokens.length > 0) {
       return merged
         .map((item, index) => ({
@@ -286,29 +306,89 @@ export function DownloadedList({
           index,
           score: scoreInventoryRow(item.row, inventoryTokens),
         }))
-        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .sort(
+          (a, b) =>
+            pinRank(a.item) - pinRank(b.item) ||
+            b.score - a.score ||
+            a.index - b.index,
+        )
         .map((entry) => entry.item);
     }
     if (sort === "recent") {
-      return merged;
+      return merged
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => pinRank(a.item) - pinRank(b.item) || a.index - b.index)
+        .map((entry) => entry.item);
     }
     return merged
       .map((item, index) => ({ item, index }))
-      .sort((a, b) =>
-        sort === "name"
-          ? inventoryItemTitle(a.item).localeCompare(
-              inventoryItemTitle(b.item),
-            ) || a.index - b.index
-          : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
-            a.index - b.index,
+      .sort(
+        (a, b) =>
+          pinRank(a.item) - pinRank(b.item) ||
+          (sort === "name"
+            ? inventoryItemTitle(a.item).localeCompare(
+                inventoryItemTitle(b.item),
+              ) || a.index - b.index
+            : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
+              a.index - b.index),
       )
       .map((entry) => entry.item);
-  }, [cachedRows, localRows, inventoryTokens, sort]);
+  }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
+  // Pinned repos get their own labelled section so it's clear why they lead
+  // the list; inventoryItems already sorts them first, so this is a prefix.
+  const pinnedCount = useMemo(
+    () =>
+      inventoryItems.filter(
+        (item) => item.row.repoId && pinnedSet.has(pinKey(item.row.repoId)),
+      ).length,
+    [inventoryItems, pinnedSet],
+  );
+  const pinnedItems = inventoryItems.slice(0, pinnedCount);
+  const unpinnedItems = inventoryItems.slice(pinnedCount);
+  const [virtualRowsWrapper, setVirtualRowsWrapper] =
+    useState<HTMLDivElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  useLayoutEffect(() => {
+    if (!virtualRowsWrapper || !scrollElement) return;
+    const measure = () => {
+      const margin = Math.max(
+        0,
+        Math.round(
+          virtualRowsWrapper.getBoundingClientRect().top -
+            scrollElement.getBoundingClientRect().top +
+            scrollElement.scrollTop,
+        ),
+      );
+      setScrollMargin((current) => (current === margin ? current : margin));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(virtualRowsWrapper.parentElement ?? scrollElement);
+    return () => observer.disconnect();
+  }, [virtualRowsWrapper, scrollElement]);
+  const rowHeightPx = compact
+    ? RESULT_SPLIT_ROW_HEIGHT_PX
+    : RESULT_GRID_ROW_HEIGHT_PX;
+  const cellHeightPx = compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  const renderInventoryRow = (item: InventoryItem) => (
+    <InventoryRow
+      row={item.row}
+      selected={selectedId === item.row.id}
+      activeCheckpoint={activeCheckpoint}
+      activeGgufVariant={activeGgufVariant}
+      isDataset={isDataset}
+      dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
+      deviceType={deviceType}
+      compact={compact}
+      onSelect={onSelect}
+      onChange={onInventoryChange}
+    />
+  );
 
   if (!downloadedReady && !hasInventoryRows) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center gap-3 text-[13px] text-muted-foreground">
+      <div className="flex min-h-[240px] items-center justify-center gap-3 text-[0.8125rem] text-muted-foreground">
         <Spinner className="size-4" />
         Loading local inventory...
       </div>
@@ -325,9 +405,29 @@ export function DownloadedList({
   }
 
   if (cachedRows.length === 0 && localRows.length === 0) {
+    if (!query.trim() && typeFilterActive) {
+      return (
+        <EmptyState
+          icon={Search01Icon}
+          title="No matching models on device"
+          body="No downloaded or local model matches the selected type filter."
+          action={
+            onClearFilters && (
+              <button
+                type="button"
+                onClick={onClearFilters}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+              >
+                Show all types
+              </button>
+            )
+          }
+        />
+      );
+    }
     return (
       <EmptyState
-        icon={query.trim() ? FolderSearchIcon : DownloadCircle02Icon}
+        icon={query.trim() ? Search01Icon : DownloadCircle02Icon}
         title={query.trim() ? "No matches on device" : "Nothing on device yet"}
         body={
           query.trim()
@@ -341,27 +441,57 @@ export function DownloadedList({
   }
 
   return (
-    <VirtualRows
-      items={inventoryItems}
-      scrollElement={scrollElement}
-      columns={columns}
-      rowHeight={compact ? RESULT_SPLIT_ROW_HEIGHT_PX : RESULT_GRID_ROW_HEIGHT_PX}
-      cellHeight={compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX}
-      getKey={(item) => `${item.variant}-${item.row.id}`}
-      renderRow={(item) => (
-        <InventoryRow
-          row={item.row}
-          selected={selectedId === item.row.id}
-          activeCheckpoint={activeCheckpoint}
-          activeGgufVariant={activeGgufVariant}
-          isDataset={isDataset}
-          dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
-          deviceType={deviceType}
-          compact={compact}
-          onSelect={onSelect}
-          onChange={onInventoryChange}
-        />
+    <>
+      {pinnedItems.length > 0 && (
+        <>
+          <div className="flex items-center gap-1.5 px-1 pb-2 pt-3 text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
+            <HugeiconsIcon
+              icon={PinIcon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+            Pinned
+          </div>
+          {/* Pinned rows are few, so render them as a plain grid matching the
+              virtualized list's lane count and row spacing. */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
+              columnGap: 12,
+              rowGap: rowHeightPx - cellHeightPx,
+              paddingBottom: rowHeightPx - cellHeightPx,
+            }}
+          >
+            {pinnedItems.map((item) => (
+              <div
+                key={`${item.variant}-${item.row.id}`}
+                className="min-w-0"
+                style={{ height: cellHeightPx }}
+              >
+                {renderInventoryRow(item)}
+              </div>
+            ))}
+          </div>
+          {unpinnedItems.length > 0 && (
+            <div className="px-1 pb-2 pt-2 text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
+              All {isDataset ? "datasets" : "models"}
+            </div>
+          )}
+        </>
       )}
-    />
+      <div ref={setVirtualRowsWrapper}>
+        <VirtualRows
+          items={unpinnedItems}
+          scrollElement={scrollElement}
+          scrollMargin={scrollMargin}
+          columns={columns}
+          rowHeight={rowHeightPx}
+          cellHeight={cellHeightPx}
+          getKey={(item) => `${item.variant}-${item.row.id}`}
+          renderRow={renderInventoryRow}
+        />
+      </div>
+    </>
   );
 }

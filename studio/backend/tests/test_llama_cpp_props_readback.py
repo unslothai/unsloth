@@ -225,31 +225,46 @@ def test_kv_unified_added_for_multi_slot():
     """Explicit --parallel N disables llama-server's auto-slots kv-unified
     default, splitting -c into per-slot windows of -c/N; Unsloth must restore
     the shared pool so one request can use the full advertised context."""
-    flags = LlamaCppBackend._ctx_integrity_flags(4, False, 98304, 98304, _CAPS_ALL)
+    flags = LlamaCppBackend._ctx_integrity_flags(4, False, False, 98304, 98304, _CAPS_ALL)
     assert "--kv-unified" in flags
 
 
 def test_kv_unified_skipped_for_single_slot_or_old_build():
     assert "--kv-unified" not in LlamaCppBackend._ctx_integrity_flags(
-        1, False, 98304, 98304, _CAPS_ALL
+        1, False, False, 98304, 98304, _CAPS_ALL
     )
     assert "--kv-unified" not in LlamaCppBackend._ctx_integrity_flags(
-        4, False, 98304, 98304, _CAPS_NONE
+        4, False, False, 98304, 98304, _CAPS_NONE
     )
 
 
 def test_fit_ctx_floors_explicit_request_under_fit():
-    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 98304, 98304, _CAPS_ALL)
+    # An explicit requested ctx floors --fit-ctx at that value on any --fit
+    # path, including legacy auto (auto_fit False).
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, False, 98304, 98304, _CAPS_ALL)
     assert flags[flags.index("--fit-ctx") + 1] == "98304"
 
 
-def test_fit_ctx_skipped_without_fit_or_explicit_ctx_or_support():
+def test_fit_ctx_skipped_without_fit_or_support():
+    # No --fit on -> no --fit-ctx.
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
-        1, False, 98304, 98304, _CAPS_ALL
+        1, False, False, 98304, 98304, _CAPS_ALL
     )
-    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(1, True, 0, 262144, _CAPS_ALL)
+    # --fit on but the binary doesn't support --fit-ctx.
     assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
-        1, True, 98304, 98304, _CAPS_NONE
+        1, True, True, 98304, 98304, _CAPS_NONE
+    )
+
+
+def test_fit_ctx_floors_auto_request_at_8192_only_under_auto_fit():
+    # Manual + Auto (auto_fit) floors the auto window at 8192 so --fit can't
+    # shrink it to a tiny size.
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 262144, _CAPS_ALL)
+    assert flags[flags.index("--fit-ctx") + 1] == "8192"
+    # Legacy auto (fit on but not auto_fit) emits -c 0 to pin native, so the
+    # 8192 floor must NOT ride along and override that pin.
+    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, False, 0, 262144, _CAPS_ALL
     )
 
 

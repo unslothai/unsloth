@@ -1249,6 +1249,77 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
             yield f
 
 
+_GGUF_SPLIT_FILE_RE = re.compile(
+    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def _colocated_first_split_shard(path: Path) -> tuple[Optional[Path], bool]:
+    """Return shard 1 and whether every shard is beside *path*."""
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return None, False
+
+    prefix = match.group("prefix").casefold()
+    total_text = match.group("total")
+    total = int(total_text)
+    if total < 1:
+        return None, False
+
+    first: Optional[Path] = None
+    indices: set[int] = set()
+    try:
+        siblings = path.parent.iterdir()
+        for sibling in siblings:
+            sibling_match = _GGUF_SPLIT_FILE_RE.match(sibling.name)
+            if (
+                sibling_match is None
+                or sibling_match.group("prefix").casefold() != prefix
+                or sibling_match.group("total") != total_text
+            ):
+                continue
+            try:
+                if not sibling.is_file():
+                    continue
+            except OSError:
+                continue
+            index = int(sibling_match.group("index"))
+            if not 1 <= index <= total:
+                continue
+            indices.add(index)
+            if index == 1:
+                first = sibling
+    except OSError:
+        return None, False
+
+    return first, first is not None and len(indices) == total
+
+
+def _local_gguf_load_path(path: Path) -> Path:
+    """Choose a loadable local path while preserving complete symlink sets."""
+    if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
+        return path.absolute()
+
+    first, complete = _colocated_first_split_shard(path)
+    if complete and first is not None:
+        return first.absolute()
+
+    try:
+        is_symlink = path.is_symlink()
+    except OSError:
+        is_symlink = False
+    if is_symlink:
+        try:
+            target = path.resolve()
+        except OSError:
+            return (first or path).absolute()
+        target_first, _ = _colocated_first_split_shard(target)
+        return (target_first or target).absolute()
+
+    return (first or path).absolute()
+
+
 def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
     """Find the mmproj GGUF for a model.
 
@@ -1434,7 +1505,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
         except OSError:
             is_dir = False  # stat() unavailable in the lock window
         if not is_dir:
-            return str(p.absolute())  # absolute() keeps symlink names readable
+            return str(_local_gguf_load_path(p))
         # Directory named "*.gguf": fall through to the dir scan below.
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
@@ -1452,7 +1523,7 @@ def detect_gguf_model(path: str) -> Optional[str]:
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
-            return str(gguf_files[0].resolve())
+            return str(_local_gguf_load_path(gguf_files[0]))
 
     return None
 
@@ -1879,7 +1950,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     For sharded GGUFs (multiple files sharing a quant label), returns the
     first shard (sorted by name), which is what ``llama-server -m`` expects.
 
-    Returns the resolved absolute path, or ``None`` if no match.
+    Returns the absolute path, or ``None`` if no match.
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
@@ -1900,7 +1971,7 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
         matches.append(f)
     matches.sort()
     if matches:
-        return str(matches[0].resolve())
+        return str(_local_gguf_load_path(matches[0]))
     return None
 
 
@@ -2005,6 +2076,24 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
+# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+def _embedding_marker_in_hf_cache(model_name: str) -> bool:
+    """True when model_name's cached snapshot carries a modules.json (the ST marker).
+    Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
+    from utils.utils import hf_cache_snapshot_dir
+
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return False
+    try:
+        return (snapshot / "modules.json").is_file()
+    except OSError:
+        return False
+
+
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Detect embedding/sentence-transformer models via HF metadata.
 
@@ -2019,6 +2108,15 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Returns:
         True if embedding model, else False (default for local paths or errors).
     """
+    from utils.utils import hf_env_offline
+
+    # Offline (remote repo): reclassify from the local cache on every call, before/without the
+    # memo. An online lookup can memoize True from tags with no weights cached, so trusting it once
+    # the session goes offline would accept a repo _get() cannot load; a cached negative can also be
+    # invalidated by later cache materialization. The cache probe is local-only, so it's cheap.
+    if not is_local_path(model_name) and hf_env_offline():
+        return _embedding_marker_in_hf_cache(model_name)
+
     cache_key = (model_name, hf_token)
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
@@ -2033,7 +2131,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -2054,9 +2152,11 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
+        # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        _embedding_detection_cache[cache_key] = False
-        return False
+        is_emb = _embedding_marker_in_hf_cache(model_name)
+        _embedding_detection_cache[cache_key] = is_emb
+        return is_emb
 
 
 def _has_model_weight_files(model_dir: Path) -> bool:

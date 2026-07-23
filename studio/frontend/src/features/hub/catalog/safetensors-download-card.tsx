@@ -7,37 +7,36 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useRepoDownload } from "../download-manager";
-import { deleteCachedModel } from "../inventory";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  PencilEdit02Icon,
   PlayIcon,
+  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useState } from "react";
 import { TrainIcon } from "../components/train-icon";
+import { useRepoDownload } from "../download-manager";
+import { useOnlineStatus } from "../hooks/use-online-status";
+import { deleteCachedModel } from "../inventory";
+import type { ModelInventoryFormat } from "../inventory";
+import { fetchModelSize } from "../lib/dataset-size";
+import { formatBytes } from "../lib/format";
 import {
   HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
   HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
 } from "../lib/hub-feature-flags";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useState } from "react";
-import { useHfTokenStore } from "../stores/hf-token-store";
-import { fetchModelSize } from "../lib/dataset-size";
-import { formatBytes } from "../lib/format";
 import { fingerprintToken } from "../lib/token-fingerprint";
-import { useOnlineStatus } from "../hooks/use-online-status";
+import { useHfTokenStore } from "../stores/hf-token-store";
+import { DotTag } from "./dot-tag";
 import {
   CardDivider,
-  CardDeleteButton,
   DeleteConfirmDialog,
   DownloadActionButton,
   DownloadCard,
 } from "./download-card";
-import { DotTag } from "./dot-tag";
-import { PathInfoButton } from "./path-info-button";
+import { QuantOptionsMenu } from "./gguf-download-card";
 import { useCardDelete } from "./use-card-delete";
-import type { ModelInventoryFormat } from "../inventory";
 import { useDownloadCardState } from "./use-download-card-state";
 
 function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
@@ -62,10 +61,9 @@ export function SafetensorsDownloadCard({
   canRun = true,
   isActive,
   isLoadingThisModel,
-  cachePath,
   knownBytes,
   onLoad,
-  onUseInChat,
+  onEject,
   onTrain,
   onChange,
 }: {
@@ -77,10 +75,13 @@ export function SafetensorsDownloadCard({
   canRun?: boolean;
   isActive: boolean;
   isLoadingThisModel: boolean;
+  /** Accepted for API parity; the options menu resolves the path itself. */
   cachePath?: string | null;
   knownBytes?: number | null;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
+  /** Accepted for API parity; the run bar ejects instead of opening chat. */
   onUseInChat?: () => void;
+  onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
 }) {
@@ -95,8 +96,8 @@ export function SafetensorsDownloadCard({
     knownBytes && knownBytes > 0
       ? knownBytes
       : modelSize.key === sizeKey
-      ? modelSize.bytes
-      : null;
+        ? modelSize.bytes
+        : null;
   const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
   const { deleting, runDelete } = useCardDelete({
     action: () => deleteCachedModel(repoId, undefined, hfToken || undefined),
@@ -170,7 +171,8 @@ export function SafetensorsDownloadCard({
     !isLoadingThisModel;
 
   return (
-    <div className="flex w-full flex-col gap-2"><DownloadCard
+    <div className="flex w-full flex-col gap-2">
+      <DownloadCard
         job={job}
         progress={downloading ? progress : null}
         dialogs={
@@ -197,7 +199,7 @@ export function SafetensorsDownloadCard({
         }
       >
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+          <span className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground">
             {(isActive || isDownloaded) && (
               <DotTag
                 tone="success"
@@ -206,7 +208,7 @@ export function SafetensorsDownloadCard({
             )}
             {!isDownloaded && !isActive && isPartial && !downloading && (
               <Tooltip>
-                <TooltipTrigger asChild>
+                <TooltipTrigger asChild={true}>
                   <span className="inline-flex">
                     <DotTag tone="warning" label="Partial" />
                   </span>
@@ -227,17 +229,20 @@ export function SafetensorsDownloadCard({
             )}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
-            {canDelete && (
-              <CardDeleteButton
-                label={`Delete ${repoId}`}
-                onClick={() => setDeleteRepoOpen(true)}
-              />
-            )}
-            {isDownloaded && cachePath && (
-              <PathInfoButton
-                path={cachePath}
-                title="On-device location"
-                description={`Where ${repoId} lives on disk.`}
+            {/* TODO: inference settings gear hidden for now, work on it in a future PR. */}
+            {/* Same 3-dots menu as GGUF, at repo level (no quant); pinning is
+                omitted in the run bar. Managed HF-cache repos only. */}
+            {(isDownloaded || (isPartial && !downloading)) &&
+              !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
+              <QuantOptionsMenu
+                repoId={repoId}
+                label={repoId}
+                downloaded={isDownloaded}
+                canDelete={canDelete}
+                onDelete={() => setDeleteRepoOpen(true)}
+                showPin={false}
+                buttonClassName="ml-0.5 size-7"
+                iconClassName="size-4"
               />
             )}
           </div>
@@ -268,7 +273,7 @@ export function SafetensorsDownloadCard({
               onClick={() => {
                 if (!canRun) return;
                 if (isActive) {
-                  onUseInChat?.();
+                  onEject?.();
                   return;
                 }
                 onLoad({});
@@ -287,18 +292,18 @@ export function SafetensorsDownloadCard({
                 </>
               ) : isActive ? (
                 <>
-                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
-                  Chat
+                  <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} />
+                  Eject
                 </>
-              ) : !canRun ? (
-                <>
-                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
-                  No run
-                </>
-              ) : (
+              ) : canRun ? (
                 <>
                   <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
                   Run
+                </>
+              ) : (
+                <>
+                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
+                  No run
                 </>
               )}
             </button>
@@ -306,7 +311,7 @@ export function SafetensorsDownloadCard({
         ) : showUnavailableAction ? (
           <button
             type="button"
-            disabled
+            disabled={true}
             className="hub-action-btn w-28 opacity-70"
           >
             <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />

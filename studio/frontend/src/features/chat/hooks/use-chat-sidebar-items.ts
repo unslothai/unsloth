@@ -217,6 +217,40 @@ export async function archiveChatItem(
   notifyChatHistoryUpdated();
 }
 
+export async function archiveAllChatItems(
+  activeId?: string,
+  onSelect?: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<number> {
+  const threads = await listStoredChatThreads({ includeArchived: true });
+  // Boolean() mirrors groupThreads: legacy records may have archived
+  // undefined/null, which must count as "not archived".
+  const toArchive = threads.filter((t) => !t.archived);
+  if (toArchive.length === 0) return 0;
+
+  for (const t of toArchive) cancelIfRunning(t.id);
+
+  await Promise.all(
+    toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
+  );
+
+  // Reset only when this action archived the active single thread or compare
+  // pair. An already-archived chat opened from the archive is not in
+  // toArchive and must stay open.
+  const archivedActive =
+    activeId !== undefined &&
+    toArchive.some(
+      (thread) => thread.id === activeId || thread.pairId === activeId,
+    );
+  if (archivedActive) {
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    onSelect?.({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }
+
+  notifyChatHistoryUpdated();
+  // Report sidebar items, not raw threads: a compare pair reads as one chat.
+  return groupThreads(toArchive).length;
+}
+
 export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
   const threadIds: string[] =
     item.type === "single"

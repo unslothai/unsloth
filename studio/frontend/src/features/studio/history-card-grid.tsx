@@ -78,13 +78,17 @@ function wasContinuedInVisibleRuns(
   run: TrainingRunSummary,
   runs: TrainingRunSummary[],
 ): boolean {
-  if (run.status !== "stopped" || !run.output_dir) return false;
+  if ((run.status !== "stopped" && run.status !== "error") || !run.output_dir)
+    return false;
   const startedAt = new Date(run.started_at).getTime();
   return runs.some(
     (other) =>
       other.id !== run.id &&
       other.output_dir === run.output_dir &&
-      (other.status === "stopped" || other.status === "completed") &&
+      (other.status === "stopped" ||
+        other.status === "completed" ||
+        other.status === "error" ||
+        other.status === "running") &&
       new Date(other.started_at).getTime() > startedAt,
   );
 }
@@ -404,7 +408,7 @@ export function HistoryCardGrid({
               tabIndex={0}
               key={run.id}
               className={cn(
-                "group relative flex h-[11.5rem] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
+                "group relative flex h-[184px] cursor-pointer flex-col gap-3 rounded-xl border bg-card p-4 text-left transition-colors hover:border-border hover:bg-accent/30",
                 isRunning
                   ? "border-blue-400/50 dark:border-blue-500/30"
                   : "border-border/60",
@@ -421,14 +425,14 @@ export function HistoryCardGrid({
               <div className="flex items-center justify-between pr-6">
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.625rem] font-semibold",
                     badge.className,
                   )}
                 >
                   {isRunning && <Spinner className="size-2.5" />}
                   {formatStatusLabel(wasContinued ? "resumed_later" : run.status, t)}
                 </span>
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-[0.625rem] text-muted-foreground">
                   {formatRelativeTime(run.started_at, t)}
                 </span>
               </div>
@@ -437,7 +441,7 @@ export function HistoryCardGrid({
                   type="button"
                   size="xs"
                   variant="outline"
-                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[0.6875rem] leading-none shadow-sm"
                   disabled={isStarting || isResuming}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -452,7 +456,7 @@ export function HistoryCardGrid({
                   type="button"
                   size="xs"
                   variant="outline"
-                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[0.6875rem] leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
                     // Encode each segment but keep "/" so the /p route matches.
@@ -520,7 +524,7 @@ export function HistoryCardGrid({
                   />
                 </div>
               )}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[0.6875rem] text-muted-foreground">
                 <span>
                   {t("studio.history.loss")}:{" "}
                   {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}

@@ -165,7 +165,7 @@ export function StudioPage(): ReactElement {
         />
 
         <div className="mb-6 flex flex-col gap-0.5 sm:mb-8">
-          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+          <h1 className="text-[1.875rem] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[2.125rem]">
             {t("studio.title")}
           </h1>
           <p className="text-sm text-muted-foreground">{subtitle}</p>
@@ -217,7 +217,13 @@ export function StudioPage(): ReactElement {
 
             <TabsContent value="history">
               {selectedHistoryRunId ? (
-                <HistoricalTrainingView runId={selectedHistoryRunId} />
+                <HistoricalTrainingView
+                  runId={selectedHistoryRunId}
+                  onResumeStarted={() => {
+                    setSelectedHistoryRunId(null);
+                    handleTabChange("current-run");
+                  }}
+                />
               ) : (
                 <HistoryCardGrid onSelectRun={(runId) => {
                   if (runId === currentJobId && isTrainingRunning) {

@@ -66,7 +66,7 @@ export function ExecutionSidebar({
                   </p>
                   <Badge
                     variant="outline"
-                    className={cn("capitalize text-[11px]", statusTone(execution.status))}
+                    className={cn("capitalize text-[0.6875rem]", statusTone(execution.status))}
                   >
                     {formatStatus(execution.status)}
                   </Badge>

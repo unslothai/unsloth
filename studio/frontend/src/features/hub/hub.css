@@ -469,7 +469,7 @@
   }
 
   .hub-page .hub-focused-heading {
-    font-size: 18px;
+    font-size: 1.125rem;
     font-weight: 600;
     letter-spacing: 0;
     color: var(--foreground);
@@ -798,8 +798,8 @@
   .hub-download-fab {
     position: relative;
     display: inline-flex;
-    width: 2.75rem;
-    height: 2.75rem;
+    width: 44px;
+    height: 44px;
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -832,16 +832,16 @@
     top: -3px;
     right: -3px;
     display: inline-flex;
-    width: 1.125rem;
-    min-width: 1.125rem;
-    height: 1.125rem;
+    width: 18px;
+    min-width: 18px;
+    height: 18px;
     align-items: center;
     justify-content: center;
     border-radius: 9999px;
     padding-inline: 0;
     background-color: var(--status-success);
     color: var(--primary-foreground);
-    font-size: 10.5px;
+    font-size: 0.65625rem;
     font-weight: 600;
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -1082,7 +1082,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
   }
 
   .hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br {
@@ -1107,19 +1107,19 @@
 	   @apply so the cascade is explicit and predictable. */
   .hub-action-btn {
     display: inline-flex;
-    height: 2.25rem;
+    height: 36px;
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 8px;
     white-space: nowrap;
     border-radius: 9999px;
     background-color: transparent;
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
-    font-size: 13px;
+    padding-left: 12px;
+    padding-right: 12px;
+    font-size: 0.8125rem;
     font-weight: 500;
-    line-height: 18px;
+    line-height: 1.125rem;
     letter-spacing: -0.025em;
     color: var(--foreground);
     transition: color 150ms, background-color 150ms;
@@ -1141,8 +1141,8 @@
 	   embedded SVG — locks to 16px so swapping icons or replacing the
 	   spinner can't drift the layout. */
   .hub-action-btn svg {
-    width: 1rem;
-    height: 1rem;
+    width: 16px;
+    height: 16px;
     flex-shrink: 0;
   }
 
@@ -1154,19 +1154,19 @@
 	   so the height aligns with adjacent ghost buttons. */
   .hub-run-action-btn {
     display: inline-flex;
-    height: 2.25rem;
+    height: 36px;
     cursor: pointer;
     align-items: center;
     justify-content: center;
-    gap: 0.4rem;
+    gap: 6.4px;
     white-space: nowrap;
     border-radius: 9999px;
     background-color: var(--status-success);
-    padding-left: 1rem;
-    padding-right: 1rem;
-    font-size: 13px;
+    padding-left: 16px;
+    padding-right: 16px;
+    font-size: 0.8125rem;
     font-weight: 600;
-    line-height: 18px;
+    line-height: 1.125rem;
     letter-spacing: -0.025em;
     color: var(--primary-foreground);
     transition: background-color 150ms, transform 150ms;
@@ -1189,8 +1189,8 @@
   }
 
   .hub-run-action-btn svg {
-    width: 0.9rem;
-    height: 0.9rem;
+    width: 14.4px;
+    height: 14.4px;
     flex-shrink: 0;
   }
 
@@ -1200,8 +1200,8 @@
   .hub-cta-indicator {
     position: relative;
     display: inline-flex;
-    width: 1rem;
-    height: 1rem;
+    width: 16px;
+    height: 16px;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
@@ -1232,11 +1232,11 @@
 	   `.group/dl` ancestor for the hover scope (the Hub download row). */
   .hub-row-action {
     position: absolute;
-    right: 0.25rem;
+    right: 4px;
     top: 50%;
     display: inline-flex;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 28px;
+    height: 28px;
     transform: translateY(-50%);
     align-items: center;
     justify-content: center;
@@ -1261,8 +1261,8 @@
   }
 
   .hub-row-action svg {
-    width: 1rem;
-    height: 1rem;
+    width: 16px;
+    height: 16px;
     flex-shrink: 0;
   }
 }
@@ -1271,8 +1271,8 @@
   .hub-page .field-trigger.field-filter {
     color: var(--muted-foreground);
     font-weight: 400;
-    padding-top: 0.25rem;
-    padding-bottom: 0.25rem;
+    padding-top: 4px;
+    padding-bottom: 4px;
     line-height: 1.25rem;
   }
 
@@ -1284,13 +1284,13 @@
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 0.4rem;
-    height: 2rem;
-    padding-inline: 0.7rem;
+    gap: 6.4px;
+    height: 32px;
+    padding-inline: 11.2px;
     border-radius: 9999px;
     border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
     background-color: color-mix(in srgb, var(--foreground) 2.5%, transparent);
-    font-size: 12px;
+    font-size: 0.75rem;
     line-height: 1;
     color: var(--muted-foreground);
     white-space: nowrap;
@@ -1478,7 +1478,7 @@
 
 @layer utilities {
   .hub-chip {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-[11px] font-medium leading-none;
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-[3px] text-[0.6875rem] font-medium leading-none;
     background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
     color: var(--muted-foreground);
   }
@@ -1488,7 +1488,7 @@
   }
 
   .hub-meta-tag {
-    @apply inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium leading-none;
+    @apply inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full px-2 text-[0.6875rem] font-medium leading-none;
     background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
     color: var(--muted-foreground);
   }

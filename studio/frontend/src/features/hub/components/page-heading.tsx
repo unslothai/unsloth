@@ -13,7 +13,7 @@ type PageHeadingProps = {
 };
 
 const TITLE_CLASS =
-  "text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]";
+  "text-[1.875rem] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[2.125rem]";
 
 export function PageHeading({
   title,
@@ -38,7 +38,7 @@ export function PageHeading({
         <h1 className={TITLE_CLASS}>{title}</h1>
       )}
       {subtitle ? (
-        <p className="mt-2 text-[13px] leading-[19px] text-muted-foreground">
+        <p className="mt-2 text-[0.8125rem] leading-[1.1875rem] text-muted-foreground">
           {subtitle}
         </p>
       ) : null}
