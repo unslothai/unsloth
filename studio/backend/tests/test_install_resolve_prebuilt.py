@@ -921,3 +921,45 @@ def test_llama_backend_env_requests_vulkan(monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
     assert ilp.llama_backend_from_env() == "vulkan"
     assert ilp.force_vulkan_requested() is True
+
+
+def test_llama_cpp_backend_env_does_not_trigger_vulkan(monkeypatch):
+    # UNSLOTH_LLAMA_CPP_BACKEND is a separate setup variable (auto/cpu); setup
+    # warns and ignores any other value, so the installer must not read a
+    # "vulkan" out of it or the opt-in would fire behind that warning.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
+    assert ilp.llama_backend_from_env() is None
+    assert ilp.force_vulkan_requested() is False
+
+
+def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
+    # A CUDA-masked NVIDIA card (has_physical_nvidia True, has_usable_nvidia
+    # False) alongside a legacy AMD gfx must NOT auto-route to Vulkan: Vulkan
+    # ignores CUDA_VISIBLE_DEVICES and could grab the reserved NVIDIA GPU.
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx803",
+        rocm_gfx_targets = ["gfx803"],
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
+def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkeypatch):
+    # The physical-NVIDIA guard only gates the AMD AUTO path; an explicit opt-in
+    # still forces Vulkan (the user asked for it).
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx803",
+        rocm_gfx_targets = ["gfx803"],
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == UPSTREAM
+    assert persist == "vulkan"

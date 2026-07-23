@@ -6045,12 +6045,15 @@ def _normalized_llama_backend(value: str | None) -> str | None:
 
 
 def llama_backend_from_env() -> str | None:
-    """Read an explicit llama.cpp backend preference from the environment."""
-    for key in ("UNSLOTH_LLAMA_BACKEND", "UNSLOTH_LLAMA_CPP_BACKEND"):
-        backend = _normalized_llama_backend(os.environ.get(key))
-        if backend:
-            return backend
-    return None
+    """Read an explicit llama.cpp backend preference from the environment.
+
+    Only ``UNSLOTH_LLAMA_BACKEND`` is honored. ``UNSLOTH_LLAMA_CPP_BACKEND`` is a
+    separate, pre-existing setup variable meaning ``auto``/``cpu`` (not a backend
+    name); setup.sh/setup.ps1 warn and ignore any other value, so reading it here
+    would silently force Vulkan behind that warning. Keep the two namespaces
+    apart -- Vulkan opt-in rides UNSLOTH_LLAMA_BACKEND / UNSLOTH_FORCE_VULKAN.
+    """
+    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
 
 
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
@@ -6109,7 +6112,12 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo) -> bool:
     return (
         host.is_windows
         and host.has_rocm
-        and not host.has_usable_nvidia
+        # No PHYSICAL NVIDIA, not merely no usable one: a host that hides an
+        # NVIDIA card via CUDA_VISIBLE_DEVICES=""/-1 keeps has_physical_nvidia
+        # while has_usable_nvidia goes False. Vulkan ignores that mask and could
+        # enumerate the reserved card, so don't auto-route it here. The Intel
+        # auto path gates the same way; an explicit Vulkan opt-in still overrides.
+        and not host.has_physical_nvidia
         and not _gfx_is_windows_hip_supported(active)
     )
 
