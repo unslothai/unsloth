@@ -711,12 +711,16 @@ def test_write_codex_parent_overlay_refreshes_fallback_copies(tmp_path, monkeypa
     source.mkdir()
     config = source / "config.toml"
     config.write_text('model = "first"\n')
+    sessions = source / "sessions"
+    sessions.mkdir()
+    (sessions / "existing.jsonl").write_text("existing session\n")
     monkeypatch.setenv("CODEX_HOME", str(source))
 
     def deny_symlink(*args, **kwargs):
         raise OSError("symlinks unavailable")
 
     monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    monkeypatch.setattr(start, "_create_directory_junction", lambda source, target: False)
     overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
     (overlay / "history.jsonl").write_text("session state\n")
     config.write_text('model = "second"\n')
@@ -724,12 +728,44 @@ def test_write_codex_parent_overlay_refreshes_fallback_copies(tmp_path, monkeypa
     overlay = start.write_codex_parent_overlay(overlay)
 
     assert (overlay / "config.toml").read_text() == 'model = "second"\n'
+    assert (overlay / "sessions" / "existing.jsonl").read_text() == "existing session\n"
     assert (overlay / "history.jsonl").read_text() == "session state\n"
 
     config.unlink()
     overlay = start.write_codex_parent_overlay(overlay)
     assert not (overlay / "config.toml").exists()
     assert (overlay / "history.jsonl").read_text() == "session state\n"
+
+
+def test_create_directory_junction_uses_windows_mklink(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(start.os, "name", "nt")
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+
+    assert start._create_directory_junction(source, target) is True
+    assert captured["command"] == [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "mklink",
+        "/J",
+        str(target),
+        str(source),
+    ]
+    assert captured["kwargs"] == {
+        "capture_output": True,
+        "text": True,
+        "timeout": 30,
+        "check": False,
+    }
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")

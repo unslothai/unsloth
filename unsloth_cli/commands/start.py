@@ -1682,12 +1682,31 @@ def _codex_source_home(*, ignore_configured: bool = False) -> Path:
 
 
 def _remove_overlay_entry(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction and is_junction():
+        path.rmdir()
+    elif path.is_symlink() or path.is_file():
         path.unlink()
     elif path.is_dir():
         shutil.rmtree(path)
     elif path.exists():
         path.unlink()
+
+
+def _create_directory_junction(source: Path, target: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
+            capture_output = True,
+            text = True,
+            timeout = 30,
+            check = False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def write_codex_parent_overlay(overlay: Path) -> Path:
@@ -1728,9 +1747,10 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
             _remove_overlay_entry(target)
 
     # Keep the user's auth, config, plugins, agents, skills, rules, and session state visible.
-    # Symlinks make this an overlay rather than a stale copy. Windows may deny symlink creation;
-    # copy the small configuration surfaces there and leave bulky runtime state session-local.
-    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces"}
+    # Symlinks make this an overlay rather than a stale copy. If Windows denies them,
+    # use directory junctions so large runtime state remains shared without a bulk copy.
+    # Copy the configuration surfaces and sessions only if both link forms are unavailable.
+    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces", "sessions"}
     entries = []
     if source_home.is_dir():
         for source in source_home.iterdir():
@@ -1749,9 +1769,12 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
                 if source.is_file():
                     shutil.copy2(source, target)
                     entries.append(source.name)
-                elif source.is_dir() and source.name in fallback_dirs:
-                    shutil.copytree(source, target)
-                    entries.append(source.name)
+                elif source.is_dir():
+                    if _create_directory_junction(source, target):
+                        entries.append(source.name)
+                    elif source.name in fallback_dirs:
+                        shutil.copytree(source, target)
+                        entries.append(source.name)
 
     _write_private_json(
         manifest_path,

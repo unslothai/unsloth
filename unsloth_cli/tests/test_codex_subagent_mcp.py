@@ -64,6 +64,7 @@ def test_protocol_uses_codex_specific_tool_name():
         "Use this tool instead of the built-in spawn_agent tool"
         in responses[1]["result"]["tools"][0]["description"]
     )
+    assert responses[1]["result"]["tools"][0]["annotations"]["destructiveHint"] is True
     assert responses[2]["result"] == {
         "content": [{"type": "text", "text": "completed: inspect this"}],
         "isError": False,
