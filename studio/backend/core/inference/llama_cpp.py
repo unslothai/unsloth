@@ -6539,10 +6539,22 @@ class LlamaCppBackend:
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     )
+                projector_has_audio = False
+                if launch_mmproj_path:
+                    try:
+                        from utils.models.gguf_metadata import (
+                            read_mmproj_audio_capability,
+                        )
+                        projector_has_audio = (
+                            read_mmproj_audio_capability(launch_mmproj_path) is True
+                        )
+                    except Exception as e:
+                        logger.debug(f"mmproj audio-capability read failed: {e}")
                 # Need both a resolved mmproj AND the config vision flag; a stray
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
                 effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
+                effective_uses_mmproj = effective_is_vision or projector_has_audio
                 if is_vision and not effective_is_vision:
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
@@ -6562,7 +6574,9 @@ class LlamaCppBackend:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path)
+                        if effective_uses_mmproj
+                        else 0
                     )
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
@@ -7420,17 +7434,7 @@ class LlamaCppBackend:
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
-                self._mmproj_has_audio = False
-                if launch_mmproj_path:
-                    try:
-                        from utils.models.gguf_metadata import (
-                            read_mmproj_audio_capability,
-                        )
-                        self._mmproj_has_audio = bool(
-                            read_mmproj_audio_capability(launch_mmproj_path)
-                        )
-                    except Exception as e:
-                        logger.debug(f"mmproj audio-capability read failed: {e}")
+                self._mmproj_has_audio = projector_has_audio
 
                 cmd = [
                     binary,
@@ -7726,9 +7730,9 @@ class LlamaCppBackend:
                     )
                     logger.info(f"Reasoning model: {reasoning_kw} by default")
 
-                if launch_mmproj_path and effective_is_vision:
+                if launch_mmproj_path and effective_uses_mmproj:
                     cmd.extend(["--mmproj", launch_mmproj_path])
-                    logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
+                    logger.info(f"Using multimodal projector: {launch_mmproj_path}")
 
                 # Option C: --api-key for direct client access when enabled
                 import secrets as _secrets
