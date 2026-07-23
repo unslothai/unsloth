@@ -113,6 +113,7 @@ import {
 import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import {
   PRE_STREAM_RUN_FAILED_EVENT,
+  getPreStreamRunReservationCount,
   type PromptQueueRunFailedEventDetail,
 } from "./utils/prompt-queue-boundary";
 import {
@@ -165,7 +166,8 @@ function compareSendAtGlobalCapacity() {
   const chatState = useChatRuntimeStore.getState();
   return (
     Object.values(chatState.runningByThreadId).some(Boolean) ||
-    usePromptQueueUI.getState().isRunning
+    usePromptQueueUI.getState().isRunning ||
+    getPreStreamRunReservationCount() > 0
   );
 }
 
@@ -390,7 +392,7 @@ export function RegisterCompareHandle({
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
-        new Promise<void>((resolve) => {
+        new Promise<void>((resolve, reject) => {
           let wasRunning = false;
           let settled = false;
           const isHandleRunning = (
@@ -402,7 +404,7 @@ export function RegisterCompareHandle({
             }
             return threadIds.some((threadId) => runningByThreadId[threadId]);
           };
-          const finish = () => {
+          const finish = (error?: Error) => {
             if (settled) return;
             settled = true;
             unsub();
@@ -410,7 +412,11 @@ export function RegisterCompareHandle({
               PRE_STREAM_RUN_FAILED_EVENT,
               onPreStreamFailure,
             );
-            resolve();
+            if (error) {
+              reject(error);
+            } else {
+              resolve();
+            }
           };
           const onPreStreamFailure = (event: Event) => {
             const failedThreadId = (
@@ -420,7 +426,7 @@ export function RegisterCompareHandle({
               failedThreadId &&
               getCompareThreadIds().includes(failedThreadId)
             ) {
-              finish();
+              finish(new Error("Compare run failed before streaming started"));
             }
           };
           const unsub = useChatRuntimeStore.subscribe((state) => {
@@ -1021,6 +1027,13 @@ export function SharedComposer({
     if (content.length === 0) return;
 
     if (compareSendAtGlobalCapacity()) {
+      if (isQueueRunningRef.current) {
+        isQueueRunningRef.current = false;
+        setIsQueueRunning(false);
+        queueRef.current = [];
+        queueIndexRef.current = 0;
+        setQueueProgress({ current: 0, total: 0 });
+      }
       toast.error("Wait for the current response to finish", {
         description:
           "Compare runs share the same global generation capacity as chat prompts.",
@@ -1679,6 +1692,13 @@ export function SharedComposer({
             toast.error("Pick a model in each pane to compare", {
               description:
                 "Use the model dropdown above each pane, then send your prompt.",
+            });
+            return;
+          }
+          if (compareSendAtGlobalCapacity()) {
+            toast.error("Wait for the current response to finish", {
+              description:
+                "Start the saved-prompt run list again once generation capacity is available.",
             });
             return;
           }

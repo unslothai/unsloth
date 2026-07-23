@@ -66,6 +66,9 @@ export {
 export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  getPreStreamRunReservationCount,
+  releasePreStreamRunReservation,
+  tryReservePreStreamRun,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
