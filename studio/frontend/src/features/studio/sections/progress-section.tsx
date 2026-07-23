@@ -19,6 +19,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
+import { usePlatformStore } from "@/config/env";
 import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
@@ -92,6 +93,7 @@ export function ProgressSection({
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
@@ -187,10 +189,18 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
+  // Mirror the training form: on Mac the CUDA/bitsandbytes optimizer names run
+  // as plain AdamW (the MLX backend normalizes them), so label them AdamW here
+  // too rather than by the requested, unnormalized name.
+  const effectiveOptimizer =
+    platformDeviceType === "mac" &&
+    OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
+      ? "adamw"
+      : cfgOptimizerType;
   const optimizerLabel =
     [...OPTIMIZER_OPTIONS, ...MLX_OPTIMIZER_OPTIONS].find(
-      (o) => o.value === cfgOptimizerType,
-    )?.label ?? cfgOptimizerType;
+      (o) => o.value === effectiveOptimizer,
+    )?.label ?? effectiveOptimizer;
 
   const configItems: ConfigGroup[] = [
     {
