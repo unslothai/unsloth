@@ -6569,9 +6569,7 @@ class LlamaCppBackend:
                     )
                 # Record actual launch capability, not merely raw request intent.
                 effective_load_mmproj = (
-                    bool(effective_is_vision)
-                    if is_vision
-                    else bool(effective_mmproj_requested)
+                    bool(effective_is_vision) if is_vision else bool(effective_mmproj_requested)
                 )
                 # Seed before the try: the except (GPU-selection failure ->
                 # --fit on) falls through to the launch which reads this, and the
@@ -8741,9 +8739,7 @@ class LlamaCppBackend:
             return False
         if self._requested_n_ctx != int(n_ctx):
             return False
-        requested_load_mmproj = bool(
-            load_mmproj and not extra_args_disable_mmproj(extra_args)
-        )
+        requested_load_mmproj = bool(load_mmproj and not extra_args_disable_mmproj(extra_args))
         if bool(getattr(self, "_load_mmproj", True)) != requested_load_mmproj:
             return False
 

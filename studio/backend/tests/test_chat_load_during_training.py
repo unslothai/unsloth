@@ -970,7 +970,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_local_excludes_projector_but_keeps_other_companions(self):
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             model = p / "model.gguf"

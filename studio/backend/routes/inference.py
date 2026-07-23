@@ -3118,10 +3118,7 @@ def _normalise_settings_str(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _effective_load_mmproj(
-    requested: bool,
-    extra_args: Optional[list[str]],
-) -> bool:
+def _effective_load_mmproj(requested: bool, extra_args: Optional[list[str]]) -> bool:
     """Resolve the first-class toggle with explicit or inherited llama.cpp args.
 
     This is the single projector state used for dedupe, training sizing,
@@ -4568,9 +4565,7 @@ async def _load_model_impl(
                     _hub_download_blocks_gguf_load,
                     config.gguf_hf_repo,
                     config.gguf_variant,
-                    require_mmproj = bool(
-                        config.is_vision and effective_load_mmproj
-                    ),
+                    require_mmproj = bool(config.is_vision and effective_load_mmproj),
                     hf_token = request.hf_token,
                 ):
                     raise HTTPException(
