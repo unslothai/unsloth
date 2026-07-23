@@ -42,7 +42,7 @@ def test_late_callbacks_are_bound_to_their_originating_run():
     assert "if (run.cancelPromise) return;" in runtime
     assert "loadAttemptRef.current === run.attemptId" in runtime
     assert "loadIntentRef.current === run.intentId" in runtime
-    assert "if (loadIntentRef.current !== loadIntentId) return;" in runtime
+    assert runtime.count("loadIntentRef.current !== loadIntentId") >= 2
     assert "loadIntentRef.current += 1;" in runtime
 
 
@@ -111,6 +111,32 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
     assert "const stopped = await shared.cancel(true);" in runtime
     assert "shared.run.previousCheckpointWasUnloaded" in runtime
+
+
+def test_superseded_replacement_keeps_the_working_model_config():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "rollbackConfig?: PerModelConfig;" in runtime
+    assert "rollbackConfig: previousConfig" in runtime
+    assert "previousConfig = activeRun.rollbackConfig;" in runtime
+    assert "previousConfig = shared.run.rollbackConfig;" in runtime
+    assert "previousConfig?.maxSeqLength ?? maxSeqLength" in runtime
+
+
+def test_throwing_callers_learn_when_their_selection_is_superseded():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert runtime.count(
+        'throw new Error("Model selection was superseded by a newer choice.");'
+    ) >= 2
+
+
+def test_shared_loading_pick_stays_visible_until_cancel_settles():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
+    cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
+    assert cancel.count("clearLoadingModelPick(pickOf(model))") == 1
+    assert cancel.index("await run.completionPromise;") < cancel.index(
+        "clearLoadingModelPick(pickOf(model))"
+    )
 
 
 def test_active_model_reload_cancellation_marks_rollback_unloaded():
