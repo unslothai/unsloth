@@ -40,7 +40,7 @@ type NavigatorWithUserAgentData = Navigator & {
   };
 };
 
-function getClientPlatform(): string {
+export function getClientPlatform(): string {
   if (typeof navigator === "undefined") {
     return "";
   }
@@ -273,7 +273,7 @@ export function WindowTitlebar({
                     draggable={false}
                     className="size-5 shrink-0 rounded-[6px] object-cover"
                   />
-                  <span className="min-w-0 truncate text-[13px] font-semibold leading-none tracking-[0.01em] text-nav-fg">
+                  <span className="min-w-0 truncate text-ui-13 font-semibold leading-none tracking-[0.01em] text-nav-fg">
                     Unsloth Studio
                   </span>
                 </div>

@@ -29,6 +29,8 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
+from hub.dependencies import get_hf_token
 from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -1692,6 +1694,8 @@ async def _aiter_llama_stream_items(
 from models.inference import (
     LoadRequest,
     UnloadRequest,
+    TranscribeRequest,
+    SttLoadRequest,
     GenerateRequest,
     LoadResponse,
     LoadProgressResponse,
@@ -3406,9 +3410,8 @@ async def _acquire_swap_gate() -> None:
         await asyncio.sleep(0.02)
 
 
-# Counts in-flight auto-switch requests per (target, variant). The busy guard
-# subtracts same-target waiters so concurrent requests for one model load once
-# instead of each 409-ing the other.
+# Counts auto-switch requests queued to load each (target, variant). They are not
+# generating, so the drain wait below excludes them from the active inference count.
 _auto_switch_waiters: dict[tuple[str, str], int] = {}
 _auto_switch_waiters_guard = threading.Lock()
 
@@ -3426,35 +3429,31 @@ def _note_switch_waiter(key: tuple[str, str], delta: int) -> None:
             _auto_switch_waiters.pop(key, None)
 
 
-def _same_target_waiters(key: tuple[str, str]) -> int:
+def _switch_waiter_count() -> int:
     with _auto_switch_waiters_guard:
-        return _auto_switch_waiters.get(key, 0)
+        return sum(max(0, count) for count in _auto_switch_waiters.values())
 
 
-# A second waiter map keyed by the raw requested model, registered before the
-# (slow) resolve. The middleware counts a concurrent same-model request as
-# in-flight before it resolves and joins _auto_switch_waiters, so without this
-# the first request would see it as an unrelated request and 409.
-_auto_switch_request_waiters: dict[str, int] = {}
-_auto_switch_request_waiters_guard = threading.Lock()
+async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
+    """Wait until a model replacement cannot interrupt active inference.
 
-
-def _request_waiter_key(requested_model: str) -> str:
-    return requested_model.strip().lower()
-
-
-def _note_request_waiter(key: str, delta: int) -> None:
-    with _auto_switch_request_waiters_guard:
-        n = _auto_switch_request_waiters.get(key, 0) + delta
-        if n > 0:
-            _auto_switch_request_waiters[key] = n
-        else:
-            _auto_switch_request_waiters.pop(key, None)
-
-
-def _same_request_waiters(key: str) -> int:
-    with _auto_switch_request_waiters_guard:
-        return _auto_switch_request_waiters.get(key, 0)
+    The caller holds ``inference_lifecycle_gate``, which prevents new inference
+    from starting while existing requests drain. Auto-switch requests that have
+    resolved their targets are scheduler waiters, not active generations, so
+    exclude them to avoid a queue deadlock.
+    """
+    from core.inference.llama_keepwarm import other_inference_request_count
+    while True:
+        queued_switches = _switch_waiter_count()
+        if current_request_counted and queued_switches > 0:
+            queued_switches -= 1
+        active_others = other_inference_request_count(
+            current_request_counted = current_request_counted,
+            include_pending = False,
+        )
+        if active_others <= queued_switches:
+            return
+        await asyncio.sleep(0.02)
 
 
 def _llama_public_model_id(llama_backend, fallback: Optional[str] = None) -> Optional[str]:
@@ -3582,7 +3581,6 @@ async def _maybe_auto_switch_model(
     from core.inference.local_model_resolver import resolve_local_gguf
     from core.inference.llama_keepwarm import (
         get_last_unloaded_model,
-        other_inference_request_count,
         inference_lifecycle_gate,
     )
 
@@ -3603,12 +3601,7 @@ async def _maybe_auto_switch_model(
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         return
 
-    # Register by the raw requested model before resolving (which can be slow):
-    # the middleware already counts a concurrent same-model request as in-flight,
-    # so the busy guard must know it shares this target even while it resolves.
-    request_key = _request_waiter_key(requested_model)
-    _note_request_waiter(request_key, 1)
-    try:
+    async def _resolve_and_switch() -> None:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
@@ -3706,6 +3699,7 @@ async def _maybe_auto_switch_model(
             )
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
+        waiter_noted = True
         try:
             async with _auto_switch_lock():
                 # The asyncio lock is per loop; add a process-wide gate so a swap on
@@ -3718,31 +3712,6 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Single slot: refuse a cross-model swap while another inference
-                        # request is active rather than killing its response. Requests
-                        # heading to this same target (by resolved id or raw name) are
-                        # excluded, so concurrent requests for one model load once. A
-                        # pending request is still in the middleware, not generating, so
-                        # it is not counted here.
-                        same_others = max(
-                            _same_target_waiters(key) - 1, _same_request_waiters(request_key) - 1, 0
-                        )
-                        others = other_inference_request_count(
-                            current_request_counted = True, include_pending = False
-                        )
-                        # Not gated on the GGUF being loaded: _load_model_impl also
-                        # tears down an active Unsloth backend before loading a GGUF,
-                        # so refuse whenever any other inference request is in flight.
-                        if others > same_others:
-                            raise HTTPException(
-                                status_code = 409,
-                                detail = openai_error_body(
-                                    "Cannot switch models while another inference request is in progress.",
-                                    status = 409,
-                                    code = "model_switch_busy",
-                                    param = "model",
-                                ),
-                            )
                         # Apply this model's saved launch flags so the swap honors the config.
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
@@ -3757,16 +3726,22 @@ async def _maybe_auto_switch_model(
                             LoadRequest(**load_kwargs),
                             fastapi_request,
                             current_subject,
+                            current_request_counted = True,
                         )
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
                 finally:
+                    # Deregister before releasing the gate: otherwise a swap on another
+                    # loop counts this finished request as queued and unloads its model.
+                    _note_switch_waiter(key, -1)
+                    waiter_noted = False
                     _auto_switch_process_lock.release()
         finally:
-            _note_switch_waiter(key, -1)
-    finally:
-        _note_request_waiter(request_key, -1)
+            if waiter_noted:
+                _note_switch_waiter(key, -1)
+
+    await _resolve_and_switch()
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -4186,6 +4161,15 @@ def _maybe_unsupported_message(msg: str) -> str:
     return msg
 
 
+def _raise_if_sidecar_swap_in_progress() -> None:
+    from utils.transformers_version import sidecar_swap_in_progress
+    if sidecar_swap_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -4206,24 +4190,23 @@ async def load_model(
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
-    from utils.transformers_version import sidecar_swap_in_progress
 
-    _swap_409 = HTTPException(
-        status_code = 409,
-        detail = "A transformers installation is in progress. Retry when it completes.",
-    )
-    if sidecar_swap_in_progress():
-        raise _swap_409
+    _raise_if_sidecar_swap_in_progress()
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     async with inference_lifecycle_gate():
-        if sidecar_swap_in_progress():
-            raise _swap_409
+        _raise_if_sidecar_swap_in_progress()
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
-async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
+async def _load_model_impl(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    current_request_counted: bool = False,
+):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     # A new load starts here; arm the progress throttle so this load's first
@@ -4557,6 +4540,13 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                         ),
                     )
 
+            # Keep the resident model alive until every active generation finishes;
+            # the caller's lifecycle gate blocks new starts.
+            await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+            # A sidecar install can reserve the gate while inference drains, after the
+            # route-level checks above, so recheck before replacing either backend.
+            _raise_if_sidecar_swap_in_progress()
+
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
                 logger.info(
@@ -4767,6 +4757,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # Unload any active GGUF model first
         llama_backend = get_llama_cpp_backend()
+        await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
+        _raise_if_sidecar_swap_in_progress()
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
@@ -6126,6 +6118,342 @@ async def generate_audio(
 
 
 # =====================================================================
+# Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
+# =====================================================================
+
+
+def _resolve_stt_engine(engine: Optional[str]) -> str:
+    """Normalize the requested STT engine name; default is Transformers."""
+    normalized = (engine or "transformers").strip().lower()
+    if normalized in ("", "transformers", "whisper"):
+        return "transformers"
+    if normalized in ("gguf", "ggml", "whisper_cpp", "whisper.cpp"):
+        return "gguf"
+    raise HTTPException(
+        status_code = 422,
+        detail = f"Unknown STT engine '{engine}'. Use 'transformers' or 'gguf'.",
+    )
+
+
+def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
+    """Resolve the engine that will actually serve a model.
+
+    whisper.cpp (gguf) only accepts curated ids, which Transformers serves too,
+    so when whisper-server is not installed (the common case: `unsloth studio
+    update` does not yet build it) fall back to Transformers instead of 501-ing
+    on every recording. Used for download/load/transcribe; unload targets a
+    specific engine via _resolve_stt_engine.
+    """
+    resolved = _resolve_stt_engine(engine)
+    if resolved == "gguf":
+        from core.inference import stt_ggml_sidecar
+        if not stt_ggml_sidecar.is_available():
+            return "transformers"
+    return resolved
+
+
+def _stt_sidecar_for(engine: str):
+    if engine == "gguf":
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+        return get_ggml_stt_sidecar()
+    from core.inference.stt_sidecar import get_stt_sidecar
+    return get_stt_sidecar()
+
+
+@studio_router.get("/audio/stt/status")
+async def stt_status(
+    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Report STT availability and which model, if any, is resident.
+
+    ``model`` extends the Transformers ``downloaded_models`` check to a
+    custom Hugging Face repository beyond the curated defaults.
+    """
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+    from core.inference.stt_sidecar import (
+        DEFAULT_STT_MODEL,
+        STT_MODELS,
+        get_stt_sidecar,
+        is_available,
+    )
+
+    sidecar = get_stt_sidecar()
+    ggml = stt_ggml_sidecar.get_ggml_stt_sidecar()
+    transformers_downloaded = [
+        model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
+    ]
+    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+        transformers_downloaded.append(model)
+    return JSONResponse(
+        content = {
+            "available": is_available(),
+            "loaded_model": sidecar.loaded_model,
+            "loading": sidecar.is_loading(),
+            "device": sidecar.device,
+            "keep_alive_seconds": sidecar.keep_alive_seconds,
+            "default_model": DEFAULT_STT_MODEL,
+            "models": list(STT_MODELS.keys()),
+            # Transformers engine, same shape as "gguf" below so clients read
+            # either generically. Top-level fields above kept for old clients.
+            "transformers": {
+                "available": is_available(),
+                "loaded_model": sidecar.loaded_model,
+                "loading": sidecar.is_loading(),
+                "device": sidecar.device,
+                "keep_alive_seconds": sidecar.keep_alive_seconds,
+                "default_model": DEFAULT_STT_MODEL,
+                "models": list(STT_MODELS.keys()),
+                "downloaded_models": transformers_downloaded,
+                "download": stt_sidecar.download_status(),
+            },
+            # whisper.cpp (GGUF) engine.
+            "gguf": {
+                "available": stt_ggml_sidecar.is_available(),
+                "loaded_model": ggml.loaded_model,
+                "loading": ggml.is_loading(),
+                "device": ggml.device,
+                "keep_alive_seconds": ggml.keep_alive_seconds,
+                "default_model": stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL,
+                "models": list(stt_ggml_sidecar.GGML_STT_MODELS.keys()),
+                "downloaded_models": [
+                    model_id
+                    for model_id in stt_ggml_sidecar.GGML_STT_MODELS
+                    if stt_ggml_sidecar._cached_model_path(model_id) is not None
+                ],
+                "download": stt_ggml_sidecar.download_status(),
+            },
+        }
+    )
+
+
+@studio_router.post("/audio/stt/download")
+async def stt_download(
+    payload: SttLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Start a background download of a dictation model.
+
+    Both engines download directly (a GGML checkpoint is a single file the Model
+    Hub's GGUF variant planner cannot express; a Transformers checkpoint is a
+    whole snapshot). Progress is reported by /audio/stt/status.
+    """
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
+
+    engine = _resolve_serving_stt_engine(payload.engine)
+    module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
+    try:
+        # Transformers accepts custom `owner/model` repos, so confirm the repo is
+        # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
+        # possibly-large non-STT repo into the shared cache. Curated ids
+        # short-circuit; GGUF only accepts curated ids, so it needs no check.
+        if engine != "gguf":
+            validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+            # Pin the download to the commit that was just validated so the
+            # repo cannot be swapped between validation and snapshot_download.
+            await asyncio.to_thread(
+                module.start_model_download,
+                payload.model,
+                hf_token,
+                validated.get("revision"),
+            )
+        else:
+            await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    return JSONResponse(content = module.download_status())
+
+
+@studio_router.post("/audio/stt/load")
+async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
+    """Load the selected STT model after the user starts local dictation."""
+    from core.inference.stt_sidecar import (
+        SttLoadCancelledError,
+        SttModelCompatibilityError,
+        SttModelIdError,
+        SttModelNotDownloadedError,
+        SttUnavailableError,
+        get_stt_sidecar,
+    )
+
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(payload.engine))
+    try:
+        await asyncio.to_thread(sidecar.load, payload.model)
+    except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except SttLoadCancelledError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except Exception as e:
+        logger.error(f"STT load error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
+
+
+@studio_router.post("/audio/stt/validate")
+async def stt_validate(
+    payload: SttLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Verify a Hub repository is a Whisper checkpoint before downloading it."""
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
+
+    try:
+        result = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+    except (SttModelIdError, SttModelCompatibilityError) as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    return JSONResponse(content = result)
+
+
+@studio_router.post("/audio/stt/unload")
+async def stt_unload(
+    engine: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Release the local STT model when dictation is idle.
+
+    Without an engine, both sidecars unload so an engine switch in Voice
+    settings always frees whichever backend was resident.
+    """
+    if engine is None:
+        engines = ["transformers", "gguf"]
+    else:
+        # Use the serving resolver: a "gguf" pick without whisper-server is
+        # actually served by the Transformers fallback, so unload must target
+        # that same engine or the resident model is never freed.
+        engines = [_resolve_serving_stt_engine(engine)]
+    # Attempt every engine even if one raises, so failing to unload one never
+    # skips freeing the other (both can be resident after a switch).
+    failed: list[str] = []
+    for name in engines:
+        try:
+            await asyncio.to_thread(_stt_sidecar_for(name).unload)
+        except Exception as exc:  # noqa: BLE001 - report after attempting all engines
+            logger.warning("Failed to unload STT engine '%s': %s", name, exc)
+            failed.append(name)
+    if failed:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to unload STT engine(s): {', '.join(failed)}",
+        )
+    return JSONResponse(content = {"loaded_model": None, "device": None})
+
+
+async def _transcribe_audio_bytes(
+    raw: bytes,
+    model: Optional[str],
+    language: Optional[str],
+    fast: bool,
+    engine: Optional[str] = None,
+) -> JSONResponse:
+    """Run STT for already-decoded request bytes."""
+    from core.inference.stt_sidecar import (
+        SttAudioDecodeError,
+        SttAudioTooLongError,
+        SttLanguageError,
+        SttLoadCancelledError,
+        SttModelCompatibilityError,
+        SttModelIdError,
+        SttModelNotDownloadedError,
+        SttUnavailableError,
+    )
+
+    if not raw:
+        raise HTTPException(status_code = 400, detail = "Audio is empty.")
+    if len(raw) > _MAX_AUDIO_RAW_BYTES:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+
+    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
+    try:
+        result = await asyncio.to_thread(
+            sidecar.transcribe,
+            raw,
+            model,
+            language,
+            fast,
+        )
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except SttLoadCancelledError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttLanguageError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttAudioTooLongError as e:
+        raise HTTPException(status_code = 413, detail = str(e))
+    except SttAudioDecodeError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except Exception as e:
+        logger.error(f"Transcription error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    return JSONResponse(content = result)
+
+
+@studio_router.post("/audio/transcribe")
+async def transcribe_audio(
+    payload: TranscribeRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Transcribe dictation audio to text via the STT sidecar.
+
+    Runs alongside the chat model without evicting it, so any model (including
+    text-only ones) can be driven by voice.
+    """
+    b64 = payload.audio or ""
+    if not b64:
+        raise HTTPException(status_code = 400, detail = "No audio provided.")
+    if len(b64) > _MAX_AUDIO_B64_CHARS:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    try:
+        raw = base64.b64decode(b64, validate = True)
+    except Exception:
+        raise HTTPException(status_code = 400, detail = "Audio is not valid base64.")
+    return await _transcribe_audio_bytes(
+        raw, payload.model, payload.language, payload.fast, payload.engine
+    )
+
+
+@studio_router.post("/audio/transcribe/raw")
+async def transcribe_audio_raw(
+    request: Request,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+    fast: bool = False,
+    engine: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Transcribe a raw audio body without base64 or JSON conversion overhead."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > _MAX_AUDIO_RAW_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
+        chunks.append(chunk)
+    return await _transcribe_audio_bytes(b"".join(chunks), model, language, fast, engine)
+
+
+# =====================================================================
 # OpenAI-Compatible Chat Completions  (/chat/completions)
 # =====================================================================
 
@@ -6166,8 +6494,8 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 # cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
 # bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
 # can expand to a far larger PCM array than the encoded-size cap implies.
-_MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
-_MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
+_MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
+_MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 _MAX_AUDIO_SECONDS = 30 * 60
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
@@ -7096,7 +7424,7 @@ async def openai_chat_completions(
     if payload.provider_id or payload.provider_type:
         # External provider: this request won't touch the local GGUF, so drop it
         # from the keep-warm count or its in-flight stream would falsely block a
-        # concurrent local auto-switch with model_switch_busy.
+        # concurrent local model switch from proceeding.
         from core.inference.llama_keepwarm import untrack_current_request
 
         untrack_current_request(request.scope)

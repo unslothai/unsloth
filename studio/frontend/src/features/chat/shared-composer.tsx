@@ -24,16 +24,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import {
-  describeMediaError,
-  describeSpeechError,
-  isMissingDeviceError,
-} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
-import {
-  applyDictationDictionary,
-  recordRecentDictation,
-  resolveDictationLanguage,
-  useVoiceSettingsStore,
-} from "@/features/settings/stores/voice-settings-store";
+  StudioDictationAdapter,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat/adapters/studio-dictation-adapter";
+import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
@@ -224,173 +220,95 @@ function formatReasoningDisabledLabel(
 function useDictation(
   setText: (value: string | ((prev: string) => string)) => void,
 ) {
+  // Re-render support state when the user switches recognition engines.
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [isDictating, setIsDictating] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-
-  const streamRef = useRef<MediaStream | null>(null);
+  // True while a stopped recording's final audio is still transcribing; a
+  // second click then cancels the pending transcription instead of re-stopping.
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const sessionRef = useRef<StudioDictationSession | null>(null);
   const startingRef = useRef(false);
-  // Guards the getUserMedia await so a mic opened after unmount is released.
-  const disposedRef = useRef(false);
-
-  const releaseStream = useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-  }, []);
+  const finalizingRef = useRef(false);
 
   const start = useCallback(async () => {
-    const SpeechRecognitionAPI =
-      typeof window !== "undefined" &&
-      (window.SpeechRecognition ??
-        (
-          window as unknown as {
-            webkitSpeechRecognition?: typeof SpeechRecognition;
-          }
-        ).webkitSpeechRecognition);
-    if (!SpeechRecognitionAPI) {
+    if (startingRef.current || sessionRef.current) return;
+    // Unsupported engine (e.g. Firefox): explain and steer to the local model.
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
       return;
     }
-    if (startingRef.current || recognitionRef.current) return;
     startingRef.current = true;
 
-    // Open the microphone chosen in Voice settings, matching the main chat
-    // adapter, so Compare dictation honors the same device selection.
-    let audioTrack: MediaStreamTrack | undefined;
-    const { micDeviceId } = useVoiceSettingsStore.getState();
-    if (navigator.mediaDevices?.getUserMedia) {
-      try {
-        let stream: MediaStream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio:
-              micDeviceId && micDeviceId !== "default"
-                ? { deviceId: { exact: micDeviceId } }
-                : true,
-          });
-        } catch (error) {
-          // Saved mic may be unplugged; fall back to the default device.
-          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: true,
-            });
-          } else {
-            throw error;
-          }
-        }
-        streamRef.current = stream;
-        audioTrack = stream.getAudioTracks()[0];
-      } catch (error) {
-        // Permission/security failure: report it and stop instead of silently
-        // recording from a different default device, matching the main adapter.
-        startingRef.current = false;
-        releaseStream();
-        setIsDictating(false);
-        toast.error(describeMediaError(error));
-        return;
-      }
-    }
-
-    if (disposedRef.current) {
-      releaseStream();
-      startingRef.current = false;
-      return;
-    }
-
-    const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = resolveDictationLanguage();
-    let sessionTranscript = "";
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      // Iterate every result from resultIndex; a single event can carry more
-      // than one finalized phrase and dropping the rest loses dictated words.
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (!result?.isFinal) continue;
-        const transcript = applyDictationDictionary(
-          result[0]?.transcript?.trim() ?? "",
-        );
-        if (!transcript) continue;
-        sessionTranscript = sessionTranscript
-          ? `${sessionTranscript} ${transcript}`
-          : transcript;
-        setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
-      }
-    };
-    recognition.onerror = (event) => {
-      // Report speech-service failures like the main adapter; aborted is a
-      // normal stop, not an error.
-      const errorEvent = event as SpeechRecognitionErrorEvent;
-      if (errorEvent.error !== "aborted") {
-        toast.error(describeSpeechError(errorEvent.error, errorEvent.message));
-      }
-      setIsDictating(false);
-    };
-    recognition.onend = () => {
-      // A stop()+immediate restart can install a new recognizer before this
-      // old one ends; only tear down shared refs when we are still current.
-      if (recognitionRef.current === recognition) {
-        releaseStream();
-        recognitionRef.current = null;
-        setIsDictating(false);
-      }
-      if (sessionTranscript) {
-        recordRecentDictation(sessionTranscript);
-        sessionTranscript = "";
-      }
-    };
+    let session: StudioDictationSession;
     try {
-      if (audioTrack) {
-        try {
-          recognition.start(audioTrack);
-        } catch {
-          // No start(track) overload: recognition captures from the default
-          // device, so release the selected-device stream.
-          releaseStream();
-          recognition.start();
-        }
-      } else {
-        recognition.start();
-      }
+      // Routes to the engine chosen in Voice settings (browser or STT model),
+      // honoring the selected microphone, language, and dictionary. Compare
+      // feeds two panes, so recent dictations must not link the unrelated
+      // single-chat active thread.
+      session = new StudioDictationAdapter({ chatId: null }).listen();
     } catch {
       startingRef.current = false;
-      releaseStream();
+      notifyStudioDictationUnavailable();
       return;
     }
-    recognitionRef.current = recognition;
-    startingRef.current = false;
+    sessionRef.current = session;
     setIsDictating(true);
-  }, [setText, releaseStream]);
+
+    // Append final transcripts; the adapter has already applied the dictionary
+    // and records the session in Recent dictations.
+    session.onSpeech((result) => {
+      if (!result.isFinal) return;
+      const transcript = result.transcript?.trim() ?? "";
+      if (transcript) {
+        setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      }
+    });
+    session.onEnd?.(() => {
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+    });
+    startingRef.current = false;
+  }, [setText]);
 
   const stop = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+    const session = sessionRef.current;
+    if (!session) return;
+    // A second click while the final segment is transcribing discards the
+    // pending transcription instead of leaving the pane stuck until timeout.
+    if (finalizingRef.current) {
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+      return;
     }
-    releaseStream();
-    setIsDictating(false);
-  }, [releaseStream]);
+    finalizingRef.current = true;
+    setIsFinalizing(true);
+    // Keep the session and dictation state alive while its final audio segment
+    // is transcribed. onEnd clears both after the transcript callbacks run.
+    void session.stop().catch((error) => {
+      console.error("Could not stop dictation:", error);
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+    });
+  }, []);
 
   useEffect(() => {
-    disposedRef.current = false;
     return () => {
-      disposedRef.current = true;
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      sessionRef.current?.cancel();
+      sessionRef.current = null;
     };
   }, []);
 
-  const supported =
-    typeof window !== "undefined" &&
-    !!(
-      window.SpeechRecognition ??
-      (window as unknown as { webkitSpeechRecognition?: unknown })
-        .webkitSpeechRecognition
-    );
+  const supported = StudioDictationAdapter.isSupported(dictationEngine);
 
-  return { isDictating, start, stop, supported };
+  return { isDictating, isFinalizing, start, stop, supported };
 }
 
 export type CompareHandles = MutableRefObject<Record<string, CompareHandle>>;
@@ -835,9 +753,9 @@ export function SharedComposer({
 
   const {
     isDictating,
+    isFinalizing: isDictationFinalizing,
     start: startDictation,
     stop: stopDictation,
-    supported: dictationSupported,
   } = useDictation(setText);
 
   useEffect(() => {
@@ -1483,7 +1401,7 @@ export function SharedComposer({
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!busy) {
+      if (!busy && !isDictating) {
         send();
       }
     }
@@ -1494,7 +1412,8 @@ export function SharedComposer({
       pendingImages.length > 0 ||
       pendingAudio !== null) &&
     !busy &&
-    !isComposing;
+    !isComposing &&
+    !isDictating;
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
@@ -2269,7 +2188,7 @@ export function SharedComposer({
               </button>
             )
           ) : null}
-          {dictationSupported && (
+          {
             <>
               {!isDictating ? (
                 <TooltipIconButton
@@ -2285,19 +2204,27 @@ export function SharedComposer({
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
-                  tooltip="Stop dictation"
+                  tooltip={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                   side="bottom"
                   variant="ghost"
                   size="icon"
                   className="size-8 rounded-full text-destructive"
                   onClick={stopDictation}
-                  aria-label="Stop dictation"
+                  aria-label={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                 >
                   <SquareIcon className="size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
-          )}
+          }
           {isQueueRunning ? (
             <button
               type="button"

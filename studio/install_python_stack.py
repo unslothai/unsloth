@@ -73,6 +73,27 @@ _ROCM_TORCH_INDEX: dict[tuple[int, int], str] = {
     (6, 0): "rocm6.0",
 }
 
+
+def _generic_pytorch_rocm_tag(ver: tuple[int, int]) -> str | None:
+    """Newest download.pytorch.org rocmX.Y tag for a host ROCm version."""
+    return next(
+        (t for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True) if ver >= (maj, mn)),
+        None,
+    )
+
+
+_ROCM_ARCH_INDEX_FLOOR = (7, 13)  # AMD per-arch index ships torch 2.11+rocm7.13
+
+
+def _strix_needs_amd_arch_index(ver: tuple[int, int]) -> bool:
+    """True when Strix's generic pytorch.org index sits below the AMD arch floor
+    (7.13), so gfx1150/1151 must use repo.amd.com's per-arch wheels. Mirrors
+    install.sh _rocm_leaf_below: reroute any generic rocm index (6.x/7.0/7.2 and a
+    future 7.3+), never one at/above the floor."""
+    key = next((k for k in sorted(_ROCM_TORCH_INDEX, reverse = True) if ver >= k), None)
+    return key is not None and key < _ROCM_ARCH_INDEX_FLOOR
+
+
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
 # Mirrors *FloorMap in install.ps1 / setup.ps1; other arches ship <2.11 and stay bare.
 _ROCM_GFX_TORCH211_LEAVES: frozenset[str] = frozenset({"gfx120x-all", "gfx1151", "gfx1150"})
@@ -719,8 +740,8 @@ def _detect_windows_gfx_arch() -> str | None:
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"9070 XT|9080", "gfx1201"),  # RDNA 4 (Radeon RX 9070 XT / 9080)
     (r"9070|9060", "gfx1200"),  # RDNA 4 (Radeon RX 9070 / 9060)
-    # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-    (r"8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
+    # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+    (r"8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max", "gfx1151"),
     # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
     (
         r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
@@ -746,6 +767,142 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
         if re.search(_pat, name, re.IGNORECASE):
             return _arch
     return None
+
+
+def _linux_amd_gfx_from_cpuinfo() -> "str | None":
+    """Infer gfx arch from /proc/cpuinfo on integrated AMD APUs (Strix Halo/Point)."""
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    if re.search(r"Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo", text, re.IGNORECASE):
+        return "gfx1151"
+    if re.search(
+        r"890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]"
+        r"|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33",
+        text,
+        re.IGNORECASE,
+    ):
+        return "gfx1150"
+    return None
+
+
+def _linux_amd_gfx_from_lspci() -> "str | None":
+    """First AMD display-class lspci line mapping to a known gfx arch. A non-AMD
+    controller can enumerate first (Intel/ASPEED before an AMD dGPU), so scan
+    them all. The vendor guard is case-SENSITIVE: a -i "ATI" would match
+    "CorporATIon" on every Intel/NVIDIA line. Whole-line matching also survives
+    the 0000: PCI domain prefix."""
+    lspci = shutil.which("lspci")
+    if not lspci:
+        return None
+    try:
+        result = subprocess.run(
+            [lspci, "-nn"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if not re.search(r"VGA compatible controller|3D controller|Display controller", line, re.I):
+            continue
+        if not re.search(r"AMD|ATI", line):
+            continue
+        arch = _gfx_arch_from_gpu_name(line)
+        if arch:
+            return arch
+    return None
+
+
+def _is_wsl() -> bool:
+    """True on WSL, where the AMD GPU is reached via /dev/dxg (not /dev/kfd)."""
+    if os.path.exists("/dev/dxg"):
+        return True
+    try:
+        with open("/proc/version", encoding = "utf-8", errors = "replace") as fh:
+            return "microsoft" in fh.read().lower()
+    except OSError:
+        return False
+
+
+def _wsl_rocm_runtime_present() -> bool:
+    """librocdxg (the WSL ROCDXG bridge that lets HIP reach the GPU over /dev/dxg)
+    under a ROCm lib dir. Its absence marks a WSL box whose ROCm was never set up."""
+    dirs = ["/opt/rocm/lib", "/opt/rocm/lib64"]
+    dirs += glob.glob("/opt/rocm-*/lib") + glob.glob("/opt/rocm-*/lib64")
+    return any(
+        os.path.exists(os.path.join(d, so))
+        for d in dirs
+        for so in ("librocdxg.so", "librocdxg.so.1")
+    )
+
+
+def _linux_amd_display_device_present() -> bool:
+    """Any AMD (vendor 0x1002) PCI display-class (0x03*) device in sysfs.
+    /proc/cpuinfo leaks the HOST CPU model into VMs/containers that received no
+    AMD GPU, so the CPU-model text alone is not GPU evidence; this is the
+    device-level check (mirrors install.sh _amd_gpu_present_via_pci)."""
+    try:
+        for dev in Path("/sys/bus/pci/devices").iterdir():
+            try:
+                if (dev / "vendor").read_text().strip() != "0x1002":
+                    continue
+                if (dev / "class").read_text().strip().startswith("0x03"):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return False
+
+
+def _infer_linux_amd_gfx_arch() -> "str | None":
+    """Infer gfx when ROCm runtime is absent but the host is a known AMD arch (unslothai#7301)."""
+    override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    if override:
+        return override
+    if _is_wsl():
+        # cpuinfo/lspci see the host APU even on a WSL box whose ROCDXG runtime
+        # was never bootstrapped; inferring there would install per-arch ROCm
+        # wheels into an env that still can't expose the GPU. Skip unless that
+        # runtime is present -- WSL enumerates no PCI display device, so
+        # /dev/dxg + librocdxg IS the GPU evidence there.
+        if not _wsl_rocm_runtime_present():
+            return None
+    elif not _linux_amd_display_device_present():
+        # Native Linux: a VM/container on a Strix host still shows the host CPU
+        # model in /proc/cpuinfo while receiving no AMD GPU, so require an AMD
+        # display device before trusting the CPU-model inference. The lspci
+        # fallback reads the same PCI space and would find nothing here either.
+        return None
+    cpu_gfx = _linux_amd_gfx_from_cpuinfo()
+    if cpu_gfx:
+        return cpu_gfx
+    return _linux_amd_gfx_from_lspci()
+
+
+def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
+    """Return the AMD per-arch pip index URL for a gfx arch (Linux + Windows).
+
+    Windows honors UNSLOTH_ROCM_WINDOWS_MIRROR (via _windows_rocm_index_url);
+    Linux honors UNSLOTH_AMD_ROCM_MIRROR -- the same var install.sh uses -- so a
+    mirrored/air-gapped Linux repair reaches the index install.sh chose rather
+    than falling back to repo.amd.com. Both default to repo.amd.com when unset.
+    """
+    if IS_WINDOWS:
+        return _windows_rocm_index_url(gfx_arch)
+    arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
+    if arch_family is None:
+        return None
+    base = (os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl").rstrip(
+        "/"
+    )
+    return f"{base}/{arch_family}/"
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
@@ -1626,22 +1783,24 @@ def _ensure_rocm_torch() -> None:
     # An explicit ROCm pin commits to ROCm wheels regardless of the visible GPU (headless / CI).
     # Mirror _ensure_cuda_torch: skip the NVIDIA/no-AMD/unreadable gates.
     _rocm_pin = _explicit_rocm_torch_index_url()
+    _inferred_linux_gfx = (
+        _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
+    )
     if _rocm_pin is None:
         # NVIDIA takes precedence on mixed hosts (only if a GPU is usable).
         if _has_usable_nvidia_gpu():
             return
         # _has_rocm_gpu() (rocminfo / amd-smi rows) is the authoritative AMD-host signal;
         # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.
-        if not _has_rocm_gpu():
+        if not _has_rocm_gpu() and not _inferred_linux_gfx:
             return  # no AMD GPU visible
 
     ver = _detect_rocm_version()
     if ver is None:
-        if _rocm_pin is None:
+        if _rocm_pin is None and not _inferred_linux_gfx:
             print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
-        # Explicit pin: the pinned leaf drives the install, so an unreadable host version
-        # is fine (sentinel keeps ver comparisons defined).
+        # Explicit pin or inferred gfx: the index drives the install.
         ver = (0, 0)
 
     # Probe whether torch links against HIP, capturing the installed ROCm tag for pin-mismatch
@@ -1691,13 +1850,51 @@ def _ensure_rocm_torch() -> None:
 
     rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
 
-    # Strix Halo / Point (gfx1151 / gfx1150) segfault under ROCm 7.1 in torch._grouped_mm;
-    # AMD's per-gfx repo ships 2.11.0+rocm7.13.0 with the fix, so route those hosts there
-    # (mirrors install.sh). On mixed hosts, reroute only when HIP's runtime GPU is the Strix one.
+    # Inferred-gfx path: ROCm runtime missing but install.sh would route to AMD wheels.
+    # Gated on the runtime NOT enumerating a GPU: when it can, the runtime-visible
+    # arch (Strix override / generic below) decides, not cpuinfo -- a mixed Strix
+    # APU + dGPU box with HIP_VISIBLE_DEVICES on the dGPU must not get APU wheels.
+    # An explicit UNSLOTH_ROCM_GFX_ARCH is exempt from that runtime gate (mirrors
+    # install.sh): a visible GPU with an unreadable/unsupported ROCm version must
+    # not silently discard the user's named arch and leave CPU torch in place.
+    _gfx_override_env = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    if (
+        _inferred_linux_gfx
+        and not has_hip_torch
+        and _rocm_pin is None
+        and (_gfx_override_env or not _has_rocm_gpu())
+    ):
+        index_url = _amd_arch_index_url(_inferred_linux_gfx)
+        if index_url is not None:
+            _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
+                _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
+            )
+            print(
+                f"\n   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
+                f"installing torch from {_strip_index_url_credentials(index_url)}\n"
+                f"   AMD wheels bundle their own ROCm runtime; install the kernel stack "
+                f"for native GPU compute.\n"
+            )
+            pip_install(
+                f"ROCm torch (inferred {_inferred_linux_gfx})",
+                "--force-reinstall",
+                "--no-cache-dir",
+                _torch_pkg,
+                _vision_pkg,
+                _audio_pkg,
+                "--index-url",
+                index_url,
+                constrain = False,
+            )
+            rocm_torch_ready = True
+
+    # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
+    # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
+    # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
     _strix_override_url: "str | None" = None
     _strix_override_pkgs: "tuple[str, str, str] | None" = None
     # An explicit ROCm pin is authoritative: never auto-reroute it.
-    if ver < (7, 2) and _explicit_rocm_torch_index_url() is None:
+    if _strix_needs_amd_arch_index(ver) and _explicit_rocm_torch_index_url() is None:
         gfx_codes = _detect_amd_gfx_codes()
         _strix_gfx = {"gfx1151", "gfx1150"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
@@ -1721,10 +1918,10 @@ def _ensure_rocm_torch() -> None:
                 print(
                     f"\n   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
-                    f"   ROCm 7.1 has a known _grouped_mm segfault on this GPU;\n"
-                    f"   routing torch install to AMD's arch-specific index\n"
+                    f"   Routing torch install to AMD's arch-specific index\n"
                     f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
-                    f"   with the upstream fix.\n"
+                    f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
+                    f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
@@ -1740,7 +1937,7 @@ def _ensure_rocm_torch() -> None:
         index_url = _strix_override_url
         _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
         print(
-            f"   Strix ROCm 7.1 override -- installing torch from "
+            f"   Strix arch-specific override -- installing torch from "
             f"{_strip_index_url_credentials(index_url)}"
         )
         pip_install(
@@ -1755,8 +1952,11 @@ def _ensure_rocm_torch() -> None:
             constrain = False,
         )
         rocm_torch_ready = True
-    elif not has_hip_torch or _rocm_pin_mismatch:
+    elif not rocm_torch_ready:
         # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from a pin.
+        # Gate on rocm_torch_ready (not has_hip_torch alone) so a successful inferred-gfx
+        # install above is not overwritten by the generic pytorch.org/rocmX.Y path -- that
+        # would undo the fresh-ROCm/no-/dev/kfd repair this path exists for (Codex P1 #7305).
         # Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
         _override_idx = _explicit_rocm_torch_index_url()
         if _override_idx is not None:
