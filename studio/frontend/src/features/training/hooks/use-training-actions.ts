@@ -15,7 +15,10 @@ import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
-import { useTrainingConfigStore } from "../stores/training-config-store";
+import {
+  forceTrainOnCompletionsOffPatch,
+  useTrainingConfigStore,
+} from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
@@ -93,14 +96,23 @@ export function useTrainingActions() {
         if (isImage && config.isVisionModel) {
           isVlm = true;
         }
-        if (isImage !== config.isDatasetImage || isAudio !== config.isDatasetAudio) {
+        const modalityChanged =
+          isImage !== config.isDatasetImage || isAudio !== config.isDatasetAudio;
+        // Mirror runDatasetCheck: a modality that forces completions-only off must also
+        // clear the guard here, so a stale persisted trainOnCompletions is not shipped
+        // for an image/audio dataset the backend would reject. Runs even when the
+        // modality is unchanged, since a reload can leave a stale true behind.
+        const modalityForcesCompletionsOff =
+          (config.isVisionModel && isImage) ||
+          (config.isAudioModel && !config.isVisionModel) ||
+          (config.isAudioModel && config.isVisionModel && isAudio);
+        if (modalityChanged || modalityForcesCompletionsOff) {
           useTrainingConfigStore.setState({
-            isDatasetImage: isImage,
-            isDatasetAudio: isAudio,
+            ...(modalityChanged ? { isDatasetImage: isImage, isDatasetAudio: isAudio } : {}),
             // Streaming is unsupported for image/audio datasets; clear the flag
-            // so buildTrainingStartPayload never ships dataset_streaming=true
-            // for a modality the backend would reject with a 422.
-            ...(isImage || isAudio ? { datasetStreaming: false } : {}),
+            // so buildTrainingStartPayload never ships dataset_streaming=true.
+            ...(modalityChanged && (isImage || isAudio) ? { datasetStreaming: false } : {}),
+            ...(modalityForcesCompletionsOff ? forceTrainOnCompletionsOffPatch() : {}),
           });
         }
 
