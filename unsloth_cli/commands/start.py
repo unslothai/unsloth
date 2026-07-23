@@ -99,6 +99,7 @@ _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
 _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
 _CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
+_CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
 _CODEX_SUBAGENT_TOOL_DESCRIPTION = (
     f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
     "requests. Other subagent requests may use the built-in tools normally."
@@ -1628,29 +1629,122 @@ def write_codex_subagent_bridge(
     return path
 
 
+def _wsl_windows_user_profile(executable: str) -> Path:
+    """Return the Windows user profile as a path accessible from WSL."""
+    profile = os.environ.get("USERPROFILE", "").strip()
+    if not profile:
+        try:
+            profile = subprocess.check_output(
+                ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
+                text = True,
+                stderr = subprocess.DEVNULL,
+                cwd = str(Path(executable).parent),
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+    if not profile or profile == "%USERPROFILE%":
+        _fail("Could not find the Windows user profile for Codex.")
+    if profile.startswith("/"):
+        return Path(profile)
+    try:
+        translated = subprocess.check_output(
+            ["wslpath", "-u", profile],
+            text = True,
+            stderr = subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        _fail(f"Could not translate Windows user profile {profile}: {exc}")
+    if not translated:
+        _fail(f"Could not translate Windows user profile {profile}.")
+    return Path(translated)
+
+
+def _codex_source_home() -> Path:
+    configured = os.environ.get("CODEX_HOME")
+    if configured:
+        if _wsl_windows_executable(["codex"]) and _looks_like_path(configured):
+            if not configured.startswith("/"):
+                try:
+                    configured = subprocess.check_output(
+                        ["wslpath", "-u", configured],
+                        text = True,
+                        stderr = subprocess.DEVNULL,
+                    ).strip()
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    _fail(f"Could not translate Windows CODEX_HOME {configured}: {exc}")
+                if not configured:
+                    _fail("Could not translate Windows CODEX_HOME.")
+        return Path(configured).expanduser()
+    executable = _wsl_windows_executable(["codex"])
+    if executable:
+        return _wsl_windows_user_profile(executable) / ".codex"
+    return Path.home() / ".codex"
+
+
+def _remove_overlay_entry(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
 def write_codex_parent_overlay(overlay: Path) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
-    source_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    source_home = _codex_source_home()
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
+
+    manifest_path = overlay / _CODEX_PARENT_OVERLAY_MANIFEST
+    source_key = str(source_home.resolve(strict = False))
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        manifest = None
+    same_source = isinstance(manifest, dict) and manifest.get("source_home") == source_key
+    if same_source:
+        managed_entries = manifest.get("entries", [])
+        if not isinstance(managed_entries, list):
+            managed_entries = []
+        for name in managed_entries:
+            if isinstance(name, str) and name not in {"", ".", ".."} and Path(name).name == name:
+                _remove_overlay_entry(overlay / name)
+    else:
+        # A reused overlay must never mix credentials, config, or plugins from two
+        # different Codex homes. Legacy overlays have no manifest, so rebuild them once.
+        for target in list(overlay.iterdir()):
+            _remove_overlay_entry(target)
 
     # Keep the user's auth, config, plugins, agents, skills, rules, and session state visible.
     # Symlinks make this an overlay rather than a stale copy. Windows may deny symlink creation;
     # copy the small configuration surfaces there and leave bulky runtime state session-local.
     fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces"}
+    entries = []
     if source_home.is_dir():
         for source in source_home.iterdir():
-            if source.name in {"AGENTS.md", "AGENTS.override.md"}:
+            if source.name in {
+                "AGENTS.md",
+                "AGENTS.override.md",
+                _CODEX_PARENT_OVERLAY_MANIFEST,
+            }:
                 continue
             target = overlay / source.name
-            if target.exists() or target.is_symlink():
-                continue
+            _remove_overlay_entry(target)
             try:
                 target.symlink_to(source, target_is_directory = source.is_dir())
+                entries.append(source.name)
             except OSError:
                 if source.is_file():
                     shutil.copy2(source, target)
+                    entries.append(source.name)
                 elif source.is_dir() and source.name in fallback_dirs:
                     shutil.copytree(source, target)
+                    entries.append(source.name)
+
+    _write_private_json(
+        manifest_path,
+        {"source_home": source_key, "entries": sorted(entries)},
+    )
 
     inherited = ""
     instruction_name = "AGENTS.md"

@@ -669,6 +669,79 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
 
 
+def test_write_codex_parent_overlay_refreshes_reused_entries(tmp_path, monkeypatch):
+    first = tmp_path / "first-codex"
+    first.mkdir()
+    (first / "auth.json").write_text('{"auth": "old"}\n')
+    (first / "old-only.toml").write_text("old\n")
+    second = tmp_path / "second-codex"
+    second.mkdir()
+    (second / "auth.json").write_text('{"auth": "new"}\n')
+    overlay_path = tmp_path / "managed" / "parent"
+
+    monkeypatch.setenv("CODEX_HOME", str(first))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+    assert (overlay / "auth.json").read_text() == '{"auth": "old"}\n'
+    assert (overlay / "old-only.toml").exists()
+
+    monkeypatch.setenv("CODEX_HOME", str(second))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+    assert (overlay / "auth.json").read_text() == '{"auth": "new"}\n'
+    assert not (overlay / "old-only.toml").exists()
+
+
+def test_write_codex_parent_overlay_refreshes_fallback_copies(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    config = source / "config.toml"
+    config.write_text('model = "first"\n')
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
+    (overlay / "history.jsonl").write_text("session state\n")
+    config.write_text('model = "second"\n')
+
+    overlay = start.write_codex_parent_overlay(overlay)
+
+    assert (overlay / "config.toml").read_text() == 'model = "second"\n'
+    assert (overlay / "history.jsonl").read_text() == "session state\n"
+
+    config.unlink()
+    overlay = start.write_codex_parent_overlay(overlay)
+    assert not (overlay / "config.toml").exists()
+    assert (overlay / "history.jsonl").read_text() == "session state\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_write_codex_parent_overlay_uses_windows_home_for_windows_codex(tmp_path, monkeypatch):
+    windows_profile = tmp_path / "windows-profile"
+    source = windows_profile / ".codex"
+    source.mkdir(parents = True)
+    (source / "auth.json").write_text('{"auth": "windows"}\n')
+    executable = "/mnt/c/Users/x/AppData/Roaming/npm/codex"
+    monkeypatch.delenv("CODEX_HOME", raising = False)
+    monkeypatch.delenv("USERPROFILE", raising = False)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(start.shutil, "which", lambda _: executable)
+
+    def check_output(command, **kwargs):
+        if command[0] == "cmd.exe":
+            assert kwargs["cwd"] == str(Path(executable).parent)
+            return r"C:\Users\x" + "\n"
+        assert command == ["wslpath", "-u", r"C:\Users\x"]
+        return str(windows_profile) + "\n"
+
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
+
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
+
+    assert (overlay / "auth.json").read_text() == '{"auth": "windows"}\n'
+
+
 def test_codex_parent_overlay_launch_uses_private_temp_root_and_cleans_up(tmp_path, monkeypatch):
     source = tmp_path / "user-codex"
     source.mkdir()
