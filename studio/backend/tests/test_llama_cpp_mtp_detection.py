@@ -637,7 +637,9 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
-        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0)
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0
+        )
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
 
@@ -734,7 +736,7 @@ def test_probe_server_capabilities_failed_help_with_output_is_inconclusive(tmp_p
     fake = tmp_path / "llama-server"
     fake.write_text(
         "#!/usr/bin/env bash\n"
-        "if [ \"$1\" = \"--help\" ]; then\n"
+        'if [ "$1" = "--help" ]; then\n'
         "  echo 'illegal instruction'\n"
         "  exit 1\n"
         "fi\n"
