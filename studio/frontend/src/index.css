@@ -2299,9 +2299,23 @@ html[data-chat-font] .aui-root {
 	.aui-thread-root [data-streamdown="code-block"] {
 		content-visibility: visible !important;
 		contain-intrinsic-size: none !important;
+		/* Long lines inside fenced code blocks should scroll
+		 * horizontally within the block, not push the chat column
+		 * wider. Streamdown's default <pre> ships with
+		 * `overflow-x: visible` + `white-space: pre` +
+		 * `word-break: normal`, so an unbreakable run (long URL,
+		 * hex string, single-line curl command) escapes the
+		 * bubble to the right and reflows the message column.
+		 * Cap the wrapper width and clip overflow so the scrollbar
+		 * appears on the inner <pre> below. */
+		max-width: 100%;
+		overflow-x: hidden;
 	}
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;
+	}
+	.aui-thread-root [data-streamdown="code-block"] pre {
+		overflow-x: auto;
 	}
 }
 
