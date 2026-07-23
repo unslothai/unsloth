@@ -997,7 +997,7 @@ export function ChatProvidersSettings({
 
   if (page === "form") {
     return (
-      <div className="-mt-3 flex min-h-0 flex-col gap-2">
+      <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
           <Button
             type="button"
@@ -1024,7 +1024,7 @@ export function ChatProvidersSettings({
         <div className="flex max-w-[760px] flex-col gap-3">
           <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
-              <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+              <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <Label
                     htmlFor="provider-preset"
@@ -1113,7 +1113,7 @@ export function ChatProvidersSettings({
               </div>
 
               {showApiKeyField ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-api-key"
@@ -1152,7 +1152,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
@@ -1173,7 +1173,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-base-url"
@@ -1197,7 +1197,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-is-reasoning"
                     className="text-sm font-medium"
@@ -1303,7 +1303,7 @@ export function ChatProvidersSettings({
                     </p>
                     {availableModels.length > 0 ? (
                       <div className="space-y-3 rounded-[8px] border border-border/70 bg-background/50 p-3">
-                        <div className="grid grid-cols-[112px_minmax(220px,330px)_auto] items-center gap-3 max-sm:grid-cols-1">
+                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
                           </span>
@@ -1395,7 +1395,7 @@ export function ChatProvidersSettings({
                   <div className="space-y-3 px-4 py-4">
                     {availableModels.length === 0 ? null : (
                       <>
-                        <div className="grid grid-cols-[112px_minmax(220px,330px)_auto] items-center gap-3 max-sm:grid-cols-1">
+                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
                           </span>
