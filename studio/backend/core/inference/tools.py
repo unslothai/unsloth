@@ -328,6 +328,25 @@ def _find_blocked_commands(command: str) -> set[str]:
 # Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
 # path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+
+# Git for Windows installs live outside System32 (e.g. Program Files\Git\cmd).
+# Only those host PATH dirs are inherited on Windows so bare ``git`` resolves
+# without appending user-writable dirs (venv, node_modules/.bin) that could
+# shadow auto-safe terminal commands (#7317).
+_WINDOWS_GIT_PATH_RE = re.compile(
+    r"[\\/]git[\\/](?:cmd|bin|mingw64[\\/]bin)(?:[\\/]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_windows_git_path_entry(entry: str) -> bool:
+    """True when ``entry`` looks like a Git-for-Windows install directory."""
+    if sys.platform != "win32":
+        return False
+    norm = os.path.normcase(os.path.normpath(entry.strip().strip('"')))
+    return bool(_WINDOWS_GIT_PATH_RE.search(norm))
+
+
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
 # and hard blocks (blocklist, rlimits) still apply at run time; this gate only
@@ -2502,11 +2521,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     shim directory.
 
     PATH starts with the Studio interpreter / venv and OS system dirs so
-    ``python``/``pip`` stay pinned, then appends absolute directories from the
-    parent PATH so user-installed tools (e.g. Windows Git under
-    ``C:\\Program Files\\Git\\cmd``) resolve by bare name like a normal
-    terminal (#7317). Relative / ``.`` entries are skipped to avoid cwd PATH
-    hijacks.
+    ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
+    dirs from the host PATH are appended so bare ``git`` resolves (#7317).
+    User-writable host PATH entries (venv, ``node_modules/.bin``, etc.) are
+    never inherited — they could shadow auto-safe terminal commands.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Unsloth server runs in.
@@ -2526,13 +2544,15 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
-    # Append absolute host PATH dirs so bare tools like `git` resolve (#7317).
-    # Keep curated entries first; skip relative / "." to avoid cwd hijacks.
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        entry = entry.strip().strip('"')
-        if not entry or entry in (".",) or not os.path.isabs(entry):
-            continue
-        path_entries.append(entry)
+    # Windows Git installs live outside System32; inherit only those host PATH
+    # dirs so bare `git` resolves without pulling in user-writable PATH (#7317).
+    if sys.platform == "win32":
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if not entry or entry in (".",) or not os.path.isabs(entry):
+                continue
+            if _is_windows_git_path_entry(entry):
+                path_entries.append(entry)
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))

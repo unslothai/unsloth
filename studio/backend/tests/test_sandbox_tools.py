@@ -308,16 +308,27 @@ class TestSandboxEnvIsolation:
 
     def test_host_path_absolute_dirs_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox PATH
-        # must still resolve bare `git` by appending absolute host PATH dirs after
-        # the curated interpreter / system prefix.
+        # must still resolve bare `git` by appending Git install dirs from the
+        # host PATH after the curated interpreter / system prefix.
         from core.inference.tools import _build_safe_env
 
+        monkeypatch.setattr(sys, "platform", "win32")
         git_dir = tmp_path / "Git" / "cmd"
         git_dir.mkdir(parents = True)
         junk_rel = "relative-bin"
+        user_bin = tmp_path / "user-bin"
+        user_bin.mkdir()
         monkeypatch.setenv(
             "PATH",
-            os.pathsep.join([str(git_dir), ".", junk_rel, os.environ.get("PATH", "")]),
+            os.pathsep.join(
+                [
+                    str(git_dir),
+                    ".",
+                    junk_rel,
+                    str(user_bin),
+                    os.environ.get("PATH", ""),
+                ]
+            ),
         )
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
@@ -326,18 +337,39 @@ class TestSandboxEnvIsolation:
         assert parts.index(str(git_dir)) > 0
         assert "." not in parts
         assert junk_rel not in parts
+        # User-writable dirs must not be inherited (PATH hijack / auto-safe shadow).
+        assert str(user_bin) not in parts
 
     def test_host_path_quoted_windows_style_entries_stripped(self, monkeypatch, tmp_path):
         from core.inference.tools import _build_safe_env
 
-        quoted = tmp_path / "Quoted Tools"
-        quoted.mkdir()
+        monkeypatch.setattr(sys, "platform", "win32")
+        quoted = tmp_path / "Program Files" / "Git" / "cmd"
+        quoted.mkdir(parents = True)
         # Windows PATH entries are sometimes quoted when they contain spaces.
         monkeypatch.setenv("PATH", f'"{quoted}"{os.pathsep}{os.environ.get("PATH", "")}')
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
         assert str(quoted) in parts
         assert f'"{quoted}"' not in parts
+
+    def test_user_writable_host_path_not_inherited(self, monkeypatch, tmp_path):
+        """venv/node_modules-style dirs must not shadow auto-safe terminal cmds."""
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        venv_scripts = tmp_path / "venv" / "Scripts"
+        venv_scripts.mkdir(parents = True)
+        node_bin = tmp_path / "project" / "node_modules" / ".bin"
+        node_bin.mkdir(parents = True)
+        monkeypatch.setenv(
+            "PATH",
+            os.pathsep.join([str(venv_scripts), str(node_bin), os.environ.get("PATH", "")]),
+        )
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert str(venv_scripts) not in parts
+        assert str(node_bin) not in parts
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
