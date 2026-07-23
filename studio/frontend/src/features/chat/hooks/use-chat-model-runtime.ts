@@ -281,6 +281,8 @@ async function syncInferenceStatusToStore(options?: {
   const includeLoras = options?.includeLoras ?? true;
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
+  const previousModelRuntimeHydrated =
+    useChatRuntimeStore.getState().modelRuntimeHydrated;
   setModelsError(null);
   if (includeLoras) {
     // A prior successful refresh is not proof that the catalog behind a later
@@ -297,7 +299,14 @@ async function syncInferenceStatusToStore(options?: {
 
     // Cancellation can land while the requests above are in flight. Bail
     // before writing backend state back -- cancelLoading already cleared it.
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      if (includeLoras) {
+        useChatRuntimeStore
+          .getState()
+          .setModelRuntimeHydrated(previousModelRuntimeHydrated);
+      }
+      return;
+    }
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
@@ -335,6 +344,11 @@ async function syncInferenceStatusToStore(options?: {
       useChatRuntimeStore.getState().setModelRuntimeHydrated(true);
     }
   } catch (error) {
+    if (includeLoras) {
+      useChatRuntimeStore
+        .getState()
+        .setModelRuntimeHydrated(previousModelRuntimeHydrated);
+    }
     if (signal?.aborted) return;
     const message =
       error instanceof Error ? error.message : "Failed to load models";
