@@ -3,10 +3,18 @@
 
 """Regression coverage for Colab iframe embedding (#7344)."""
 
+import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import colab
+
+
+def _mock_google_colab_modules(colab_mod):
+    """Mock ``google`` and ``google.colab`` for environments without Google packages."""
+    google_mod = types.ModuleType("google")
+    google_mod.colab = colab_mod
+    return {"google": google_mod, "google.colab": colab_mod}
 
 
 def test_short_colab_url_truncates_proxy_host():
@@ -35,15 +43,15 @@ def test_ready_card_html_does_not_open_colab_proxy_in_new_tab():
 
 def test_is_colab_runtime_requires_release_tag(monkeypatch):
     monkeypatch.delenv("COLAB_RELEASE_TAG", raising = False)
-    with patch.dict("sys.modules", {"google.colab": object()}):
+    with patch.dict("sys.modules", _mock_google_colab_modules(object())):
         assert colab._is_colab_runtime() is False
 
     monkeypatch.setenv("COLAB_RELEASE_TAG", "test")
-    with patch.dict("sys.modules", {"google.colab": object()}):
+    with patch.dict("sys.modules", _mock_google_colab_modules(object())):
         assert colab._is_colab_runtime() is True
 
     monkeypatch.setenv("COLAB_RELEASE_TAG", "test")
-    with patch.dict("sys.modules", {"google.colab": None}):
+    with patch.dict("sys.modules", _mock_google_colab_modules(None)):
         assert colab._is_colab_runtime() is False
 
 
@@ -65,12 +73,7 @@ def test_ready_card_html_keeps_open_button_for_localhost_outside_colab(monkeypat
 def test_embed_kernel_port_iframe_uses_colab_helper():
     colab_output = MagicMock()
     google_colab = SimpleNamespace(output = colab_output)
-    # `import google.colab` resolves the top-level `google` package first, so
-    # mock it too or the import fails when no real google package is installed.
-    google_pkg = SimpleNamespace(colab = google_colab)
-    with patch.dict(
-        "sys.modules", {"google": google_pkg, "google.colab": google_colab}
-    ):
+    with patch.dict("sys.modules", _mock_google_colab_modules(google_colab)):
         assert colab._embed_kernel_port_iframe(8888) is True
     colab_output.serve_kernel_port_as_iframe.assert_called_once_with(
         8888,
@@ -80,7 +83,7 @@ def test_embed_kernel_port_iframe_uses_colab_helper():
 
 
 def test_embed_kernel_port_iframe_returns_false_without_colab():
-    with patch.dict("sys.modules", {"google.colab": None}):
+    with patch.dict("sys.modules", _mock_google_colab_modules(None)):
         assert colab._embed_kernel_port_iframe(8888) is False
 
 
