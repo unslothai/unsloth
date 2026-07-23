@@ -70,13 +70,18 @@ export function FloatingMonitor() {
     (sum, device) => sum + (device.memory_total_gb ?? 0),
     0,
   );
-  const vramUsed = devices.reduce(
-    (sum, device) => sum + (device.vram_used_gb ?? 0),
-    0,
-  );
+  // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
+  // fabricates a 0-used readout, so the aggregate is unknown if any device is.
+  const vramUsageKnown =
+    devices.length > 0 &&
+    devices.every((device) => Number.isFinite(device.vram_used_gb));
+  const vramUsed = vramUsageKnown
+    ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
+    : 0;
   const vramPercent = clampPercent(
-    vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
+    vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
   );
+  const unknownLabel = t("settings.resources.environment.unknown");
 
   const hasGpu = (systemInfo.gpu?.available ?? false) && devices.length > 0;
 
@@ -97,7 +102,7 @@ export function FloatingMonitor() {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
-            className="settings-surface fixed bottom-4 right-4 w-64 max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm pointer-events-auto cursor-default select-none"
+            className="settings-surface fixed bottom-4 right-4 w-64 max-w-[calc(100vw-32px)] resize overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm pointer-events-auto cursor-default select-none"
           >
             <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
               <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
@@ -134,7 +139,7 @@ export function FloatingMonitor() {
               className="space-y-3 overflow-hidden"
             >
               <div className="space-y-1">
-                <div className="flex justify-between text-[11px] font-medium font-mono">
+                <div className="flex justify-between text-[0.6875rem] font-medium font-mono">
                   <span>{t("settings.resources.liveMonitor.ram")}</span>
                   <span
                     className={cn("tabular-nums", usageTextClass(ramPercent))}
@@ -154,7 +159,7 @@ export function FloatingMonitor() {
 
               {hasGpu && (
                 <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] font-medium font-mono">
+                  <div className="flex justify-between text-[0.6875rem] font-medium font-mono">
                     <span className="truncate flex-1 pr-2">
                       {t("settings.resources.liveMonitor.vram")}{" "}
                       {devices.length > 1
@@ -164,17 +169,20 @@ export function FloatingMonitor() {
                     <span
                       className={cn(
                         "shrink-0 tabular-nums",
-                        usageTextClass(vramPercent),
+                        vramUsageKnown
+                          ? usageTextClass(vramPercent)
+                          : "text-muted-foreground",
                       )}
                     >
-                      {Math.round(vramPercent)}%
+                      {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
                     </span>
                   </div>
                   <div className="text-xs text-muted-foreground font-mono tabular-nums">
-                    {formatGiB(vramUsed)} / {formatGiB(vramTotal)}
+                    {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
+                    {formatGiB(vramTotal)}
                   </div>
                   <Progress
-                    value={vramPercent}
+                    value={vramUsageKnown ? vramPercent : 0}
                     className="mt-1 h-1.5 rounded-full bg-muted"
                     indicatorClassName={usageIndicatorClass(vramPercent)}
                   />

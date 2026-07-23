@@ -36,7 +36,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
   return (
     <div
       className={cn(
-        "pointer-events-none absolute left-1/2 top-4 z-50 w-[clamp(16rem,28vw,22rem)] max-w-[calc(100vw-1rem)] -translate-x-1/2 transition-all duration-200 ease-out",
+        "pointer-events-none absolute left-1/2 top-4 z-50 w-[clamp(256px,28vw,352px)] max-w-[calc(100vw-16px)] -translate-x-1/2 transition-all duration-200 ease-out",
         isIdle ? "-translate-y-1 opacity-0" : "translate-y-0 opacity-100",
       )}
       role="status"
@@ -60,7 +60,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
           <div className="truncate text-xs font-medium text-foreground">
             {title}
           </div>
-          <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+          <div className="mt-0.5 truncate text-[0.6875rem] leading-4 text-muted-foreground">
             {description}
           </div>
         </div>

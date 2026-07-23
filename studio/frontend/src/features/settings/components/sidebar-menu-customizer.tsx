@@ -45,7 +45,7 @@ function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
       {/* Spacer where the drag handle sits on movable rows. */}
       <span className="size-4" aria-hidden="true" />
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
-      <span className="text-[13px]">{label}</span>
+      <span className="text-[0.8125rem]">{label}</span>
     </div>
   );
 }
@@ -93,7 +93,7 @@ function MovableRow({ item }: { item: SidebarMenuItemPref }) {
         strokeWidth={1.75}
         className="size-4 text-foreground/80"
       />
-      <span className="text-[13px] text-foreground">{t(meta.labelKey)}</span>
+      <span className="text-[0.8125rem] text-foreground">{t(meta.labelKey)}</span>
       <Switch
         className="ml-auto"
         checked={item.visible}

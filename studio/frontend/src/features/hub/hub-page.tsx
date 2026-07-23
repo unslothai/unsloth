@@ -1,34 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  loadRememberedLoadSettings,
-  rememberedLoadSettingsKey,
-} from "@/components/assistant-ui/model-selector/remembered-load-settings";
-import { hfModelFitsDevice } from "@/components/assistant-ui/model-selector/recommended-fit";
-import { useHubInventory } from "@/features/hub/inventory";
-import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { useGpuInfo } from "@/hooks/use-gpu-info";
-import {
-  type HfModelSearchChannel,
-  type HfSortDirection,
-  type HfSortKey,
-} from "@/features/hub/hooks/use-hub-model-search";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
-import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
 import {
-  hfApiToken,
-  useHfTokenStore,
-} from "@/features/hub/stores/hf-token-store";
+  isChannelEntryFresh,
+  useHubFeedStore,
+} from "./stores/hub-feed-store";
 import {
   getInferenceStatus,
   isExternalModelId,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { useHubInventory } from "./inventory";
+import type {
+  HfModelSearchChannel,
+  HfSortDirection,
+  HfSortKey,
+} from "./hooks/use-hub-model-search";
+import { useOnlineStatus } from "@/features/hub";
+import { useHubInfiniteScroll } from "@/features/hub";
+import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
+import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
+import {
+  applyModelLoadConfigToRuntime,
+  currentRuntimePerModelConfig,
+  hfModelFitsDevice,
+  resolveInitialConfig,
+} from "@/features/model-picker";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
+import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   useCallback,
@@ -38,17 +40,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
-import { HubTopBar } from "./catalog/hub-top-bar";
 import { HubFeed } from "./catalog/hub-feed";
-import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
-import {
-  type AllModelsView,
-  HubListHeader,
-  type InventorySort,
-  InventorySortControl,
-  ResultListHeader,
-} from "./catalog/models-table";
+import { HubTopBar } from "./catalog/hub-top-bar";
 import {
   ModelsCatalog,
   type ModelsCatalogHandlers,
@@ -56,14 +51,22 @@ import {
   type ModelsCatalogState,
 } from "./catalog/models-catalog";
 import { ModelsHeader } from "./catalog/models-header";
+import {
+  type AllModelsView,
+  HubListHeader,
+  type InventorySort,
+  InventorySortControl,
+  InventoryTypeFilterControl,
+  ResultListHeader,
+} from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
-import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
+import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
+import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useHubFeed } from "./hooks/use-hub-feed";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
-import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import {
   CHANNEL_TO_SECTION,
@@ -79,7 +82,12 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import {
+  type ModelTypeFilter,
+  matchesModelType,
+} from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
   detectResultFormat,
@@ -102,6 +110,10 @@ const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
+
+// Iconless models (repo name matches no provider logo, e.g. Ornith, Inkling)
+// still show in the feed once they clear this many Hugging Face likes.
+const MIN_ICONLESS_MODEL_LIKES = 30;
 
 /** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
 export type OwnerScope = "unsloth" | "all";
@@ -451,6 +463,8 @@ export function ModelsPage() {
     setInventorySortState(sort);
     writeInventorySortPreference(sort);
   }, []);
+  const [inventoryTypeFilter, setInventoryTypeFilter] =
+    useState<ModelTypeFilter>("all");
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
@@ -569,19 +583,23 @@ export function ModelsPage() {
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
+  const tokenFingerprint = useMemo(
+    () => fingerprintToken(apiHfToken),
+    [apiHfToken],
+  );
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
-  const mode: DiscoverMode = !isModelDiscover
-    ? "search"
-    : hasQuery
+  const mode: DiscoverMode = isModelDiscover
+    ? hasQuery
       ? "search"
       : urlSection != null
         ? "channel-list"
         : sortBrowseActive
           ? "search"
-          : "feed";
+          : "feed"
+    : "search";
   const isFeedMode = mode === "feed";
   const isChannelListMode = mode === "channel-list";
   const isSortBrowseMode =
@@ -633,8 +651,22 @@ export function ModelsPage() {
     online,
   });
 
+  const cachedListEntry = useHubFeedStore((state) =>
+    liveListChannel ? state.channels[liveListChannel.id] : undefined,
+  );
+  const visibleResults =
+    results.length === 0 &&
+    liveListChannel &&
+    isChannelEntryFresh(
+      cachedListEntry,
+      liveListChannel.id,
+      tokenFingerprint,
+    )
+      ? (cachedListEntry?.results ?? results)
+      : results;
+
   useFeedWriteBack({
-    channelId: isChannelListMode ? activeChannelId : null,
+    channelId: liveListChannel?.id ?? null,
     results,
     isLoading,
     accessToken: apiHfToken,
@@ -656,8 +688,13 @@ export function ModelsPage() {
     [effectiveCachedRows, effectiveLocalRows],
   );
   const modelDiscoverRows = useMemo<DiscoverRow[]>(
-    () => buildDiscoverRows(results, effectiveCachedRows, effectiveLocalRows),
-    [results, modelDiscoveryInventorySignature],
+    () =>
+      buildDiscoverRows(
+        visibleResults,
+        effectiveCachedRows,
+        effectiveLocalRows,
+      ),
+    [visibleResults, modelDiscoveryInventorySignature],
   );
 
   const datasetDiscoverRows = useMemo<DiscoverRow[]>(() => {
@@ -706,10 +743,14 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // The default feed only shows models with a provider logo.
+        // Feed shows logo'd models, plus iconless ones above the likes threshold.
         (!isFeedMode ||
-          resolveOwnerProviderLogo(row.owner, row.repo) !== null) &&
-        matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
+          resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
+          (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+        matchesFormat(
+          detectResultFormat(row.result),
+          effectiveDiscoverFormat,
+        ) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit,
@@ -779,12 +820,15 @@ export function ModelsPage() {
     }
     return merged;
   }, [isFeedMode, feedTrendingRows, filteredDiscoverRows]);
-  const feedResults = useMemo(() => feedRows.map((row) => row.result), [feedRows]);
+  const feedResults = useMemo(
+    () => feedRows.map((row) => row.result),
+    [feedRows],
+  );
   const selectionDiscoverRows = isFeedMode ? feedRows : discoverRows;
   const selectionFilteredDiscoverRows = isFeedMode
     ? feedRows
     : filteredDiscoverRows;
-  const selectionResults = isFeedMode ? feedResults : results;
+  const selectionResults = isFeedMode ? feedResults : visibleResults;
 
   const inventoryTokens = useMemo(
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
@@ -809,7 +853,8 @@ export function ModelsPage() {
       // Local rows may lack a repo id, so also check path and title.
       return (
         !isHiddenModelId(row.id, row.repoId, row.path, row.title) ||
-        (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens))
+        (inventoryTokens.length > 0 &&
+          inventoryRowMatches(row, inventoryTokens))
       );
     },
     [hiddenEmbeddingModelIds, inventoryTokens],
@@ -827,6 +872,7 @@ export function ModelsPage() {
             // id/title/path happens to contain an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              matchesModelType(row, inventoryTypeFilter) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -835,6 +881,7 @@ export function ModelsPage() {
       effectiveCachedRows,
       isDatasetMode,
       deferredFormatFilter,
+      inventoryTypeFilter,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -850,6 +897,7 @@ export function ModelsPage() {
             // id/title/path happens to contain an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              matchesModelType(row, inventoryTypeFilter) &&
               isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
@@ -858,6 +906,7 @@ export function ModelsPage() {
       effectiveLocalRows,
       isDatasetMode,
       deferredFormatFilter,
+      inventoryTypeFilter,
       inventoryTokens,
       isVisibleInventoryRow,
     ],
@@ -890,6 +939,7 @@ export function ModelsPage() {
         resourceType,
         deferredFormatFilter,
         deferredCapabilityFilter,
+        inventoryTypeFilter,
         effectiveSort,
         effectiveDirection,
         activeChannelId,
@@ -900,6 +950,7 @@ export function ModelsPage() {
       resourceType,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      inventoryTypeFilter,
       effectiveSort,
       effectiveDirection,
       activeChannelId,
@@ -918,6 +969,7 @@ export function ModelsPage() {
       }
     } else {
       setDownloadedFormat("all");
+      setInventoryTypeFilter("all");
     }
     setCapabilityFilter("all");
   }, [isDiscoverTab, urlSection, navigate]);
@@ -1127,50 +1179,22 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      // "Load on selection" off: stage GGUF picks instead of loading, so the
-      // chat page's staging flow can read the header and show the load options.
-      // Non-GGUF models have nothing to configure pre-load, so they load now.
-      if (
-        !useChatRuntimeStore.getState().loadOnSelection &&
-        (opts.ggufVariant != null || selectedModel.isGguf)
-      ) {
-        useChatRuntimeStore.getState().stageModel({
-          id: runId,
-          ggufVariant: opts.ggufVariant,
-          isGguf: selectedModel.isGguf,
-          isDownloaded,
-          expectedBytes: opts.expectedBytes,
-        });
-        openNewChat();
-        return;
-      }
-      // Detach any leftover staged pick first so its edited knobs (e.g. a custom
-      // context length) don't leak into this load -- mirrors the chat page's
-      // detachStaged(); keepDownload keeps any staged download running.
-      useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
-      // Load-on-selection skips the chat sheet, so seed this GGUF pick's saved
-      // load knobs here the way the sheet's restore effect would; otherwise the
-      // remembered config is silently ignored on the Hub run path. keepSpeculative
-      // then honors the restored speculative choice across the switch.
-      const remembered =
-        opts.ggufVariant != null || selectedModel.isGguf
-          ? loadRememberedLoadSettings(
-              rememberedLoadSettingsKey({
-                id: runId,
-                ggufVariant: opts.ggufVariant,
-              }),
-            )
-          : null;
-      if (remembered) {
-        useChatRuntimeStore.getState().applyRememberedLoadSettings(remembered);
-      }
+      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
+      const rememberedConfig = resolvedConfig.remembered
+        ? resolvedConfig.config
+        : null;
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
+      const hasAppliedConfig = applyModelLoadConfigToRuntime(rememberedConfig);
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
-        keepSpeculative: remembered != null,
+        keepSpeculative: hasAppliedConfig,
         throwOnError: true,
+        previousConfig,
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.
@@ -1252,6 +1276,7 @@ export function ModelsPage() {
       onLoad: handleLoad,
       onLoadLocal: handleLoadLocal,
       onUseInChat: openNewChat,
+      onEject: () => void ejectModel(),
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
@@ -1260,6 +1285,7 @@ export function ModelsPage() {
       handleLoad,
       handleLoadLocal,
       openNewChat,
+      ejectModel,
       handleTrain,
       handleSearchHub,
       refreshInventory,
@@ -1267,31 +1293,38 @@ export function ModelsPage() {
   );
 
   const catalogState = useMemo<ModelsCatalogState>(
-    () => ({
-      tab,
-      discoverRows: listRows,
-      cachedRows: filteredCachedRows,
-      localRows: filteredLocalRows,
-      selectedId,
-      isLoading,
-      downloadedReady,
-      inventoryError,
-      inventoryWarning,
-      query,
-      activeCheckpoint,
-      activeGgufVariant,
-      searchError,
-      online,
-      isDataset: isDatasetMode,
-      inventoryTokens,
-      scannedCount,
-      loadingIntentCount: discoverFetchIntent,
-      hasMore,
-      manualFetchAvailable: discoverManualFetchAvailable,
-      hasActiveFilters:
-        !isFeedMode &&
-        (deferredFormatFilter !== "all" || deferredCapabilityFilter !== "all"),
-    }),
+    () => {
+      const typeFilterActive =
+        !isDatasetMode && inventoryTypeFilter !== "all";
+      return {
+        tab,
+        discoverRows: listRows,
+        cachedRows: filteredCachedRows,
+        localRows: filteredLocalRows,
+        selectedId,
+        isLoading,
+        downloadedReady,
+        inventoryError,
+        inventoryWarning,
+        query,
+        activeCheckpoint,
+        activeGgufVariant,
+        searchError,
+        online,
+        isDataset: isDatasetMode,
+        inventoryTokens,
+        scannedCount,
+        loadingIntentCount: discoverFetchIntent,
+        hasMore,
+        manualFetchAvailable: discoverManualFetchAvailable,
+        hasActiveFilters:
+          !isFeedMode &&
+          (deferredFormatFilter !== "all" ||
+            deferredCapabilityFilter !== "all" ||
+            (tab === "downloaded" && typeFilterActive)),
+        typeFilterActive,
+      };
+    },
     [
       tab,
       isFeedMode,
@@ -1316,6 +1349,7 @@ export function ModelsPage() {
       discoverManualFetchAvailable,
       deferredFormatFilter,
       deferredCapabilityFilter,
+      inventoryTypeFilter,
     ],
   );
 
@@ -1394,16 +1428,18 @@ export function ModelsPage() {
         </div>
       );
     }
-    const ownerToggle = !isDatasetMode ? (
+    const ownerToggle = isDatasetMode ? undefined : (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
-    ) : undefined;
+    );
     // Compact pill so it stays beside the view-mode tabs even in the narrow
     // split pane instead of dropping to its own row.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
           <HubListHeader
-            title={channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"}
+            title={
+              channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"
+            }
             count={listCount}
             view={allModelsView}
             onViewChange={setAllModelsView}
@@ -1446,27 +1482,40 @@ export function ModelsPage() {
   ]);
 
   const downloadedHeader = useMemo(() => {
-    const sortControl = (
-      <InventorySortControl value={inventorySort} onChange={setInventorySort} />
+    // Compact pills so they stay beside the view-mode tabs even in the narrow
+    // split pane instead of dropping to their own row.
+    const controls = (
+      <div className="flex min-w-0 items-center gap-1.5">
+        {!isDatasetMode && (
+          <InventoryTypeFilterControl
+            value={inventoryTypeFilter}
+            onChange={setInventoryTypeFilter}
+          />
+        )}
+        <InventorySortControl
+          value={inventorySort}
+          onChange={setInventorySort}
+        />
+      </div>
     );
-    // Compact pill so it stays beside the view-mode tabs even in the narrow
-    // split pane instead of dropping to its own row.
     return (
       <HubListHeader
         title="On device"
-        count={visibleCachedCount + visibleLocalCount}
+        count={filteredCachedRows.length + filteredLocalRows.length}
         view={allModelsView}
         onViewChange={setAllModelsView}
-        actions={sortControl}
+        actions={controls}
       />
     );
   }, [
-    visibleCachedCount,
-    visibleLocalCount,
+    filteredCachedRows,
+    filteredLocalRows,
     allModelsView,
     setAllModelsView,
     inventorySort,
     setInventorySort,
+    inventoryTypeFilter,
+    isDatasetMode,
   ]);
 
   const detailOpen = urlModel !== null;
@@ -1557,7 +1606,7 @@ export function ModelsPage() {
               />
             </div>
           ) : (
-            <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-[13px] text-muted-foreground lg:flex">
+            <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-[0.8125rem] text-muted-foreground lg:flex">
               Select a model to preview its details.
             </div>
           )

@@ -32,11 +32,11 @@ export const en = {
       runOptions: "Run options",
     },
     navigation: {
-      newChat: "New Chat",
+      newChat: "New chat",
       returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
-      hub: "Hub",
+      hub: "Models",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -99,6 +99,7 @@ export const en = {
       chat: "Chat",
       voice: "Voice",
       connections: "Connections",
+      data: "Data",
       apiKeys: "API",
       about: "About",
     },
@@ -181,7 +182,7 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
-      tokenSaved: "Token saved",
+      tokenValidated: "Token validated",
       password: "Password",
       passwordDescription: "Change the password for this Unsloth account.",
       passwordDialog: {
@@ -195,6 +196,7 @@ export const en = {
         currentTooShort:
           "Current password must be at least {minLength} characters.",
         newTooShort: "New password must be at least {minLength} characters.",
+        newHasSpaces: "New password cannot contain spaces.",
         mismatch: "Passwords do not match.",
         samePassword:
           "New password must be different from your current password.",
@@ -232,6 +234,9 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        keepKv: "Keep chat context across idle unload",
+        keepKvDescription:
+          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -254,7 +259,7 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Bypass permissions",
+        bypassLabel: "Tool permissions",
         bypassDescription:
           "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
       },
@@ -508,7 +513,7 @@ export const en = {
     },
     chat: {
       title: "Chat",
-      description: "Manage chat history stored on this device.",
+      description: "Customize how chat behaves on this device.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
@@ -576,6 +581,53 @@ export const en = {
       storageClearFailed:
         "A storage clear failed; {count} chats may remain. Please retry.",
       failedToClearChats: "Failed to clear chats",
+    },
+    data: {
+      title: "Data",
+      description:
+        "Manage chat history and uploaded files stored on this device.",
+      archivedChats: "Archived chats",
+      archivedChatsDescription: "View and manage chats you have archived.",
+      manageAction: "Manage",
+      exportArchivedChats: "Export",
+      exportingArchivedChats: "Exporting...",
+      exportedOneArchivedChat: "Exported 1 archived chat",
+      exportedArchivedChatCount: "Exported {count} archived chats",
+      noArchivedChatsToExport: "No archived chats to export.",
+      failedToExportArchivedChats: "Failed to export archived chats",
+      archiveAllChats: "Archive all chats",
+      archiveAllChatsDescription:
+        "Move every chat in Recents and Projects to the archive.",
+      noChatsToArchive: "No chats to archive.",
+      archiveAllAction: "Archive all",
+      archivingAction: "Archiving...",
+      archiveAllChatsTitle: "Archive all chats?",
+      archiveAllChatsConfirmDescription:
+        "Moves every chat on this device to the archive. Archived chats stay available and can be unarchived at any time.",
+      archivedAllChats: "Archived all chats",
+      archivedOneChat: "Archived 1 chat",
+      archivedChatCount: "Archived {count} chats",
+      failedToArchiveChats: "Failed to archive chats",
+      confirmBeforeDeleting: "Confirm before deleting",
+      confirmBeforeDeletingDescription:
+        "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      filesSection: "Files",
+      uploadedFiles: "Uploaded files",
+      uploadedFilesDescription:
+        "View and manage files uploaded to chats, projects, and knowledge bases.",
+      fineTuneExport: "Use chats as training data",
+      fineTuneExportDescription:
+        "Create a fine-tuning JSONL dataset from your chats. Load it in Train, refine in Recipes, or export it.",
+      fineTuneExportAction: "Export JSONL",
+      fineTuneRunAction: "Run",
+      fineTuneExportingAction: "Exporting...",
+      fineTuneOpenRecipesAction: "Open in Recipes",
+      fineTuneOpeningRecipesAction: "Opening...",
+      fineTuneTrainAction: "Load in Train tab",
+      fineTuneTrainingAction: "Loading...",
+      fineTuneExportFailed: "Failed to export training data",
+      fineTuneRecipeFailed: "Failed to open chats in Recipes",
+      fineTuneTrainFailed: "Failed to load dataset in the Train tab",
     },
     connections: {
       title: "Connections",
@@ -1002,7 +1054,8 @@ export const en = {
       continueAction: "Continue Training",
       cancelAction: "Cancel Training",
       stopTitle: "Stop Training",
-      stopDescription: "Choose how you want to stop the current training run.",
+      stopDescription:
+        "Choose how you want to stop the current training run. Stop and Save writes a checkpoint you can resume from later; Stop cannot be resumed.",
       stopAction: "Stop",
       stopping: "Stopping...",
       stopAndSave: "Stop and Save",

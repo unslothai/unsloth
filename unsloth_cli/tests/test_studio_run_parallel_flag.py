@@ -170,13 +170,24 @@ def _install_reexec_capture(monkeypatch, *, platform):
 
     monkeypatch.setattr(sys, "platform", platform)
 
+    def capture(kind, argv):
+        captured.append(
+            {
+                "kind": kind,
+                "argv": list(argv),
+                "start_api_key_marker": studio_mod.os.environ.get(
+                    studio_mod._START_API_KEY_MARKER_ENV
+                ),
+            }
+        )
+
     def fake_execvp(file, argv):
-        captured.append({"kind": "execvp", "argv": list(argv)})
+        capture("execvp", argv)
         raise _ExecCaptured(argv)
 
     class _FakePopen:
         def __init__(self, argv, *a, **kw):
-            captured.append({"kind": "popen", "argv": list(argv)})
+            capture("popen", argv)
             self._argv = argv
 
         def wait(self):
@@ -233,6 +244,30 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
     assert (
         _value_after(argv, "--parallel") == value
     ), f"{flag} {value} was dropped on re-exec; argv = {argv}"
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_reexec_hands_off_start_api_key_marker_out_of_band(monkeypatch, platform):
+    """A new child receives the marker while an old child sees no unknown flag."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--start-api-key-marker"],
+        platform = platform,
+    )
+    assert len(captured) == 1, result.output
+    assert "--start-api-key-marker" not in captured[0]["argv"]
+    assert captured[0]["start_api_key_marker"] == "1"
+
+
+def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
+    """A supported child consumes the handoff before starting descendants."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv(studio_mod._START_API_KEY_MARKER_ENV, "1")
+
+    inherited = studio_mod._consume_start_api_key_marker_env()
+
+    assert inherited is True
+    assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])

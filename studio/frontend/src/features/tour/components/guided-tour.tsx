@@ -270,7 +270,7 @@ export function GuidedTour({
                 onInteractOutside={(e) => e.preventDefault()}
                 className={cn(
                   "fixed z-[52] outline-none",
-                  "w-[min(420px,calc(100vw-1.5rem))]",
+                  "w-[min(420px,calc(100vw-24px))]",
                 )}
                 style={{
                   left: cardPos.left,
@@ -313,13 +313,13 @@ export function GuidedTour({
                   <div className="relative p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[0.625rem] font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
                           {idx + 1}/{total}
                           <span className="size-1 rounded-full bg-control-accent/70" />
                           guided tour
                         </div>
                         <DialogPrimitive.Title
-                          className="mt-2 text-[18px] leading-tight"
+                          className="mt-2 text-[1.125rem] leading-tight"
                           style={{ fontFamily: "var(--font-serif)" }}
                         >
                           {step?.title ?? "Quick tour"}
@@ -383,7 +383,7 @@ export function GuidedTour({
                   </div>
 
                   <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
-                  <div className="px-5 py-3 text-[11px] text-foreground/55 dark:text-zinc-300/65">
+                  <div className="px-5 py-3 text-[0.6875rem] text-foreground/55 dark:text-zinc-300/65">
                     Tip: `Esc` skips. Tour blocks clicks so you can read.
                   </div>
                 </motion.div>
