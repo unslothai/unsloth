@@ -899,8 +899,15 @@ def test_rocm_runtime_wires_complete_windows_dll_overlay(tmp_path):
 
     whisper_bin = tmp_path / "whisper_bin"
     linked = M.link_ggml_runtime(bin_dir, whisper_bin, backend = "rocm")
+    linked_dirs = M.link_runtime_directories(
+        bin_dir,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("windows", "x64"),
+    )
 
     assert set(linked) == dlls
+    assert linked_dirs == []
     assert all((whisper_bin / name).is_file() for name in dlls)
     assert not (whisper_bin / "not-a-runtime.txt").exists()
 
@@ -932,7 +939,12 @@ def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, m
     monkeypatch.setattr(M, "_elf_needed", lambda path: dependencies.get(path.name, set()))
     whisper_bin = tmp_path / "whisper-bin"
     linked = M.link_ggml_runtime(llama_bin, whisper_bin, backend = "rocm")
-    linked_dirs = M.link_runtime_directories(llama_bin, whisper_bin, backend = "rocm")
+    linked_dirs = M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64"),
+    )
 
     assert "libcustomrocm.so.1" in linked
     assert "libhipblas.so.2" in linked
@@ -948,7 +960,12 @@ def test_rocm_runtime_requires_both_kernel_catalogs(tmp_path):
     (llama_bin / "hipblaslt").mkdir()
     (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
     with pytest.raises(PrebuiltFallback, match = "rocblas"):
-        M.link_runtime_directories(llama_bin, tmp_path / "whisper-bin", backend = "rocm")
+        M.link_runtime_directories(
+            llama_bin,
+            tmp_path / "whisper-bin",
+            backend = "rocm",
+            host = _host("linux", "x64"),
+        )
 
 
 def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
@@ -959,7 +976,12 @@ def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
         (catalog / "kernel.dat").write_bytes(directory.encode())
     monkeypatch.setattr(M.os, "link", lambda *args: (_ for _ in ()).throw(OSError("xdev")))
     whisper_bin = tmp_path / "whisper-bin"
-    M.link_runtime_directories(llama_bin, whisper_bin, backend = "rocm")
+    M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64"),
+    )
     for directory in M.SLIM_ROCM_RUNTIME_DIRS:
         assert (whisper_bin / directory / "kernel.dat").read_bytes() == directory.encode()
 
@@ -1004,6 +1026,12 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
     assert M.existing_install_matches(tmp_path, host, object()) is False
     (server.parent / "libggml.so.0").write_text("lib")
     assert M.existing_install_matches(tmp_path, host, object()) is True
+    marker.update(backend = "rocm", linked_runtime_directories = [])
+    assert M.existing_install_matches(
+        tmp_path,
+        _host("windows", "x64"),
+        object(),
+    ) is True
 
 
 def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):

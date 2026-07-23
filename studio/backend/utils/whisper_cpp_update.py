@@ -394,7 +394,11 @@ def _install_latest_while_blocked(
     }
 
 
-def chained_phase_plan(*, force_refresh: bool = False) -> dict:
+def chained_phase_plan(
+    *,
+    force_refresh: bool = False,
+    paired_llama_will_update: bool = False,
+) -> dict:
     """Whisper's side of the combined llama+whisper update item.
 
     Returns {status, update_available, skip_reason, phase}: `status` is the
@@ -432,6 +436,19 @@ def chained_phase_plan(*, force_refresh: bool = False) -> dict:
         # (prepare_runtime_payload).
         plan["skip_reason"] = "up_to_date"
         return plan
+    if marker.get("install_kind") == "slim" and not paired_llama_will_update:
+        # A slim install can only be refreshed from a completed managed llama
+        # prebuilt. Ask the installer through its read-only resolver so local
+        # links, markerless/current source builds, and incomplete managed trees
+        # never produce an Update button that can only fail. When the llama
+        # phase will run first, it supplies the repaired pairing instead.
+        resolved = _resolve_prebuilt_for_host(
+            force_refresh = force_refresh,
+            backend = marker.get("backend") if isinstance(marker.get("backend"), str) else None,
+        )
+        if not (resolved or {}).get("prebuilt_available"):
+            plan["skip_reason"] = "paired_llama_unavailable"
+            return plan
     script = _installer_script()
     if script is None:
         plan["skip_reason"] = "installer_missing"

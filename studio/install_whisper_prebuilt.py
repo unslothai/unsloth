@@ -746,10 +746,16 @@ def link_ggml_runtime(
 
 
 def link_runtime_directories(
-    llama_bin_dir: Path, whisper_bin_dir: Path, *, backend: str
+    llama_bin_dir: Path,
+    whisper_bin_dir: Path,
+    *,
+    backend: str,
+    host: HostInfo,
 ) -> list[str]:
     """Mirror GPU kernel catalogs that packaged ROCm libraries load at runtime."""
-    if backend != "rocm":
+    # Windows ROCm prebuilts are a flat DLL overlay. The hipblaslt/rocblas
+    # catalog directories are part of the Linux ROCm bundle layout only.
+    if backend != "rocm" or host.is_windows:
         return []
     linked: list[str] = []
     for name in SLIM_ROCM_RUNTIME_DIRS:
@@ -775,7 +781,12 @@ def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -
     source = Path(selection.linked_from)
     destination = runtime_bin_dir(staged_root, host)
     linked = link_ggml_runtime(source, destination, backend = selection.backend)
-    linked_dirs = link_runtime_directories(source, destination, backend = selection.backend)
+    linked_dirs = link_runtime_directories(
+        source,
+        destination,
+        backend = selection.backend,
+        host = host,
+    )
     log(f"slim install: hardlinked {len(linked)} ggml libraries from {selection.linked_from}")
     return replace(
         selection,
@@ -877,7 +888,7 @@ def existing_install_matches(
             )
             return False
         runtime_dirs = marker.get("linked_runtime_directories")
-        if marker.get("backend") == "rocm" and (
+        if marker.get("backend") == "rocm" and not host.is_windows and (
             not isinstance(runtime_dirs, list) or set(runtime_dirs) != set(SLIM_ROCM_RUNTIME_DIRS)
         ):
             log(f"existing ROCm install at {install_dir} lacks kernel catalogs; reinstalling")

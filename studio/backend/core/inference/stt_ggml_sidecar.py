@@ -231,10 +231,11 @@ def slim_runtime_intact(binary: str) -> bool:
             for name in runtime_dirs
         )
     if intact and marker.get("backend") == "rocm":
+        expected_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
         intact = (
             marker.get("runtime_wiring_version") == 2
             and isinstance(runtime_dirs, list)
-            and set(runtime_dirs) == {"hipblaslt", "rocblas"}
+            and set(runtime_dirs) == expected_runtime_dirs
         )
     if not intact:
         logger.warning(

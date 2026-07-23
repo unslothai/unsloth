@@ -2130,14 +2130,27 @@ def swap_into_place(staged_root: Path, install_dir: Path) -> None:
     """Atomically replace install_dir with staged_root (same filesystem), with rollback."""
     install_dir.parent.mkdir(parents = True, exist_ok = True)
     backup: Path | None = None
-    if install_dir.exists():
-        backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
-        os.replace(install_dir, backup)
     try:
+        if install_dir.exists():
+            backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
+            os.replace(install_dir, backup)
         os.replace(staged_root, install_dir)
-    except OSError:
-        if backup is not None and not install_dir.exists():
-            os.replace(backup, install_dir)
+    except OSError as exc:
+        restored = False
+        if backup is not None and backup.exists() and not install_dir.exists():
+            try:
+                os.replace(backup, install_dir)
+                restored = True
+            except OSError as rollback_exc:
+                raise PrebuiltFallback(
+                    "prebuilt activation failed and the previous install could not be restored "
+                    f"({exc}; rollback: {rollback_exc})"
+                ) from rollback_exc
+        if is_busy_lock_error(exc):
+            detail = "; restored the previous install" if restored else ""
+            raise BusyInstallConflict(
+                f"the existing install appears to still be in use{detail} ({exc})"
+            ) from exc
         raise
     if backup is not None:
         shutil.rmtree(backup, ignore_errors = True)

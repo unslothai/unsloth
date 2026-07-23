@@ -25,7 +25,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 def _no_whisper_piggyback(monkeypatch):
     # Keep the whisper piggyback probe off the host: these tests exercise the
     # llama local-link contract only.
-    monkeypatch.setattr(u, "_whisper_chain_status", lambda *, force_refresh = False: None)
+    monkeypatch.setattr(u, "_whisper_chain_status", lambda **kwargs: None)
 
 
 def _make_link(link: Path, target: Path) -> None:

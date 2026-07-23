@@ -738,6 +738,29 @@ def test_core_slim_hooks_default_inert(component, tmp_path):
     assert component.ops.prepare_runtime_payload(tmp_path, host, selection) is None
 
 
+def test_busy_activation_restores_previous_install(monkeypatch, tmp_path):
+    install_dir = tmp_path / "whisper.cpp"
+    staged_root = tmp_path / "staged"
+    install_dir.mkdir()
+    staged_root.mkdir()
+    (install_dir / "version").write_text("old")
+    (staged_root / "version").write_text("new")
+    real_replace = core.os.replace
+
+    def locked_activation(source, destination):
+        if Path(source) == staged_root:
+            raise PermissionError(13, "Permission denied")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(core.os, "replace", locked_activation)
+    with pytest.raises(core.BusyInstallConflict):
+        core.swap_into_place(staged_root, install_dir)
+
+    assert (install_dir / "version").read_text() == "old"
+    assert staged_root.is_dir()
+    assert not list(tmp_path.glob(".whisper.cpp.old-*"))
+
+
 # ── Host/GPU token helpers (component-independent core functions) ──
 # Value tables moved verbatim from the llama characterization suite; these are
 # pure functions with no descriptor sensitivity, so they run unparameterized.

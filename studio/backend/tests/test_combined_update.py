@@ -349,6 +349,31 @@ def test_whisper_plan_eligible_when_behind(monkeypatch, tmp_path):
     assert plan["phase"]["pin_release_tag"] == "v1.9.2-unsloth.1"
 
 
+def test_whisper_plan_requires_a_repairable_pair_for_slim_installs(monkeypatch, tmp_path):
+    install_dir = _setup_whisper(monkeypatch, tmp_path)
+    marker_path = install_dir / WHISPER_MARKER
+    marker = json.loads(marker_path.read_text())
+    marker["install_kind"] = "slim"
+    marker_path.write_text(json.dumps(marker))
+    wfresh.reset_caches()
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **kwargs: {"prebuilt_available": False},
+    )
+
+    plan = wupd.chained_phase_plan(force_refresh = True)
+    assert plan["update_available"] is False
+    assert plan["skip_reason"] == "paired_llama_unavailable"
+
+    repaired = wupd.chained_phase_plan(
+        force_refresh = True,
+        paired_llama_will_update = True,
+    )
+    assert repaired["update_available"] is True
+    assert repaired["phase"] is not None
+
+
 def test_whisper_phase_pins_installer_to_checked_release(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(

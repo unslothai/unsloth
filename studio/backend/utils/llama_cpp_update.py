@@ -259,13 +259,20 @@ def _local_link_status() -> dict:
     return _flow.local_link_status(_job, _job_lock)
 
 
-def _whisper_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
+def _whisper_chain_status(
+    *,
+    force_refresh: bool = False,
+    paired_llama_will_update: bool = False,
+) -> Optional[dict]:
     """Whisper's piggyback plan for the combined update item (see
     whisper_cpp_update.chained_phase_plan). None disables the piggyback --
     fail-open so whisper can never break the llama status or apply."""
     try:
         from utils import whisper_cpp_update
-        return whisper_cpp_update.chained_phase_plan(force_refresh = force_refresh)
+        return whisper_cpp_update.chained_phase_plan(
+            force_refresh = force_refresh,
+            paired_llama_will_update = paired_llama_will_update,
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llama update: whisper piggyback probe failed", error = str(exc))
         return None
@@ -277,7 +284,10 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
     (llama behind OR whisper behind) while llama_update_available keeps the
     llama-only flag. All pre-existing top-level fields are preserved."""
     status["llama_update_available"] = bool(status.get("update_available"))
-    plan = _whisper_chain_status(force_refresh = force_refresh)
+    plan = _whisper_chain_status(
+        force_refresh = force_refresh,
+        paired_llama_will_update = status["llama_update_available"],
+    )
     if plan is None:
         status["whisper"] = None
         status["update_component"] = "llama" if status["llama_update_available"] else None
@@ -641,7 +651,10 @@ def start_update() -> dict:
 
     llama_plan = _plan_llama_phase()
     llama_spec = llama_plan.get("spec")
-    whisper_plan = _whisper_chain_status(force_refresh = True)
+    whisper_plan = _whisper_chain_status(
+        force_refresh = True,
+        paired_llama_will_update = llama_spec is not None,
+    )
     whisper_spec = (whisper_plan or {}).get("phase")
     if llama_spec is None and whisper_spec is None:
         # Nothing to run in either phase: answer with the llama refusal so the

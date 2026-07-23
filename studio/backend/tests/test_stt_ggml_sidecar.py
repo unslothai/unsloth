@@ -251,6 +251,21 @@ def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
     assert ggml_module.slim_runtime_intact(binary) is False
 
 
+def test_slim_guard_accepts_windows_rocm_dll_overlay(monkeypatch, tmp_path):
+    monkeypatch.setattr(ggml_module.sys, "platform", "win32")
+    names = ["ggml.dll", "ggml-base.dll", "ggml-hip.dll", "amdhip64.dll"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = [],
+        runtime_wiring_version = 2,
+    )
+    for name in names:
+        (Path(binary).parent / name).write_bytes(b"dll")
+    assert ggml_module.slim_runtime_intact(binary) is True
+
+
 def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):
     # Fat installs carry their own ggml; no marker means source/custom build.
     fat = _slim_install(tmp_path / "fat", install_kind = None, with_ggml = False)
