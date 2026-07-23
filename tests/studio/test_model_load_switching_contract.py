@@ -27,7 +27,10 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "if (!stopped)" in runtime
     assert "await refresh();" in runtime
     assert "if (!preserveCheckpoint) clearCheckpoint();" in cancel
-    assert "if (run.backendLoadStarted)" in cancel
+    assert "useTransformersUpgradeDialogStore.getState().cancelPending();" in cancel
+    assert "useRemoteCodeConsentDialogStore.getState().resolve(false);" in cancel
+    assert "useHfTokenWarningStore.getState().resolve(\"cancel\");" in cancel
+    assert "await run.completionPromise;" in cancel
 
 
 def test_late_callbacks_are_bound_to_their_originating_run():
@@ -69,6 +72,20 @@ def test_external_selection_invalidates_older_local_intent():
         'if (meta?.source === "external" || isExternalModelId(value)) {',
         1,
     )[1]
-    assert external.index("invalidatePendingModelSelection();") < external.index(
+    assert external.index("invalidatePendingModelSelection()") < external.index(
         "store.setCheckpoint(value, null);"
     )
+    assert external.index("await cancelLoading();") < external.index(
+        "store.setCheckpoint(value, null);"
+    )
+    assert "isModelSelectionIntentCurrent(selectionIntentId)" in external
+
+
+def test_replacement_carries_forward_an_already_unloaded_rollback_target():
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "previousCheckpointWasUnloaded: replacementNeedsRollback" in runtime
+    assert (
+        "replacementNeedsRollback ||\n"
+        "          activeRun.previousCheckpointWasUnloaded"
+    ) in runtime
+    assert "let previousWasUnloaded = run.previousCheckpointWasUnloaded;" in runtime

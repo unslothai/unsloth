@@ -3,7 +3,11 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  confirmRemoteCodeIfNeeded,
+  useRemoteCodeConsentDialogStore,
+} from "@/features/security";
+import { useHfTokenWarningStore } from "@/features/hf-auth";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -117,6 +121,8 @@ type ActiveModelLoadRun = {
   resolveCompletion: () => void;
   cancelPromise: Promise<boolean> | null;
   backendLoadStarted: boolean;
+  rollbackCheckpoint: string | null;
+  previousCheckpointWasUnloaded: boolean;
 };
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
@@ -474,6 +480,9 @@ export function useChatModelRuntime() {
 
       const model = run.info;
       run.abortController.abort();
+      useHfTokenWarningStore.getState().resolve("cancel");
+      useRemoteCodeConsentDialogStore.getState().resolve(false);
+      useTransformersUpgradeDialogStore.getState().cancelPending();
       loadAbortRef.current = null;
       loadingModelRef.current = null;
       useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
@@ -500,14 +509,15 @@ export function useChatModelRuntime() {
           // task to observe the abort. The unload route waits for cancellation
           // to settle before it returns, preventing a late /load activation.
           await unloadModel({ model_path: model.id });
-          // Frontend-only preflights can be blocked on a confirmation promise
-          // that AbortController cannot resolve. Once /unload succeeds there is
-          // no backend activation to await unless this run actually reached
-          // /load; the aborted preflight will clean itself up when its obsolete
-          // dialog eventually settles.
-          if (run.backendLoadStarted) {
-            await run.completionPromise;
+          if (run.rollbackCheckpoint) {
+            run.previousCheckpointWasUnloaded = true;
           }
+          // Every owned confirmation above is now declined. If a transformers
+          // install is already running, cancelPending deliberately resolves
+          // only after it settles, because that install may unload the active
+          // backend model. Do not let a replacement start before the cancelled
+          // frontend task has observed that outcome.
+          await run.completionPromise;
           return true;
         } catch (error) {
           const detail =
@@ -559,8 +569,13 @@ export function useChatModelRuntime() {
     [cancelLoadRun],
   );
 
-  const invalidatePendingModelSelection = useCallback(() => {
+  const invalidatePendingModelSelection = useCallback((): number => {
     loadIntentRef.current += 1;
+    return loadIntentRef.current;
+  }, []);
+
+  const isModelSelectionIntentCurrent = useCallback((intentId: number) => {
+    return loadIntentRef.current === intentId;
   }, []);
 
   const selectModel = useCallback(
@@ -603,6 +618,7 @@ export function useChatModelRuntime() {
       // the superseded run's error cleanup from restoring its previous config
       // over settings already applied by the new caller.
       const loadIntentId = ++loadIntentRef.current;
+      let replacementNeedsRollback = false;
       // A different pick supersedes the local load in flight. Await its
       // cancellation and backend unload before claiming the slot. Re-check in a
       // loop because multiple selections may be waiting on the same cancellation;
@@ -640,6 +656,9 @@ export function useChatModelRuntime() {
         // Keep the working checkpoint as the rollback target for the
         // replacement. A standalone Stop still clears the selection.
         const stopped = await cancelLoadRun(activeRun, true);
+        replacementNeedsRollback =
+          replacementNeedsRollback ||
+          activeRun.previousCheckpointWasUnloaded;
         if (loadIntentRef.current !== loadIntentId) return;
         if (!stopped) {
           if (typeof selection !== "string" && selection.previousConfig) {
@@ -739,12 +758,14 @@ export function useChatModelRuntime() {
         resolveCompletion,
         cancelPromise: null,
         backendLoadStarted: false,
+        rollbackCheckpoint: previousCheckpoint,
+        previousCheckpointWasUnloaded: replacementNeedsRollback,
       };
       activeLoadRunRef.current = run;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
-          let previousWasUnloaded = false;
+          let previousWasUnloaded = run.previousCheckpointWasUnloaded;
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
@@ -892,6 +913,7 @@ export function useChatModelRuntime() {
                 && currentCheckpoint
               ) {
                 previousWasUnloaded = true;
+                run.previousCheckpointWasUnloaded = true;
               }
               if (!upgraded) {
                 throw new Error(getTransformersUpgradeRequiredMessage(displayName));
@@ -924,9 +946,10 @@ export function useChatModelRuntime() {
               : undefined;
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
-            if (currentCheckpoint) {
+            if (currentCheckpoint && !previousWasUnloaded) {
               await unloadModel({ model_path: currentCheckpoint });
               previousWasUnloaded = true;
+              run.previousCheckpointWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
 
@@ -1029,7 +1052,12 @@ export function useChatModelRuntime() {
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
-            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
+            if (
+              abortCtrl.signal.aborted ||
+              loadIntentRef.current !== run.intentId
+            ) {
+              throw new Error("Cancelled");
+            }
 
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
@@ -1715,6 +1743,7 @@ export function useChatModelRuntime() {
     ejectModel,
     cancelLoading,
     invalidatePendingModelSelection,
+    isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
     loadToastDismissed,

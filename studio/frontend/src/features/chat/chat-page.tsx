@@ -1865,6 +1865,7 @@ export function ChatPage({
     ejectModel,
     cancelLoading,
     invalidatePendingModelSelection,
+    isModelSelectionIntentCurrent,
     loadingModel,
     loadProgress,
     loadToastDismissed,
@@ -2477,11 +2478,11 @@ export function ChatPage({
   });
 
   const handleCheckpointChange = useCallback(
-    (
+    async (
       value: string,
       meta?: ModelSelectorChangeMeta,
     ) => {
-      const store = useChatRuntimeStore.getState();
+      let store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
       if (!value) return;
@@ -2493,7 +2494,23 @@ export function ChatPage({
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {
-        invalidatePendingModelSelection();
+        const selectionIntentId = invalidatePendingModelSelection();
+        const hadLocalLoad = Boolean(
+          store.modelLoading || store.loadingModelPick,
+        );
+        if (hadLocalLoad) {
+          const stopped = await cancelLoading();
+          if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
+          if (!stopped) {
+            toast.error("Could not stop the current model load", {
+              description:
+                "The hosted model was not selected because the local backend state is uncertain.",
+            });
+            return;
+          }
+          store = useChatRuntimeStore.getState();
+        }
+        if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -2681,7 +2698,9 @@ export function ChatPage({
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
+      cancelLoading,
       invalidatePendingModelSelection,
+      isModelSelectionIntentCurrent,
       stageOrLoad,
       view,
     ],
