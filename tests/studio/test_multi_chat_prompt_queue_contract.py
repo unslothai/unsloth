@@ -21,6 +21,9 @@ RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").read_t
     encoding = "utf-8"
 )
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+RUNTIME_PROVIDER = (FRONTEND / "features/chat/runtime-provider.tsx").read_text(
+    encoding = "utf-8"
+)
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
@@ -116,6 +119,7 @@ def test_regular_and_compare_sends_share_the_queue_capacity_boundary():
     assert "anyPromptQueueRunning" in submit
     assert "promptQueueAtCapacity" in submit
     assert "startPromptQueue(" in submit
+    assert "onSendClick={handleSubmit}" in THREAD
     assert "compareSendAtGlobalCapacity()" in SHARED_COMPOSER
     assert "usePromptQueueUI.getState().isRunning" in SHARED_COMPOSER
 
@@ -181,7 +185,9 @@ def test_background_queue_snapshots_settings_and_blocks_model_changes():
     assert '"preserveThinking"' in QUEUED_SETTINGS
     assert "pendingSettingsIds" in target
     assert "discardQueuedChatRunSettings(settingsId)" in target
-    assert "checkpoint: liveRuntime.params.checkpoint" in CHAT_ADAPTER
+    assert "queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
+    assert "? queuedRunSettings.params.checkpoint" in CHAT_ADAPTER
+    assert ": liveRuntime" in CHAT_ADAPTER
     assert "usePromptQueueUI.getState().isRunning" in CHAT_PAGE
     assert "Object.values(runtime.runningByThreadId).some(Boolean)" in CHAT_PAGE
     assert "getPreStreamRunReservationCount() > 0" in CHAT_PAGE
@@ -216,6 +222,14 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     assert "deletePromptQueueRun(failedRun);" in failed
     assert "requestPromptQueuePumpIfReady();" in failed
     assert "cancelByThreadId: Record<string, () => void>;" in RUNTIME_STORE
+    assert "notifyPreStreamRunFailed(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
+
+
+def test_persisted_new_chat_accepts_its_promoted_remote_id():
+    assert RUNTIME_PROVIDER.count(
+        "visibleThreadId === localThreadId ||\n"
+        "                visibleThreadId === remoteId"
+    ) >= 2
 
 
 def test_sidebar_distinguishes_running_queues_from_completed_background_chats():
