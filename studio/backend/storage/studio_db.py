@@ -523,9 +523,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "WHERE operation_key NOT LIKE 'sha256:%'"
     ).fetchall()
     for row in rows:
-        digest = "sha256:" + hashlib.sha256(
-            row["operation_key"].encode("utf-8")
-        ).hexdigest()
+        digest = "sha256:" + hashlib.sha256(row["operation_key"].encode("utf-8")).hexdigest()
         conn.execute(
             "UPDATE OR IGNORE chat_memory_source_operations SET operation_key = ? "
             "WHERE source_message_id = ? AND operation_key = ?",

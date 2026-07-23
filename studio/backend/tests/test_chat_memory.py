@@ -599,10 +599,7 @@ def test_operation_ledger_uses_opaque_keys_and_cascades(tmp_path, monkeypatch):
     studio_db.delete_chat_threads(["thread"])
     conn = studio_db.get_connection()
     try:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM chat_memory_source_operations").fetchone()[0]
-            == 0
-        )
+        assert conn.execute("SELECT COUNT(*) FROM chat_memory_source_operations").fetchone()[0] == 0
     finally:
         conn.close()
 

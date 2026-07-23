@@ -8,9 +8,7 @@ ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.t
 
 
 def test_memory_scope_uses_remote_id_after_first_save():
-    start = ADAPTER_SRC.index(
-        "await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);"
-    )
+    start = ADAPTER_SRC.index("await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);")
     end = ADAPTER_SRC.index("// ── Audio model path", start)
     scope_block = ADAPTER_SRC[start:end]
 
