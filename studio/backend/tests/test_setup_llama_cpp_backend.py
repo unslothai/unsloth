@@ -130,7 +130,7 @@ def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
 
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
-    assert '_legacy_force_vulkan=' in sh
+    assert "_legacy_force_vulkan=" in sh
     assert "1|true|yes|on) _explicit_vulkan_backend=true" in sh
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
@@ -149,7 +149,7 @@ def _run_ps1(value: str | None) -> str:
     # applied to $prebuiltArgs lower down; compose both real snippets.
     normalize = _ps1_search(
         r'\$llamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?'
-        r'Ignoring UNSLOTH_LLAMA_CPP_BACKEND=.*?\n\s*\}',
+        r"Ignoring UNSLOTH_LLAMA_CPP_BACKEND=.*?\n\s*\}",
         re.DOTALL,
     )
     apply_flag = _ps1_search(

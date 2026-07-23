@@ -176,10 +176,7 @@ def test_memory_mode_flags_maps_modes(mode, expected):
     ],
 )
 def test_memory_mode_flags_use_unified_load_mode(mode, expected):
-    assert (
-        LlamaCppBackend._memory_mode_flags(mode, supports_load_mode = True)
-        == expected
-    )
+    assert LlamaCppBackend._memory_mode_flags(mode, supports_load_mode = True) == expected
 
 
 # ── _already_in_target_state ─────────────────────────────────────────────────
@@ -400,10 +397,7 @@ def test_vulkan_fit_keeps_discrete_device_selected(tmp_path):
         patch.object(subprocess, "Popen", side_effect = _make_fake_popen),
         patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []),
     ):
-        assert backend.load_model(
-            gguf_path = str(gguf),
-            model_identifier = "test",
-        )
+        assert backend.load_model(gguf_path = str(gguf), model_identifier = "test")
 
     cmd = captured["cmd"]
     assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
