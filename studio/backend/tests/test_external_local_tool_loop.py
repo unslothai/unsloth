@@ -742,7 +742,9 @@ def test_parallel_calls_respect_per_message_budget(monkeypatch):
 
 
 def test_tool_events_carry_local_provenance(monkeypatch):
-    client = _FakeClient([_one_call_stream("c1"), [_sse_chunk(content = "x", finish_reason = "stop"), "data: [DONE]"]])
+    client = _FakeClient(
+        [_one_call_stream("c1"), [_sse_chunk(content = "x", finish_reason = "stop"), "data: [DONE]"]]
+    )
     monkeypatch.setattr("core.inference.external_agentic.execute_tool", lambda *a, **k: "hit")
 
     async def _run():
@@ -763,7 +765,9 @@ def test_tool_events_carry_local_provenance(monkeypatch):
 
 
 def test_forced_tool_choice_downgraded_after_first_round(monkeypatch):
-    client = _FakeClient([_one_call_stream("c1"), [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]])
+    client = _FakeClient(
+        [_one_call_stream("c1"), [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]]
+    )
     monkeypatch.setattr("core.inference.external_agentic.execute_tool", lambda *a, **k: "hit")
     forced = {"type": "function", "function": {"name": "web_search"}}
 

@@ -216,6 +216,7 @@ async def stream_external_local_tool_loop(
             tool_choice = active_tool_choice,
             stream = True,
         )
+
         # Stop may fire while the remote is still in prefill and the read is
         # blocked awaiting the next SSE line. Drive the generator one item at a
         # time via a cancellable task raced against the cancel event, so Stop
