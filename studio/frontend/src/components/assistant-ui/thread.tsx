@@ -3138,27 +3138,6 @@ const ComposerToolsMenu: FC<{
           <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
           Add photos &amp; files
         </DropdownMenuItem>
-        {researchAvailable ? (
-          <DropdownMenuItem
-            disabled={researchDisabled && !deepResearchEnabled}
-            className={
-              deepResearchEnabled && !researchDisabled
-                ? "text-primary font-medium"
-                : undefined
-            }
-            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
-          >
-            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
-            Deep research
-            {deepResearchEnabled && !researchDisabled ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2}
-                className="ml-auto"
-              />
-            ) : null}
-          </DropdownMenuItem>
-        ) : null}
         <DropdownMenuItem
           disabled={searchDisabled}
           className={
@@ -3210,6 +3189,27 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
+        {researchAvailable ? (
+          <DropdownMenuItem
+            disabled={researchDisabled && !deepResearchEnabled}
+            className={
+              deepResearchEnabled && !researchDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+          >
+            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
+            Deep research
+            {deepResearchEnabled && !researchDisabled ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ) : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
