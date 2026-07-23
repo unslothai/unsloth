@@ -10788,6 +10788,9 @@ class _ResponsesReasoningExtractor:
         reasoning_prefilled: bool = False,
     ) -> None:
         self._buffer = ""
+        # Cross-delta holdback for structured reasoning_content so split
+        # literal markers cannot reassemble downstream (#7066).
+        self._structured_buffer = ""
         # Text already consumed from the CURRENT reasoning block; classification
         # context so fence state and quote parity survive buffer truncation.
         self._span_prefix = ""
@@ -10807,10 +10810,18 @@ class _ResponsesReasoningExtractor:
         structured_reasoning = _coerce_responses_reasoning_text(reasoning_content)
         if structured_reasoning:
             # Structured reasoning never uses think tags as delimiters (the
-            # channel already is reasoning). Neutralize any literal markers so
-            # downstream <think> wrappers / UI parsers cannot close early (#7066).
-            from core.inference.chat_template_helpers import neutralize_think_markup
-            reasoning_parts.append(neutralize_think_markup(structured_reasoning))
+            # channel already is reasoning). Neutralize literal markers with a
+            # cross-delta holdback so split tags cannot reassemble (#7066).
+            from core.inference.chat_template_helpers import (
+                neutralize_think_markup_streaming,
+            )
+
+            self._structured_buffer += structured_reasoning
+            _emitted, self._structured_buffer = neutralize_think_markup_streaming(
+                self._structured_buffer
+            )
+            if _emitted:
+                reasoning_parts.append(_emitted)
         if text:
             self._buffer += text
         if not self._parse_think_markers:
@@ -10894,16 +10905,66 @@ class _ResponsesReasoningExtractor:
         return "".join(reasoning_parts), "".join(visible_parts)
 
     def finish(self) -> tuple[str, str]:
+        structured_tail = ""
+        if self._structured_buffer:
+            from core.inference.chat_template_helpers import (
+                neutralize_think_markup_streaming,
+            )
+
+            structured_tail, self._structured_buffer = (
+                neutralize_think_markup_streaming(
+                    self._structured_buffer, finalize = True
+                )
+            )
         if not self._buffer:
-            return "", ""
+            return structured_tail, ""
         remaining = self._buffer
         self._buffer = ""
         if not self._parse_think_markers:
-            return "", remaining
+            return structured_tail, remaining
         if self._in_reasoning:
+            # No more bytes are coming: resolve any held close tags now. A tag
+            # at buffer end has no trailing quote, so a quoted thought ending
+            # in a structural close parses as the block end (not raw text).
+            reasoning_parts: list[str] = [structured_tail]
+            visible_parts: list[str] = []
+            buf = remaining
+            while buf:
+                close_idx = buf.find(_RESPONSES_THINK_CLOSE)
+                if close_idx == -1:
+                    reasoning_parts.append(buf.replace(_RESPONSES_THINK_OPEN, ""))
+                    break
+                if _think_close_is_literal_in_span(
+                    self._span_prefix + buf,
+                    len(self._span_prefix) + close_idx,
+                ):
+                    from core.inference.chat_template_helpers import (
+                        neutralize_think_markup,
+                    )
+
+                    reasoning_parts.append(
+                        buf[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
+                    )
+                    reasoning_parts.append(
+                        neutralize_think_markup(_RESPONSES_THINK_CLOSE)
+                    )
+                    consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
+                    self._span_prefix += buf[:consumed]
+                    buf = buf[consumed:]
+                    continue
+                reasoning_parts.append(
+                    buf[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
+                )
+                visible_parts.append(
+                    buf[close_idx + len(_RESPONSES_THINK_CLOSE) :].replace(
+                        _RESPONSES_THINK_CLOSE, ""
+                    )
+                )
+                break
             self._in_reasoning = False
-            return remaining.replace(_RESPONSES_THINK_OPEN, ""), ""
-        return "", remaining.replace(_RESPONSES_THINK_CLOSE, "")
+            self._span_prefix = ""
+            return "".join(reasoning_parts), "".join(visible_parts)
+        return structured_tail, remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
 
 def _extract_responses_reasoning(
