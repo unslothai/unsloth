@@ -136,6 +136,7 @@ def _parse_gguf_audio_type(path: str) -> Optional[str]:
     found: set[bytes] = set()
     bicodec = False
     qwen3_asr_identity = False
+    csm_identity = False
     has_audio_encoder = False
     has_vision_encoder: Optional[bool] = None
     audio_projector_type: Optional[bytes] = None
@@ -187,6 +188,7 @@ def _parse_gguf_audio_type(path: str) -> Optional[str]:
                         audio_projector_type = identity
                     else:
                         qwen3_asr_identity = qwen3_asr_identity or b"qwen3_asr" in identity
+                        csm_identity = csm_identity or b"csm" in identity or b"sesame" in identity
                     continue
 
                 if key in {"clip.has_audio_encoder", "clip.has_vision_encoder"}:
@@ -245,10 +247,11 @@ def _parse_gguf_audio_type(path: str) -> Optional[str]:
         has_audio_encoder and has_vision_encoder is False and audio_projector_type == b"qwen3a"
     ):
         return "asr"
-    # Match llama.cpp runtime detection exactly: these two single-token
-    # markers are the CSM signature; no repository-name identity is required.
     if {b"<|AUDIO|>", b"<|audio_eos|>"} <= found:
-        return "csm"
+        # The marker pair is shared by chat-capable audio families. Only
+        # classify it as codec-backed CSM when GGUF identity corroborates that
+        # family; otherwise preserve the audio-input/chat path.
+        return "csm" if csm_identity else "audio_vlm"
     if b"<|startoftranscript|>" in found:
         return "whisper"
     if b"<audio_soft_token>" in found or b"<|audio|>" in found:

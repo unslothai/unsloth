@@ -3022,6 +3022,7 @@ class ModelConfig:
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
                 gguf_audio_type = detect_gguf_audio_type(gguf_file)
                 projector_has_audio = False
+                projector_has_vision = None
                 if mmproj_file:
                     projector_has_vision = read_mmproj_vision_capability(mmproj_file)
                     # Older vision projectors omit the flag, so only an explicit
@@ -3050,6 +3051,12 @@ class ModelConfig:
                     local_files_only = True,
                 )
                 has_audio_input = has_audio_input or projector_has_audio
+                if (
+                    projector_has_audio
+                    and gguf_audio_type == "asr"
+                    and projector_has_vision is not True
+                ):
+                    gguf_is_vision = False
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
@@ -3103,6 +3110,7 @@ class ModelConfig:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 
                 cached_gguf = cached_gguf_for_load(identifier, variant)
+                cached_mmproj = None
                 if cached_gguf:
                     cached_snapshot = next(
                         (
@@ -3120,6 +3128,7 @@ class ModelConfig:
                         cached_mmproj = _compatible_cached_mmproj(identifier, cached_gguf)
                     gguf_audio_type = detect_gguf_audio_type(cached_gguf)
                     projector_has_audio = False
+                    projector_has_vision = None
                     if cached_mmproj:
                         projector_has_vision = read_mmproj_vision_capability(cached_mmproj)
                         has_vision = projector_has_vision is not False
@@ -3153,6 +3162,12 @@ class ModelConfig:
                         local_files_only = config_source_is_local,
                     )
                     has_audio_input = has_audio_input or projector_has_audio
+                    if (
+                        projector_has_audio
+                        and gguf_audio_type == "asr"
+                        and projector_has_vision is not True
+                    ):
+                        has_vision = False
                 else:
                     gguf_audio_type = detect_audio_type(identifier, hf_token = hf_token)
                     gguf_audio_type, has_audio_input, is_chat_capable = _classify_audio_capability(
@@ -3178,6 +3193,7 @@ class ModelConfig:
                     has_audio_input = has_audio_input,
                     is_chat_capable = is_chat_capable,
                     gguf_file = None,
+                    gguf_mmproj_file = cached_mmproj,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

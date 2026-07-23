@@ -430,10 +430,21 @@ def test_mmproj_vision_capability_distinguishes_audio_only(tmp_path: Path):
     assert read_mmproj_vision_capability(str(p)) is False
 
 
-def test_csm_tokens_match_runtime_without_name_identity(tmp_path: Path):
+def test_shared_csm_tokens_default_to_chat_audio_without_name_identity(tmp_path: Path):
     p = _write_synthetic_gguf(
         tmp_path / "generic.gguf",
         {"general.architecture": "llama"},
+        extra_string_arrays = {
+            "tokenizer.ggml.tokens": ["<s>", "<|AUDIO|>", "<|audio_eos|>"],
+        },
+    )
+    assert detect_gguf_audio_type(str(p)) == "audio_vlm"
+
+
+def test_csm_tokens_require_corroborating_name_identity(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "csm.gguf",
+        {"general.architecture": "llama", "general.name": "sesame-csm-1b"},
         extra_string_arrays = {
             "tokenizer.ggml.tokens": ["<s>", "<|AUDIO|>", "<|audio_eos|>"],
         },
@@ -483,4 +494,4 @@ def test_vocab_sized_fixed_array_before_tokens_is_skipped(tmp_path: Path):
     )
     p = tmp_path / "large-metadata-array.gguf"
     p.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + fixed_array + tokens)
-    assert detect_gguf_audio_type(str(p)) == "csm"
+    assert detect_gguf_audio_type(str(p)) == "audio_vlm"

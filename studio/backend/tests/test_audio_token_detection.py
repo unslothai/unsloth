@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 from utils.models import model_config
 from utils.models.model_config import (
     _AUDIO_TOKEN_PATTERNS,
@@ -68,3 +70,11 @@ def test_qwen3_asr_identity_wins_over_chat_like_tokens(monkeypatch):
 def test_whisper_identity_preserves_loader_audio_type(monkeypatch):
     monkeypatch.setattr(model_config, "_raw_config_model_type", lambda *args, **kwargs: "whisper")
     assert _classify_audio_capability("model", "whisper") == ("whisper", True, False)
+
+
+def test_cached_audio_projector_is_forwarded_and_clears_false_vision():
+    source = inspect.getsource(model_config.ModelConfig.from_identifier)
+    assert "gguf_mmproj_file = cached_mmproj" in source
+    assert "projector_has_vision is not True" in source
+    assert "has_vision = False" in source
+    assert "gguf_is_vision = False" in source
