@@ -6848,6 +6848,13 @@ async def _proxy_to_external_provider(
                 permission_mode = getattr(payload, "permission_mode", None),
                 session_id = getattr(payload, "session_id", None),
                 thread_id = getattr(payload, "thread_id", None),
+                max_tool_iterations = payload.max_tool_calls_per_message
+                if payload.max_tool_calls_per_message is not None
+                else 25,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                rag_scope = payload.rag_scope,
                 cancel_event = cancel_event,
             )
             try:
@@ -6855,21 +6862,6 @@ async def _proxy_to_external_provider(
                 stream_failed = False
                 async for line in gen:
                     monitor_event = _monitor_openai_sse_line(monitor_id, line)
-                    if monitor_event is None:
-                        try:
-                            parsed = json.loads(
-                                line[5:].strip() if line.startswith("data:") else line
-                            )
-                            if isinstance(parsed, dict) and parsed.get("type") not in (
-                                "tool_start",
-                                "tool_end",
-                                "tool_status",
-                                "tool_output",
-                                "tool_args",
-                            ):
-                                _monitor_openai_chunk(monitor_id, parsed)
-                        except Exception:
-                            pass
                     if monitor_event == "error":
                         stream_failed = True
                     yield f"{line}\n\n"
@@ -7212,8 +7204,15 @@ async def openai_chat_completions(
                 _ext_provider_type = _cfg.get("provider_type")
         from core.inference.external_agentic import provider_supports_local_tool_runtime
 
-        _ext_local_tools = provider_supports_local_tool_runtime(_ext_provider_type) and (
-            payload.enable_tools is True or bool(payload.enabled_tools) or bool(payload.mcp_enabled)
+        _ext_local_tools = (
+            provider_supports_local_tool_runtime(_ext_provider_type)
+            and payload.stream
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.mcp_enabled)
+            )
+            and not payload.tools
         )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).
