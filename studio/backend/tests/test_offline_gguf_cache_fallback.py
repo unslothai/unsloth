@@ -645,6 +645,23 @@ class TestListGgufVariantsFromCache:
     def test_returns_none_when_not_cached(self, hf_cache):
         assert _list_gguf_variants_from_hf_cache("unsloth/absent") is None
 
+    def test_keeps_complete_uppercase_split_variant(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/uppercase-split-GGUF",
+            {
+                "model-Q4_K_M-00001-of-00002.GGUF": 100,
+                "model-Q4_K_M-00002-of-00002.GGUF": 100,
+            },
+        )
+
+        out = _list_gguf_variants_from_hf_cache(
+            "unsloth/uppercase-split-GGUF"
+        )
+        assert out is not None
+        variants, _ = out
+        assert [variant.quant for variant in variants] == ["Q4_K_M"]
+
 
 class TestCachedColocatedSplitMain:
     def test_prefers_older_complete_snapshot_over_newer_partial(self, hf_cache):

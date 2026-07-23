@@ -1222,6 +1222,11 @@ def _classify_audio_capability(
     if model_type in _AUDIO_CHAT_MODEL_TYPES:
         return "audio_vlm", True, True
     if model_type in _NON_CHAT_AUDIO_MODEL_TYPES:
+        # Qwen3-ASR safetensors use the generic multimodal model loader. Keep
+        # their input capability, but do not label them as a codec-backed audio
+        # model: that would route them into the TTS/codec loader.
+        if model_type == "qwen3_asr":
+            return None, True, False
         classified = (
             "whisper"
             if model_type == "whisper"
@@ -1981,7 +1986,7 @@ def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufV
                 expected = set(range(1, int(total_text) + 1))
                 present = {
                     int(found.group("index"))
-                    for sibling in candidate.parent.glob("*.gguf")
+                    for sibling in _iter_gguf_files(candidate.parent)
                     if (found := _GGUF_SPLIT_FILE_RE.match(sibling.name))
                     and found.group("prefix").casefold() == prefix
                     and found.group("total") == total_text

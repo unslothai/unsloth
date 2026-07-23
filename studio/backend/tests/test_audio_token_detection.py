@@ -62,7 +62,7 @@ def test_structured_audio_chat_family_overrides_codec_markers(monkeypatch):
 
 def test_qwen3_asr_identity_wins_over_chat_like_tokens(monkeypatch):
     monkeypatch.setattr(model_config, "_raw_config_model_type", lambda *args, **kwargs: "qwen3_asr")
-    assert _classify_audio_capability("model", "audio_vlm") == ("asr", True, False)
+    assert _classify_audio_capability("model", "audio_vlm") == (None, True, False)
 
 
 def test_whisper_identity_preserves_loader_audio_type(monkeypatch):
