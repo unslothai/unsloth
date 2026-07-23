@@ -198,8 +198,12 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
     GGUF vision support. Both direct picks and the settings action must carry
     the hint, and the chat selection + deferred download handoff must retain it."""
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
-    assert picker.count("isVision: hasVision") >= 2
-    assert "nativeContext, hasVision" in picker
+    assert "const variantVisionHint = hasVision ? undefined : false;" in picker
+    assert picker.count("isVision: variantVisionHint") >= 2
+    assert "variantVisionHint," in picker
+    assert "visionByRepo: ReadonlyMap<string, boolean>" in picker
+    assert "pinnedQuantValidation.visionByRepo.get(entry.repoId)" in picker
+    assert "cachedRepo?.has_vision === false" not in picker
 
     types = _read("features/model-picker/components/model-selector/types.ts")
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
