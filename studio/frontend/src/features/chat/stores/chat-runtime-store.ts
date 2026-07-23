@@ -1468,12 +1468,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         return { runningByThreadId: nextRunning };
       }
       delete nextRunning[threadId];
-      if (!(threadId in state.cancelByThreadId)) {
-        return { runningByThreadId: nextRunning };
-      }
-      const nextCancel = { ...state.cancelByThreadId };
-      delete nextCancel[threadId];
-      return { runningByThreadId: nextRunning, cancelByThreadId: nextCancel };
+      // Keep the mounted runtime's cancel handle for its next run. The
+      // registrar cleanup removes it when that runtime actually unmounts.
+      return { runningByThreadId: nextRunning };
     }),
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {

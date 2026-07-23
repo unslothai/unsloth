@@ -114,6 +114,7 @@ import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import {
   PRE_STREAM_RUN_FAILED_EVENT,
   getPreStreamRunReservationCount,
+  notifyPreStreamRunFailed,
   releasePreStreamRunReservation,
   tryReservePreStreamRun,
   type PromptQueueRunFailedEventDetail,
@@ -1458,7 +1459,7 @@ export function SharedComposer({
         });
       } finally {
         if (compareReservationPending) {
-          releasePreStreamRunReservation();
+          notifyPreStreamRunFailed();
         }
         setComparing(false);
       }

@@ -158,7 +158,7 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
     assert "releasePreStreamRunForThread(threadKey);" in CHAT_ADAPTER
     assert "runtime.setThreadRunning(threadKey, true);" in CHAT_ADAPTER
     assert "sendReservedComposer()" in submit
-    assert "releasePreStreamRunReservation();" in THREAD
+    assert "notifyPreStreamRunFailed(referenceThreadId);" in THREAD
 
 
 def test_retry_edit_and_compare_preflights_reserve_global_capacity():
@@ -166,7 +166,7 @@ def test_retry_edit_and_compare_preflights_reserve_global_capacity():
     assert "if (!reserveInteractiveRun()) return;" in THREAD
     assert "if (!tryReservePreStreamRun())" in SHARED_COMPOSER
     assert "compareReservationPending = true;" in SHARED_COMPOSER
-    assert "releasePreStreamRunReservation();" in SHARED_COMPOSER
+    assert "notifyPreStreamRunFailed();" in SHARED_COMPOSER
 
 
 def test_background_queue_snapshots_settings_and_blocks_model_changes():
@@ -229,6 +229,13 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     assert failed.index("requestPromptQueuePumpIfReady();") > failed.index("if (threadId)")
     assert "cancelByThreadId: Record<string, () => void>;" in RUNTIME_STORE
     assert "notifyPreStreamRunFailed(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
+    set_running = _between(
+        RUNTIME_STORE,
+        "setThreadRunning: (threadId, running) =>",
+        "registerThreadCancel: (threadId, cancel) =>",
+    )
+    assert "delete nextCancel[threadId]" not in set_running
+    assert "registrar cleanup removes it" in set_running
 
 
 def test_persisted_new_chat_accepts_its_promoted_remote_id():
