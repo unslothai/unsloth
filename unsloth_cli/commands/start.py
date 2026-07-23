@@ -2110,6 +2110,11 @@ def _launch(
         for name in unset_env:
             child_env.pop(name, None)
     child_env.update(env)
+    if os.name != "nt" and not wsl_env_bridge:
+        # Keep POSIX child processes from seeing a stale inherited PWD when
+        # subprocess cwd was changed by the caller. Some Node CLIs use PWD for
+        # project-root discovery instead of process.cwd().
+        child_env["PWD"] = os.getcwd()
     # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
