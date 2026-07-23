@@ -29,9 +29,9 @@ SIDEBAR_ITEMS = (FRONTEND / "features/chat/hooks/use-chat-sidebar-items.ts").rea
     encoding = "utf-8"
 )
 CHAT_PAGE = (FRONTEND / "features/chat/chat-page.tsx").read_text(encoding = "utf-8")
-QUEUED_SETTINGS = (
-    FRONTEND / "features/chat/utils/queued-chat-run-settings.ts"
-).read_text(encoding = "utf-8")
+QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
+    encoding = "utf-8"
+)
 
 
 def _between(source: str, start: str, end: str) -> str:
