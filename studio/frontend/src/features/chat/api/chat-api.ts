@@ -149,6 +149,7 @@ export async function validateModel(
       // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      load_mmproj: payload.load_mmproj ?? true,
       gpu_ids: payload.gpu_ids,
       // Manual placement is an explicit override: Auto layers use llama.cpp
       // --fit, while a pinned layer count is owned by the user. Tell validate
@@ -176,6 +177,7 @@ export async function fetchGgufStagedMetadata(payload: {
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isVision: boolean;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -185,7 +187,12 @@ export async function fetchGgufStagedMetadata(payload: {
       ).nativePathLease;
     } catch {
       // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      return { contextLength: null, layerCount: null, moeLayerCount: null };
+      return {
+        contextLength: null,
+        layerCount: null,
+        moeLayerCount: null,
+        isVision: false,
+      };
     }
   }
   const response = await authFetch("/api/inference/validate", {
@@ -204,6 +211,7 @@ export async function fetchGgufStagedMetadata(payload: {
     contextLength: res.context_length ?? null,
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
+    isVision: res.is_vision ?? false,
   };
 }
 
