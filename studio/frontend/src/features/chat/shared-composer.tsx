@@ -1234,18 +1234,13 @@ export function SharedComposer({
         const preLoadStore = useChatRuntimeStore.getState();
         const previousCheckpoint = preLoadStore.params.checkpoint;
         const previousVariant = preLoadStore.activeGgufVariant ?? null;
-        const switchingModels =
-          previousCheckpoint &&
-          (previousCheckpoint !== sel.id ||
-            previousVariant !== (sel.ggufVariant ?? null));
         // Only expose a backend cancellation target once /load is about to
         // start. Let /load own the switch: its download/training prechecks run
-        // before it unloads the resident model.
+        // before it unloads the resident model. Preserve the origin even for a
+        // same-model reload because Stop can unload that active same-id model.
         compareRunsRef.current.setLoadingModel(run, sel);
-        modelSwitchState.originCheckpoint = switchingModels
-          ? previousCheckpoint
-          : null;
-        modelSwitchState.originGgufVariant = switchingModels
+        modelSwitchState.originCheckpoint = previousCheckpoint || null;
+        modelSwitchState.originGgufVariant = previousCheckpoint
           ? previousVariant
           : null;
         const resp = await loadModel(

@@ -867,8 +867,12 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     lookupCompareThreadIds()
       .then((ids) => {
         if (!isActive) return;
-        applyCompareThreadIds(ids);
         initialThreadLookupCompleteRef.current = true;
+        // A send may start before IndexedDB returns. Do not replace its
+        // temporary pane IDs mid-submission; the idle refresh below will apply
+        // persisted IDs after that run releases ownership.
+        if (compareSubmittingRef.current) return;
+        applyCompareThreadIds(ids);
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
