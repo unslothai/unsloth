@@ -745,11 +745,7 @@ def _is_dynamic_import_callable(
         ) in {"import_module", "__import__"}
     if not isinstance(node, ast.Call):
         return False
-    if (
-        isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) >= 2
-    ):
+    if isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
         return _subscript_key(node.args[1]) in {"import_module", "__import__"}
     return (
         isinstance(node.func, ast.Attribute)
@@ -859,9 +855,7 @@ def _pyyaml_loader_is_safe(
         dynamic_import_aliases,
         dynamic_namespace_aliases,
     )
-    return parent_path is not None and all(
-        part in _PYYAML_SUBMODULE_NAMES for part in parent_path
-    )
+    return parent_path is not None and all(part in _PYYAML_SUBMODULE_NAMES for part in parent_path)
 
 
 def _pyyaml_safe_loader_registry_mutation(
@@ -883,15 +877,12 @@ def _pyyaml_safe_loader_registry_mutation(
         ):
             return True
         if isinstance(current, ast.Attribute):
-            if (
-                current.attr in _PYYAML_SAFE_LOADER_MUTATORS
-                and _pyyaml_loader_is_safe(
-                    current.value,
-                    yaml_aliases,
-                    safe_loader_aliases,
-                    dynamic_import_aliases,
-                    dynamic_namespace_aliases,
-                )
+            if current.attr in _PYYAML_SAFE_LOADER_MUTATORS and _pyyaml_loader_is_safe(
+                current.value,
+                yaml_aliases,
+                safe_loader_aliases,
+                dynamic_import_aliases,
+                dynamic_namespace_aliases,
             ):
                 return True
             current = current.value
@@ -5459,14 +5450,8 @@ def _check_signal_escape_patterns(code: str):
                     self.dynamic_import_aliases,
                     self.dynamic_namespace_aliases,
                 )
-                and not (
-                    isinstance(func, ast.Name)
-                    and func.id in self.function_parameter_aliases
-                )
-                and (
-                    not node.args
-                    or _subscript_key(node.args[0]) is None
-                )
+                and not (isinstance(func, ast.Name) and func.id in self.function_parameter_aliases)
+                and (not node.args or _subscript_key(node.args[0]) is None)
             ):
                 self._record_unsafe_pyyaml(
                     node,
@@ -5476,8 +5461,7 @@ def _check_signal_escape_patterns(code: str):
                 isinstance(func, ast.Attribute)
                 and (
                     func.attr in _PYYAML_SAFE_LOADER_MUTATORS
-                    or func.attr
-                    in {"update", "setdefault", "pop", "clear", "__setitem__"}
+                    or func.attr in {"update", "setdefault", "pop", "clear", "__setitem__"}
                 )
                 and _pyyaml_safe_loader_registry_mutation(
                     func.value,
