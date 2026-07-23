@@ -878,6 +878,28 @@ class TestDetectGgufModelRemoteOffline:
             out = detect_gguf_model_remote("unsloth/a")
         assert out == "a-Q4_K_M.gguf"
 
+    def test_transient_timeout_retries_before_success(self, clean_offline_env):
+        calls = 0
+
+        class ReadTimeout(Exception):
+            pass
+
+        def flaky(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise ReadTimeout("temporary timeout")
+            return _types.SimpleNamespace(
+                siblings = [_types.SimpleNamespace(rfilename = "a-Q4_K_M.gguf")]
+            )
+
+        with (
+            patch("huggingface_hub.model_info", flaky),
+            patch("time.sleep", lambda *_: None),
+        ):
+            assert detect_gguf_model_remote("unsloth/a") == "a-Q4_K_M.gguf"
+        assert calls == 3
+
     def test_remote_big_endian_only_repo_is_not_detected(self, clean_offline_env, monkeypatch):
         siblings = [
             _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf"),

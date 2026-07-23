@@ -67,7 +67,7 @@ def test_offline_window_forces_in_process_hub_flags(monkeypatch):
 
 
 def test_offline_window_falls_back_when_force_context_enter_fails(monkeypatch):
-    import transformers  # noqa: F401 - ensures the in-process force path is selected
+    pytest.importorskip("transformers")
     import utils.transformers_version as transformers_version
     import core.export.worker as worker
 

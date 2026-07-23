@@ -2095,12 +2095,6 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
             ):
                 logger.debug(f"Could not check GGUF files for '{repo_id}': {e}")
                 return None
-            if isinstance(e, (ConnectionError, TimeoutError)) or err_name in (
-                "ConnectError",
-                "ConnectTimeout",
-                "ReadTimeout",
-            ):
-                break
             if attempt < 2:
                 time.sleep(2**attempt)
 
@@ -2171,17 +2165,26 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     Returns:
         True if embedding model, else False (default for local paths or errors).
     """
-    from utils.utils import hf_env_offline
+    from utils.utils import hf_cache_snapshot_is_loadable, hf_env_offline
+
+    cache_key = (model_name, hf_token)
+
+    def cached_embedding_classification() -> bool:
+        if _embedding_marker_in_hf_cache(model_name):
+            return True
+        return (
+            _embedding_detection_cache.get(cache_key) is True
+            and hf_cache_snapshot_is_loadable(model_name)
+        )
 
     # Offline (remote repo): reclassify from the local cache on every call, before/without the
     # memo. An online lookup can memoize True from tags with no weights cached, so trusting it once
     # the session goes offline would accept a repo _get() cannot load; a cached negative can also be
     # invalidated by later cache materialization. The cache probe is local-only, so it's cheap.
     if not is_local_path(model_name) and hf_env_offline():
-        return _embedding_marker_in_hf_cache(model_name)
+        return cached_embedding_classification()
 
     # Local paths: check for sentence-transformer marker (modules.json)
-    cache_key = (model_name, hf_token)
     if is_local_path(model_name):
         local_dir = normalize_path(model_name)
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
@@ -2193,7 +2196,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
             "Offline/unreachable HF Hub -- using cached embedding marker for %s",
             model_name,
         )
-        return _embedding_marker_in_hf_cache(model_name)
+        return cached_embedding_classification()
 
     if cache_key in _embedding_detection_cache:
         return _embedding_detection_cache[cache_key]
