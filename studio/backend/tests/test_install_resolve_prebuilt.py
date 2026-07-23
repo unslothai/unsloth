@@ -888,6 +888,16 @@ def test_route_to_vulkan_prebuilt_gfx1103_keeps_rocm():
     assert persist is None
 
 
+def test_route_to_vulkan_prebuilt_gfx1034_keeps_rocm():
+    # gfx1034 (RX 6500/6400-class) is covered by the fork windows-rocm gfx103X
+    # bundle, so it must stay on the ROCm path rather than fall back to Vulkan.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+
+
 def test_route_to_vulkan_prebuilt_explicit_opt_in_on_mixed_amd(monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
     host = _windows_amd_host(

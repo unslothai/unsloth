@@ -64,15 +64,17 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# ggml-org/llama.cpp release.yml windows-hip job GPU_TARGETS, plus gfx1103 which
-# the fork windows-rocm gfx110X bundle covers. Cards below this floor (e.g.
-# gfx803 / RX 480) are invisible to the HIP prebuilt; Vulkan is the practical
-# llama-server backend on Windows for those hosts (#7357).
+# ggml-org/llama.cpp release.yml windows-hip job GPU_TARGETS, plus gfx1034 and
+# gfx1103 which the fork windows-rocm gfx103X / gfx110X bundles cover (see the
+# gfx103X members in tests/studio/install/test_selection_logic.py). Cards below
+# this floor (e.g. gfx803 / RX 480) are invisible to the HIP prebuilt; Vulkan is
+# the practical llama-server backend on Windows for those hosts (#7357).
 WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
     {
         "gfx1030",
         "gfx1031",
         "gfx1032",
+        "gfx1034",
         "gfx1100",
         "gfx1101",
         "gfx1102",
