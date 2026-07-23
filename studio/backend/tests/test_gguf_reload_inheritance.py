@@ -267,7 +267,6 @@ def test_extra_args_source_default_is_none():
 
 def test_idle_identity_preserves_effective_mmproj_state():
     from core.inference.llama_keepwarm import _loaded_identity
-
     backend = _loaded_backend(
         _model_identifier = "owner/vision-repo",
         _hf_variant = "Q4_K_M",
