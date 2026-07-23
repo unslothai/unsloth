@@ -20,12 +20,13 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "await unloadModel({ model_path: model.id }).catch" not in runtime
     cancel = runtime.split("const cancelLoadRun = useCallback(", 1)[1]
     cancel = cancel.split("const cancelLoading = useCallback(", 1)[0]
-    assert cancel.index("await run.completionPromise;") < cancel.index(
-        "await unloadModel({ model_path: model.id });"
+    assert cancel.index("await unloadModel({ model_path: model.id });") < cancel.index(
+        "await run.completionPromise;"
     )
-    assert "const stopped = await cancelLoadRun(activeRun);" in runtime
+    assert "const stopped = await cancelLoadRun(activeRun, true);" in runtime
     assert "if (!stopped)" in runtime
     assert "await refresh();" in runtime
+    assert "if (!preserveCheckpoint) clearCheckpoint();" in cancel
 
 
 def test_late_callbacks_are_bound_to_their_originating_run():
@@ -38,6 +39,7 @@ def test_late_callbacks_are_bound_to_their_originating_run():
     assert "loadAttemptRef.current === run.attemptId" in runtime
     assert "loadIntentRef.current === run.intentId" in runtime
     assert "if (loadIntentRef.current !== loadIntentId) return;" in runtime
+    assert "loadIntentRef.current += 1;" in runtime
 
 
 def test_cancelled_load_does_not_report_success_to_callers():
@@ -55,3 +57,15 @@ def test_picker_preserves_background_downloads_but_switches_cached_models():
     assert "if (wantBackgroundDownload)" in stage_or_load
     assert "const stopped = await cancelLoading();" in stage_or_load
     assert "if (!stopped)" in stage_or_load
+    assert 'toast.info("Another model is already loading"' in stage_or_load
+
+
+def test_external_selection_invalidates_older_local_intent():
+    page = _read("features/chat/chat-page.tsx")
+    external = page.split(
+        'if (meta?.source === "external" || isExternalModelId(value)) {',
+        1,
+    )[1]
+    assert external.index("invalidatePendingModelSelection();") < external.index(
+        "store.setCheckpoint(value, null);"
+    )
