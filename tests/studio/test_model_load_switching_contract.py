@@ -27,6 +27,7 @@ def test_unload_is_awaited_and_failure_blocks_replacement():
     assert "if (!stopped)" in runtime
     assert "await refresh();" in runtime
     assert "if (!preserveCheckpoint) clearCheckpoint();" in cancel
+    assert "if (run.backendLoadStarted)" in cancel
 
 
 def test_late_callbacks_are_bound_to_their_originating_run():
@@ -55,9 +56,11 @@ def test_picker_preserves_background_downloads_but_switches_cached_models():
     stage_or_load = page.split("const stageOrLoad = useCallback(", 1)[1]
     stage_or_load = stage_or_load.split("useRepoDownload({", 1)[0]
     assert "if (wantBackgroundDownload)" in stage_or_load
-    assert "const stopped = await cancelLoading();" in stage_or_load
-    assert "if (!stopped)" in stage_or_load
-    assert 'toast.info("Another model is already loading"' in stage_or_load
+    assert "await cancelLoading()" not in stage_or_load
+    assert "await selectModel({" in stage_or_load
+    assert "const stopped = await cancelLoadRun(activeRun, true);" in _read(
+        "features/chat/hooks/use-chat-model-runtime.ts"
+    )
 
 
 def test_external_selection_invalidates_older_local_intent():
