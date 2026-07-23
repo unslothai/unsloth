@@ -359,9 +359,7 @@ class TestSandboxEnvIsolation:
         monkeypatch.setenv("ProgramFiles", str(prog))
         git_dir = prog / "Git" / "cmd"
         git_dir.mkdir(parents = True)
-        monkeypatch.setattr(
-            tools_mod.shutil, "which", lambda name: str(git_dir / "git.cmd")
-        )
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_dir / "git.cmd"))
         env = _build_safe_env(str(tmp_path))
         assert str(git_dir) in env["PATH"].split(os.pathsep)
         assert env["PATHEXT"] == ".EXE;.COM;.CMD"
@@ -376,17 +374,13 @@ class TestSandboxEnvIsolation:
         monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
         shim_dir = tmp_path / "users" / "alice" / "scoop" / "shims"
         shim_dir.mkdir(parents = True)
-        monkeypatch.setattr(
-            tools_mod.shutil, "which", lambda name: str(shim_dir / "git.exe")
-        )
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim_dir / "git.exe"))
         env = _build_safe_env(str(tmp_path))
         assert str(shim_dir) not in env["PATH"].split(os.pathsep)
         # No trusted git launcher -> PATHEXT stays minimal.
         assert env["PATHEXT"] == ".EXE;.COM"
 
-    def test_no_default_current_directory_in_exe_path_set_on_windows(
-        self, monkeypatch, tmp_path
-    ):
+    def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
         import core.inference.tools as tools_mod
         from core.inference.tools import _build_safe_env
