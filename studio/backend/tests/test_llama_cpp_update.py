@@ -473,6 +473,7 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
 
     def _on_start(cmd):
+        captured["cmd"] = cmd
         _write_install(
             install_dir,
             "b9518",
@@ -480,6 +481,7 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
             asset = "llama-b9518-bin-ubuntu-vulkan-x64.tar.gz",
         )
 
+    captured: dict = {}
     popen_kwargs: dict = {}
     _patch_installer_popen(
         monkeypatch,
@@ -497,6 +499,8 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert job["state"] == "success", job
     assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
+    assert popen_kwargs["env"]["UNSLOTH_LLAMA_BACKEND"] == "vulkan"
+    assert "--llama-backend" in captured["cmd"] and "vulkan" in captured["cmd"]
 
 
 @pytest.mark.parametrize(
