@@ -96,9 +96,7 @@ def test_cancelled_preflight_does_not_open_late_owned_dialogs():
     assert runtime.count("signal: abortCtrl.signal") >= 3
     assert "if (signal?.aborted)" in remote_code
     assert "if (options.signal?.aborted)" in hf_token
-    assert hf_token.index(
-        "await validateHfToken(normalized, options.signal)"
-    ) < hf_token.index(
+    assert hf_token.index("await validateHfToken(normalized, options.signal)") < hf_token.index(
         "if (options.signal?.aborted)"
     )
     assert remote_code.index("await getRemoteCodeScan") < remote_code.index("if (signal?.aborted)")
@@ -108,10 +106,7 @@ def test_other_runtime_surface_can_cancel_the_shared_load():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "let sharedModelLoadHandle: SharedModelLoadHandle | null = null;" in runtime
     assert "sharedModelLoadHandle = {" in runtime
-    assert (
-        "return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);"
-        in runtime
-    )
+    assert "return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);" in runtime
     assert "if (sharedModelLoadHandle?.run === run)" in runtime
     assert "const stopped = await shared.cancel(true);" in runtime
     assert "shared.run.previousCheckpointWasUnloaded" in runtime
