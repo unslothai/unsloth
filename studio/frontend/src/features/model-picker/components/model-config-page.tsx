@@ -359,9 +359,9 @@ function GpuMemorySettings({
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
               Which GPUs this model may use. Unchecked GPUs are hidden from
-              llama.cpp (CUDA_VISIBLE_DEVICES, or HIP_VISIBLE_DEVICES on ROCm).
-              Leave all checked to use every GPU. At least one GPU must stay
-              selected.
+              llama.cpp (CUDA_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES on ROCm, or
+              a --device pin on Vulkan builds). Leave all checked to use every
+              GPU. At least one GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">

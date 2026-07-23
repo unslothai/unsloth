@@ -4431,23 +4431,20 @@ async def _load_model_impl(
                         "Omit gpu_ids to use all devices."
                     ),
                 )
-            # Same reasoning for a Vulkan-only build: --device pins ggml's own
-            # Vulkan ordinals, so a physical pick can land on the wrong card on
-            # masked or non-contiguous hosts.
+            # A Vulkan-only build validates against ggml's own Vulkan ordinals
+            # instead: /api/system reports gguf_devices in that space, load_model
+            # pins the pick with --device Vulkan<i>, so probe, picker, and pin
+            # share one index space (physical ids are never involved).
             if LlamaCppBackend._is_vulkan_backend():
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported with a Vulkan "
-                        "llama.cpp build: physical GPU ids have no defined "
-                        "mapping to Vulkan device ordinals. Omit gpu_ids to use "
-                        "all devices."
-                    ),
-                )
-            try:
-                resolve_requested_gpu_ids(effective_gpu_ids)
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+                try:
+                    LlamaCppBackend.validate_vulkan_gpu_ids(effective_gpu_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            else:
+                try:
+                    resolve_requested_gpu_ids(effective_gpu_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
                 status_code = 400,
@@ -5055,20 +5052,18 @@ async def validate_model(
                         "Omit gpu_ids to use all devices."
                     ),
                 )
+            # Mirror /load: a Vulkan build validates the pick in ggml's own
+            # Vulkan ordinal space (the space the --device pin uses).
             if LlamaCppBackend._is_vulkan_backend():
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported with a Vulkan "
-                        "llama.cpp build: physical GPU ids have no defined "
-                        "mapping to Vulkan device ordinals. Omit gpu_ids to use "
-                        "all devices."
-                    ),
-                )
-            try:
-                resolve_requested_gpu_ids(effective_gpu_ids)
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+                try:
+                    LlamaCppBackend.validate_vulkan_gpu_ids(effective_gpu_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            else:
+                try:
+                    resolve_requested_gpu_ids(effective_gpu_ids)
+                except ValueError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

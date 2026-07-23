@@ -9,6 +9,12 @@ export interface GpuInfo {
   available: boolean;
   name: string;
   memoryTotalGb: number;
+  /** VRAM budget for GGUF/llama-server workloads. On a Vulkan build this sums
+   * the devices llama-server actually uses (gguf_devices), which can include
+   * cards the torch backend can't see (e.g. a pre-ROCm AMD card); otherwise
+   * identical to memoryTotalGb. GGUF fit labels must use this; torch-based
+   * (training / safetensors) estimates must stay on memoryTotalGb. */
+  ggufMemoryTotalGb: number;
   cpuCore: number;
   cpuThread: number;
   systemRamAvailableGb: number;
@@ -22,9 +28,10 @@ export interface SystemGpuDevice {
   /** Free VRAM at fetch time. Degrades to the total when the utilization
    * probe had no usage data; 0 only when the total is unknown too. */
   memoryFreeGb: number;
-  /** "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
-   *  "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
-   *  backend can't map back, so the picker must not offer it. */
+  /** True when `index` is safe to pin via gpu_ids: a stable physical/PCI id,
+   *  or a ggml Vulkan ordinal (the space /load pins with --device Vulkan<i>).
+   *  False for ordinals into a parent CUDA_VISIBLE_DEVICES mask, which the
+   *  backend can't map back, so the picker must not offer them. */
   physicalIndex: boolean;
 }
 
@@ -32,6 +39,7 @@ const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
   memoryTotalGb: 0,
+  ggufMemoryTotalGb: 0,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
@@ -70,28 +78,57 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
   };
   const gpuData = data?.gpu;
   const devices = gpuData?.devices ?? [];
+  // GGUF budget: what llama-server can use. Skips iGPUs (their "VRAM" is the
+  // shared system RAM already reported above); falls back to the torch total
+  // when the backend reports no separate llama-server inventory.
+  const ggufDeviceTotalGb = (gpuData?.gguf_devices ?? []).reduce(
+    (sum, d) => sum + (d.is_igpu ? 0 : (d.memory_total_gb ?? 0)),
+    0,
+  );
   if (!gpuData?.available || !devices.length) {
-    return { ...DEFAULT_GPU, ...base };
+    // Torch sees no GPU (training stays CPU-bound / unavailable), but a Vulkan
+    // llama.cpp build may still drive GPUs for GGUF: surface that budget alone.
+    return { ...DEFAULT_GPU, ...base, ggufMemoryTotalGb: ggufDeviceTotalGb };
   }
+  const memoryTotalGb = devices.reduce(
+    (sum, d) => sum + (d.memory_total_gb ?? 0),
+    0,
+  );
   return {
     ...base,
     available: true,
     name: devices[0]?.name ?? "Unknown",
-    memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
+    memoryTotalGb,
+    ggufMemoryTotalGb: ggufDeviceTotalGb || memoryTotalGb,
   };
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // Unpinnable configurations must hide every pick surface: XPU indices are
-  // torch-xpu ordinals no applicator speaks, and Vulkan-only builds pin ggml's
-  // own ordinals -- /load and /validate 400 picks on both, so the backend
-  // reports gpu.gguf_gpu_ids_supported and every gate keyed on physicalIndex
-  // (picker, persisted-pick reconcile) follows it. The device flavor lives on
-  // the TOP-LEVEL device_backend field; absent support info defaults to
-  // pinnable (older backend).
+  // torch-xpu ordinals no applicator speaks -- /load and /validate 400 picks,
+  // so the backend reports gpu.gguf_gpu_ids_supported and every gate keyed on
+  // physicalIndex (picker, persisted-pick reconcile) follows it. The device
+  // flavor lives on the TOP-LEVEL device_backend field; absent support info
+  // defaults to pinnable (older backend).
   const pinnableBackend =
     data?.device_backend !== "xpu" &&
     data?.gpu?.gguf_gpu_ids_supported !== false;
+  // These devices exist to drive GGUF loads, so when the backend reports the
+  // llama-server (Vulkan) inventory, that list is authoritative: it can see
+  // cards torch can't, its indices are the ggml ordinals /load pins with
+  // --device Vulkan<i>, and gguf_gpu_ids_supported says picks are accepted.
+  const ggufDevices = data?.gpu?.gguf_devices ?? [];
+  if (ggufDevices.length) {
+    return ggufDevices
+      .filter((d) => typeof d.index === "number")
+      .map((d) => ({
+        index: d.index as number,
+        name: d.name ?? `GPU ${d.index}`,
+        memoryTotalGb: d.memory_total_gb ?? 0,
+        memoryFreeGb: d.vram_free_gb ?? 0,
+        physicalIndex: pinnableBackend && d.index_kind === "vulkan",
+      }));
+  }
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({

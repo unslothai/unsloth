@@ -1160,9 +1160,12 @@ export function ModelsPage() {
 
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
 
-  const gpuLabel = gpu.available
-    ? `${Math.round(gpu.memoryTotalGb)} GiB`
-    : "Unavailable";
+  // Models here run through llama-server, so show the budget it can use (on a
+  // Vulkan build this can span cards the torch backend can't see).
+  const gpuLabel =
+    gpu.available || gpu.ggufMemoryTotalGb > 0
+      ? `${Math.round(gpu.ggufMemoryTotalGb)} GiB`
+      : "Unavailable";
   const ramLabel =
     gpu.systemRamTotalGb > 0
       ? `${Math.round(gpu.systemRamTotalGb)} GiB`
@@ -1254,7 +1257,7 @@ export function ModelsPage() {
       loadingPhase: loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpuGb: gpu.available ? gpu.memoryTotalGb : undefined,
+      gpuGb: gpu.ggufMemoryTotalGb > 0 ? gpu.ggufMemoryTotalGb : undefined,
       systemRamGb:
         gpu.systemRamAvailableGb > 0 ? gpu.systemRamAvailableGb : undefined,
     }),
@@ -1265,8 +1268,7 @@ export function ModelsPage() {
       loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpu.available,
-      gpu.memoryTotalGb,
+      gpu.ggufMemoryTotalGb,
       gpu.systemRamAvailableGb,
     ],
   );

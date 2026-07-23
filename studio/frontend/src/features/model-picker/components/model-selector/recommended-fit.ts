@@ -129,9 +129,17 @@ export function hfModelFitsDevice(
     estimatedSizeBytes?: number;
     isGguf?: boolean;
   },
-  gpu: { memoryTotalGb: number; systemRamAvailableGb: number },
+  gpu: {
+    memoryTotalGb: number;
+    ggufMemoryTotalGb?: number;
+    systemRamAvailableGb: number;
+  },
 ): boolean {
-  if (gpu.memoryTotalGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
+  // "Can this run at all" assumes the quantized llama.cpp path, so budget
+  // against the devices llama-server can use (can exceed the torch view on a
+  // Vulkan build, e.g. a pre-ROCm card next to a ROCm one).
+  const gpuGb = gpu.ggufMemoryTotalGb ?? gpu.memoryTotalGb;
+  if (gpuGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
   const params = model.totalParams ?? paramsFromId(model.id);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
   const sizeBytes = isGgufId(model.id, model.isGguf)
@@ -139,7 +147,7 @@ export function hfModelFitsDevice(
     : (quantBytes ?? model.estimatedSizeBytes);
   return fitsDevice({
     sizeBytes,
-    gpuGb: gpu.memoryTotalGb,
+    gpuGb,
     systemRamGb: gpu.systemRamAvailableGb,
     requireKnown: true,
   });
