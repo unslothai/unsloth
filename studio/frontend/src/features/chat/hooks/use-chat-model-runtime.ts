@@ -282,6 +282,12 @@ async function syncInferenceStatusToStore(options?: {
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
+  if (includeLoras) {
+    // A prior successful refresh is not proof that the catalog behind a later
+    // compare mount is current. Keep new compare layouts unfrozen until this
+    // inventory request has published its LoRAs.
+    useChatRuntimeStore.getState().setModelRuntimeHydrated(false);
+  }
   try {
     const [listRes, statusRes, lorasRes] = await Promise.all([
       listModels(),

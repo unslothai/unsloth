@@ -379,16 +379,19 @@ export function RegisterCompareHandle({
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
         new Promise<void>((resolve) => {
-          let threadId = aui.threads().getState().mainThreadId || null;
-          let wasRunning = threadId
-            ? Boolean(useChatRuntimeStore.getState().runningByThreadId[threadId])
-            : false;
+          let wasRunning = false;
           const unsub = useChatRuntimeStore.subscribe((state) => {
-            if (!threadId) {
-              threadId = aui.threads().getState().mainThreadId || null;
-            }
-            if (!threadId) return;
-            const isRunning = Boolean(state.runningByThreadId[threadId]);
+            // A fresh assistant-ui pane begins with __LOCALID..., then storage
+            // initialization assigns its persisted remote id before the adapter
+            // marks the run active. Refresh both identities on every update so
+            // the waiter follows that handoff instead of watching a stale id.
+            const ids = [
+              aui.threads().getState().mainThreadId,
+              aui.threadListItem().getState().remoteId,
+            ].filter((id): id is string => Boolean(id));
+            const isRunning = ids.some((id) =>
+              Boolean(state.runningByThreadId[id]),
+            );
             if (isRunning) wasRunning = true;
             if (wasRunning && !isRunning) {
               unsub();
@@ -1065,8 +1068,12 @@ export function SharedComposer({
       // Once /load starts, the backend may replace the active model after its
       // prechecks. Remember the origin so failures can preserve it when status
       // proves the backend never reached the unload step.
-      const modelSwitchState: { originCheckpoint: string | null } = {
+      const modelSwitchState: {
+        originCheckpoint: string | null;
+        originGgufVariant: string | null;
+      } = {
         originCheckpoint: null,
+        originGgufVariant: null,
       };
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
@@ -1237,6 +1244,9 @@ export function SharedComposer({
         modelSwitchState.originCheckpoint = switchingModels
           ? previousCheckpoint
           : null;
+        modelSwitchState.originGgufVariant = switchingModels
+          ? previousVariant
+          : null;
         const resp = await loadModel(
           {
             model_path: sel.id,
@@ -1275,6 +1285,7 @@ export function SharedComposer({
         persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
         upgradeUnloadedActive = false;
         modelSwitchState.originCheckpoint = null;
+        modelSwitchState.originGgufVariant = null;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1460,7 +1471,9 @@ export function SharedComposer({
               const status = await getInferenceStatus();
               originalModelStillActive =
                 resolveInferenceCheckpointId(status)?.toLowerCase() ===
-                modelSwitchState.originCheckpoint.toLowerCase();
+                  modelSwitchState.originCheckpoint.toLowerCase() &&
+                (status.gguf_variant ?? null) ===
+                  modelSwitchState.originGgufVariant;
             } catch {
               // If status cannot prove the old model survived, clear the stale
               // client checkpoint below.
