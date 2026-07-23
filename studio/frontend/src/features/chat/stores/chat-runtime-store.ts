@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndexKind,
+  cachedPinnableGpuIndices,
+  type GpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -586,8 +590,18 @@ export function rebalanceSplit(
 // unpopulated device cache leaves the pick alone (the backend still guards).
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
 ): number[] | null {
   if (ids == null) return ids;
+  if (arguments.length >= 2) {
+    const currentIndexKind = cachedPinnableGpuIndexKind();
+    if (
+      currentIndexKind !== undefined &&
+      currentIndexKind !== savedIndexKind
+    ) {
+      return null;
+    }
+  }
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));
@@ -606,6 +620,7 @@ export function loadedGpuMemoryFields(resp: {
   n_layers?: number | null;
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
+  requested_gpu_ids?: number[] | null;
   gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
@@ -635,8 +650,6 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
-  // Keep the user's placement pool editable across status/load hydration.
-  // gpu_ids remains the effective fitted subset for diagnostics.
   const gpuIds = resp.requested_gpu_ids ?? resp.gpu_ids ?? null;
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
@@ -675,7 +688,8 @@ export function loadedGpuMemoryFields(resp: {
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
-    // The picker reflects the requested placement pool, not a fitted subset.
+    // Keep the editable picker on the user's requested set. Auto fit can narrow
+    // effective placement, but that must not silently rewrite future requests.
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
     // Commit the residency the backend actually applied. Mirroring both the

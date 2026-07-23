@@ -529,13 +529,13 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+        description = "Effective GPU indices the model is using, or None for automatic selection.",
     )
     requested_gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU placement pool requested by the user before fit-time narrowing, "
-            "or None for automatic selection."
+            "GPU indices requested by the user before fit-time narrowing, or "
+            "None for automatic selection."
         ),
     )
     gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
@@ -708,13 +708,13 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+        description = "Effective GPU indices the model is using, or None for automatic selection.",
     )
     requested_gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU placement pool requested by the user before fit-time narrowing, "
-            "or None for automatic selection."
+            "GPU indices requested by the user before fit-time narrowing, or "
+            "None for automatic selection."
         ),
     )
     gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(

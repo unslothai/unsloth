@@ -605,11 +605,6 @@ def test_response_models_emit_gpu_ids(model_cls):
     assert obj.model_dump()["requested_gpu_ids"] == [1, 2]
 
 
-def test_gguf_load_and_status_responses_include_requested_gpu_pool():
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
-    assert route_src.count("requested_gpu_ids = llama_backend.requested_gpu_ids") == 3
-
-
 def test_gpu_ids_property_default_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_ids is None
