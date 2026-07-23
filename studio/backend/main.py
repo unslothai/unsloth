@@ -307,6 +307,7 @@ from routes import (
     rag_router,
     training_history_router,
     training_router,
+    usage_router,
 )
 from routes.llama import router as llama_router
 from routes.whisper import router as whisper_router
@@ -527,6 +528,15 @@ async def lifespan(app: FastAPI):
         cleanup_orphaned_runs()
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+    try:
+        from storage.usage_log import enforce_retention, record_event
+        from core.inference.api_monitor import api_monitor
+
+        enforce_retention()
+        api_monitor.on_finish = record_event
+    except Exception as exc:
+        _lifespan_log.warning("usage logging setup failed at startup: %s", exc)
 
     reap_hub_orphan_workers()
 

@@ -69,6 +69,14 @@ from .data_recipe import (
     JobCreateResponse,
 )
 
+from .usage import (
+    UsageEvent,
+    UsageSummaryRow,
+    UsageSummaryResponse,
+    UsageRetentionSetting,
+    UsageExportParams,
+)
+
 __all__ = [
     # Training schemas
     "TrainingStartRequest",
@@ -127,4 +135,10 @@ __all__ = [
     "ValidateError",
     "ValidateResponse",
     "JobCreateResponse",
+    # Usage schemas
+    "UsageEvent",
+    "UsageSummaryRow",
+    "UsageSummaryResponse",
+    "UsageRetentionSetting",
+    "UsageExportParams",
 ]

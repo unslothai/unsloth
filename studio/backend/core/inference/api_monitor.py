@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 
 _MAX_ENTRIES = 50
@@ -52,6 +52,7 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
+    provider_type: Optional[str] = None
 
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         duration_ms = None
@@ -97,6 +98,7 @@ class ApiMonitor:
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self.on_finish: Optional[Callable[[ApiMonitorEntry], None]] = None
 
     def start(
         self,
@@ -107,6 +109,7 @@ class ApiMonitor:
         prompt: str,
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> str:
         now = time.time()
         entry = ApiMonitorEntry(
@@ -121,6 +124,7 @@ class ApiMonitor:
             subject = subject,
             started_monotonic = time.monotonic(),
             context_length = context_length,
+            provider_type = provider_type,
         )
         with self._lock:
             self._entries.appendleft(entry)
@@ -195,6 +199,8 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+
+        finished_entry = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -211,10 +217,22 @@ class ApiMonitor:
             self._entries.remove(entry)
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            finished_entry = entry
+
+        if finished_entry is not None and self.on_finish is not None:
+            try:
+                self.on_finish(finished_entry)
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "api_monitor.on_finish_failed", error = str(exc)
+                )
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
+
+        failed_entry = None
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
@@ -233,6 +251,16 @@ class ApiMonitor:
             self._entries.remove(entry)
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
+            failed_entry = entry
+
+        if failed_entry is not None and self.on_finish is not None:
+            try:
+                self.on_finish(failed_entry)
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "api_monitor.on_finish_failed", error = str(exc)
+                )
 
     def snapshot(
         self,
