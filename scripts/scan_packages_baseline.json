@@ -303,8 +303,8 @@
       "file": "openai/_base_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L264:         while True: sha256:95ca67e46d42354ae650abbdc5b0d97df8b0ed43187800bf40f5690c3901b94b",
-      "evidence_hash": "a57d8d15fed0bf04f9967dcc18a18b80bb19f4095675bccbb78ac0450d7fce14"
+      "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
+      "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
     },
     {
       "package": "openai",
@@ -319,8 +319,8 @@
       "file": "openai/auth/_workload.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "IMDS: L96:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L149:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L77:     http_client: httpx.Client | None = None, | L108:                 with httpx.Client() as client: | L133:     http_client: httpx.Client | None = None, | L155:                 with httpx.Client() as client: | L248:         with httpx.Client() as client:",
-      "evidence_hash": "1581d9f4a23393e9af23fbe5ef9f66807b22c5b5a3f1fe167254c9ebee108567"
+      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
+      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
     },
     {
       "package": "openai",
@@ -343,8 +343,8 @@
       "file": "openai/resources/beta/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3999:         while True: sha256:df298b6eaf3416589b79f4ef283f8fb76e54d505bfda8840673f8e6419117e2e",
-      "evidence_hash": "10ce5cb5a7097fcff4042ddcfb4802edda60aa4b7b113c8b926a52ddb76f78c2"
+      "evidence": "L4000:         while True: sha256:f8ab538118daba9ec06e27399dbdc90a4521c3390e6a47a6348a1f180a83effd",
+      "evidence_hash": "31481ea83c687acc27144d72d3832d4fb98dd1c79fb5e0ddd85080de95997b9f"
     },
     {
       "package": "openai",
@@ -359,16 +359,16 @@
       "file": "openai/resources/realtime/realtime.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L310:         while True: sha256:458198ff3d3f05870bf98c9564cbfd68c739e57b9bbe4120ed81e3eb6af74a05",
-      "evidence_hash": "a3165d21e46b3ce553795daeae53e8f80e8e89c5cb228e68e6dcaff54bca5a89"
+      "evidence": "L311:         while True: sha256:5b63313072aae9ca28677e03426513ccf12221e4f4e0ea6c31efbe09790633b5",
+      "evidence_hash": "05e1af469d651b51673763a7c4cdf759af9472fb627b7b470adc28cc237bd650"
     },
     {
       "package": "openai",
       "file": "openai/resources/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3950:         while True: sha256:1ce0b5a388c747945cdfda1a71b77afdfd03ae840d7aa9fa62f02eb00aa5e29f",
-      "evidence_hash": "6de300ebb5e6e17cb51c89cbcdf08515a44655182f0776f0908a9d1043ebbcd7"
+      "evidence": "L3951:         while True: sha256:d68ef896bf0743ca430cfacb9a3353da1f3b9c51c3a21b6450a07a32b55aa2ac",
+      "evidence_hash": "160eecdd79b521bffbe8476f782b69a0724c35d1b19376a7600807165fd54f9f"
     },
     {
       "package": "openai",
