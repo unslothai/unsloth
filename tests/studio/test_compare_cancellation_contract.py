@@ -38,6 +38,14 @@ def test_compare_layout_waits_for_inventory_then_freezes():
     assert 'aria-busy="true"' in compare
 
 
+def test_inventory_refresh_restores_previous_hydration_on_abort_or_error():
+    runtime = _read("hooks/use-chat-model-runtime.ts")
+    sync = runtime.split("async function syncInferenceStatusToStore(", 1)[1]
+    sync = sync.split("export async function resyncInferenceStatus", 1)[0]
+    assert "const previousModelRuntimeHydrated =" in sync
+    assert sync.count("setModelRuntimeHydrated(previousModelRuntimeHydrated)") == 2
+
+
 def test_same_model_reload_retains_origin_for_stop_reconciliation():
     composer = _read("shared-composer.tsx")
     assert "modelSwitchState.originCheckpoint = previousCheckpoint || null;" in composer
