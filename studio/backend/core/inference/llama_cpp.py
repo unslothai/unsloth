@@ -7841,6 +7841,7 @@ class LlamaCppBackend:
                 if is_vision and not effective_mmproj_requested:
                     env.pop("LLAMA_ARG_MMPROJ", None)
                     env.pop("LLAMA_ARG_MMPROJ_AUTO", None)
+                    env.pop("LLAMA_ARG_MMPROJ_URL", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default

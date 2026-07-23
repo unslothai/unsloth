@@ -235,6 +235,21 @@ def test_vision_downgrade_preserves_multi_gpu_intent():
     assert auto != -1 and "_layer_min_gpus" in src[auto : auto + 200]
 
 
+def test_disabled_projector_clears_every_inherited_mmproj_env_form():
+    """The Studio toggle must override path, auto, and URL projector env flags."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    first_pop = src.index('env.pop("LLAMA_ARG_MMPROJ", None)')
+    start = src.rindex("if is_vision and not effective_mmproj_requested:", 0, first_pop)
+    end = src.index("# Windows + full offload", start)
+    block = src[start:end]
+    for env_name in (
+        "LLAMA_ARG_MMPROJ",
+        "LLAMA_ARG_MMPROJ_AUTO",
+        "LLAMA_ARG_MMPROJ_URL",
+    ):
+        assert f'env.pop("{env_name}", None)' in block
+
+
 # ── per-binary capability cache (pure) ───────────────────────────────
 
 

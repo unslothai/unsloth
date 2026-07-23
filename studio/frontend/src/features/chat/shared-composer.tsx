@@ -1049,7 +1049,7 @@ export function SharedComposer({
           : fallbackTensorParallel;
         const effectiveVisionProjector = ownRemembered
           ? (ownConfig.visionProjectorEnabled ?? true)
-          : true;
+          : compareLoadKnobs.visionProjectorEnabled;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
