@@ -93,8 +93,8 @@ huggingfacenotorch = [
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
 ]
-# Gemma audio / datasets>=4 torchcodec backend (#7225). Pins are torch-minor
-# specific — use audio-torch* matching your torch install (see TORCH_TORCHCODEC).
+# torchcodec backend for Gemma audio / datasets>=4 (#7225).
+# Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
 audio-torch210 = [
     "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10'",
 ]
