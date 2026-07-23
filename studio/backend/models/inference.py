@@ -70,7 +70,10 @@ class LoadRequest(BaseModel):
 
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
+        description = (
+            "KV cache data type for both K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -407,7 +410,10 @@ class LoadResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
+        description = (
+            "KV cache data type for K and V "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
+        ),
     )
     chat_template: Optional[str] = Field(
         None,
@@ -560,7 +566,11 @@ class InferenceStatusResponse(BaseModel):
     )
     cache_type_kv: Optional[str] = Field(
         None,
-        description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+        description = (
+            "KV cache quantization dtype "
+            "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32'), "
+            "or None for default"
+        ),
     )
     chat_template: Optional[str] = Field(
         None, description = "Model's default chat template (Jinja2 source), if any"

@@ -46,7 +46,17 @@ export const MAX_SEQ_LENGTH_STEP = 128;
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
-export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;
+// Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
+export const KV_CACHE_DTYPES = [
+  "bf16",
+  "q8_0",
+  "q4_0",
+  "q4_1",
+  "q5_0",
+  "q5_1",
+  "iq4_nl",
+  "f32",
+] as const;
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 export const SPECULATIVE_TYPES = [
