@@ -26,7 +26,7 @@ def _load_is_vlm():
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_is_vlm"
     )
     namespace = {}
-    module = ast.Module(body=[func], type_ignores=[])
+    module = ast.Module(body = [func], type_ignores = [])
     ast.fix_missing_locations(module)
     exec(compile(module, SAVE_PATH, "exec"), namespace)
     return namespace["_is_vlm"]
@@ -36,7 +36,7 @@ class _Cfg:
     def __init__(
         self,
         architectures,
-        vision_config=False,
+        vision_config = False,
     ):
         self.architectures = architectures
         if vision_config:
@@ -57,7 +57,7 @@ def test_is_vlm_handles_none_architectures():
 def test_is_vlm_detects_vision_architecture_and_config():
     is_vlm = _load_is_vlm()
     assert is_vlm(_Model(_Cfg(["Gemma3ForConditionalGeneration"]))) is True
-    assert is_vlm(_Model(_Cfg(None, vision_config=True))) is True
+    assert is_vlm(_Model(_Cfg(None, vision_config = True))) is True
 
 
 def test_is_vlm_false_for_text_model_and_missing_config():
