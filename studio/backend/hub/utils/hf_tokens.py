@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
-HfTokenArg = str | Literal[False]
+HfTokenArg = Union[str, Literal[False]]
 
 
 def hf_token_arg(hf_token: Optional[str]) -> HfTokenArg:
