@@ -240,10 +240,10 @@ _COLAB_IFRAME_HEIGHT = 900
 def _embed_kernel_port_iframe(port: int) -> bool:
     """Embed Studio via Colab's native kernel-port iframe helper.
 
-  Colab's output sanitizer often strips custom ``<iframe>`` tags from
-  ``IPython.display.HTML`` without raising, which leaves a blank cell even
-  though ``display()`` succeeded. The kernel-port helper is the supported
-  embedding path and registers the proxy correctly.
+    Colab's output sanitizer often strips custom ``<iframe>`` tags from
+    ``IPython.display.HTML`` without raising, which leaves a blank cell even
+    though ``display()`` succeeded. The kernel-port helper is the supported
+    embedding path and registers the proxy correctly.
     """
     try:
         from google.colab import output as colab_output
@@ -313,7 +313,6 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
     if cloudflare_url:
         try:
             from IPython.display import HTML, display
-
             display(HTML(_shareable_link_html(cloudflare_url)))
         except Exception as e:
             logger.info(f"Could not render Cloudflare link card ({e}).")
