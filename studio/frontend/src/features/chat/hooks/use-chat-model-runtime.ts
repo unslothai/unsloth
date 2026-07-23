@@ -1271,12 +1271,19 @@ export function useChatModelRuntime() {
                 prog.expected_bytes,
                 dlSamples,
               );
-              setLoadProgress({
-                percent: pct,
-                label: progressLabel,
-                phase: "downloading",
-              });
-              if (loadToastDismissedRef.current) return;
+              // loadProgress state is only read by the dismissed-toast inline
+              // status. Writing it while the toast is visible re-renders the
+              // whole chat page every poll — cheap in Chrome, janky in the
+              // desktop WebView2 (laggy typing). Feed the toast directly and
+              // only touch state when the inline view is actually live.
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({
+                  percent: pct,
+                  label: progressLabel,
+                  phase: "downloading",
+                });
+                return;
+              }
               toast(null, {
                 id: toastId,
                 ...modelLoadToastOptions(
@@ -1298,19 +1305,23 @@ export function useChatModelRuntime() {
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
-              setLoadProgress({
-                percent: null,
-                label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
-                phase: "downloading",
-              });
+              // Inline-status-only state; skip the chat-page re-render unless it's shown.
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({
+                  percent: null,
+                  label: `${dlGb.toFixed(1)} GB downloaded${rateSuffix}`,
+                  phase: "downloading",
+                });
+              }
             } else if (prog.progress >= 1 && hasShownProgress) {
               downloadComplete = true;
-              setLoadProgress({
-                percent: 100,
-                label: "Download complete",
-                phase: "starting",
-              });
-              if (!loadToastDismissedRef.current) {
+              if (loadToastDismissedRef.current) {
+                setLoadProgress({
+                  percent: 100,
+                  label: "Download complete",
+                  phase: "starting",
+                });
+              } else {
                 toast(null, {
                   id: toastId,
                   ...modelLoadToastOptions(
@@ -1364,12 +1375,17 @@ export function useChatModelRuntime() {
                   formatEta(est.eta) !== "--" ? ` • ${formatEta(est.eta)} left` : ""
                 }`
               : base;
-            setLoadProgress({
-              percent: pct,
-              label,
-              phase: "starting",
-            });
-            if (loadToastDismissedRef.current) return;
+            // Inline-status-only state (see pollDownload): while the toast is
+            // up, skip the state write so the chat page doesn't re-render every
+            // poll during "Starting model" — the desktop WebView2 typing-lag fix.
+            if (loadToastDismissedRef.current) {
+              setLoadProgress({
+                percent: pct,
+                label,
+                phase: "starting",
+              });
+              return;
+            }
             toast(null, {
               id: toastId,
               ...modelLoadToastOptions(
