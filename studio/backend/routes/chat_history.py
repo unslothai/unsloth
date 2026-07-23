@@ -7,7 +7,7 @@ Chat history API routes backed by studio.db.
 
 from typing import Annotated, Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
@@ -15,6 +15,7 @@ from loggers import get_logger
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
+    ChatMessageProtectedError,
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
@@ -274,10 +275,46 @@ async def patch_thread(
     return ChatThread(**thread)
 
 
+def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
+    """Signal any active research runs on these threads to stop before their rows are deleted.
+
+    Deleting a thread cascade-deletes its research_runs row, and the worker eventually notices via
+    lease loss -- but only at its next lease check, so it can keep doing model/web/RAG work (up to a
+    tool timeout) for a run that no longer exists. Setting the cancel event first shortens that
+    orphaned window. Best-effort: never let cancellation bookkeeping break the deletion itself.
+    """
+    if not thread_ids:
+        return
+    try:
+        from storage import research_runs_db
+    except Exception:  # noqa: BLE001 - research storage optional/unavailable
+        return
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    for thread_id in thread_ids:
+        try:
+            active = research_runs_db.list_active(thread_id)
+        except Exception:  # noqa: BLE001
+            continue
+        for run in active:
+            try:
+                status = research_runs_db.request_cancel(run["id"])
+                if supervisor is not None and status == "cancelling":
+                    supervisor.cancel(run["id"])
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "chat_history.cancel_active_research_failed run_id=%s",
+                    run.get("id"),
+                    exc_info = True,
+                )
+
+
 @router.delete("/threads")
 async def delete_threads(
-    payload: ChatDeleteRequest, current_subject: str = Depends(get_current_subject)
+    payload: ChatDeleteRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
+    _cancel_active_research(request, payload.ids)
     delete_chat_threads(payload.ids)
     return {"status": "deleted"}
 
@@ -402,7 +439,17 @@ def delete_attachment(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """Remove one attachment from its chat message."""
-    if not delete_chat_attachment(message_id, attachment_id):
+    try:
+        deleted = delete_chat_attachment(message_id, attachment_id)
+    except ChatMessageProtectedError as exc:
+        raise log_and_http_error(
+            exc,
+            409,
+            safe_curated_detail(exc),
+            event = "chat_history.delete_attachment_conflict",
+            log = logger,
+        ) from exc
+    if not deleted:
         raise HTTPException(status_code = 404, detail = "Attachment not found")
     return {"ok": True}
 
@@ -459,9 +506,13 @@ async def patch_project(
 @router.delete("/projects/{project_id}", response_model = ChatProject)
 async def delete_project(
     project_id: str,
+    request: Request,
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
+    _cancel_active_research(
+        request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
+    )
     project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
@@ -549,7 +600,7 @@ def save_thread_message(
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     try:
         return ChatMessage(**upsert_chat_message(payload.model_dump()))
-    except ChatMessageConflictError as exc:
+    except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
             409,
@@ -587,7 +638,7 @@ def replace_thread_messages(
                 )
             ]
         )
-    except ChatMessageConflictError as exc:
+    except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
             409,
@@ -621,7 +672,8 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(current_subject: str = Depends(get_current_subject)):
+async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
+    _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
     clear_chat_history()
     return {"status": "deleted"}
 

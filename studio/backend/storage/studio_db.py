@@ -533,6 +533,182 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'planning', 'awaiting_approval', 'queued', 'running', 'paused',
+                'cancelling', 'cancelled', 'completed', 'failed'
+            )),
+            plan_json TEXT,
+            plan_revision INTEGER NOT NULL DEFAULT 0,
+            plan_hash TEXT,
+            config_json TEXT NOT NULL,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            lease_owner TEXT,
+            lease_expires_at INTEGER,
+            heartbeat_at INTEGER,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            report_text TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            next_event_seq INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    research_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_runs)").fetchall()
+    }
+    if "report_text" not in research_run_cols:
+        conn.execute("ALTER TABLE research_runs ADD COLUMN report_text TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_thread_claims (
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    claim_pk = [
+        row[1]
+        for row in sorted(
+            conn.execute("PRAGMA table_info(research_thread_claims)").fetchall(),
+            key = lambda row: int(row[5] or 0),
+        )
+        if int(row[5] or 0) > 0
+    ]
+    if claim_pk != ["thread_id"]:
+        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK)
+        # atomically. Without an explicit transaction the RENAME/CREATE/INSERT/DROP run
+        # in autocommit, so an interruption after CREATE left the new table empty and the
+        # rows orphaned in _legacy, and the migration never re-triggered.
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "ALTER TABLE research_thread_claims RENAME TO research_thread_claims_legacy"
+            )
+            conn.execute(
+                """
+                CREATE TABLE research_thread_claims (
+                    owner_subject TEXT NOT NULL,
+                    thread_id TEXT NOT NULL PRIMARY KEY REFERENCES chat_threads(id) ON DELETE CASCADE,
+                    created_at INTEGER NOT NULL
+                ) WITHOUT ROWID
+                """
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO research_thread_claims
+                   (owner_subject, thread_id, created_at)
+                   SELECT owner_subject, thread_id, created_at
+                   FROM research_thread_claims_legacy
+                   ORDER BY created_at, owner_subject"""
+            )
+            conn.execute("DROP TABLE research_thread_claims_legacy")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    conn.execute(
+        """INSERT OR IGNORE INTO research_thread_claims
+           (owner_subject, thread_id, created_at)
+           SELECT owner_subject, thread_id, created_at
+           FROM research_runs ORDER BY created_at, id"""
+    )
+    conn.execute(
+        """UPDATE research_runs
+           SET status='failed', error_message='Superseded by the global thread research claim',
+               lease_owner=NULL, lease_expires_at=NULL, completed_at=COALESCE(completed_at, updated_at)
+           WHERE status IN ('planning','awaiting_approval','queued','running','paused','cancelling')
+             AND EXISTS (
+                 SELECT 1 FROM research_thread_claims c
+                 WHERE c.thread_id=research_runs.thread_id
+                   AND c.owner_subject<>research_runs.owner_subject
+             )"""
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_plan_steps (
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            query TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result_json TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            PRIMARY KEY(run_id, position)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            step_position INTEGER,
+            url TEXT NOT NULL,
+            title TEXT,
+            snippet TEXT,
+            fetched_at INTEGER NOT NULL,
+            UNIQUE(run_id, url)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_document_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            step_position INTEGER,
+            source_key TEXT NOT NULL,
+            document_id TEXT,
+            chunk_id TEXT,
+            filename TEXT NOT NULL,
+            page INTEGER,
+            score REAL,
+            snippet TEXT,
+            fetched_at INTEGER NOT NULL,
+            UNIQUE(run_id, source_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_events (
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(run_id, seq)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_owner_thread_status "
+        "ON research_runs(owner_subject, thread_id, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_lease "
+        "ON research_runs(status, lease_expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_sources_run ON research_sources(run_id, id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_document_sources_run "
+        "ON research_document_sources(run_id, id)"
+    )
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -540,10 +716,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         WHERE singleton = 1
         """
     ).fetchone()
+    # Positional read: works for raw tuple or sqlite3.Row (no row_factory precondition).
     if (
         inventory_state is None
-        or inventory_state["inventory_version"] != _CHAT_ATTACHMENT_INVENTORY_VERSION
-        or inventory_state["dirty"]
+        or inventory_state[0] != _CHAT_ATTACHMENT_INVENTORY_VERSION
+        or inventory_state[1]
     ):
         _rebuild_chat_attachment_inventory(conn)
         _mark_chat_attachment_inventory_clean(conn)
@@ -725,6 +902,7 @@ def get_connection() -> sqlite3.Connection:
             if not _schema_ready:
                 try:
                     _ensure_schema(conn)
+                    conn.commit()
                     _schema_ready = True
                 except Exception:
                     conn.close()
@@ -1623,6 +1801,10 @@ class ChatMessageConflictError(RuntimeError):
     """Raised when a chat message id already belongs to another thread."""
 
 
+class ChatMessageProtectedError(RuntimeError):
+    """Raised when pruning would remove a message owned by a durable feature."""
+
+
 class CorruptSettingsError(RuntimeError):
     """Raised when a partial settings patch would overwrite corrupt settings."""
 
@@ -1728,6 +1910,60 @@ def _recompute_chat_thread_updated_at(conn: sqlite3.Connection, thread_id: str) 
         """,
         (thread_id,),
     )
+
+
+def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            "SELECT user_message_id, assistant_message_id FROM research_runs WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
+def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, message: dict) -> bool:
+    row = conn.execute(
+        "SELECT parent_id, role, content_json, metadata_json, attachments_json, created_at "
+        "FROM chat_messages WHERE thread_id = ? AND id = ?",
+        (thread_id, str(message["id"])),
+    ).fetchone()
+    if row is None:
+        return False
+
+    def canon(value: object) -> str | None:
+        return json.dumps(value, sort_keys = True) if value is not None else None
+
+    # created_at is compared too: without it a client could re-upsert a protected message with an
+    # unchanged body but a different timestamp and silently reorder the server-managed research
+    # prompt/response pair. Absent createdAt defaults to the stored value (a no-op re-sync).
+    return (
+        canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))
+        or canon(message.get("metadata"))
+        != canon(json.loads(row["metadata_json"]) if row["metadata_json"] else None)
+        or canon(message.get("attachments"))
+        != canon(json.loads(row["attachments_json"]) if row["attachments_json"] else None)
+        or (message.get("parentId") or None) != (row["parent_id"] or None)
+        or str(message.get("role")) != str(row["role"])
+        or int(message.get("createdAt", row["created_at"])) != int(row["created_at"])
+    )
+
+
+def _guard_research_messages(
+    conn: sqlite3.Connection, thread_id: str, messages: list[dict]
+) -> None:
+    protected = _research_message_ids(conn, thread_id)
+    if not protected:
+        return
+    for message in messages:
+        if str(message["id"]) in protected and _research_message_would_change(
+            conn, thread_id, message
+        ):
+            raise ChatMessageProtectedError(
+                "Research prompts and responses are server-managed and cannot be edited"
+            )
 
 
 _CONTENT_PART_ID_PREFIX = "content-part-sha256-"
@@ -1984,11 +2220,13 @@ def _ensure_chat_attachment_inventory_current(conn: sqlite3.Connection) -> None:
         raise
 
 
-def upsert_chat_message(message: dict) -> dict:
+def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -> dict:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        if not allow_research_update:
+            _guard_research_messages(conn, message["threadId"], [message])
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -2061,11 +2299,15 @@ def sync_chat_messages(
     thread_id: str,
     messages: list[dict],
     prune_missing: bool = False,
+    *,
+    allow_research_update: bool = False,
 ) -> list[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        if not allow_research_update:
+            _guard_research_messages(conn, thread_id, messages)
         _raise_if_chat_message_thread_conflicts(
             conn,
             thread_id,
@@ -2132,6 +2374,10 @@ def sync_chat_messages(
                 ).fetchall()
             }
             missing_ids = sorted(existing_ids - retained_ids)
+            if set(missing_ids) & _research_message_ids(conn, thread_id):
+                raise ChatMessageProtectedError(
+                    "Research prompts and responses cannot be deleted from their original thread"
+                )
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -2149,7 +2395,7 @@ def sync_chat_messages(
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
         return list_chat_messages(thread_id)
-    except ChatMessageConflictError:
+    except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise
     except sqlite3.Error:
@@ -2158,6 +2404,55 @@ def sync_chat_messages(
         raise
     finally:
         conn.close()
+
+
+_RESEARCH_LINK_KEYS = {
+    "researchRunId",
+    "researchRun",
+    "researchStatus",
+    "researchPlanRevision",
+    "serverManaged",
+}
+
+
+def _detach_research_message_json(
+    content_json: str, metadata_json: str | None
+) -> tuple[str, str | None]:
+    content = _json_loads(content_json, [])
+    metadata = _json_loads(metadata_json, None)
+    custom = metadata.get("custom") if isinstance(metadata, dict) else None
+    linked = (
+        isinstance(metadata, dict)
+        and any(key in metadata for key in _RESEARCH_LINK_KEYS)
+        or isinstance(custom, dict)
+        and any(key in custom for key in _RESEARCH_LINK_KEYS)
+        or isinstance(content, list)
+        and any(
+            isinstance(part, dict) and any(key in part for key in _RESEARCH_LINK_KEYS)
+            for part in content
+        )
+    )
+    if not linked:
+        return content_json, metadata_json
+
+    if isinstance(content, list):
+        content = [
+            {key: value for key, value in part.items() if key not in _RESEARCH_LINK_KEYS}
+            if isinstance(part, dict)
+            else part
+            for part in content
+        ]
+    if isinstance(metadata, dict):
+        metadata = {key: value for key, value in metadata.items() if key not in _RESEARCH_LINK_KEYS}
+        custom = metadata.get("custom")
+        if isinstance(custom, dict):
+            metadata["custom"] = {
+                key: value for key, value in custom.items() if key not in _RESEARCH_LINK_KEYS
+            }
+    return (
+        json.dumps(content, ensure_ascii = False),
+        json.dumps(metadata, ensure_ascii = False) if metadata is not None else None,
+    )
 
 
 def fork_chat_thread(
@@ -2233,6 +2528,23 @@ def fork_chat_thread(
                 branch_message_id,
             ),
         )
+        fork_messages = []
+        for row in ancestry:
+            content_json, metadata_json = _detach_research_message_json(
+                row["content_json"], row["metadata_json"]
+            )
+            fork_messages.append(
+                (
+                    id_map[row["id"]],
+                    new_thread_id,
+                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    row["role"],
+                    content_json,
+                    row["attachments_json"],
+                    metadata_json,
+                    int(row["created_at"]),
+                )
+            )
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -2240,19 +2552,7 @@ def fork_chat_thread(
                  metadata_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (
-                    id_map[row["id"]],
-                    new_thread_id,
-                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
-                    row["role"],
-                    row["content_json"],
-                    row["attachments_json"],
-                    row["metadata_json"],
-                    int(row["created_at"]),
-                )
-                for row in ancestry
-            ],
+            fork_messages,
         )
         for row in ancestry:
             _replace_chat_attachment_inventory(
@@ -2530,6 +2830,11 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             conn.rollback()
             return False
+        if str(message_id) in _research_message_ids(conn, str(row["thread_id"])):
+            conn.rollback()
+            raise ChatMessageProtectedError(
+                "Research prompts and responses are server-managed and cannot be edited"
+            )
 
         attachments = _json_loads(row["attachments_json"], None)
         updated_attachments_json = row["attachments_json"]
