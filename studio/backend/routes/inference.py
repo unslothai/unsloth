@@ -1070,6 +1070,20 @@ except ImportError:
     )
 
 
+def _resolve_load_model_config(
+    model_identifier: str,
+    hf_token: Optional[str],
+    gguf_variant: Optional[str],
+) -> Optional[ModelConfig]:
+    """Resolve model metadata without blocking an async route's event loop."""
+    with _hf_offline_if_dns_dead():
+        return ModelConfig.from_identifier(
+            model_id = model_identifier,
+            hf_token = hf_token,
+            gguf_variant = gguf_variant,
+        )
+
+
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
     return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
 
@@ -4311,12 +4325,12 @@ async def _load_model_impl(
             )
             needs_audio_projector_retry = False
             if gguf_runtime_matches and not getattr(llama_backend, "_has_audio_input", False):
-                with _hf_offline_if_dns_dead():
-                    config = ModelConfig.from_identifier(
-                        model_id = model_identifier,
-                        hf_token = request.hf_token,
-                        gguf_variant = request.gguf_variant,
-                    )
+                config = await asyncio.to_thread(
+                    _resolve_load_model_config,
+                    model_identifier,
+                    request.hf_token,
+                    request.gguf_variant,
+                )
                 needs_audio_projector_retry = bool(config and config.has_audio_input)
             if gguf_runtime_matches and not needs_audio_projector_retry:
                 logger.info(
@@ -4416,12 +4430,12 @@ async def _load_model_impl(
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
         if config is None:
-            with _hf_offline_if_dns_dead():
-                config = ModelConfig.from_identifier(
-                    model_id = model_identifier,
-                    hf_token = request.hf_token,
-                    gguf_variant = request.gguf_variant,
-                )
+            config = await asyncio.to_thread(
+                _resolve_load_model_config,
+                model_identifier,
+                request.hf_token,
+                request.gguf_variant,
+            )
 
         if not config:
             raise HTTPException(

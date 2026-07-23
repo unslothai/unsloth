@@ -396,6 +396,21 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / shard1)
 
+    def test_three_digit_split_reused_only_when_colocated(self, hf_cache):
+        backend = LlamaCppBackend()
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-002-of-002.gguf"
+        snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
+            patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(snap / shard1)
+
     def test_partial_split_set_downloads(self, hf_cache):
         """A partial split set is not reused."""
         backend = LlamaCppBackend()
@@ -545,6 +560,12 @@ class TestCachedGgufForLoadProbe:
         shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
         _build_cache(hf_cache, REPO, {shard1: 4})
         assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_complete_three_digit_split_is_found(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-002-of-002.gguf"
+        snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) == str(snap / shard1)
 
     def test_partial_new_snapshot_does_not_hide_complete_split(self, hf_cache):
         import os

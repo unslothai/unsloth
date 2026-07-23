@@ -424,7 +424,7 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{3,})-of-(\d{3,})\.gguf$", re.IGNORECASE)
-_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
+_SHARD_RE = re.compile(r"^(.*)-\d{3,}-of-\d{3,}\.gguf$", re.IGNORECASE)
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -1396,9 +1396,14 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     if not m:
         return []
     prefix = m.group(1)
+    index_width = len(m.group(2))
     total = m.group(3)
     sibling_pat = re.compile(
-        r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$",
+        r"^"
+        + re.escape(prefix)
+        + rf"-\d{{{index_width}}}-of-"
+        + re.escape(total)
+        + r"\.gguf$",
         re.IGNORECASE,
     )
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
@@ -2901,9 +2906,14 @@ class LlamaCppBackend:
         # Check for split shards (e.g. model-00001-of-00003.gguf)
         m = _SHARD_FULL_RE.match(main.name)
         if m:
-            prefix, _, num_total = m.group(1), m.group(2), m.group(3)
+            prefix, first_index, num_total = m.group(1), m.group(2), m.group(3)
+            index_width = len(first_index)
             sibling_pat = re.compile(
-                r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(num_total) + r"\.gguf$",
+                r"^"
+                + re.escape(prefix)
+                + rf"-\d{{{index_width}}}-of-"
+                + re.escape(num_total)
+                + r"\.gguf$",
                 re.IGNORECASE,
             )
             for sibling in main.parent.iterdir():
@@ -4463,7 +4473,7 @@ class LlamaCppBackend:
             path_infos = list(get_paths_info(hf_repo, gguf_files, token = hf_token))
             size_map = {p.path: (p.size or 0) for p in path_infos}
 
-            # Group by variant: shards share a prefix before -NNNNN-of-NNNNN
+            # Group by variant: shards share a prefix before -NNN+-of-NNN+.
             variants: dict[str, list[str]] = {}
             for f in gguf_files:
                 m = _SHARD_RE.match(f)
@@ -9517,9 +9527,10 @@ class LlamaCppBackend:
         paths = [p]
         m = _SHARD_FULL_RE.match(p.name)
         if m:
-            prefix, _first, total = m.groups()
+            prefix, first, total = m.groups()
+            index_width = len(first)
             paths = [
-                p.with_name(f"{prefix}-{i:05d}-of-{total}{p.suffix}")
+                p.with_name(f"{prefix}-{i:0{index_width}d}-of-{total}{p.suffix}")
                 for i in range(1, int(total) + 1)
             ]
         try:
@@ -12178,7 +12189,22 @@ class LlamaCppBackend:
             if "<custom_token_" in _detok(128258) and "<custom_token_" in _detok(128259):
                 return "snac"
             if len(_tok("<|AUDIO|>")) == 1 and len(_tok("<|audio_eos|>")) == 1:
-                return "csm"
+                # The marker pair is shared by codec-backed CSM and
+                # chat-capable audio families. Match the bounded GGUF-header
+                # classifier so runtime startup cannot reverse the preflight
+                # capability decision.
+                try:
+                    from utils.models.gguf_metadata import detect_gguf_audio_type
+
+                    metadata_type = (
+                        detect_gguf_audio_type(self._gguf_path)
+                        if self._gguf_path
+                        else None
+                    )
+                except Exception as exc:
+                    logger.debug("GGUF audio identity probe failed: %s", exc)
+                    metadata_type = None
+                return "csm" if metadata_type == "csm" else "audio_vlm"
             if len(_tok("<|startoftranscript|>")) == 1:
                 return "whisper"
             # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).

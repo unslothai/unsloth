@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from types import SimpleNamespace
 
+from core.inference import llama_cpp
 from utils.models import model_config
+from utils.models import gguf_metadata
 from utils.models.model_config import (
     _AUDIO_TOKEN_PATTERNS,
     _classify_audio_capability,
@@ -95,3 +98,39 @@ def test_audio_projector_loads_retry_and_share_download_exclusion():
     assert 'kwargs.get("is_vision") or kwargs.get("has_audio_input")' in guard_source
     assert "(config.is_vision or config.has_audio_input)" in route_source
     assert "config and config.has_audio_input" in route_source
+    assert "await asyncio.to_thread(" in route_source
+    assert "_resolve_load_model_config" in route_source
+
+
+class _AudioProbeClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def post(self, url, json):
+        if url.endswith("/tokenize"):
+            tokens = [1] if json["content"] in {"<|AUDIO|>", "<|audio_eos|>"} else []
+            return SimpleNamespace(status_code = 200, json = lambda: {"tokens": tokens})
+        return SimpleNamespace(status_code = 200, json = lambda: {"content": ""})
+
+
+def test_runtime_audio_probe_preserves_chat_capability(monkeypatch):
+    backend = llama_cpp.LlamaCppBackend()
+    backend._gguf_path = "/fake/audio-chat.gguf"
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "is_loaded", property(lambda _self: True))
+    monkeypatch.setattr(llama_cpp.httpx, "Client", lambda **_kwargs: _AudioProbeClient())
+    monkeypatch.setattr(gguf_metadata, "detect_gguf_audio_type", lambda _path: "audio_vlm")
+
+    assert backend._detect_audio_type_strict() == "audio_vlm"
+
+
+def test_runtime_audio_probe_keeps_identity_confirmed_csm(monkeypatch):
+    backend = llama_cpp.LlamaCppBackend()
+    backend._gguf_path = "/fake/csm.gguf"
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "is_loaded", property(lambda _self: True))
+    monkeypatch.setattr(llama_cpp.httpx, "Client", lambda **_kwargs: _AudioProbeClient())
+    monkeypatch.setattr(gguf_metadata, "detect_gguf_audio_type", lambda _path: "csm")
+
+    assert backend._detect_audio_type_strict() == "csm"
