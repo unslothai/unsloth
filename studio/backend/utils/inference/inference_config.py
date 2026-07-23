@@ -157,9 +157,6 @@ def load_inference_config(model_identifier: str) -> Dict[str, Any]:
         "top_k": _get_param("top_k", -1),
         "min_p": _get_param("min_p", 0.01),
         "presence_penalty": _get_param("presence_penalty", 0.0),
-        # Family defaults (inference_defaults.json) carry repetition_penalty; surface it too so
-        # a recommended value isn't silently dropped when resolving sampling for a request.
-        "repetition_penalty": _get_param("repetition_penalty", 1.0),
         "trust_remote_code": model_inference.get(
             "trust_remote_code", default_inference.get("trust_remote_code", False)
         ),
@@ -189,6 +186,14 @@ _SAMPLING_FIELDS = {
 
 # Public, ordered tuple of the sampling fields callers resolve.
 SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
+
+# Fields the Studio Chat UI adopts as *per-model recommendations* from the backend
+# `.inference` block. Its frontend `mergeBackendRecommendedInference`
+# (presets/preset-policy.ts) seeds exactly these five and never reads repetition_penalty,
+# so the server auto-recommends the same five for request parity. repetition_penalty stays a
+# manual-only knob (client-sent or an UNSLOTH_SAMPLING_REPETITION_PENALTY operator pin),
+# matching the UI where it is never auto-filled per model.
+_UI_RECOMMENDED_FIELDS = ("temperature", "top_p", "top_k", "min_p", "presence_penalty")
 
 
 def _clean_sampling_value(field: str, val: Any):
@@ -228,39 +233,27 @@ def _operator_sampling_override(field: str):
 
 @lru_cache(maxsize = 128)
 def _recommended_sampling(model_id: str) -> Dict[str, Any]:
-    """Per-model recommended sampling values (model-specific YAML or family defaults only).
+    """Per-model recommended sampling, resolved through the SAME path the Studio Chat UI uses.
 
-    The generic ``default.yaml`` tier that :func:`load_inference_config` falls back to is
-    intentionally excluded: a model with no specific/family recommendation keeps the
-    request's schema defaults instead of shifting every unknown model to the generic
-    baseline. Model-specific YAML wins over the family default. Cached by model id.
+    The Chat UI seeds its sampling from the ``.inference`` block of the load/status responses,
+    which is exactly :func:`load_inference_config` (model-specific YAML -> family defaults
+    (inference_defaults.json) -> default.yaml). Sourcing recommendations here keeps the values
+    the server applies to a request identical to what the UI shows for the same model. Only the
+    fields the UI actually adopts (:data:`_UI_RECOMMENDED_FIELDS`) are recommended; each value
+    is validated (finite + in range) before use. Cached by model id.
     """
     if not model_id:
         return {}
-    # load_model_defaults() falls back to default.yaml for an unknown model, so gate the
-    # model-YAML tier on _has_specific_yaml (mirrors load_inference_config) to keep the
-    # generic default.yaml out of "recommended".
     try:
-        if _has_specific_yaml(model_id):
-            model_inference = (load_model_defaults(model_id) or {}).get("inference", {}) or {}
-        else:
-            model_inference = {}
+        cfg = load_inference_config(model_id) or {}
     except Exception as e:
-        logger.debug(f"Could not load model defaults for '{model_id}': {e}")
-        model_inference = {}
-    try:
-        family = get_family_inference_params(model_id) or {}
-    except Exception as e:
-        logger.debug(f"Could not load family sampling for '{model_id}': {e}")
-        family = {}
-
+        logger.debug(f"Could not load recommended sampling for '{model_id}': {e}")
+        return {}
     recommended: Dict[str, Any] = {}
-    for field in _SAMPLING_FIELDS:
-        for source in (model_inference, family):
-            cleaned = _clean_sampling_value(field, source.get(field))
-            if cleaned is not None:
-                recommended[field] = cleaned
-                break
+    for field in _UI_RECOMMENDED_FIELDS:
+        cleaned = _clean_sampling_value(field, cfg.get(field))
+        if cleaned is not None:
+            recommended[field] = cleaned
     return recommended
 
 
