@@ -64,11 +64,7 @@ def think_markup_holdback(text: str) -> int:
     return 0
 
 
-def neutralize_think_markup_streaming(
-    buffer: str,
-    *,
-    finalize: bool = False,
-) -> tuple[str, str]:
+def neutralize_think_markup_streaming(buffer: str, *, finalize: bool = False) -> tuple[str, str]:
     """Neutralize complete think markers in *buffer*, retaining a trailing holdback.
 
     Returns ``(emit, remaining_buffer)`` for streaming ``reasoning_content`` chunks

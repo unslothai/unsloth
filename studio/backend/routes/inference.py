@@ -14201,7 +14201,6 @@ def _build_openai_passthrough_body(
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     if system_prompt:
         from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
-
         system_prompt = neutralize_non_assistant_control_markup(system_prompt)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
