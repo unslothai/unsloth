@@ -1867,7 +1867,13 @@ class TestInstallShStructure:
                     "_has_usable_nvidia_gpu() { return 1; }\n"
                     "_has_amd_rocm_gpu() { return 0; }\n"
                     + infer_stub
-                    + "\n" + probe_fn + "\n" + family_fn + "\n" + fn + "\n"
+                    + "\n"
+                    + probe_fn
+                    + "\n"
+                    + family_fn
+                    + "\n"
+                    + fn
+                    + "\n"
                     "get_torch_index_url\n"
                 )
                 # Run from a file, not -c: Windows bash mangles multi-KB -c strings.
@@ -1875,9 +1881,14 @@ class TestInstallShStructure:
                 with open(sp, "w", encoding = "utf-8", newline = "\n") as f:
                     f.write(script)
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-                for var in ("UNSLOTH_ROCM_GFX_ARCH", "UNSLOTH_TORCH_INDEX_URL",
-                            "UNSLOTH_TORCH_INDEX_FAMILY", "UNSLOTH_PYTORCH_MIRROR",
-                            "ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+                for var in (
+                    "UNSLOTH_ROCM_GFX_ARCH",
+                    "UNSLOTH_TORCH_INDEX_URL",
+                    "UNSLOTH_TORCH_INDEX_FAMILY",
+                    "UNSLOTH_PYTORCH_MIRROR",
+                    "ROCR_VISIBLE_DEVICES",
+                    "HIP_VISIBLE_DEVICES",
+                ):
                     env.pop(var, None)
                 return subprocess.run(
                     [shell, sp.replace("\\", "/")], env = env, capture_output = True, text = True
@@ -1885,23 +1896,27 @@ class TestInstallShStructure:
 
             r = run("_infer_linux_amd_gfx_arch() { echo gfx1100; }")
             assert r.returncode == 0, f"inferable case aborted: {r.stderr}"
-            assert r.stdout.strip().endswith("/cpu"), f"must hand */cpu to the reroute: {r.stdout!r}"
-            assert "inferring gfx1100" in r.stderr, f"must announce the inference handoff: {r.stderr!r}"
+            assert r.stdout.strip().endswith(
+                "/cpu"
+            ), f"must hand */cpu to the reroute: {r.stdout!r}"
+            assert (
+                "inferring gfx1100" in r.stderr
+            ), f"must announce the inference handoff: {r.stderr!r}"
             assert (
                 "installing CPU-only PyTorch" not in r.stderr
             ), f"must not promise a CPU-only install the reroute will override: {r.stderr!r}"
             r2 = run("_infer_linux_amd_gfx_arch() { return 1; }")
             assert r2.returncode == 0, f"uninferable case aborted: {r2.stderr}"
             assert r2.stdout.strip().endswith("/cpu")
-            assert "installing CPU-only PyTorch" in r2.stderr, (
-                f"uninferable gfx must keep the actionable CPU warning: {r2.stderr!r}"
-            )
+            assert (
+                "installing CPU-only PyTorch" in r2.stderr
+            ), f"uninferable gfx must keep the actionable CPU warning: {r2.stderr!r}"
             r3 = run("_infer_linux_amd_gfx_arch() { echo gfx906; }")
             assert r3.returncode == 0, f"unsupported-family case aborted: {r3.stderr}"
             assert r3.stdout.strip().endswith("/cpu")
-            assert "installing CPU-only PyTorch" in r3.stderr, (
-                f"an inferred arch with no wheel family must keep the CPU warning: {r3.stderr!r}"
-            )
+            assert (
+                "installing CPU-only PyTorch" in r3.stderr
+            ), f"an inferred arch with no wheel family must keep the CPU warning: {r3.stderr!r}"
 
     def test_reroute_gate_covers_kfd_only(self):
         """The runtime-less reroute must fire for a KFD-only host: _has_amd_rocm_gpu
@@ -1933,8 +1948,7 @@ class TestInstallShStructure:
                     f"_has_amd_rocm_gpu() {{ {gpu_stub}; }}\n"
                     f"_probe_amd_gfx_arch() {{ {probe_stub}; }}\n"
                     "_infer_linux_amd_gfx_arch() { echo gfx1100; }\n"
-                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n"
-                    + family_fn + "\n"
+                    "_strip_index_url_credentials() { printf '%s\\n' \"$1\"; }\n" + family_fn + "\n"
                     "_torch_index_pinned=false\nSKIP_TORCH=false\n_ARCH=x86_64\n"
                     "TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu\n"
                     + block.group(0)
