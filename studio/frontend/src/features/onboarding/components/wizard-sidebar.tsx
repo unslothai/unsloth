@@ -23,8 +23,9 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
           className="size-12"
         />
         <div className="flex flex-col">
-          <span className="font-semibold text-lg leading-tight">Unsloth</span>
-          <span className="text-xs text-muted-foreground">Studio</span>
+          {/* Logo lockup keeps px sizes: it must not follow the UI font size. */}
+          <span className="font-semibold text-[18px] leading-tight">Unsloth</span>
+          <span className="text-[12px] text-muted-foreground">Studio</span>
         </div>
       </div>
       <div className="mt-3 md:mt-0">

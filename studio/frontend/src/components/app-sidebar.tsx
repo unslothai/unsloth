@@ -1189,10 +1189,11 @@ export function AppSidebar() {
                     alt="Unsloth"
                     className="h-[34px] w-[34px] rounded-full object-cover"
                   />
-                  <span className="font-heading text-[1.3125rem] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                  {/* Logo lockup keeps px sizes: it must not follow the UI font size. */}
+                  <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
                     unsloth
                   </span>
-                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[0.5rem] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>
                 </Link>
