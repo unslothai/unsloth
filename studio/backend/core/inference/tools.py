@@ -4899,6 +4899,21 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Assign(self, node):
             self.visit(node.value)
+            if (
+                isinstance(node.value, ast.Attribute)
+                and node.value.attr in _PYYAML_SAFE_LOADER_MUTATORS
+                and _pyyaml_loader_is_safe(
+                    node.value.value,
+                    self.yaml_aliases,
+                    self.yaml_safe_loader_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+            ):
+                self._record_unsafe_pyyaml(
+                    node.value,
+                    "Unsafe PyYAML deserialization via escaped SafeLoader mutator",
+                )
             for target in node.targets:
                 if _pyyaml_safe_loader_registry_mutation(
                     target,
@@ -4920,6 +4935,21 @@ def _check_signal_escape_patterns(code: str):
                 self.visit(node.annotation)
             if node.value is not None:
                 self.visit(node.value)
+                if (
+                    isinstance(node.value, ast.Attribute)
+                    and node.value.attr in _PYYAML_SAFE_LOADER_MUTATORS
+                    and _pyyaml_loader_is_safe(
+                        node.value.value,
+                        self.yaml_aliases,
+                        self.yaml_safe_loader_aliases,
+                        self.dynamic_import_aliases,
+                        self.dynamic_namespace_aliases,
+                    )
+                ):
+                    self._record_unsafe_pyyaml(
+                        node.value,
+                        "Unsafe PyYAML deserialization via escaped SafeLoader mutator",
+                    )
                 if _pyyaml_safe_loader_registry_mutation(
                     node.target,
                     self.yaml_aliases,
@@ -4932,6 +4962,22 @@ def _check_signal_escape_patterns(code: str):
                         "Unsafe PyYAML deserialization via SafeLoader registry mutation",
                     )
                 self._update_pyyaml_bindings([node.target], node.value)
+            self.visit(node.target)
+
+        def visit_AugAssign(self, node):
+            self.visit(node.value)
+            if _pyyaml_safe_loader_registry_mutation(
+                node.target,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+                self.dynamic_namespace_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node.target,
+                    "Unsafe PyYAML deserialization via SafeLoader registry mutation",
+                )
+            self._update_pyyaml_bindings([node.target], None)
             self.visit(node.target)
 
         def visit_NamedExpr(self, node):
@@ -5207,9 +5253,15 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_FunctionDef(self, node):
             self._visit_function_scope(node)
+            self._update_pyyaml_bindings(
+                [ast.Name(id = node.name, ctx = ast.Store())], None
+            )
 
         def visit_AsyncFunctionDef(self, node):
             self._visit_function_scope(node)
+            self._update_pyyaml_bindings(
+                [ast.Name(id = node.name, ctx = ast.Store())], None
+            )
 
         def visit_Lambda(self, node):
             self._visit_function_scope(node)
@@ -5229,6 +5281,9 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(statement)
             finally:
                 self._restore_pyyaml_scope_state(state)
+            self._update_pyyaml_bindings(
+                [ast.Name(id = node.name, ctx = ast.Store())], None
+            )
 
         def _visit_comprehension_scope(self, node, result_nodes):
             state = self._pyyaml_scope_state()
@@ -5445,6 +5500,19 @@ def _check_signal_escape_patterns(code: str):
                 )
             func = node.func
             if (
+                isinstance(func, ast.Call)
+                and isinstance(func.func, ast.Name)
+                and func.func.id == "getattr"
+                and len(func.args) >= 2
+                and _subscript_key(func.args[1]) is None
+                and isinstance(func.args[0], ast.Name)
+                and func.args[0].id == "importlib"
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization policy bypass through dynamic import lookup",
+                )
+            if (
                 _is_dynamic_import_callable(
                     func,
                     self.dynamic_import_aliases,
@@ -5474,6 +5542,20 @@ def _check_signal_escape_patterns(code: str):
                 self._record_unsafe_pyyaml(
                     node,
                     "Unsafe PyYAML deserialization via SafeLoader registry mutation",
+                )
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in _PYYAML_SAFE_LOADER_MUTATORS
+                and _is_pyyaml_module_expr(
+                    func.value,
+                    self.yaml_aliases,
+                    self.dynamic_import_aliases,
+                    self.dynamic_namespace_aliases,
+                )
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization via module-level loader registry mutation",
                 )
             func_name = None
             if isinstance(func, ast.Attribute):

@@ -345,6 +345,39 @@ class TestPyYamlDeserialization:
                 "importlib.__getattribute__('import_module')('yaml').unsafe_load("
                 "'!!python/object/apply:os.system [\"echo pwned\"]')"
             ),
+            (
+                "import yaml\n"
+                "add = yaml.SafeLoader.add_constructor\n"
+                "add('!run', run)\n"
+                "yaml.load('!run x', Loader=yaml.SafeLoader)"
+            ),
+            (
+                "import importlib\n"
+                "name = 'import_module'\n"
+                "getattr(importlib, name)('yaml').unsafe_load('a: 1')"
+            ),
+            (
+                "from yaml import load, Loader\n"
+                "def SafeLoader(*args, **kwargs):\n"
+                "    return globals()['Loader'](*args, **kwargs)\n"
+                "load(payload, Loader=SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "yaml.add_constructor('!run', run, Loader=yaml.SafeLoader)\n"
+                "yaml.load('!run x', Loader=yaml.SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "yaml.SafeLoader.yaml_constructors |= {'!run': run}\n"
+                "yaml.load('!run x', Loader=yaml.SafeLoader)"
+            ),
+            (
+                "from yaml import load, Loader\n"
+                "class SafeLoader(globals()['Loader']):\n"
+                "    pass\n"
+                "load(payload, Loader=SafeLoader)"
+            ),
         ],
     )
     def test_unsafe_pyyaml_loaders_blocked(self, code):
