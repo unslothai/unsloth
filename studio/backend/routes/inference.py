@@ -3231,10 +3231,7 @@ def _request_matches_loaded_settings(
         request.load_mmproj,
         effective_extra,
     )
-    if (
-        not llama_backend.is_diffusion
-        and requested_load_mmproj != bool(llama_backend.load_mmproj)
-    ):
+    if not llama_backend.is_diffusion and requested_load_mmproj != bool(llama_backend.load_mmproj):
         return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
@@ -3668,9 +3665,9 @@ async def _maybe_auto_switch_model(
                     str(target_id).casefold() == str(last_target).casefold()
                     or str(override_id).casefold() == str(last_override).casefold()
                 )
-                variant_matches = str(variant or "").casefold() == str(
-                    last_variant or ""
-                ).casefold()
+                variant_matches = (
+                    str(variant or "").casefold() == str(last_variant or "").casefold()
+                )
                 if target_matches and variant_matches:
                     stashed_load_mmproj = bool(last_load_mmproj)
         backend = get_llama_cpp_backend()
