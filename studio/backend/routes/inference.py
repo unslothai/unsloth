@@ -10910,11 +10910,8 @@ class _ResponsesReasoningExtractor:
             from core.inference.chat_template_helpers import (
                 neutralize_think_markup_streaming,
             )
-
-            structured_tail, self._structured_buffer = (
-                neutralize_think_markup_streaming(
-                    self._structured_buffer, finalize = True
-                )
+            structured_tail, self._structured_buffer = neutralize_think_markup_streaming(
+                self._structured_buffer, finalize = True
             )
         if not self._buffer:
             return structured_tail, ""
@@ -10942,19 +10939,13 @@ class _ResponsesReasoningExtractor:
                         neutralize_think_markup,
                     )
 
-                    reasoning_parts.append(
-                        buf[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
-                    )
-                    reasoning_parts.append(
-                        neutralize_think_markup(_RESPONSES_THINK_CLOSE)
-                    )
+                    reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
+                    reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
                     consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
                     self._span_prefix += buf[:consumed]
                     buf = buf[consumed:]
                     continue
-                reasoning_parts.append(
-                    buf[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
-                )
+                reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
                 visible_parts.append(
                     buf[close_idx + len(_RESPONSES_THINK_CLOSE) :].replace(
                         _RESPONSES_THINK_CLOSE, ""
