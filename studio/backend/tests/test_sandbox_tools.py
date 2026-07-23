@@ -297,7 +297,7 @@ class TestSandboxEnvIsolation:
             "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
-            "PATHEXT",  # Windows only; inherited so bare names like git resolve
+            "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"

@@ -2515,8 +2515,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
     TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
-    SystemRoot/PATHEXT) reach the child; all credential vars (HF_TOKEN, AWS_*,
-    etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
+    SystemRoot and a minimal PATHEXT) reach the child; all credential vars
+    (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
     operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
     shim directory.
 
@@ -2573,11 +2573,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
-        # cmd.exe uses PATHEXT to map `git` -> `git.exe`. Inherit the host
-        # list when present so bare tool names resolve like a normal shell.
-        pathext = os.environ.get("PATHEXT")
-        if pathext:
-            env["PATHEXT"] = pathext
+        # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
+        env["PATHEXT"] = ".EXE;.COM"
     return env
 
 
