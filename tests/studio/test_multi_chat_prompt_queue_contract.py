@@ -14,18 +14,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
-THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(
-    encoding="utf-8"
+THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
+SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(encoding = "utf-8")
+APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
+RUNTIME_STORE = (FRONTEND / "features/chat/stores/chat-runtime-store.ts").read_text(
+    encoding = "utf-8"
 )
-SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(
-    encoding="utf-8"
-)
-APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(
-    encoding="utf-8"
-)
-RUNTIME_STORE = (
-    FRONTEND / "features/chat/stores/chat-runtime-store.ts"
-).read_text(encoding="utf-8")
 
 
 def _between(source: str, start: str, end: str) -> str:
@@ -55,10 +49,7 @@ def test_scheduler_reserves_global_capacity_before_async_dispatch():
     assert append.index("promptQueueActiveRunIds.add(run.id)") < append.index(
         "item.target.append(item.prompt)"
     )
-    assert (
-        "promptQueueActiveRunIds.size + promptQueueDispatchingRunIds.size"
-        in THREAD
-    )
+    assert "promptQueueActiveRunIds.size + promptQueueDispatchingRunIds.size" in THREAD
 
 
 def test_scheduler_pumps_when_any_generation_releases_capacity():
