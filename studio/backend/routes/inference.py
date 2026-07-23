@@ -10822,6 +10822,18 @@ class _ResponsesReasoningExtractor:
             )
             if _emitted:
                 reasoning_parts.append(_emitted)
+        if text and self._structured_buffer:
+            # The stream switched to visible content: flush the held reasoning
+            # tail now so output order is preserved (reasoning before message).
+            from core.inference.chat_template_helpers import (
+                neutralize_think_markup_streaming,
+            )
+
+            _tail, self._structured_buffer = neutralize_think_markup_streaming(
+                self._structured_buffer, finalize = True
+            )
+            if _tail:
+                reasoning_parts.append(_tail)
         if text:
             self._buffer += text
         if not self._parse_think_markers:
