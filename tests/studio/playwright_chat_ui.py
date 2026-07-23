@@ -1126,7 +1126,9 @@ with sync_playwright() as p:
         # changes. A completed three-cycle toggle must expose both typography
         # states before we check the Linux selector.
         if len(typography_states) != 3:
-            soft_fail(f"chat typography observed {len(typography_states)} theme state(s), expected 3")
+            soft_fail(
+                f"chat typography observed {len(typography_states)} theme state(s), expected 3"
+            )
         elif {state["isDark"] for state in typography_states} != {False, True}:
             soft_fail(f"chat typography did not observe both themes: {typography_states!r}")
         else:
