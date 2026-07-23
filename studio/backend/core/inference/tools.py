@@ -2510,10 +2510,13 @@ def _windows_program_roots() -> list[str]:
         import ctypes
         from ctypes import wintypes
 
-        # FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86.
+        # FOLDERID_ProgramFiles, _ProgramFilesX86, _ProgramFilesX64. The X64
+        # id (Win10 1703+) yields the native root even from a 32-bit process,
+        # where the first two both map to Program Files (x86).
         folder_ids = (
             "{905e63b6-c1bf-494e-b29c-65b732d3d21a}",
             "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}",
+            "{6D809377-6AF0-444b-8957-A3773F02200E}",
         )
         _SHGet = ctypes.windll.shell32.SHGetKnownFolderPath
         _CoTaskMemFree = ctypes.windll.ole32.CoTaskMemFree

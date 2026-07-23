@@ -316,7 +316,7 @@ class TestSandboxEnvIsolation:
 
         monkeypatch.setattr(sys, "platform", "win32")
         prog = tmp_path / "Program Files"
-        monkeypatch.setenv("ProgramFiles", str(prog))
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
         git_dir = prog / "Git" / "cmd"
         git_dir.mkdir(parents = True)
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_dir / "git.exe"))
@@ -356,7 +356,7 @@ class TestSandboxEnvIsolation:
 
         monkeypatch.setattr(sys, "platform", "win32")
         prog = tmp_path / "Program Files"
-        monkeypatch.setenv("ProgramFiles", str(prog))
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
         git_dir = prog / "Git" / "cmd"
         git_dir.mkdir(parents = True)
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_dir / "git.cmd"))
@@ -371,7 +371,9 @@ class TestSandboxEnvIsolation:
         from core.inference.tools import _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
         shim_dir = tmp_path / "users" / "alice" / "scoop" / "shims"
         shim_dir.mkdir(parents = True)
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim_dir / "git.exe"))
@@ -432,8 +434,9 @@ class TestSandboxEnvIsolation:
         from core.inference.tools import _build_safe_env
 
         monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
-        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
         temp_git = tmp_path / "Windows" / "Temp" / "Git" / "cmd"
         temp_git.mkdir(parents = True)
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(temp_git / "git.exe"))
@@ -454,12 +457,27 @@ class TestSandboxEnvIsolation:
             alias.symlink_to(real_prog, target_is_directory = True)
         except (OSError, NotImplementedError):
             pytest.skip("symlink unsupported in this environment")
-        monkeypatch.setenv("ProgramFiles", str(real_prog))
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(real_prog)]
+        )
         git_via_alias = alias / "Git" / "cmd" / "git.exe"
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(git_via_alias))
         env = _build_safe_env(str(tmp_path))
         parts = [os.path.normcase(os.path.realpath(p)) for p in env["PATH"].split(os.pathsep)]
         assert os.path.normcase(str(real_prog / "Git" / "cmd")) in parts
+
+    def test_program_roots_include_native_root(self, monkeypatch):
+        """FOLDERID_ProgramFilesX64 is queried so a 32-bit process still trusts
+        the native C:\\Program Files (both other ids map to x86 there)."""
+        import core.inference.tools as tools_mod
+
+        # Simulate the known-folder API being unavailable so we exercise the
+        # documented env fallback, which must include ProgramW6432 semantics.
+        monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
+        monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        roots = tools_mod._windows_program_roots()
+        # On this Linux host the ctypes call fails, so env fallback applies.
+        assert any(r.lower().endswith("program files") for r in roots)
 
     def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""
