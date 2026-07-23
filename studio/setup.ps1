@@ -3703,12 +3703,18 @@ if ($LocalLlamaCppLinked) {
         # maps to the persisted --force-cpu choice. vulkan is consumed directly
         # by install_llama_prebuilt.py and does not change the torch backend.
         $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+        $legacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
+        $explicitVulkanBackend = $false
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
         } elseif ($llamaBackend -eq "vulkan") {
+            $explicitVulkanBackend = $true
             Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
         } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "vulkan")) {
             Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
+        }
+        if ($llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
+            $explicitVulkanBackend = $true
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -3760,13 +3766,19 @@ if ($LocalLlamaCppLinked) {
             substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
             exit 3
         } else {
-            step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
+            step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
-            $NeedLlamaSourceBuild = $true
+            if ($explicitVulkanBackend) {
+                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
+                substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
+                exit 1
+            } else {
+                substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
+                $NeedLlamaSourceBuild = $true
+            }
         }
 }
 

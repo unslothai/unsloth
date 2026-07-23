@@ -108,6 +108,36 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
     assert "--force-cpu" not in block
 
 
+def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
+    sh = _SETUP_SH.read_text(encoding = "utf-8")
+    failure = sh.index('step "llama.cpp" "prebuilt install failed"')
+    source_build = sh.index("_NEED_LLAMA_SOURCE_BUILD=true", failure)
+    guard = sh.index('if [ "$_explicit_vulkan_backend" = true ]', failure)
+    assert guard < source_build
+    guarded = sh[guard:source_build]
+    assert "will not substitute a ROCm or CPU source build" in guarded
+    assert "exit 1" in guarded
+
+    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
+    failure = ps1.index('step "llama.cpp" "prebuilt install failed"')
+    source_build = ps1.index("$NeedLlamaSourceBuild = $true", failure)
+    guard = ps1.index("if ($explicitVulkanBackend)", failure)
+    assert guard < source_build
+    guarded = ps1[guard:source_build]
+    assert "will not substitute a CUDA, ROCm, or CPU source build" in guarded
+    assert "exit 1" in guarded
+
+
+def test_legacy_force_vulkan_gets_the_same_strict_fallback():
+    sh = _SETUP_SH.read_text(encoding = "utf-8")
+    assert '_legacy_force_vulkan=' in sh
+    assert "1|true|yes|on) _explicit_vulkan_backend=true" in sh
+
+    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
+    assert '$legacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)"' in ps1
+    assert '$legacyForceVulkan -in @("1", "true", "yes", "on")' in ps1
+
+
 def _ps1_search(pattern: str, flags = 0) -> str:
     m = re.search(pattern, _SETUP_PS1.read_text(encoding = "utf-8"), flags)
     assert m, f"setup.ps1 block not found: {pattern}"

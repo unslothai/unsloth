@@ -1374,6 +1374,8 @@ else
     # install_llama_prebuilt.py and remains scoped to llama.cpp, so it does not
     # change the torch backend used for training.
     _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+    _legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
+    _explicit_vulkan_backend=false
     case "$_llama_backend" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
@@ -1386,12 +1388,18 @@ else
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
+                _explicit_vulkan_backend=true
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_INFO"
             fi
             ;;
         ""|auto) ;;
         *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$UNSLOTH_LLAMA_CPP_BACKEND' (expected 'auto', 'cpu', or 'vulkan')" "$C_WARN" >&2 ;;
     esac
+    if [ "$_llama_backend" != "cpu" ] && [ "$_HOST_SYSTEM" != "Darwin" ]; then
+        case "$_legacy_force_vulkan" in
+            1|true|yes|on) _explicit_vulkan_backend=true ;;
+        esac
+    fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
@@ -1425,14 +1433,20 @@ else
         substep "close Unsloth or other llama.cpp users and retry"
         exit 3
     else
-        step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+        step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        if [ "$_explicit_vulkan_backend" = true ]; then
+            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
+            substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
+            exit 1
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
     fi
 fi
 

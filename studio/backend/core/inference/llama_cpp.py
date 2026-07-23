@@ -6896,6 +6896,7 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
@@ -7743,6 +7744,25 @@ class LlamaCppBackend:
                 # model can't spill onto an unpicked GPU.
                 if gpu_ids and gpu_indices is None:
                     gpu_indices = sorted(gpu_ids)
+                # Auto placement must not broaden a Vulkan launch from the GPUs
+                # considered by the planner to every Vulkan device just because
+                # the requested context needs --fit CPU offload. Prefer all
+                # discrete devices; use integrated devices only when no discrete
+                # Vulkan device exists. Manual mode without a picker deliberately
+                # leaves device selection to llama.cpp.
+                elif (
+                    is_vulkan_backend
+                    and gpu_memory_mode != "manual"
+                    and use_fit
+                    and gpu_indices is None
+                    and _detected_gpus
+                ):
+                    discrete_ids = [
+                        idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 0) > 0
+                    ]
+                    gpu_indices = sorted(
+                        discrete_ids or [idx for idx, _free in _detected_gpus]
+                    )
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
