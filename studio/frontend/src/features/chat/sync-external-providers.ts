@@ -5,14 +5,17 @@ import {
   type ProviderRegistryEntry,
   listProviderConfigs,
   listProviderRegistry,
+  updateProviderConfig,
 } from "./api/providers-api";
-import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
+  type ExternalProviderConfig,
   isCustomProviderType,
+  isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   supportsProviderPromptCaching,
+  supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
 } from "./external-providers";
 
@@ -84,6 +87,37 @@ export function pruneProviderModelIds(
   return modelIds;
 }
 
+/** Carry browser-local provider knobs through a backend sync rebuild. */
+export function mergeLocalProviderOptions(
+  existing: ExternalProviderConfig | undefined,
+  synced: ExternalProviderConfig,
+): ExternalProviderConfig {
+  if (!existing) {
+    return synced;
+  }
+  const providerType = synced.providerType;
+  return {
+    ...synced,
+    enablePromptCaching: supportsProviderPromptCaching(providerType)
+      ? (existing.enablePromptCaching ?? synced.enablePromptCaching ?? true)
+      : undefined,
+    promptCacheTtl:
+      supportsProviderPromptCacheTtl(providerType) &&
+      isPromptCacheTtl(existing.promptCacheTtl)
+        ? existing.promptCacheTtl
+        : synced.promptCacheTtl,
+    isReasoningModel: supportsProviderReasoningToggle(providerType)
+      ? (existing.isReasoningModel ?? synced.isReasoningModel)
+      : undefined,
+    openaiContainerTtlMinutes:
+      providerType === "openai" &&
+      typeof existing.openaiContainerTtlMinutes === "number" &&
+      existing.openaiContainerTtlMinutes >= 1
+        ? Math.min(existing.openaiContainerTtlMinutes, 20)
+        : synced.openaiContainerTtlMinutes,
+  };
+}
+
 /** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
@@ -98,7 +132,8 @@ export async function syncExternalProvidersFromBackend(
     existingById.set(provider.id, provider);
   }
 
-  return configRows
+  const backfillTasks: Promise<unknown>[] = [];
+  const syncedProviders = configRows
     .filter((config) => config.is_enabled)
     .map((config) => {
       const existing = existingById.get(config.id);
@@ -132,7 +167,7 @@ export async function syncExternalProvidersFromBackend(
       );
       const savedModels = existing?.models ?? [];
       const savedAvailableModels = existing?.availableModels ?? [];
-      const existingModels = pruneProviderModelIds(
+      const resolvedModels = pruneProviderModelIds(
         uiProviderType,
         serverModels.length > 0
           ? serverModels
@@ -140,7 +175,7 @@ export async function syncExternalProvidersFromBackend(
             ? savedModels
             : defaultModels,
       );
-      const existingAvailableModels = pruneProviderModelIds(
+      const resolvedAvailableModels = pruneProviderModelIds(
         uiProviderType,
         serverAvailableModels.length > 0
           ? serverAvailableModels
@@ -148,13 +183,25 @@ export async function syncExternalProvidersFromBackend(
             ? savedAvailableModels
             : defaultModels,
       );
-      return {
+      const needsModelBackfill =
+        serverModels.length === 0 && savedModels.length > 0;
+      const needsAvailableBackfill =
+        serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
+      if (needsModelBackfill || needsAvailableBackfill) {
+        backfillTasks.push(
+          updateProviderConfig(config.id, {
+            models: resolvedModels,
+            availableModels: resolvedAvailableModels,
+          }),
+        );
+      }
+      const synced: ExternalProviderConfig = {
         id: config.id,
         providerType: uiProviderType,
         name: config.display_name,
         baseUrl: config.base_url ?? "",
-        models: existingModels,
-        availableModels: existingAvailableModels,
+        models: resolvedModels,
+        availableModels: resolvedAvailableModels,
         enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
           ? (existing?.enablePromptCaching ?? true)
           : undefined,
@@ -164,5 +211,11 @@ export async function syncExternalProvidersFromBackend(
         createdAt: existing?.createdAt ?? createdAt,
         updatedAt,
       };
+      return mergeLocalProviderOptions(existing, synced);
     });
+
+  if (backfillTasks.length > 0) {
+    await Promise.allSettled(backfillTasks);
+  }
+  return syncedProviders;
 }

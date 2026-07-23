@@ -1755,8 +1755,8 @@ export function ChatPage({
   const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
-    void hydratePersistedSettings();
     void (async () => {
+      await hydratePersistedSettings();
       try {
         const synced = await syncExternalProvidersFromBackend(
           useExternalProvidersStore.getState().providers,

@@ -35,9 +35,24 @@ def test_frontend_sync_prefers_server_models_on_remote_clients():
     assert "serverModels.length > 0" in source
 
 
+def test_frontend_sync_backfills_local_models_to_backend():
+    source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
+    assert "updateProviderConfig" in source
+    assert "needsModelBackfill" in source
+    assert "Promise.allSettled(backfillTasks)" in source
+
+
+def test_frontend_sync_preserves_local_provider_options():
+    source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
+    assert "mergeLocalProviderOptions" in source
+    assert "promptCacheTtl" in source
+    assert "openaiContainerTtlMinutes" in source
+
+
 def test_chat_page_hydrates_connections_on_startup():
     source = CHAT_PAGE.read_text(encoding = "utf-8")
     assert "syncExternalProvidersFromBackend" in source
+    assert "await hydratePersistedSettings()" in source
 
 
 def test_providers_api_sends_models_to_backend():
