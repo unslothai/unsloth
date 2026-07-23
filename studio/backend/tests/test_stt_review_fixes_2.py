@@ -6,8 +6,8 @@
 1. scripts/build_whisper_cpp.sh must not rm -rf a whisper.cpp/src tree under a
    custom Studio home unless Studio itself created it (ownership marker), the
    same policy studio/setup.sh applies before its destructive replacements.
-2. _snapshot_is_complete must validate every shard of a sharded PyTorch
-   (pytorch_model.bin.index.json) checkpoint, like the safetensors path.
+2. _snapshot_is_complete must reject pickle (pytorch_model.bin) checkpoints
+   outright; only safetensors weights count as a usable snapshot.
 3. _snapshot_is_complete must require tokenizer assets (tokenizer.json or
    vocab.json + merges.txt); weights + config alone decode to blank text.
 4. Custom-repo downloads must pin the revision validated beforehand and
@@ -143,7 +143,10 @@ def _base_snapshot(tmp_path: Path) -> Path:
     return snap
 
 
-def test_sharded_pytorch_snapshot_requires_every_shard(tmp_path):
+def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
+    # A cached pytorch_model.bin is a pickle RCE load path; the snapshot must
+    # read as incomplete no matter how many shards are present, so update
+    # re-resolves and _select_snapshot_files fails it closed.
     snap = _base_snapshot(tmp_path)
     index = {
         "weight_map": {
@@ -153,11 +156,14 @@ def test_sharded_pytorch_snapshot_requires_every_shard(tmp_path):
     }
     (snap / "pytorch_model.bin.index.json").write_text(json.dumps(index))
     (snap / "pytorch_model-00001-of-00002.bin").write_bytes(b"w" * 8)
-
-    # One missing .bin shard must read as incomplete, like the safetensors path.
+    (snap / "pytorch_model-00002-of-00002.bin").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is False
 
-    (snap / "pytorch_model-00002-of-00002.bin").write_bytes(b"w" * 8)
+    # A single-file pickle checkpoint is likewise rejected; the safetensors
+    # equivalent in the same dir makes it complete.
+    (snap / "pytorch_model.bin").write_bytes(b"w" * 8)
+    assert stt_sidecar_module._snapshot_is_complete(snap) is False
+    (snap / "model.safetensors").write_bytes(b"w" * 8)
     assert stt_sidecar_module._snapshot_is_complete(snap) is True
 
 
