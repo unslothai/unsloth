@@ -488,31 +488,28 @@ class TestSandboxEnvIsolation:
         assert str(trusted_git) in parts
         assert str(shim) not in parts
 
-    def test_program_roots_derive_native_from_x86(self, monkeypatch):
-        """A 32-bit process seeing only the x86 root must still trust the
-        derived native C:\\Program Files."""
+    def test_program_roots_fallback_uses_systemdrive_not_env(self, monkeypatch):
+        """When the known-folder API is unavailable, roots come from a fixed
+        SystemDrive path, never the overrideable %ProgramFiles% env."""
         import core.inference.tools as tools_mod
 
-        # Force the API-empty path so the env fallback + derivation runs, with
-        # only an x86 root available.
-        monkeypatch.delenv("ProgramFiles", raising = False)
-        monkeypatch.delenv("ProgramW6432", raising = False)
-        monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        # ctypes fails on this Linux host, so the fallback runs. An attacker
+        # override of ProgramFiles must NOT enter the trusted roots.
+        monkeypatch.setenv("ProgramFiles", r"D:\attacker-writable")
+        monkeypatch.setenv("ProgramW6432", r"D:\attacker-writable")
+        monkeypatch.setenv("SystemDrive", "C:")
         roots = [r.lower() for r in tools_mod._windows_program_roots()]
         assert any(r.endswith(r"\program files") for r in roots)
+        assert not any("attacker-writable" in r for r in roots)
 
     def test_program_roots_include_native_root(self, monkeypatch):
-        """FOLDERID_ProgramFilesX64 is queried so a 32-bit process still trusts
-        the native C:\\Program Files (both other ids map to x86 there)."""
+        """The fallback yields both the native and x86 Program Files roots."""
         import core.inference.tools as tools_mod
 
-        # Simulate the known-folder API being unavailable so we exercise the
-        # documented env fallback, which must include ProgramW6432 semantics.
-        monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
-        monkeypatch.setenv("ProgramFiles(x86)", r"C:\Program Files (x86)")
-        roots = tools_mod._windows_program_roots()
-        # On this Linux host the ctypes call fails, so env fallback applies.
-        assert any(r.lower().endswith("program files") for r in roots)
+        monkeypatch.setenv("SystemDrive", "C:")
+        roots = [r.lower() for r in tools_mod._windows_program_roots()]
+        assert any(r.endswith(r"\program files") for r in roots)
+        assert any(r.endswith(r"\program files (x86)") for r in roots)
 
     def test_no_default_current_directory_in_exe_path_set_on_windows(self, monkeypatch, tmp_path):
         """cmd/CreateProcess must not search cwd for bare names in the sandbox."""

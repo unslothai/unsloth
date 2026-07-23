@@ -2531,11 +2531,9 @@ def _windows_program_roots() -> list[str]:
     except Exception:
         roots = []
     if not roots:
-        for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
-            val = os.environ.get(var)
-            if val:
-                roots.append(val)
-    if not roots:
+        # Do NOT fall back to %ProgramFiles%/%ProgramW6432%: a caller can
+        # override those to a writable dir and relocate the trust boundary.
+        # SystemDrive is not a viable override (retargeting it breaks the OS).
         drive = os.environ.get("SystemDrive", "C:")
         roots = [drive + r"\Program Files", drive + r"\Program Files (x86)"]
     # A 32-bit process on 64-bit Windows only sees the x86 root (the X64
