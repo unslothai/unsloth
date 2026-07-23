@@ -348,10 +348,7 @@ def test_initial_load_uses_staged_config_payload():
     assert "lastBlurCommittedRef" in numeric
     # Invalid drafts must not turn Auto into an explicit pin.
     assert "const commitDraft = (raw: string): number | null" in numeric
-    assert re.search(
-        r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;",
-        numeric,
-    )
+    assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
     assert re.search(
         r"if \(final == null\) \{\s*"
         r"draftRef\.current = String\(value\);\s*"
