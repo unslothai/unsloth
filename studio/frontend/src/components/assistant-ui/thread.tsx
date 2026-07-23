@@ -1440,6 +1440,12 @@ const Composer: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
+  const resetAfterComposerSendRef = useRef(false);
+  useAuiEvent("thread.runStart", () => {
+    if (!resetAfterComposerSendRef.current) return;
+    resetAfterComposerSendRef.current = false;
+    void aui.composer().reset();
+  });
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
@@ -1822,6 +1828,8 @@ const Composer: FC<{
         });
         closeOverlay();
       }
+
+      resetAfterComposerSendRef.current = true;
     },
     [
       aui,
