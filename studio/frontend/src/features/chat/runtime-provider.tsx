@@ -56,6 +56,7 @@ import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
 import {
+  getPreStreamRunReservationCount,
   isPreStreamRunActive,
   notifyPreStreamRunFailed,
   registerPreStreamRun,
@@ -901,6 +902,44 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   };
 }
 
+class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
+  private readonly delegate: AttachmentAdapter;
+
+  constructor(delegate: AttachmentAdapter) {
+    this.delegate = delegate;
+  }
+
+  get accept(): string {
+    return this.delegate.accept;
+  }
+
+  add(state: { file: File }) {
+    return this.delegate.add(state);
+  }
+
+  remove(attachment: Parameters<AttachmentAdapter["remove"]>[0]) {
+    return this.delegate.remove(attachment);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    try {
+      return await this.delegate.send(attachment);
+    } catch (error) {
+      // ComposerRuntime.send() intentionally returns void even though its core
+      // awaits attachment conversion. Release the slot here, at the only
+      // promise boundary that can observe a pre-handleSend conversion failure.
+      if (getPreStreamRunReservationCount() > 0) {
+        notifyPreStreamRunFailed();
+        toast.error("Could not prepare attachments", {
+          description:
+            error instanceof Error ? error.message : "Please retry the send.",
+        });
+      }
+      throw error;
+    }
+  }
+}
+
 function useStudioRuntimeAdapters(
   modelType: ModelType,
   pairId?: string,
@@ -1231,15 +1270,17 @@ function useStudioRuntimeAdapters(
   );
   const attachments = useMemo(
     () =>
-      new CompositeAttachmentAdapter([
-        new VisionImageAdapter(),
-        new AudioAttachmentAdapter(),
-        new TextAttachmentAdapter(),
-        new HtmlAttachmentAdapter(),
-        new PDFAttachmentAdapter(),
-        new DocxAttachmentAdapter(),
-        new OpenDocumentAttachmentAdapter(),
-      ]),
+      new PreStreamAwareAttachmentAdapter(
+        new CompositeAttachmentAdapter([
+          new VisionImageAdapter(),
+          new AudioAttachmentAdapter(),
+          new TextAttachmentAdapter(),
+          new HtmlAttachmentAdapter(),
+          new PDFAttachmentAdapter(),
+          new DocxAttachmentAdapter(),
+          new OpenDocumentAttachmentAdapter(),
+        ]),
+      ),
     [],
   );
   const adapters = useMemo(

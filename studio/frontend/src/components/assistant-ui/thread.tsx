@@ -2062,17 +2062,9 @@ const Composer: FC<{
 
   const sendReservedComposer = useCallback(() => {
     try {
-      void Promise.resolve(aui.composer().send()).catch((error) => {
-        // Attachment conversion happens before the adapter starts. If it
-        // rejects there, the adapter cannot release the pre-stream slot.
-        if (getPreStreamRunReservationCount() > 0) {
-          notifyPreStreamRunFailed(referenceThreadId);
-        }
-        toast.error("Could not prepare attachments", {
-          description:
-            error instanceof Error ? error.message : "Please retry the send.",
-        });
-      });
+      // The public composer API returns void; async attachment conversion
+      // failures are released by PreStreamAwareAttachmentAdapter.
+      aui.composer().send();
     } catch (error) {
       if (getPreStreamRunReservationCount() > 0) {
         notifyPreStreamRunFailed(referenceThreadId);
