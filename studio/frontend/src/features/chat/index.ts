@@ -76,6 +76,7 @@ export {
 export {
   consumeQueuedChatRunSettings,
   discardQueuedChatRunSettings,
+  discardQueuedChatRunSettingsForThread,
   registerQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
   type QueuedChatRunSettings,
