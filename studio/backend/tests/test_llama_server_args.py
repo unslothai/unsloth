@@ -905,7 +905,16 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
 
 def test_strip_shadowing_flags_drops_memory_mode_when_requested():
     out = strip_shadowing_flags(
-        ["--mlock", "--no-mmap", "--mmap", "--top-k", "20"],
+        [
+            "--load-mode",
+            "dio",
+            "--mlock",
+            "--no-mmap",
+            "--mmap",
+            "--direct-io",
+            "--top-k",
+            "20",
+        ],
         strip_memory_mode = True,
     )
     assert out == ["--top-k", "20"]
