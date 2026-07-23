@@ -10038,10 +10038,11 @@ class LlamaCppBackend:
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
         at an explicitly requested ctx so it offloads or fails instead of
-        silently shrinking the window. The 8192 auto-floor and the tighter
-        ``--fit-target`` margin apply only under Manual + Auto (``auto_fit``),
-        which omits ``-c``: on the legacy auto path ``-c 0`` already pins the
-        native window and ``--fit-ctx 8192`` would override it down to 8192.
+        silently shrinking the window. The 8192 auto-floor applies only under
+        Manual + Auto (``auto_fit``), which omits ``-c``: on the legacy auto
+        path ``-c 0`` already pins the native window and ``--fit-ctx 8192``
+        would override it down to 8192. Keep llama.cpp's default fit target
+        instead of reducing its safety margin.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -10054,11 +10055,6 @@ class LlamaCppBackend:
                 # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
                 # shrink the window below a usable size.
                 flags.extend(["--fit-ctx", "8192"])
-        if use_fit and auto_fit and caps.get("supports_fit_target"):
-            # llama.cpp's --fit leaves 1 GiB free per device by default;
-            # tighten that to 512 MiB so it packs more of the model onto
-            # the GPU before spilling to system RAM.
-            flags.extend(["--fit-target", "512"])
         return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:
