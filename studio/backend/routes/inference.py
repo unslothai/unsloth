@@ -10759,7 +10759,11 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     if not before or not after:
         return False
     if before in "\"'`" and after in "\"'`":
-        return True
+        # Only literal when the leading quote OPENS a span (odd count of that
+        # quote char before the tag). An even count means the quote closed a
+        # prior span, so this close tag is structural.
+        if buffer.count(before, 0, close_idx) % 2 == 1:
+            return True
     return False
 
 

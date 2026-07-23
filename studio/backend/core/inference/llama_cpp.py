@@ -10224,20 +10224,23 @@ class LlamaCppBackend:
                         if not line:
                             continue
                         if line == "data: [DONE]":
+                            if reasoning_markup_buffer:
+                                from core.inference.chat_template_helpers import (
+                                    neutralize_think_markup_streaming,
+                                )
+                                flushed, reasoning_markup_buffer = (
+                                    neutralize_think_markup_streaming(
+                                        reasoning_markup_buffer,
+                                        finalize = True,
+                                    )
+                                )
+                                if flushed:
+                                    if not in_thinking:
+                                        cumulative += "<think>"
+                                        in_thinking = True
+                                    cumulative += flushed
+                                    reasoning_text += flushed
                             if in_thinking:
-                                if reasoning_markup_buffer:
-                                    from core.inference.chat_template_helpers import (
-                                        neutralize_think_markup_streaming,
-                                    )
-                                    flushed, reasoning_markup_buffer = (
-                                        neutralize_think_markup_streaming(
-                                            reasoning_markup_buffer,
-                                            finalize = True,
-                                        )
-                                    )
-                                    if flushed:
-                                        cumulative += flushed
-                                        reasoning_text += flushed
                                 if has_content_tokens:
                                     # Real thinking + content: close the tag
                                     cumulative += "</think>"
