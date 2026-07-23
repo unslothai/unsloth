@@ -122,6 +122,7 @@ type ActiveModelLoadRun = {
   cancelPromise: Promise<boolean> | null;
   backendLoadStarted: boolean;
   rollbackCheckpoint: string | null;
+  rollbackConfig?: PerModelConfig;
   previousCheckpointWasUnloaded: boolean;
 };
 
@@ -499,7 +500,6 @@ export function useChatModelRuntime() {
       useTransformersUpgradeDialogStore.getState().cancelPending(run);
       loadAbortRef.current = null;
       loadingModelRef.current = null;
-      useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(model));
       const tid = loadToastIdRef.current;
       loadToastIdRef.current = null;
       setLoadingModel(null);
@@ -567,6 +567,9 @@ export function useChatModelRuntime() {
               activeLoadRunRef.current,
               run,
             );
+            useChatRuntimeStore
+              .getState()
+              .clearLoadingModelPick(pickOf(model));
             useChatRuntimeStore.getState().setModelLoading(false);
           }
           if (sharedModelLoadHandle?.run === run) {
@@ -623,10 +626,12 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+      let previousConfig =
+        typeof selection === "string" ? undefined : selection.previousConfig;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
+        if (previousConfig) {
+          applyPerModelConfigToRuntime(previousConfig);
         }
         return;
       }
@@ -640,8 +645,8 @@ export function useChatModelRuntime() {
         (initialInFlightLoad.nativePathToken ?? null) ===
           (nativePathToken ?? null);
       if (initiallyLoadingSamePick && !initialActiveRun?.cancelPromise) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
+        if (previousConfig) {
+          applyPerModelConfigToRuntime(previousConfig);
         }
         return;
       }
@@ -667,10 +672,14 @@ export function useChatModelRuntime() {
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
         if (loadingSamePick && !activeRun?.cancelPromise) {
-          if (typeof selection !== "string" && selection.previousConfig) {
-            applyPerModelConfigToRuntime(selection.previousConfig);
+          if (previousConfig) {
+            applyPerModelConfigToRuntime(previousConfig);
           }
           return;
+        }
+
+        if (activeRun?.rollbackConfig) {
+          previousConfig = activeRun.rollbackConfig;
         }
 
         // A load owned by another runtime surface cannot be safely cancelled
@@ -679,15 +688,23 @@ export function useChatModelRuntime() {
         if (!activeRun) {
           const shared = sharedModelLoadHandle;
           if (shared) {
+            if (shared.run.rollbackConfig) {
+              previousConfig = shared.run.rollbackConfig;
+            }
             const stopped = await shared.cancel(true);
             replacementNeedsRollback =
               replacementNeedsRollback ||
               shared.run.previousCheckpointWasUnloaded;
-            if (loadIntentRef.current !== loadIntentId) return;
+            if (loadIntentRef.current !== loadIntentId) {
+              if (throwOnError) {
+                throw new Error("Model selection was superseded by a newer choice.");
+              }
+              return;
+            }
             if (stopped) continue;
           }
-          if (typeof selection !== "string" && selection.previousConfig) {
-            applyPerModelConfigToRuntime(selection.previousConfig);
+          if (previousConfig) {
+            applyPerModelConfigToRuntime(previousConfig);
           }
           const message =
             "The current model could not be stopped, so the new model was not loaded.";
@@ -702,10 +719,15 @@ export function useChatModelRuntime() {
         replacementNeedsRollback =
           replacementNeedsRollback ||
           activeRun.previousCheckpointWasUnloaded;
-        if (loadIntentRef.current !== loadIntentId) return;
+        if (loadIntentRef.current !== loadIntentId) {
+          if (throwOnError) {
+            throw new Error("Model selection was superseded by a newer choice.");
+          }
+          return;
+        }
         if (!stopped) {
-          if (typeof selection !== "string" && selection.previousConfig) {
-            applyPerModelConfigToRuntime(selection.previousConfig);
+          if (previousConfig) {
+            applyPerModelConfigToRuntime(previousConfig);
           }
           const message =
             "The current model could not be stopped, so the new model was not loaded.";
@@ -802,6 +824,7 @@ export function useChatModelRuntime() {
         cancelPromise: null,
         backendLoadStarted: false,
         rollbackCheckpoint: previousCheckpoint,
+        rollbackConfig: previousConfig,
         previousCheckpointWasUnloaded: replacementNeedsRollback,
       };
       activeLoadRunRef.current = run;
@@ -832,9 +855,7 @@ export function useChatModelRuntime() {
           // params.maxSeqLength may already be the next model's; use it only when
           // no snapshot exists.
           const previousMaxSeqLength =
-            (typeof selection !== "string"
-              ? selection.previousConfig?.maxSeqLength
-              : null) ?? maxSeqLength;
+            previousConfig?.maxSeqLength ?? maxSeqLength;
           // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
           // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
           // not the positive context it picked (which the backend treats as a pin).
@@ -1716,10 +1737,9 @@ export function useChatModelRuntime() {
           loadIntentRef.current === run.intentId;
         if (
           isLatestRun &&
-          typeof selection !== "string" &&
-          selection.previousConfig
+          previousConfig
         ) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
+          applyPerModelConfigToRuntime(previousConfig);
         }
         if (abortCtrl.signal.aborted) return false; // User cancelled, nothing to report
         if (!isLatestRun) return false;
