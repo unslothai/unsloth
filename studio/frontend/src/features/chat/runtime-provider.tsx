@@ -55,7 +55,11 @@ import {
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
-import { notifyPreStreamRunFailed } from "./utils/prompt-queue-boundary";
+import {
+  isPreStreamRunActive,
+  notifyPreStreamRunFailed,
+  registerPreStreamRun,
+} from "./utils/prompt-queue-boundary";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
   chatContentPartAttachmentIdFromSignature,
@@ -875,6 +879,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
   return {
     ...adapter,
     async *run(options) {
+      registerPreStreamRun(options.unstable_threadId ?? null);
       try {
         await waitForRunStartHistoryAppend(options.messages);
       } catch (error) {
@@ -1345,12 +1350,9 @@ function ActiveThreadSync({
 function CancelRegistrar(): ReactElement | null {
   const aui = useAui();
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const isRunning = useChatRuntimeStore((s) =>
-    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
-  );
 
   useEffect(() => {
-    if (!mainThreadId || !isRunning) return;
+    if (!mainThreadId) return;
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const cancel = () => {
       try {
@@ -1362,11 +1364,14 @@ function CancelRegistrar(): ReactElement | null {
     useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
     return () => {
       const store = useChatRuntimeStore.getState();
-      if (!store.runningByThreadId[mainThreadId]) {
+      if (
+        !store.runningByThreadId[mainThreadId] &&
+        !isPreStreamRunActive(mainThreadId)
+      ) {
         store.clearThreadCancel(mainThreadId);
       }
     };
-  }, [aui, mainThreadId, isRunning]);
+  }, [aui, mainThreadId]);
 
   return null;
 }

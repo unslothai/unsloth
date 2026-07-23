@@ -154,7 +154,8 @@ def test_normal_sends_reserve_capacity_until_stream_ownership_begins():
     )
     assert "tryReservePreStreamRun()" in submit
     assert "preStreamRunReservations" in QUEUE_BOUNDARY
-    assert "releasePreStreamRunReservation();" in CHAT_ADAPTER
+    assert "registerPreStreamRun(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
+    assert "releasePreStreamRunForThread(threadKey);" in CHAT_ADAPTER
     assert "runtime.setThreadRunning(threadKey, true);" in CHAT_ADAPTER
     assert "sendReservedComposer()" in submit
     assert "releasePreStreamRunReservation();" in THREAD
@@ -198,7 +199,13 @@ def test_bulk_archive_and_clear_stop_prompt_queues_first():
         "export async function unarchiveChatItem(",
     )
     assert "requestPromptQueueStop(toArchive.map((thread) => thread.id));" in archive_all
+    assert "isPreStreamRunActive(threadId)" in SIDEBAR_ITEMS
+    assert "cancelByThreadId[threadId]?.();" in CLEAR_ALL_CHATS
+    assert "getPreStreamRunThreadIds()" in CLEAR_ALL_CHATS
     assert "requestPromptQueueStop();" in CLEAR_ALL_CHATS
+    assert CLEAR_ALL_CHATS.index("cancelByThreadId[threadId]?.();") < (
+        CLEAR_ALL_CHATS.index("requestPromptQueueStop();")
+    )
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
         "clearStoredChats();"
     )
@@ -219,6 +226,9 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     assert "requestPromptQueuePumpIfReady();" in stop
     assert "deletePromptQueueRun(failedRun);" in failed
     assert "requestPromptQueuePumpIfReady();" in failed
+    assert failed.index("requestPromptQueuePumpIfReady();") > failed.index(
+        "if (threadId)"
+    )
     assert "cancelByThreadId: Record<string, () => void>;" in RUNTIME_STORE
     assert "notifyPreStreamRunFailed(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
 
