@@ -2145,9 +2145,26 @@ export function createOpenAIStreamAdapter(
       }
 
       // Re-read store after auto-load / model-ready wait.
+      const liveRuntime = useChatRuntimeStore.getState();
       runtime = queuedRunSettings
-        ? { ...useChatRuntimeStore.getState(), ...queuedRunSettings }
-        : useChatRuntimeStore.getState();
+        ? {
+            ...liveRuntime,
+            ...queuedRunSettings,
+            // A queue started before any model was loaded snapshots an empty
+            // checkpoint. Preserve the model and capability discovered by the
+            // auto-load above instead of overwriting them with that stale
+            // pre-load state.
+            ...(queuedRunSettings.params.checkpoint
+              ? {}
+              : { supportsTools: liveRuntime.supportsTools }),
+            params: queuedRunSettings.params.checkpoint
+              ? queuedRunSettings.params
+              : {
+                  ...queuedRunSettings.params,
+                  checkpoint: liveRuntime.params.checkpoint,
+                },
+          }
+        : liveRuntime;
       const { params } = runtime;
       const {
         supportsTools,
