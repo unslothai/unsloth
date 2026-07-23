@@ -1157,9 +1157,7 @@ class InferenceBackend:
 
             safe_messages = neutralize_control_markup_in_messages(messages)
             safe_system = (
-                neutralize_non_assistant_control_markup(system_prompt)
-                if system_prompt
-                else None
+                neutralize_non_assistant_control_markup(system_prompt) if system_prompt else None
             )
             formatted_prompt = self.format_chat_prompt(safe_messages, safe_system)
             reasoning_channel_markers = None
