@@ -288,7 +288,7 @@ export function ProfilePersonalizationPanel() {
               onClick={() => setAvatarShape(shape)}
               aria-pressed={avatarShape === shape}
               className={cn(
-                "inline-flex h-8 items-center rounded-full px-4 text-[13px] font-medium transition-colors",
+                "inline-flex h-8 items-center rounded-full px-4 text-[0.8125rem] font-medium transition-colors",
                 avatarShape === shape
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -366,7 +366,7 @@ export function ProfilePersonalizationPanel() {
               shownAvatar === null && "ring-ring-strong hover:ring-ring-strong",
             )}
           >
-            <span className="text-[11px] font-medium">
+            <span className="text-[0.6875rem] font-medium">
               {t("settings.profile.noneLabel")}
             </span>
           </button>

@@ -278,7 +278,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               </div>
               <div className="flex items-stretch gap-2">
                 <Input
-                  className="min-w-0 flex-1 font-mono text-[12px]"
+                  className="min-w-0 flex-1 font-mono text-[0.75rem]"
                   value={saveDirectory}
                   onChange={(e) => onSaveDirectoryChange(e.target.value)}
                   spellCheck={false}
@@ -303,7 +303,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   <TooltipContent>Browse</TooltipContent>
                 </Tooltip>
               </div>
-              <p className="text-[11px] text-muted-foreground/70">
+              <p className="text-[0.6875rem] text-muted-foreground/70">
                 {saveDirectory !== defaultSaveDirectory ? (
                   <>Default: {defaultSaveDirectory}</>
                 ) : (
@@ -350,7 +350,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         href="https://huggingface.co/settings/tokens"
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-700 transition-colors"
+                        className="flex items-center gap-1 text-[0.6875rem] text-emerald-600 hover:text-emerald-700 transition-colors"
                       >
                         Get token
                         <HugeiconsIcon icon={ArrowRight01Icon} className="size-3" />
@@ -369,7 +369,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         onChange={(e) => onHfTokenChange(e.target.value)}
                       />
                     </InputGroup>
-                    <p className="text-[11px] text-muted-foreground/70">
+                    <p className="text-[0.6875rem] text-muted-foreground/70">
                       Leave empty if already logged in via CLI.
                     </p>
                   </div>
@@ -427,7 +427,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                     </span>
                   ) : null}
                   <code
-                    className="select-all break-all font-mono text-[12px] text-foreground/90"
+                    className="select-all break-all font-mono text-[0.75rem] text-foreground/90"
                     title={o.path}
                   >
                     {o.path}
@@ -503,11 +503,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       {showProgress && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-foreground/10 px-2.5 py-1 text-[10px] font-semibold">
+            <span className="rounded-full bg-foreground/10 px-2.5 py-1 text-[0.625rem] font-semibold">
               {PHASE_LABELS[run.phase] ?? run.phase}
             </span>
             {summaryMethod === "gguf" && run.quantTotal > 1 && (
-              <span className="text-[10px] tabular-nums text-muted-foreground">
+              <span className="text-[0.625rem] tabular-nums text-muted-foreground">
                 Quant{" "}
                 {Math.min(
                   run.quantIndex + (isExporting ? 1 : 0),
@@ -516,10 +516,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 of {run.quantTotal}
               </span>
             )}
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[0.625rem] font-medium tabular-nums text-muted-foreground">
               {progress}%
             </span>
-            <span className="text-[10px] tabular-nums text-muted-foreground/70">
+            <span className="text-[0.625rem] tabular-nums text-muted-foreground/70">
               {formatElapsed(elapsedSeconds)}
             </span>
           </div>
@@ -536,7 +536,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
           />
           {run.stage && (
             <p
-              className="truncate text-[11px] text-muted-foreground/80"
+              className="truncate text-[0.6875rem] text-muted-foreground/80"
               title={run.stage}
             >
               {run.stage}
@@ -552,7 +552,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 <label className="text-xs font-medium text-muted-foreground">
                   Export output
                 </label>
-                <div className="flex items-center gap-2 text-[11px] text-muted-foreground/80">
+                <div className="flex items-center gap-2 text-[0.6875rem] text-muted-foreground/80">
                   <span
                     className={
                       run.reconnecting
@@ -576,7 +576,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div
                 ref={logScrollRef}
                 onScroll={handleLogScroll}
-                className="h-56 w-full overflow-auto rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-[11px] leading-[1.45] text-emerald-200/90"
+                className="h-56 w-full overflow-auto rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-[0.6875rem] leading-[1.45] text-emerald-200/90"
               >
                 {run.logLines.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-muted-foreground/70">

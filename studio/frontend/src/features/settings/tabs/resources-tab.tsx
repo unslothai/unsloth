@@ -99,7 +99,7 @@ function MetricTile({
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+        <span className="truncate text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
         </span>
         <span
@@ -469,7 +469,7 @@ export function ResourcesTab() {
           description={t("settings.resources.storage.modelsFolderDescription")}
           className="max-sm:flex-col max-sm:items-start max-sm:gap-2"
         >
-          <div className="flex min-w-0 items-center gap-2 max-sm:max-w-[calc(100vw-5rem)]">
+          <div className="flex min-w-0 items-center gap-2 max-sm:max-w-[calc(100vw-80px)]">
             <span
               title={modelsFolder?.path}
               className="min-w-0 max-w-[280px] truncate font-mono text-xs text-muted-foreground max-sm:max-w-[180px]"

@@ -283,14 +283,14 @@ export const ModelCard = memo(function ModelCard({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-11 shrink-0 rounded-[14px] text-[17px] ring-1 ring-white/10"
+          className="size-11 shrink-0 rounded-[14px] text-[1.0625rem] ring-1 ring-white/10"
           remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">
-          <p className="hub-trending-title line-clamp-2 text-[13.5px] font-semibold leading-[16px] text-foreground">
+          <p className="hub-trending-title line-clamp-2 text-[0.84375rem] font-semibold leading-[1rem] text-foreground">
             {row.repo}
           </p>
-          <span className="hub-trending-owner flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+          <span className="hub-trending-owner flex min-w-0 items-center gap-1 text-[0.71875rem] leading-[0.9375rem] text-muted-foreground/80">
             <span className="truncate">{row.owner}</span>
             {row.owner.toLowerCase() === "unsloth" && (
               <span

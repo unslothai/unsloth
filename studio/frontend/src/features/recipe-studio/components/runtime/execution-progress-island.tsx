@@ -132,8 +132,8 @@ export function ExecutionProgressIsland({
   return (
     <div
       className={cn(
-        "w-[clamp(15rem,26vw,20rem)] max-w-[calc(100vw-1rem)] rounded-b-xl border-x border-b bg-card/96 shadow-sm backdrop-blur-sm transition-all",
-        minimized ? "min-h-[3rem]" : "min-h-[8.5rem]",
+        "w-[clamp(240px,26vw,320px)] max-w-[calc(100vw-16px)] rounded-b-xl border-x border-b bg-card/96 shadow-sm backdrop-blur-sm transition-all",
+        minimized ? "min-h-[48px]" : "min-h-[136px]",
       )}
       aria-live="polite"
     >
@@ -156,7 +156,7 @@ export function ExecutionProgressIsland({
           {showLoadingSpinner && (
             <Spinner className="size-3.5 text-muted-foreground" />
           )}
-          <span className="shrink-0 text-[11px] text-muted-foreground">
+          <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
             {formatPercent(progressPercent)}
           </span>
           <button
@@ -180,7 +180,7 @@ export function ExecutionProgressIsland({
 
       {!minimized && (
         <>
-          <div className="grid grid-cols-2 gap-2 px-3 pt-2 text-[11px] text-muted-foreground sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-2 px-3 pt-2 text-[0.6875rem] text-muted-foreground sm:grid-cols-4">
             <p
               className="truncate"
               title={`Done: ${formatMetricValue(execution.progress?.done)}`}
@@ -207,7 +207,7 @@ export function ExecutionProgressIsland({
             </p>
           </div>
           {showSourceProgress ? (
-            <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
+            <div className="mt-1 flex items-center gap-1.5 px-3 text-[0.6875rem] text-muted-foreground">
               <HugeiconsIcon
                 icon={Flag02Icon}
                 className="size-3.5 shrink-0 text-amber-700 dark:text-amber-300"
@@ -217,7 +217,7 @@ export function ExecutionProgressIsland({
               </p>
             </div>
           ) : (
-            <div className="mt-1 flex items-center gap-1.5 px-3 text-[11px] text-muted-foreground">
+            <div className="mt-1 flex items-center gap-1.5 px-3 text-[0.6875rem] text-muted-foreground">
               <HugeiconsIcon
                 icon={currentColumnIcon}
                 className="size-3.5 shrink-0"
@@ -229,7 +229,7 @@ export function ExecutionProgressIsland({
           )}
           {showBatch && (
             <div
-              className="mt-1 truncate px-3 text-[11px] text-muted-foreground"
+              className="mt-1 truncate px-3 text-[0.6875rem] text-muted-foreground"
               title={`Batch: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
             >
               Batch: {execution.batch?.idx ?? "--"}/
@@ -241,7 +241,7 @@ export function ExecutionProgressIsland({
               type="button"
               variant="outline"
               size="sm"
-              className="h-7 w-full text-[11px]"
+              className="h-7 w-full text-[0.6875rem]"
               onClick={onViewExecutions}
             >
               View run details
