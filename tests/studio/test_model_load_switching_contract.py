@@ -126,7 +126,5 @@ def test_abort_signal_reaches_validation_and_scan_cleanup():
     remote_code = _read("features/security/hooks/use-remote-code-consent.ts")
     assert api.count("signal: options?.signal") >= 2
     assert "const discardScanDownloads = () =>" in remote_code
-    aborted = remote_code.split("if (signal?.aborted)", 1)[1].split(
-        "// No custom code", 1
-    )[0]
+    aborted = remote_code.split("if (signal?.aborted)", 1)[1].split("// No custom code", 1)[0]
     assert "discardScanDownloads();" in aborted
