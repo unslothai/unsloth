@@ -390,6 +390,50 @@ class TestPyYamlDeserialization:
                 "from pkgutil import resolve_name as resolve\n"
                 "resolve('yaml.unsafe_load')(payload)"
             ),
+            (
+                "import pydoc\n"
+                "runner = pydoc.locate('yaml.unsafe_load')\n"
+                "runner(payload)"
+            ),
+            (
+                "from pkgutil import resolve_name as resolve\n"
+                "runner = resolve('yaml.unsafe_load')\n"
+                "runner(payload)"
+            ),
+            (
+                "import yaml\n"
+                "getattr(yaml.SafeLoader, 'add_multi_constructor')("
+                "'tag:yaml.org,2002:python/object/apply:', "
+                "yaml.constructor.FullConstructor.construct_python_object_apply)\n"
+                "yaml.load(payload, Loader=yaml.SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "dict.__setitem__(yaml.SafeLoader.yaml_constructors, '!run', run)\n"
+                "yaml.load(payload, Loader=yaml.SafeLoader)"
+            ),
+            (
+                "from yaml import load\n"
+                "try:\n"
+                "    1 / 0\n"
+                "    load = print\n"
+                "finally:\n"
+                "    load(payload)"
+            ),
+            (
+                "import importlib as il\n"
+                "name = 'import_module'\n"
+                "getattr(il, name)('yaml').unsafe_load(payload)"
+            ),
+            (
+                "import builtins as bi\n"
+                "name = '__import__'\n"
+                "getattr(bi, name)('yaml').unsafe_load(payload)"
+            ),
+            "import yaml\ngetattr(yaml.loader, 'Loader')(payload).get_single_data()",
+            "import yaml\nvars(yaml.loader)['Loader'](payload).get_single_data()",
+            "from yaml import unsafe_load\nglobals()['unsafe_load'](payload)",
+            "from yaml import unsafe_load as loads\nlocals()['loads'](payload)",
         ],
     )
     def test_unsafe_pyyaml_loaders_blocked(self, code):
