@@ -2790,3 +2790,28 @@ def test_route_accepts_max_tokens_without_treating_it_as_a_credential(research_h
     run = asyncio.run(create_research_run(payload, request, current_subject = "alice"))
 
     assert run["config"]["inferenceRequest"]["maxTokens"] == 1024
+
+
+def test_merge_scraped_evidence_keeps_snippet_and_chunk():
+    # Grounded auto-scrape must AUGMENT the raw search snippets, not replace them.
+    # Replacing dropped the answer-bearing snippet whenever the scraped chunk was a
+    # distractor, regressing grounded runs below snippet-only accuracy.
+    from core.research_runs import _merge_scraped_evidence
+
+    raw = "Qwen2.5-72B-Instruct is released under the Qwen License (see model card)."
+    scraped = "Most Qwen2.5 sizes such as 7B and 14B are licensed under Apache 2.0."
+    merged = _merge_scraped_evidence(raw, scraped)
+    # both the correct snippet and the grounded chunk survive
+    assert "Qwen License" in merged
+    assert "Apache 2.0" in merged
+    # snippet comes first so it is never truncated away by the evidence cap
+    assert merged.index("Qwen License") < merged.index("Apache 2.0")
+
+
+def test_merge_scraped_evidence_handles_empty_sides():
+    from core.research_runs import _merge_scraped_evidence
+
+    # no scraped chunk -> raw snippets returned unchanged (grounding produced nothing)
+    assert _merge_scraped_evidence("only snippets", "") == "only snippets"
+    # no raw snippets -> the scraped section is returned
+    assert _merge_scraped_evidence("", "only chunk") == "only chunk"

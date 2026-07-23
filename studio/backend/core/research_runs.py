@@ -530,6 +530,25 @@ def _bounded_synthesis_evidence(
     return separator.join(bounded)[:max_chars]
 
 
+def _merge_scraped_evidence(raw_result: str, scraped_section: str) -> str:
+    """Combine the raw search snippets with grounded page-body chunks (additive).
+
+    Grounded auto-scrape used to REPLACE ``raw_result`` with ``scraped_section``.
+    When the retrieved chunk was a distractor or dropped the key fact, the
+    answer-bearing search snippet was lost and the grounded run regressed below
+    snippet-only accuracy. Keep the snippets first (they already carry the answer
+    for most factual queries) and append the grounded excerpts as supplementary
+    evidence. If either side is empty the other is returned unchanged.
+    """
+    raw = (raw_result or "").strip()
+    scraped = (scraped_section or "").strip()
+    if not scraped:
+        return raw_result
+    if not raw:
+        return scraped_section
+    return f"{raw}\n\nAdditional detail retrieved from the pages above:\n{scraped}"
+
+
 def _parse_json_object(text: str) -> dict:
     text = text.strip()
     if text.startswith("```"):
@@ -1842,9 +1861,10 @@ class ResearchSupervisor:
                 fetched_urls.update(scraped_urls)
                 await self._check_active(run["id"])
                 if scraped_section:
-                    # Replace raw search text with the retrieved chunks; sources are already
-                    # cataloged above, so nothing citable is lost.
-                    result = scraped_section
+                    # Additive merge (not replace): keep the answer-bearing search
+                    # snippets and append the grounded page-body chunks. See
+                    # _merge_scraped_evidence for why replacing regressed accuracy.
+                    result = _merge_scraped_evidence(result, scraped_section)
             note = (
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}\n\n"
