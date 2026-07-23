@@ -459,24 +459,15 @@ class TestPyYamlDeserialization:
             "import yaml\nvars(yaml.loader)['Loader'](payload).get_single_data()",
             "from yaml import unsafe_load\nglobals()['unsafe_load'](payload)",
             "from yaml import unsafe_load as loads\nlocals()['loads'](payload)",
-            (
-                "from yaml import unsafe_load\n"
-                "globals()['unsafe' + '_load'](payload)"
-            ),
+            ("from yaml import unsafe_load\nglobals()['unsafe' + '_load'](payload)"),
             "import pydoc\npydoc.locate(name)(payload)",
-            (
-                "from pkgutil import resolve_name\n"
-                "resolve_name('yaml.' + loader_name)(payload)"
-            ),
+            ("from pkgutil import resolve_name\nresolve_name('yaml.' + loader_name)(payload)"),
             (
                 "import yaml\n"
                 "getattr(yaml.SafeLoader, 'add_' + 'constructor')('!run', run)\n"
                 "yaml.safe_load('!run x')"
             ),
-            (
-                "getattr(__builtins__, '__' + 'import__')('yaml')"
-                ".unsafe_load(payload)"
-            ),
+            ("getattr(__builtins__, '__' + 'import__')('yaml').unsafe_load(payload)"),
             (
                 "import yaml\n"
                 "s = setattr\n"

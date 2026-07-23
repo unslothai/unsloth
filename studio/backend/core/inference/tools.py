@@ -845,10 +845,7 @@ def _is_pyyaml_resolver_call(node, resolver_aliases: set[str]) -> bool:
         isinstance(node, ast.Call)
         and node.args
         and (
-            (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr in {"locate", "resolve_name"}
-            )
+            (isinstance(node.func, ast.Attribute) and node.func.attr in {"locate", "resolve_name"})
             or (isinstance(node.func, ast.Name) and node.func.id in resolver_aliases)
         )
     )
@@ -5317,10 +5314,7 @@ def _check_signal_escape_patterns(code: str):
                 self.dynamic_namespace_aliases,
             )
             registry_setter = value is not None and (
-                (
-                    isinstance(value, ast.Name)
-                    and value.id in self.pyyaml_registry_setter_aliases
-                )
+                (isinstance(value, ast.Name) and value.id in self.pyyaml_registry_setter_aliases)
                 or (
                     isinstance(value, ast.Attribute)
                     and value.attr in {"setattr", "delattr"}
@@ -5868,10 +5862,7 @@ def _check_signal_escape_patterns(code: str):
             if (
                 isinstance(func, ast.Call)
                 and func.args
-                and (
-                    _is_yaml_string(func.args[0])
-                    or _subscript_key(func.args[0]) is None
-                )
+                and (_is_yaml_string(func.args[0]) or _subscript_key(func.args[0]) is None)
                 and (
                     (
                         isinstance(func.func, ast.Attribute)
@@ -5961,10 +5952,7 @@ def _check_signal_escape_patterns(code: str):
                 )
             if (
                 (
-                    (
-                        isinstance(func, ast.Name)
-                        and func.id in self.pyyaml_registry_setter_aliases
-                    )
+                    (isinstance(func, ast.Name) and func.id in self.pyyaml_registry_setter_aliases)
                     or (isinstance(func, ast.Attribute) and func.attr in {"setattr", "delattr"})
                 )
                 and node.args
