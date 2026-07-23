@@ -210,7 +210,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           <span className="text-xs text-foreground/90">{label}</span>
           {statusLabel ? (
             <span
-              className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
+              className={`rounded-full px-1.5 py-0.5 text-[0.625rem] font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
             >
               {statusLabel}
             </span>
@@ -221,7 +221,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
         </span>
       </div>
       {sizeLabel ? (
-        <div className="text-[11px] tabular-nums text-muted-foreground">
+        <div className="text-[0.6875rem] tabular-nums text-muted-foreground">
           {sizeLabel}
         </div>
       ) : null}
@@ -233,7 +233,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
       ) : null}
       {state.cachePath ? (
         <div
-          className="truncate rounded bg-muted/50 px-2 py-1 text-[10px] text-muted-foreground/70"
+          className="truncate rounded bg-muted/50 px-2 py-1 text-[0.625rem] text-muted-foreground/70"
           title={state.cachePath}
         >
           {formatCachePath(state.cachePath)}
@@ -316,7 +316,7 @@ export function TrainingStartOverlay({
 
   return (
     <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-background/45 backdrop-blur-[1px]">
-      <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-2rem)] flex-col items-center">
+      <div className="pointer-events-auto relative flex w-[860px] max-w-[calc(100%-32px)] flex-col items-center">
         <MascotImg src="unsloth-gem.png" className="size-24 object-contain" />
         <div className="relative w-full">
           <AlertDialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>

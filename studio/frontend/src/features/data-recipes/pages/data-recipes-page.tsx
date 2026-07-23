@@ -280,7 +280,7 @@ function LearningRecipeCards({
                       <Badge
                         key={`${template.title}-${badge}`}
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
+                        className="h-5 shrink-0 px-1.5 text-[0.625rem] dark:text-zinc-300"
                       >
                         {badge}
                       </Badge>
@@ -288,7 +288,7 @@ function LearningRecipeCards({
                     {extraLearningBadgeCount > 0 ? (
                       <Badge
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
+                        className="h-5 shrink-0 px-1.5 text-[0.625rem] dark:text-zinc-300"
                       >
                         +{extraLearningBadgeCount}
                       </Badge>
@@ -296,7 +296,7 @@ function LearningRecipeCards({
                     {isReady ? null : (
                       <Badge
                         variant="secondary"
-                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
+                        className="h-5 shrink-0 px-1.5 text-[0.625rem] dark:text-zinc-300"
                       >
                         Soon
                       </Badge>
@@ -403,7 +403,7 @@ export function DataRecipesPage(): ReactElement {
       <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+            <h1 className="text-[1.875rem] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[2.125rem]">
               Data Recipes
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">

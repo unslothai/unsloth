@@ -100,7 +100,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
           onChange={handleSeek}
           className="h-1.5 w-full cursor-pointer accent-primary"
         />
-        <div className="flex justify-between text-[10px] text-muted-foreground">
+        <div className="flex justify-between text-[0.625rem] text-muted-foreground">
           <span>{formatTime(progress)}</span>
           <span>{formatTime(duration)}</span>
         </div>

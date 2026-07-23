@@ -454,7 +454,7 @@ function HighlightedCode({
     [code, language],
   );
   return (
-    <div className="max-w-full overflow-x-auto p-3 pr-16 text-[11px] leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-[11px] [&_pre]:!leading-relaxed [&_code]:!text-[11px] [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-[11px]">
+    <div className="max-w-full overflow-x-auto p-3 pr-16 text-[0.6875rem] leading-relaxed [&_pre]:!m-0 [&_pre]:!whitespace-pre-wrap [&_pre]:!break-words [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-[0.6875rem] [&_pre]:!leading-relaxed [&_code]:!text-[0.6875rem] [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block]]:!text-[0.6875rem]">
       <Streamdown
         mode="static"
         plugins={{ code: codePlugin }}
@@ -668,7 +668,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onCheckedChange={handleToggleAutoSwitch}
               aria-label={t("settings.general.modelAutoSwitch.enable")}
             />
-            <span className="text-[11px] font-medium text-foreground">
+            <span className="text-[0.6875rem] font-medium text-foreground">
               {t("settings.general.modelAutoSwitch.enable")}
             </span>
             <Tooltip>
@@ -686,7 +686,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   />
                 </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-[260px] text-[11px] leading-snug">
+              <TooltipContent className="max-w-[260px] text-[0.6875rem] leading-snug">
                 {t("settings.general.modelAutoSwitch.enableDescription")}
               </TooltipContent>
             </Tooltip>
@@ -701,7 +701,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 onCheckedChange={handleToggleTunnel}
                 aria-label={t("settings.apiKeys.secureHttps")}
               />
-              <span className="text-[11px] font-medium text-foreground">
+              <span className="text-[0.6875rem] font-medium text-foreground">
                 {t("settings.apiKeys.secureHttps")}
               </span>
               {/* Only when not launched with --secure: the raw 0.0.0.0 port is
@@ -720,7 +720,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                       />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent className="max-w-[260px] text-[11px] leading-snug">
+                  <TooltipContent className="max-w-[260px] text-[0.6875rem] leading-snug">
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>
@@ -730,7 +730,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               type="button"
               onClick={handleCopyUrl}
               className={cn(
-                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[0.6875rem] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 !useTunnel && "opacity-50",
               )}
               title={cloudflareUrl}
@@ -759,7 +759,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   onClick={() => setLang(tab.id)}
                   aria-pressed={active}
                   className={cn(
-                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "rounded-full px-2.5 py-1 text-[0.6875rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     active
                       ? "hub-tab-toggle-pill text-foreground"
                       : "text-muted-foreground hover:text-foreground",
@@ -778,7 +778,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onClick={() => setOs("unix")}
               aria-pressed={os === "unix"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "rounded-full px-2.5 py-1 text-[0.6875rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "unix"
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -791,7 +791,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onClick={() => setOs("windows")}
               aria-pressed={os === "windows"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                "rounded-full px-2.5 py-1 text-[0.6875rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "windows"
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -805,7 +805,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <button
             type="button"
             onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[0.6875rem] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon
@@ -821,10 +821,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           />
         </div>
         <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">
-          <span className="text-[11px] font-semibold text-foreground">
+          <span className="text-[0.6875rem] font-semibold text-foreground">
             {t("settings.apiKeys.codingAgents")}
           </span>
-          <span className="text-[11px] leading-snug text-muted-foreground">
+          <span className="text-[0.6875rem] leading-snug text-muted-foreground">
             {t("settings.apiKeys.codingAgentsHint")}
           </span>
           <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -846,7 +846,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                       : undefined
                   }
                   className={cn(
-                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-[0.6875rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     active
                       ? "hub-tab-toggle-pill text-foreground"
                       : "text-muted-foreground hover:text-foreground",
@@ -864,13 +864,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             })}
           </div>
           <div className="relative mt-0.5 min-w-0">
-            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[11px] text-foreground">
+            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[0.6875rem] text-foreground">
               {agentCommand}
             </code>
             <button
               type="button"
               onClick={handleCopyAgent}
-              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon
@@ -879,7 +879,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               />
             </button>
           </div>
-          <span className="text-[11px] leading-snug text-muted-foreground">
+          <span className="text-[0.6875rem] leading-snug text-muted-foreground">
             {detectedAgents.length > 0
               ? t("settings.apiKeys.codingAgentsDetectedHint", {
                   agents: detectedAgents
@@ -889,7 +889,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               : t("settings.apiKeys.codingAgentsSwap")}
           </span>
         </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[0.6875rem] text-muted-foreground">
           <span>{t("settings.apiKeys.setupDocs")}</span>
           {DOC_LINKS.map((link) => (
             <a

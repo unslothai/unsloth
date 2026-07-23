@@ -100,7 +100,7 @@ export function EmbeddingModelCombobox({
         autoHighlight={true}
       >
         <ComboboxInput
-          className="h-8 w-full font-mono [&_input]:text-[11px]"
+          className="h-8 w-full font-mono [&_input]:text-[0.6875rem]"
           placeholder={placeholder}
           aria-label={ariaLabel}
           disabled={disabled}
@@ -123,7 +123,7 @@ export function EmbeddingModelCombobox({
                   selectingRef.current = true;
                 }}
               >
-                <span className="truncate font-mono text-[11px]">{id}</span>
+                <span className="truncate font-mono text-[0.6875rem]">{id}</span>
               </ComboboxItem>
             )}
           </ComboboxList>

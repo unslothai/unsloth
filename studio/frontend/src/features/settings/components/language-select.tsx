@@ -37,7 +37,7 @@ export function LanguageSelect() {
       </SelectTrigger>
       <SelectContent
         style={{
-          maxHeight: "min(18rem, var(--radix-select-content-available-height))",
+          maxHeight: "min(288px, var(--radix-select-content-available-height))",
         }}
       >
         <SelectItem value={AUTO_LOCALE}>

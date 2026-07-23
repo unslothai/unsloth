@@ -17,14 +17,16 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
   return (
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
       <div className="flex items-center gap-3 py-1 md:py-2">
+        {/* Logo lockup follows the UI font size at half rate:
+            base + (root - 16px) / 2, written as (base - 8)px + 0.5rem. */}
         <img
           src={`${import.meta.env.BASE_URL}sticker.png`}
           alt="Unsloth"
-          className="size-12"
+          className="size-[calc(40px+0.5rem)]"
         />
         <div className="flex flex-col">
-          <span className="font-semibold text-lg leading-tight">Unsloth</span>
-          <span className="text-xs text-muted-foreground">Studio</span>
+          <span className="font-semibold text-[calc(10px+0.5rem)] leading-tight">Unsloth</span>
+          <span className="text-[calc(4px+0.5rem)] text-muted-foreground">Studio</span>
         </div>
       </div>
       <div className="mt-3 md:mt-0">
