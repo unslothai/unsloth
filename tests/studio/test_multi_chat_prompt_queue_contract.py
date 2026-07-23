@@ -226,9 +226,7 @@ def test_cancel_and_failure_paths_release_capacity_and_resume_other_queues():
     assert "requestPromptQueuePumpIfReady();" in stop
     assert "deletePromptQueueRun(failedRun);" in failed
     assert "requestPromptQueuePumpIfReady();" in failed
-    assert failed.index("requestPromptQueuePumpIfReady();") > failed.index(
-        "if (threadId)"
-    )
+    assert failed.index("requestPromptQueuePumpIfReady();") > failed.index("if (threadId)")
     assert "cancelByThreadId: Record<string, () => void>;" in RUNTIME_STORE
     assert "notifyPreStreamRunFailed(options.unstable_threadId ?? null)" in RUNTIME_PROVIDER
 
