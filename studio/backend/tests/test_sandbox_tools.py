@@ -71,13 +71,8 @@ def _blocked(code: str, *, expect_phrase: str):
             "'!x', lambda loader, node: None)()\n"
             "yaml.safe_load('!x value')"
         ),
-        (
-            "[__import__][0]('yaml').unsafe_load('a: 1')"
-        ),
-        (
-            "import pkgutil\n"
-            "[pkgutil.resolve_name][0]('yaml:unsafe_load')('a: 1')"
-        ),
+        ("[__import__][0]('yaml').unsafe_load('a: 1')"),
+        ("import pkgutil\n[pkgutil.resolve_name][0]('yaml:unsafe_load')('a: 1')"),
         (
             "import yaml\n"
             "super(yaml.SafeLoader, yaml.SafeLoader).add_constructor("
