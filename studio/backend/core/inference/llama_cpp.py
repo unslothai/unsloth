@@ -6818,9 +6818,9 @@ class LlamaCppBackend:
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
                 # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
-                # Route and remote-download preflights reject before teardown; keep
-                # this as a final defense if classification ever disagrees.
+                # ggml Vulkan ordinal cannot be honored. The route rejects models it
+                # can classify before teardown; this covers a remote uncached GGUF
+                # whose architecture is first known after download (#7239).
                 if is_vulkan_backend and gpu_ids:
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
