@@ -1,5 +1,5 @@
 {
-  "_comment": "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check, evidence_hash); evidence_hash is over the matched code with L<NN>: markers stripped, so version bumps and line shifts do not reopen an entry but changed code does. severity and evidence are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
+  "_comment": "scan_packages.py allowlist (reviewed). Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check, evidence_hash); evidence_hash is over the matched code with L<NN>: markers stripped, so version bumps and line shifts do not reopen an entry but changed code does. severity and evidence are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
   "version": 1,
   "entries": [
     {
