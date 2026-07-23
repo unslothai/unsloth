@@ -92,6 +92,19 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> 
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
+// Optimizers the MLX trainer actually supports on Apple Silicon. Values must
+// match SUPPORTED_MLX_OPTIMIZERS in unsloth-zoo's mlx/trainer.py; on MLX the
+// bitsandbytes/torch names above have no meaning and are remapped to plain
+// AdamW, so Studio offers this list instead when running on a Mac.
+export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "adamw", label: "AdamW" },
+  { value: "adam", label: "Adam" },
+  { value: "lion", label: "Lion" },
+  { value: "muon", label: "Muon" },
+  { value: "sgd", label: "SGD" },
+  { value: "adafactor", label: "Adafactor" },
+];
+
 export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "linear", label: "Linear" },
   { value: "cosine", label: "Cosine" },

@@ -1545,6 +1545,78 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L836:         code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736:         exec(code, globs, locs)",
       "evidence_hash": "5c0992c90f05c772abd94d00784f157de337e1f8567f8b3aee1b15e46c96cd5d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L165:         temporary_location=\"/tmp/ignored\", sha256:ab5c587f9ec31a0cc10ee55698ab133a417148d9d3f371bbc81b1e13fa119c13",
+      "evidence_hash": "93a11159147aad94f353ec4d2e0b8486b256abef88cd96d741813222cd32b138"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_vision_collator_audio.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L111:         out = extract_audio_info(msgs({\"type\": \"audio\", key: \"/tmp/a.wav\"})) sha256:2efe23ffbe2b91b8403aec9b700736919b59e5ca770f8e1f5501651b44b7d398",
+      "evidence_hash": "d416b79dd17b24214f3f7653ac01354507d7bf0fc464dee30a4a4b8998f063ba"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
+      "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
+    },
+    {
+      "package": "openai",
+      "file": "openai/auth/_workload.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
+      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/beta/responses/responses.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4000:         while True: sha256:f8ab538118daba9ec06e27399dbdc90a4521c3390e6a47a6348a1f180a83effd",
+      "evidence_hash": "31481ea83c687acc27144d72d3832d4fb98dd1c79fb5e0ddd85080de95997b9f"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/realtime/realtime.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L311:         while True: sha256:5b63313072aae9ca28677e03426513ccf12221e4f4e0ea6c31efbe09790633b5",
+      "evidence_hash": "05e1af469d651b51673763a7c4cdf759af9472fb627b7b470adc28cc237bd650"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/responses/responses.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L3951:         while True: sha256:d68ef896bf0743ca430cfacb9a3353da1f3b9c51c3a21b6450a07a32b55aa2ac",
+      "evidence_hash": "160eecdd79b521bffbe8476f782b69a0724c35d1b19376a7600807165fd54f9f"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_gemma4_forced_float32_ple_dtype.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L277:     compile(rewritten + _GEMMA4_PLE_CAST_HELPER, \"<gemma4-ple-generated>\", \"exec\") | L440:     compile(on, \"<gemma4-ple-append>\", \"exec\") | L468:     compile(generated, \"<gemma4-ple-crosspath>\", \"exec\")\nExec: L19:     exec(_GEMMA4_PLE_CAST_HELPER, namespace)",
+      "evidence_hash": "a85e24d8e7c431563cbd83b70f91a3b971abde0f37083d68e70984147960cc70"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_vision_collator_audio.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L111:         out = extract_audio_info(msgs({\"type\": \"audio\", key: \"/tmp/a.wav\"})) sha256:022f81dd21acfc6a35a058de96132834c218404a9e37b3d09a7768a8c8f6c728",
+      "evidence_hash": "2d1e75446af120d9133a42aa8af426a839d3434d9dc109cc1d6c1b22ca1ddb75"
     }
   ]
 }

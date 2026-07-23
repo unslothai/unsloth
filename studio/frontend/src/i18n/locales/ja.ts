@@ -40,7 +40,7 @@ export const ja = {
       returnToChat: "チャットに戻る",
       compare: "比較",
       search: "検索",
-      hub: "ハブ",
+      hub: "モデル",
       train: "トレーニング",
       recipes: "レシピ",
       export: "エクスポート",

@@ -109,7 +109,9 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization
-    return get_visible_gpu_utilization()
+
+    # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this route.
+    return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
 @router.post("/start")
@@ -414,46 +416,29 @@ async def start_training(
             try:
                 from routes.training_vram import (
                     can_keep_chat_during_training,
-                    free_chat_models_for_training,
-                    summarize_resident_chat,
+                    coordinate_models_for_training,
                 )
 
-                resident = summarize_resident_chat()
-                if not resident["any"]:
-                    return
-                if resident.get("loading"):
-                    # In-flight load can't be sized -> free rather than risk OOM.
-                    freed = free_chat_models_for_training(reason = "chat model still loading")
-                    logger.info("Freed in-flight chat load for training: %s", freed)
-                    return
-                keep, info = can_keep_chat_during_training(
-                    model_name = training_kwargs["model_name"],
-                    hf_token = training_kwargs["hf_token"],
-                    training_type = training_kwargs["training_type"],
-                    load_in_4bit = training_kwargs["load_in_4bit"],
-                    batch_size = training_kwargs["batch_size"],
-                    max_seq_length = training_kwargs["max_seq_length"],
-                    lora_rank = training_kwargs["lora_r"],
-                    target_modules = training_kwargs["target_modules"],
-                    gradient_checkpointing = training_kwargs["gradient_checkpointing"],
-                    optimizer = training_kwargs["optim"],
-                    gpu_ids = training_kwargs["gpu_ids"],
-                )
-                if keep:
-                    logger.info(
-                        "Keeping chat model(s) loaded during training "
-                        "(free ~%s GB, needs ~%s GB): %s",
-                        info.get("usable_gb"),
-                        info.get("required_gb"),
-                        resident,
+                def _can_keep_resident_models():
+                    return can_keep_chat_during_training(
+                        model_name = training_kwargs["model_name"],
+                        hf_token = training_kwargs["hf_token"],
+                        training_type = training_kwargs["training_type"],
+                        load_in_4bit = training_kwargs["load_in_4bit"],
+                        batch_size = training_kwargs["batch_size"],
+                        max_seq_length = training_kwargs["max_seq_length"],
+                        lora_rank = training_kwargs["lora_r"],
+                        target_modules = training_kwargs["target_modules"],
+                        gradient_checkpointing = training_kwargs["gradient_checkpointing"],
+                        optimizer = training_kwargs["optim"],
+                        gpu_ids = training_kwargs["gpu_ids"],
                     )
-                else:
-                    freed = free_chat_models_for_training(
-                        reason = "insufficient VRAM to run training alongside chat",
-                    )
-                    logger.info("Freed chat model(s) for training: %s", freed)
+
+                freed = coordinate_models_for_training(_can_keep_resident_models)
+                if freed:
+                    logger.info("Freed models for training: %s", freed)
             except Exception as e:
-                logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
+                logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
         from utils.transformers_version import SidecarSwapInProgress

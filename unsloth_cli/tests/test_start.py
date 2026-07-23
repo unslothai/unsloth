@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import unsloth_cli.commands.start as start
@@ -618,6 +619,104 @@ def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
     assert not (tmp_path / "model-catalog.json").exists()
 
 
+def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
+    path = start.write_codex_subagent_config(BASE, "private-token", local, tmp_path)
+    agent = _parse_toml(path.read_text())
+    assert agent["name"] == "unsloth"
+    assert "local agent" in agent["description"].lower()
+    assert agent["model_provider"] == start._CODEX_PROFILE
+    assert agent["model"] == local["id"]
+    assert agent["model_context_window"] == MODEL["context_length"]
+    assert agent["model_providers"][start._CODEX_PROFILE] == {
+        "name": "Unsloth Studio",
+        "base_url": f"{BASE}/v1",
+        "wire_api": "responses",
+        "auth": {
+            "command": sys.executable,
+            "args": [
+                "-c",
+                "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
+                str(tmp_path / "unsloth-auth.json"),
+            ],
+            "timeout_ms": 5000,
+        },
+    }
+    assert json.loads((tmp_path / "unsloth-auth.json").read_text()) == {"token": "private-token"}
+    catalog = json.loads((tmp_path / agent["model_catalog_json"]).read_text())
+    assert catalog["models"][0]["slug"] == local["id"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_codex_subagent_auth_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex.exe",
+    )
+
+    path = start.write_codex_subagent_config(BASE, "private-token", MODEL, tmp_path)
+    auth = _parse_toml(path.read_text())["model_providers"][start._CODEX_PROFILE]["auth"]
+
+    assert auth["command"] == "wsl.exe"
+    assert auth["args"][:5] == ["-d", "Ubuntu", "--", sys.executable, "-c"]
+    assert auth["args"][-1] == str(tmp_path / "unsloth-auth.json")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_agent_config_path_translates_for_windows_agent(monkeypatch, tmp_path):
+    windows_path = r"\\wsl.localhost\Ubuntu\tmp\unsloth.toml"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex",
+    )
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_path)
+
+    assert start._agent_config_path(tmp_path / "unsloth.toml", ["codex"]) == windows_path
+
+
+def test_subagent_model_id_preserves_explicit_variant(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: pytest.fail("explicit variant should not need status"),
+    )
+    assert (
+        start._subagent_model_id(BASE, "key", MODEL, MODEL["id"], "UD-Q4_K_XL")
+        == MODEL["id"] + ":UD-Q4_K_XL"
+    )
+
+
+def test_subagent_model_id_uses_loaded_variant(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: {"is_gguf": True, "gguf_variant": "Q5_K_M"},
+    )
+    assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
+
+
+def test_subagent_model_id_warns_when_status_unavailable(monkeypatch, capsys):
+    def raise_error(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(start, "_http_json", raise_error)
+    assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"]
+    assert "could not verify the loaded GGUF variant" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("agent", ["openclaw", "hermes"])
+def test_unsupported_agents_reject_as_subagent(agent):
+    result = CliRunner().invoke(start.start_app, [agent, "--as-subagent"])
+    assert result.exit_code == 1
+    assert f"--as-subagent is not supported for {agent}." in result.output
+
+
 @pytest.fixture()
 def fake_studio(tmp_path, monkeypatch):
     calls = []
@@ -639,8 +738,13 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/auth/api-keys"):
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/inference/load"):
+            already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [{"id": payload["model_path"], "context_length": 4096}]
-            return {}
+            return {
+                "status": "already_loaded" if already_loaded else "loaded",
+                "model": payload["model_path"],
+                "display_name": payload["model_path"],
+            }
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
@@ -682,6 +786,82 @@ def test_connect_claude_no_launch(fake_studio):
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
     assert "--settings" in result.output
     assert ".claude/settings.json" not in result.output
+
+
+def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+            "hello",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    plugin = tmp_path / "agents" / "claude-subagent" / "unsloth-local-agent"
+    assert command == [
+        "claude",
+        "--plugin-dir",
+        str(plugin),
+        "--allowedTools",
+        start._CLAUDE_SUBAGENT_TOOL,
+        "hello",
+    ]
+    assert "--model" not in command
+    parent_base = "$env:ANTHROPIC_BASE_URL" if os.name == "nt" else "export ANTHROPIC_BASE_URL="
+    parent_token = (
+        "$env:ANTHROPIC_AUTH_TOKEN" if os.name == "nt" else "export ANTHROPIC_AUTH_TOKEN="
+    )
+    assert parent_base not in result.output
+    assert parent_token not in result.output
+    assert "unset ANTHROPIC_API_KEY" not in result.output
+    assert "UNSLOTH_CLAUDE_SUBAGENT_API_KEY" not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == (
+        "unsloth-local-agent"
+    )
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == sys.executable
+    assert mcp["args"] == ["-m", start._CLAUDE_SUBAGENT_MCP_MODULE]
+    assert mcp["env"] == {
+        "UNSLOTH_CLAUDE_SUBAGENT_BASE_URL": BASE,
+        "UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "sk-unsloth-feedfacefeedface",
+        "UNSLOTH_CLAUDE_SUBAGENT_MODEL": MODEL["id"] + ":UD-Q4_K_XL",
+        "UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS": "0",
+        "UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW": "4096",
+    }
+    skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
+    assert "spawn an Unsloth agent or local agent" in skill
+    assert "Ask Claude to spawn an Unsloth or local agent." in result.output
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_claude_subagent_plugin_uses_wsl_for_windows_claude(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("WSLENV", "EXISTING")
+    monkeypatch.setattr(
+        start.shutil,
+        "which",
+        lambda _: "/mnt/c/Users/x/AppData/Local/Programs/claude.exe",
+    )
+    server_env = {"UNSLOTH_CLAUDE_SUBAGENT_API_KEY": "secret"}
+    plugin = start.write_claude_subagent_plugin(tmp_path, server_env)
+    mcp = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["unsloth"]
+    assert mcp["command"] == "wsl.exe"
+    assert mcp["args"] == [
+        "-d",
+        "Ubuntu",
+        "--",
+        sys.executable,
+        "-m",
+        start._CLAUDE_SUBAGENT_MCP_MODULE,
+    ]
+    assert mcp["env"]["UNSLOTH_CLAUDE_SUBAGENT_API_KEY"] == "secret"
+    assert mcp["env"]["WSLENV"].split(":") == ["EXISTING", "UNSLOTH_CLAUDE_SUBAGENT_API_KEY"]
 
 
 def test_connect_claude_compact_window_omitted_without_context(fake_studio, monkeypatch):
@@ -808,6 +988,38 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "codex",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[0] == "codex"
+    assert command[1:3] == ["--enable", "multi_agent"]
+    assert "agents.max_depth=1" in command
+    assert "--oss" not in command
+    assert "--profile" not in command
+    assert "--model" not in command
+    assert "CODEX_HOME" not in result.output
+    assert start._CODEX_ENV_KEY not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    home = tmp_path / "agents" / "codex-subagent"
+    agent_path = home / "unsloth.toml"
+    agent = _parse_toml(agent_path.read_text())
+    assert agent["model"] == MODEL["id"] + ":UD-Q4_K_XL"
+    assert "env_key" not in agent["model_providers"][start._CODEX_PROFILE]
+    assert f"agents.unsloth.config_file={json.dumps(str(agent_path))}" in command
+    assert "Ask Codex to spawn an Unsloth or local agent." in result.output
+
+
 def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
     result = CliRunner().invoke(
         start.start_app,
@@ -824,7 +1036,7 @@ def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, t
     assert profile["model"] == MODEL["id"]
 
 
-def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
+def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, capsys):
     calls = []
     state = {"loaded": False}
 
@@ -862,6 +1074,8 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
 
     assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
     assert any(c[1].endswith("/api/inference/load") for c in calls)
+    output = capsys.readouterr().out
+    assert "please wait" not in output
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
@@ -903,6 +1117,35 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": False,
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            return {"status": "loaded", "model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
     # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
     # no /api/inference/load call.
@@ -929,6 +1172,25 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
     assert entry["id"] == "unsloth/Gemma-4-GGUF"
     assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_without_request_rejects_unloaded_catalog(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {
+            "data": [
+                {
+                    "id": "unsloth/Gemma-4-GGUF",
+                    "loaded": False,
+                    "context_length": 131072,
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "sk-test", None)
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
@@ -1213,6 +1475,9 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
+    assert result.output.index(
+        f"Switching the Unsloth server from {MODEL['id']} to unsloth/Qwen3.5-35B-A3B.\n"
+    ) < result.output.index("This unloads the current model for every attached session.\n")
     _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
@@ -1296,6 +1561,211 @@ def test_split_repo_variant(model, expected):
     assert start._split_repo_variant(model) == expected
 
 
+@pytest.mark.parametrize(
+    "token, expected",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", True),
+        ("some-org/model.name_1", True),
+        ("--continue", False),  # flag
+        ("resume", False),  # single word, no slash
+        ("/models/local.gguf", False),  # absolute path
+        ("./rel.gguf", False),  # relative path
+        ("C:\\models\\x.gguf", False),  # Windows drive
+        ("my models/foo", False),  # has a space
+        ("owner/repo/extra", False),  # too many segments
+    ],
+)
+def test_looks_like_model(token, expected):
+    assert start._looks_like_model(token) is expected
+
+
+def test_consume_positional_model_leading_token():
+    # A leading org/name positional routes to --model and is dropped from the passthrough.
+    model, rest = start._consume_positional_model(None, ["unsloth/Model-GGUF", "--continue"])
+    assert model == "unsloth/Model-GGUF"
+    assert rest == ["--continue"]
+
+
+def test_looks_like_model_leaves_existing_local_dir_for_agent(tmp_path, monkeypatch):
+    # A relative `owner/repo` that actually exists (e.g. an OpenCode project dir) must
+    # stay an agent argument, not be consumed as a model.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "owner" / "repo").mkdir(parents = True)
+    assert start._looks_like_model("owner/repo") is False
+    model, rest = start._consume_positional_model(None, ["owner/repo"])
+    assert model is None and rest == ["owner/repo"]
+    # The same shape, when it does not exist locally, is still treated as a model.
+    assert start._looks_like_model("owner/absent-repo") is True
+
+
+def test_consume_positional_model_ignores_non_leading_and_explicit_model():
+    # An org/name that is an option value (not leading) is never stolen.
+    model, rest = start._consume_positional_model(None, ["--profile", "owner/repo"])
+    assert model is None and rest == ["--profile", "owner/repo"]
+    # An explicit --model always wins; the positional is left untouched.
+    model, rest = start._consume_positional_model("explicit/model", ["owner/repo"])
+    assert model == "explicit/model" and rest == ["owner/repo"]
+
+
+def test_start_separator_preserves_model_shaped_agent_argument(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app,
+        ["codex", "--no-launch", "--", "owner/repo"],
+    )
+
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[-2:] == ["--", "owner/repo"]
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["codex", "--no-launch", MODEL["id"], "--", "--continue"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[-2:] == ["--", "--continue"]
+
+
+def test_start_positional_model_routes_to_model_on_auto_serve(fake_studio, monkeypatch):
+    # `unsloth start claude unsloth/Model-GGUF` (no --model): the positional becomes the
+    # model; the GGUF variant is left unset so the server's own quant preference selects it.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        captured["model"] = model
+        captured["load"] = load
+        captured["server_options"] = server_options
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(start.start_app, ["claude", "unsloth/gemma-4-E2B-it-GGUF"])
+    assert result.exit_code == 0, result.output
+    assert captured["model"] == "unsloth/gemma-4-E2B-it-GGUF"
+    assert captured["load"].gguf_variant is None
+
+
+def test_start_local_gguf_path_keeps_no_default_variant(fake_studio, monkeypatch, tmp_path):
+    # A local GGUF dir/path ending in -GGUF must NOT get a forced default quant: the dir
+    # may only hold a different quant, and pre-PR the server picked whatever was available.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    local = tmp_path / "Qwen3-1.7B-GGUF"
+    local.mkdir()
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        captured["load"] = load
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(start.start_app, ["claude", "--model", str(local)])
+    assert result.exit_code == 0, result.output
+    assert captured["load"].gguf_variant is None
+
+
+def test_start_studio_server_forwards_tool_flags_via_command_and_env(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    # No inherited kill switches, so the omitted-flag default applies.
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+
+    # Default start: tools off (passthrough), healing + nudging on.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    cmd, env = captured["command"], captured["kwargs"]["env"]
+    assert "--disable-tools" in cmd and "--enable-tools" not in cmd
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+    # Flipped: tools on, healing off, nudging off.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(enable_tools = True, tool_call_healing = False, tool_call_nudging = False),
+    )
+    cmd, env = captured["command"], captured["kwargs"]["env"]
+    assert "--enable-tools" in cmd and "--disable-tools" not in cmd
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
+    # With the flags omitted, an operator's pre-exported kill switch must survive into the
+    # child server instead of being overwritten with the start defaults.
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "1")
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", "0")
+
+    # Flags omitted -> inherited values are preserved.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+    # An explicit flag still overrides the inherited env.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(tool_call_healing = True, tool_call_nudging = True),
+    )
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     # A bare `--model <loaded repo>` (no load knobs) attaches to the already-loaded model
     # without touching /api/inference/load, so it can never evict another session.
@@ -1303,6 +1773,7 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     assert result.exit_code == 0, result.output
     loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
     assert loads == []
+    assert f"Reusing loaded model: {MODEL['id']}\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
@@ -1324,6 +1795,7 @@ def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
             {"model_path": MODEL["id"], "gguf_variant": "UD-Q4_K_XL"},
         )
     ]
+    assert f"Reusing loaded model: {MODEL['id']}:UD-Q4_K_XL\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
@@ -1730,8 +2202,9 @@ def _reset_auto_served():
     start._auto_served_server = None
 
 
-def test_start_studio_server_builds_command_and_waits(monkeypatch):
+def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     captured = {}
+    monkeypatch.setenv(start._START_API_KEY_MARKER_ENV, "parent")
 
     class FakePopen:
         def __init__(self, command, **kwargs):
@@ -1761,18 +2234,210 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch):
     assert cmd[cmd.index("--gguf-variant") + 1] == "UD-Q4_K_XL"
     assert cmd[cmd.index("--context-length") + 1] == "8192"
     assert "--tensor-parallel" in cmd
+    assert "--start-api-key-marker" not in cmd
+    assert captured["kwargs"]["env"][start._START_API_KEY_MARKER_ENV] == "1"
+    assert start.os.environ[start._START_API_KEY_MARKER_ENV] == "parent"
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
     assert captured["kwargs"].get("start_new_session") is True  # own process group
     assert server.pid == 4321
+    output = capsys.readouterr().out
+    assert "Starting Unsloth server\n" in output
+    assert "Model: unsloth/Qwen3-1.7B-GGUF:UD-Q4_K_XL\n" in output
+    assert "No Unsloth server at" not in output
+    assert "server ready" not in output
 
 
-def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
+def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
+    class FakePopen:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    tails = iter(
+        [
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\nLoading model...",
+            "UNSLOTH_START_API_KEY: sk-unsloth-early\nModel loaded: owner/model",
+        ]
+    )
+    created = []
+
+    class FakeProgress:
+        def __init__(self, base, key, model, variant):
+            created.append((base, key, model, variant, "created"))
+
+        def poll(self):
+            created.append("poll")
+
+        def close(self):
+            created.append("close")
+
+        def complete(self):
+            created.append("complete")
+
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: FakePopen())
+    monkeypatch.setattr(start, "_studio_healthy", lambda *a, **k: True)
+    monkeypatch.setattr(start, "_log_tail", lambda *a, **k: next(tails))
+    monkeypatch.setattr(start, "_ModelDownloadProgress", FakeProgress)
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        start.typer,
+        "echo",
+        lambda message = "", **_kwargs: created.append(("echo", message)),
+    )
+
+    server = start._start_studio_server(
+        BASE,
+        "owner/model-GGUF",
+        start.LoadOptions(gguf_variant = "Q4_K_M"),
+    )
+
+    assert server.pid == 4321
+    assert (BASE, "sk-unsloth-early", "owner/model-GGUF", "Q4_K_M", "created") in created
+    assert created.count("poll") == 2
+    assert created[-2:] == ["complete", "close"]
+    assert not any(isinstance(event, tuple) and "server ready" in event[-1] for event in created)
+
+
+def test_load_model_with_progress_uses_selected_gguf_size(monkeypatch, capsys):
+    release = start.threading.Event()
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/api/inference/load"):
+            assert release.wait(timeout = 2)
+            return {"model": "owner/model-GGUF"}
+        if "/api/hub/gguf-variants?" in url:
+            return {
+                "default_variant": "Q8_0",
+                "variants": [
+                    {
+                        "quant": "UD-Q4_K_XL",
+                        "filename": "model-UD-Q4_K_XL.gguf",
+                        "size_bytes": 4 * 1024**3,
+                        "download_size_bytes": 4 * 1024**3,
+                    }
+                ],
+            }
+        if "/api/hub/gguf-download-progress?" in url:
+            release.set()
+            return {
+                "downloaded_bytes": 2 * 1024**3,
+                "expected_bytes": 4 * 1024**3,
+                "progress": 0.5,
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_DOWNLOAD_POLL_INTERVAL_S", 0.001)
+    result = start._load_model_with_progress(
+        BASE,
+        "sk-test",
+        "owner/model-GGUF",
+        start.LoadOptions(gguf_variant = "UD-Q4_K_XL"),
+        {"model_path": "owner/model-GGUF", "gguf_variant": "UD-Q4_K_XL"},
+    )
+
+    assert result == {"model": "owner/model-GGUF"}
+    output = capsys.readouterr().out
+    assert "Downloading model" in output
+    assert "100%" in output
+    progress_url = next(url for method, url, _ in calls if "gguf-download-progress" in url)
+    assert "variant=UD-Q4_K_XL" in progress_url
+    assert f"expected_bytes={4 * 1024**3}" in progress_url
+
+
+def test_download_progress_ignores_fully_cached_bytes(capsys):
+    display = start._DownloadProgressDisplay()
+    display.update(
+        {
+            "downloaded_bytes": 4 * 1024**3,
+            "completed_bytes": 4 * 1024**3,
+            "expected_bytes": 4 * 1024**3,
+            "progress": 0.99,
+        }
+    )
+    display.close()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_resolve_model_warns_on_same_repo_quant_switch(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        assert url.endswith("/api/inference/status"), url
+        return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: {"status": "loaded", "model": "owner/model-GGUF"},
+    )
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0"))
+
+    out = capsys.readouterr().out
+    assert (
+        "Switching the Unsloth server from owner/model-GGUF:Q4_K_M to owner/model-GGUF:Q8_0." in out
+    )
+    assert "every attached session" in out
+
+
+def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {"is_gguf": True, "gguf_variant": "Q8_0"},
+    )
+    monkeypatch.setattr(
+        start,
+        "_load_model_with_progress",
+        lambda base, key, model, load, payload: {
+            "status": "already_loaded",
+            "model": "owner/model-GGUF",
+        },
+    )
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0"))
+
+    out = capsys.readouterr().out
+    assert "Switching" not in out
+    assert "Reusing loaded model: owner/model-GGUF:Q8_0" in out
+
+
+def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.update(base = base, model = model, load = load)
         start._auto_served_server = fake
         return fake
@@ -1793,8 +2458,134 @@ def test_auto_serves_when_no_server_then_tears_down(fake_studio, monkeypatch):
     assert started["model"] == "unsloth/Qwen3-1.7B-GGUF"
     assert started["load"].gguf_variant == "UD-Q4_K_XL"
     assert started["base"] == BASE
-    # Torn down after the agent session ended.
-    assert started.get("down") is fake
+    # A successful agent exit releases ownership and leaves the server available
+    # for another terminal. Explicit startup failures still use the cleanup path.
+    assert "down" not in started
+    assert start._auto_served_server is None
+    assert "is still running" in result.output
+    assert "unsloth studio stop" in result.output
+
+
+def test_auto_served_agent_launch_failure_stops_server(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    stopped = []
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", stopped.append)
+    monkeypatch.setattr(
+        start,
+        "_launch",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("agent launch failed")),
+    )
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"],
+    )
+
+    assert result.exit_code == 1
+    assert stopped == [fake]
+    assert "is still running" not in result.output
+
+
+def test_auto_served_server_exit_is_not_reported_as_running(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    fake = SimpleNamespace(pid = 999, poll = lambda: 1)
+
+    def fake_start(*_args):
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_launch", lambda *a, **k: 0)
+
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "stopped during the session" in result.output
+    assert "is still running" not in result.output
+
+
+def test_attached_server_prints_stop_hint_after_agent_exits(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: SimpleNamespace(returncode = 0),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert f"Unsloth ready at {BASE} · model {MODEL['id']}\n" in result.output
+    assert f"Unsloth Studio is still running at {BASE}." in result.output
+    assert "Stop it with: unsloth studio stop\n" in result.output
+
+
+def test_no_launch_recipe_does_not_print_stop_hint(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "is still running" not in result.output
+
+
+def test_nonzero_agent_exit_notes_code_before_stop_hint(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: SimpleNamespace(returncode = 3),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["claude"])
+
+    assert result.exit_code == 3
+    assert "The agent exited with code 3." in result.output
+    assert f"Unsloth Studio is still running at {BASE}." in result.output
+
+
+def test_redacted_log_tail_strips_minted_keys(tmp_path):
+    log = tmp_path / "server.log"
+    log.write_text(
+        "booting\nUNSLOTH_START_API_KEY: sk-unsloth-feedfacefeedface\nerror: load failed\n",
+        encoding = "utf-8",
+    )
+
+    tail = start._redacted_log_tail(log)
+
+    assert "sk-unsloth-feedfacefeedface" not in tail
+    assert "sk-unsloth-[redacted]" in tail
+    assert "error: load failed" in tail
+
+
+def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(start.tempfile, "gettempdir", lambda: str(tmp_path))
+    fake = SimpleNamespace(pid = 4242, poll = lambda: 1)
+
+    def fake_popen(command, **kwargs):
+        # The child prints the early key marker, then dies before it is ready.
+        kwargs["stdout"].write(b"UNSLOTH_START_API_KEY: sk-unsloth-secretsecret\nload failed\n")
+        kwargs["stdout"].flush()
+        return fake
+
+    monkeypatch.setattr(start.subprocess, "Popen", fake_popen)
+
+    with pytest.raises(start.typer.Exit):
+        start._start_studio_server(BASE, "owner/model-GGUF", start.LoadOptions())
+
+    err = capsys.readouterr().err
+    assert "stopped before it was ready" in err
+    assert "sk-unsloth-secretsecret" not in err
+    assert "sk-unsloth-[redacted]" in err
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):
@@ -1805,7 +2596,12 @@ def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started.update(base = base, model = model)
         start._auto_served_server = fake
         return fake
@@ -1900,7 +2696,12 @@ def test_auto_serve_normalizes_portless_url(fake_studio, monkeypatch):
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started["base"] = base
         start._auto_served_server = fake
         return fake
@@ -2092,8 +2893,7 @@ def test_write_opencode_config_fresh(tmp_path):
         MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
     }
     assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    # The overlay never writes disabled_providers; the dedicated provider id is one a
-    # user's disable list would not target, so nothing needs re-enabling.
+    # Provider filters belong to the launch-time inline overlay, not this config writer.
     assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
@@ -2132,6 +2932,109 @@ def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["disabled_providers"] == ["openai", "gemini"]
+
+
+def test_write_opencode_config_as_subagent_preserves_parent_model(tmp_path):
+    path = tmp_path / "opencode.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model": "anthropic/claude-sonnet-4-5",
+                "small_model": "anthropic/claude-haiku-4-5",
+                "compaction": {"auto": False},
+            }
+        )
+    )
+    local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        local,
+        path,
+        as_subagent = True,
+    )
+    config = json.loads(path.read_text())
+    assert config["model"] == "anthropic/claude-sonnet-4-5"
+    assert config["small_model"] == "anthropic/claude-haiku-4-5"
+    assert config["compaction"] == {"auto": False}
+    agent = config["agent"]["unsloth"]
+    assert agent["mode"] == "subagent"
+    assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{local['id']}"
+    assert "local agent" in agent["description"].lower()
+    assert local["id"] in config["provider"][start._OPENCODE_PROVIDER]["models"]
+
+
+def test_opencode_subagent_inline_keeps_parent_provider_filters(monkeypatch, tmp_path):
+    config_path = tmp_path / "opencode.json"
+    inherited = {"theme": "tokyonight"}
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", json.dumps(inherited))
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    captured = {}
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(
+                {
+                    "enabled_providers": ["opencode-go"],
+                    "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+                    "subagent_depth": 0,
+                }
+            ),
+            stderr = "",
+        )
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    permission = {"edit": "allow"}
+    inline = start._opencode_subagent_inline_config(config_path, permission)
+
+    assert captured["command"] == ["/usr/bin/opencode", "debug", "config"]
+    assert captured["env"]["OPENCODE_CONFIG"] == str(config_path)
+    assert inline == {
+        "theme": "tokyonight",
+        "enabled_providers": ["opencode-go", start._OPENCODE_PROVIDER],
+        "disabled_providers": ["ollama"],
+        "subagent_depth": 1,
+        "permission": permission,
+    }
+
+
+def test_opencode_subagent_inline_preserves_positive_depth(monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: "/usr/bin/opencode")
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps({"subagent_depth": 3}),
+            stderr = "",
+        ),
+    )
+
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+
+    assert inline["subagent_depth"] == 3
+
+
+def test_opencode_subagent_inline_merges_inherited_filters_without_binary(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "OPENCODE_CONFIG_CONTENT",
+        json.dumps(
+            {
+                "enabled_providers": ["opencode-go"],
+                "disabled_providers": ["ollama", start._OPENCODE_PROVIDER],
+            }
+        ),
+    )
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+
+    inline = start._opencode_subagent_inline_config(tmp_path / "opencode.json", {})
+
+    assert inline["enabled_providers"] == ["opencode-go", start._OPENCODE_PROVIDER]
+    assert inline["disabled_providers"] == ["ollama"]
+    assert inline["subagent_depth"] == 1
 
 
 def _opencode_inline_config(output: str) -> dict:
@@ -2220,6 +3123,130 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     # driver may append); the model is forced by the inline pin above.
     assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_opencode_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "opencode",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode"]
+    expected_model = f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    # The agent rides in the inline overlay; nothing else comes from the empty base.
+    assert _opencode_inline_config(result.output) == {
+        "agent": {
+            "unsloth": {
+                "description": start._SUBAGENT_DESCRIPTION,
+                "mode": "subagent",
+                "model": expected_model,
+                "prompt": start._SUBAGENT_INSTRUCTIONS,
+            }
+        }
+    }
+    path = tmp_path / "agents" / "opencode-subagent" / "opencode.json"
+    config = json.loads(path.read_text())
+    assert "model" not in config
+    assert "small_model" not in config
+    assert "compaction" not in config
+    agent = config["agent"]["unsloth"]
+    assert agent["model"] == expected_model
+    assert "Unsloth is available as @unsloth and in /models." in result.output
+
+
+def test_claude_subagent_allowed_tools_precede_forwarded_delimiter(fake_studio):
+    # A forwarded `--` makes everything after it positional; the tool pre-approval
+    # must be parsed as an option, so it rides before ctx.args.
+    result = CliRunner().invoke(
+        start.start_app,
+        ["claude", "--as-subagent", "--no-launch", "--", "--resume", "abc123"],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command.index("--allowedTools") < command.index("--resume")
+
+
+def test_opencode_subagent_installs_binary_before_filter_inspection(fake_studio, monkeypatch):
+    # The effective-config inspection needs the opencode binary; a first launch must
+    # offer the install before building the overlay, or a global allowlist read only
+    # after _launch installs OpenCode would filter out the new provider.
+    installed = {}
+    monkeypatch.setattr(
+        start,
+        "_which_with_install_dirs",
+        lambda name: "/usr/local/bin/opencode" if installed.get("done") else None,
+    )
+
+    def install(name, hint):
+        installed["done"] = True
+        installed["name"] = name
+        return "/usr/local/bin/opencode"
+
+    monkeypatch.setattr(start, "_install_agent", install)
+    inspected = {}
+
+    def inline(path, permission):
+        inspected["binary"] = start._which_with_install_dirs("opencode")
+        return {}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline)
+    monkeypatch.setattr(start, "_run", lambda *a, **k: None)
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--as-subagent"])
+
+    assert result.exit_code == 0, result.output
+    assert installed["name"] == "opencode"
+    assert inspected["binary"] == "/usr/local/bin/opencode"
+
+
+def test_opencode_subagent_pins_agent_in_inline_overlay(fake_studio, monkeypatch):
+    # A project opencode.json outranks the session file, so the agent must ride in
+    # OPENCODE_CONFIG_CONTENT where a repo's own agent.unsloth cannot field-merge over it.
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", lambda path, permission: {})
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--as-subagent", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"],
+    )
+    assert result.exit_code == 0, result.output
+    agent = _opencode_inline_config(result.output)["agent"]["unsloth"]
+    assert agent["mode"] == "subagent"
+    assert agent["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}:UD-Q4_K_XL"
+    assert agent["prompt"] == start._SUBAGENT_INSTRUCTIONS
+    assert agent["description"] == start._SUBAGENT_DESCRIPTION
+
+
+def test_connect_opencode_subagent_yolo_no_launch_stays_append_safe(fake_studio, monkeypatch):
+    monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda: True)
+    captured = {}
+
+    def inline(path, permission):
+        captured["permission"] = permission
+        return {"permission": permission}
+
+    monkeypatch.setattr(start, "_opencode_subagent_inline_config", inline)
+    result = CliRunner().invoke(
+        start.start_app,
+        ["opencode", "--as-subagent", "--no-launch", "--yolo"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["opencode"]
+    assert "--auto" not in result.output
+    assert captured["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "task": "allow",
+        "external_directory": {"*": "allow"},
+    }
+    assert _opencode_inline_config(result.output)["permission"] == captured["permission"]
 
 
 # ── Hermes (OpenAI /v1/chat/completions, key via env) ────────────────
@@ -2362,6 +3389,39 @@ def test_connect_pi_no_launch(fake_studio, tmp_path):
         {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "pi",
+            "--as-subagent",
+            "--no-launch",
+            "--model",
+            MODEL["id"] + ":UD-Q4_K_XL",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[:2] == ["pi", "--extension"]
+    assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert "--provider" not in command
+    assert "--model" not in command
+    assert "PI_CODING_AGENT_DIR" not in result.output
+    assert "export HOME=" not in result.output
+    assert "UNSLOTH_PI_SUBAGENT_API_KEY" not in result.output
+    assert "sk-unsloth-feedfacefeedface" not in result.output
+    config_path = tmp_path / "agents" / "pi-subagent" / "subagent.json"
+    _assert_env_set(result.output, "UNSLOTH_PI_SUBAGENT_CONFIG", str(config_path))
+    assert json.loads(config_path.read_text()) == {
+        "baseUrl": f"{BASE}/v1",
+        "apiKey": "sk-unsloth-feedfacefeedface",
+        "model": MODEL["id"] + ":UD-Q4_K_XL",
+        "contextWindow": 4096,
+        "maxTokens": 1024,
+    }
+    assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
@@ -2905,6 +3965,27 @@ def test_opencode_non_yolo_flips_only_explicit_allow(tmp_path):
     config = json.loads(path.read_text())
     assert config["permission"] == {"edit": "ask", "bash": "deny", "read": "ask"}
     assert session == {}  # a non-yolo session carries no permission inline
+
+
+def test_opencode_subagent_non_yolo_clears_yolo_task_permission(tmp_path):
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        MODEL,
+        path,
+        yolo = True,
+        as_subagent = True,
+    )
+    start.write_opencode_config(
+        BASE,
+        "sk-unsloth-abc",
+        MODEL,
+        path,
+        as_subagent = True,
+    )
+
+    assert json.loads(path.read_text())["permission"]["task"] == "ask"
 
 
 def test_opencode_non_yolo_leaves_string_permission(tmp_path):
