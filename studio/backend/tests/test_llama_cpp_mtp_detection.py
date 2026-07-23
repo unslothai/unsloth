@@ -637,7 +637,7 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
-        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "")
+        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0)
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
 
