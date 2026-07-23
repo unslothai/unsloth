@@ -4288,13 +4288,14 @@ async def _load_model_impl(
         llama_backend = get_llama_cpp_backend()
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
+        config: Optional[ModelConfig] = None
         if request.gguf_variant or is_direct_gguf_request:
             gguf_variant_matches = is_direct_gguf_request or bool(
                 llama_backend.hf_variant
                 and request.gguf_variant
                 and llama_backend.hf_variant.lower() == request.gguf_variant.lower()
             )
-            if (
+            gguf_runtime_matches = (
                 llama_backend.is_loaded
                 and gguf_variant_matches
                 and llama_backend.model_identifier
@@ -4307,7 +4308,22 @@ async def _load_model_impl(
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
+            )
+            needs_audio_projector_retry = False
+            if (
+                gguf_runtime_matches
+                and not getattr(llama_backend, "_has_audio_input", False)
             ):
+                with _hf_offline_if_dns_dead():
+                    config = ModelConfig.from_identifier(
+                        model_id = model_identifier,
+                        hf_token = request.hf_token,
+                        gguf_variant = request.gguf_variant,
+                    )
+                needs_audio_projector_retry = bool(
+                    config and config.has_audio_input
+                )
+            if gguf_runtime_matches and not needs_audio_projector_retry:
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4404,12 +4420,13 @@ async def _load_model_impl(
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
-        with _hf_offline_if_dns_dead():
-            config = ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
-            )
+        if config is None:
+            with _hf_offline_if_dns_dead():
+                config = ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
 
         if not config:
             raise HTTPException(
@@ -4530,7 +4547,8 @@ async def _load_model_impl(
                     config.gguf_hf_repo,
                     config.gguf_variant,
                     require_mmproj = bool(
-                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                        (config.is_vision or config.has_audio_input)
+                        and not extra_args_disable_mmproj(extra_llama_args)
                     ),
                     hf_token = request.hf_token,
                 ):

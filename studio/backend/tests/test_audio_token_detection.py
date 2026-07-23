@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 from utils.models import model_config
 from utils.models.model_config import (
@@ -78,3 +79,21 @@ def test_cached_audio_projector_is_forwarded_and_clears_false_vision():
     assert "projector_has_vision is not True" in source
     assert "has_vision = False" in source
     assert "gguf_is_vision = False" in source
+
+
+def test_audio_projector_loads_retry_and_share_download_exclusion():
+    from core.inference import llama_cpp
+
+    backend_source = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    guard_source = inspect.getsource(llama_cpp._with_gguf_load_marker)
+    route_source = (
+        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    ).read_text()
+
+    assert "has_audio_input = has_audio_input" in backend_source
+    assert "has_audio_input and not self._has_audio_input" in inspect.getsource(
+        llama_cpp.LlamaCppBackend._already_in_target_state
+    )
+    assert "kwargs.get(\"is_vision\") or kwargs.get(\"has_audio_input\")" in guard_source
+    assert "(config.is_vision or config.has_audio_input)" in route_source
+    assert "config and config.has_audio_input" in route_source

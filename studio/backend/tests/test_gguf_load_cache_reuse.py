@@ -541,6 +541,11 @@ class TestCachedGgufForLoadProbe:
         _build_cache(hf_cache, REPO, {shard1: 4})
         assert cached_gguf_for_load(REPO, VARIANT) is None
 
+    def test_partial_three_digit_split_is_none(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        _build_cache(hf_cache, REPO, {shard1: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) is None
+
     def test_partial_new_snapshot_does_not_hide_complete_split(self, hf_cache):
         import os
 
@@ -782,6 +787,32 @@ class TestLoadHubDownloadExclusion:
                 assert not hf_gguf_load_in_flight(REPO)
 
         asyncio.run(scenario())
+
+    def test_audio_input_requires_projector_in_decorator_conflict_probe(self):
+        from core.inference.llama_cpp import _with_gguf_load_marker
+
+        class FakeBackend:
+            @_with_gguf_load_marker
+            def load_model(
+                self,
+                *,
+                hf_repo,
+                hf_variant,
+                has_audio_input = False,
+            ):
+                return True
+
+        with patch(
+            "core.inference.llama_cpp._hub_download_blocks_gguf_load",
+            return_value = False,
+        ) as blocked:
+            assert FakeBackend().load_model(
+                hf_repo = REPO,
+                hf_variant = VARIANT,
+                has_audio_input = True,
+            )
+
+        assert blocked.call_args.kwargs["require_mmproj"] is True
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()

@@ -1358,7 +1358,7 @@ def _iter_gguf_files(directory: Path, recursive: bool = False):
 
 
 _GGUF_SPLIT_FILE_RE = re.compile(
-    r"^(?P<prefix>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    r"^(?P<prefix>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})\.gguf$",
     re.IGNORECASE,
 )
 

@@ -423,7 +423,7 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
-_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{3,})-of-(\d{3,})\.gguf$", re.IGNORECASE)
 _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
 
 
@@ -1378,7 +1378,7 @@ def _with_gguf_load_marker(load: Callable):
                 hf_repo,
                 kwargs.get("hf_variant"),
                 require_mmproj = bool(
-                    kwargs.get("is_vision")
+                    (kwargs.get("is_vision") or kwargs.get("has_audio_input"))
                     and not extra_args_disable_mmproj(kwargs.get("extra_args"))
                 ),
                 hf_token = kwargs.get("hf_token"),
@@ -6238,6 +6238,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                has_audio_input = has_audio_input,
                 preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
                 logger.info(
@@ -8688,6 +8689,7 @@ class LlamaCppBackend:
         chat_template_override: Optional[str],
         extra_args: Optional[List[str]],
         is_vision: bool,
+        has_audio_input: bool = False,
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
@@ -8706,6 +8708,11 @@ class LlamaCppBackend:
         /load that raced past the route-level check (#5401).
         """
         if not self.is_loaded:
+            return False
+        # A previous HF load may have started text-only while its audio
+        # projector was unavailable. Retry once the request knows audio input
+        # is required instead of deduping to that degraded session forever.
+        if has_audio_input and not self._has_audio_input:
             return False
         if (self._model_identifier or "").lower() != (model_identifier or "").lower():
             return False
