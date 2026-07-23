@@ -609,3 +609,117 @@ def test_proxy_openai_enable_tools_stays_on_passthrough(monkeypatch):
     # Pure proxy: client tools stay None; hosted builtins use enabled_tools.
     assert seen["tools"] is None
     assert seen["enabled_tools"] == ["web_search"]
+
+
+def _one_call_stream(tool_id, name = "web_search", args = '{"query":"q"}'):
+    return [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+
+
+def test_assistant_content_retained_with_tool_call(monkeypatch):
+    # Streamed explanation before a tool call must survive into the transcript.
+    stream = [
+        _sse_chunk(content = "Let me search. "),
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"q"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final = [_sse_chunk(content = "Done.", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([stream, final])
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda *a, **k: "hit",
+    )
+
+    async def _run():
+        async for _ in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+        ):
+            pass
+
+    asyncio.run(_run())
+    second = client.requests[1]["messages"]
+    asst = next(m for m in second if m.get("role") == "assistant" and m.get("tool_calls"))
+    assert asst["content"] == "Let me search. "
+
+
+def test_no_limit_timeout_sentinel_passed_as_none(monkeypatch):
+    captured = {}
+
+    def fake_execute(name, arguments, cancel, timeout, *a, **k):
+        captured["timeout"] = timeout
+        return "ok"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute)
+    client = _FakeClient([_one_call_stream("c1"), [_sse_chunk(content = "x", finish_reason = "stop"), "data: [DONE]"]])
+
+    async def _run():
+        async for _ in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            tool_call_timeout = 9999,
+        ):
+            pass
+
+    asyncio.run(_run())
+    assert captured["timeout"] is None
+
+
+def test_parallel_calls_respect_per_message_budget(monkeypatch):
+    # One completion with two parallel calls, budget = 1 -> only one executes.
+    stream = [
+        _sse_chunk(
+            tool_calls = [
+                {"index": 0, "id": "c1", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"a"}'}},
+                {"index": 1, "id": "c2", "type": "function", "function": {"name": "web_search", "arguments": '{"query":"b"}'}},
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final = [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"]
+    client = _FakeClient([stream, final])
+    calls = []
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda name, arguments, *a, **k: calls.append(arguments) or "hit",
+    )
+
+    async def _run():
+        async for _ in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            max_tool_iterations = 1,
+        ):
+            pass
+
+    asyncio.run(_run())
+    assert len(calls) == 1
