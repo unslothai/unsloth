@@ -160,14 +160,11 @@ function _inferProviderFromOpenrouterId(
 }
 
 /**
- * OpenAI-compatible Connections (Ollama / llama.cpp / vLLM / Custom) that run
- * on a remote chat-completions endpoint but can still drive Unsloth's *local*
- * tool runtime (web_search / python / terminal / MCP) on the Studio host.
- *
- * Distinct from `providerSupportsBuiltin*`: those gate *server-side* hosted
- * tools (OpenAI/Anthropic/…). Local-runtime remotes get `supportsTools=true`
- * so Search/Code/MCP light up, and the backend runs the same local tool loop
- * against the remote model's function-calling responses (issue #7282).
+ * OAI-compat Connections (Ollama / llama.cpp / vLLM / Custom) on a remote
+ * endpoint that can still drive Unsloth's *local* tool runtime (web_search /
+ * python / terminal / MCP) on the Studio host. Unlike `providerSupportsBuiltin*`
+ * (server-side hosted tools), these get `supportsTools=true` and the backend
+ * runs the local tool loop against the model's function calls (#7282).
  */
 const LOCAL_TOOL_RUNTIME_PROVIDER_TYPES = new Set([
   "ollama",
