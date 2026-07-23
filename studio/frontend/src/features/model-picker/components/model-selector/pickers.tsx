@@ -840,9 +840,10 @@ function GgufVariantExpander({
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
         isGguf: true,
+        isVision: hasVision,
       });
     },
-    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
+    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext, hasVision],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -1062,6 +1063,7 @@ function GgufVariantExpander({
                     expectedBytes,
                     contextLength: nativeContext,
                     isGguf: true,
+                    isVision: hasVision,
                   })
                 }
               />

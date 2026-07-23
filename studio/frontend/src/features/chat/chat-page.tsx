@@ -122,6 +122,7 @@ import {
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
+import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
 import {
   deleteChatProject,
   moveChatItemToProject,
@@ -2642,7 +2643,14 @@ export function ChatPage({
                 (model) => model.id === value,
               );
               showImageCompatibilityWarning =
-                hasImage && targetModel?.isVision === false;
+                hasImage &&
+                isKnownTextOnlySelection(
+                  {
+                    isVision: meta?.isVision,
+                    isGguf: meta?.isGguf,
+                  },
+                  targetModel,
+                );
             }
           }
         }
@@ -2662,6 +2670,7 @@ export function ChatPage({
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
+          isVision: meta?.isVision,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,

@@ -193,6 +193,24 @@ def test_variant_expander_refreshes_after_delete():
     assert del_confirm, "delete onConfirm must bump refreshKey after a successful delete"
 
 
+def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
+    """Variant metadata is more authoritative than the parent catalog row for
+    GGUF vision support. Both direct picks and the settings action must carry
+    the hint, and the chat selection + deferred download handoff must retain it."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert picker.count("isVision: hasVision") >= 2
+    assert "nativeContext, hasVision" in picker
+
+    types = _read("features/model-picker/components/model-selector/types.ts")
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    page = _read("features/chat/chat-page.tsx")
+    assert "isVision?: boolean;" in types
+    assert "isVision?: boolean;" in runtime
+    assert "isVision: meta?.isVision" in page
+    assert "selection,\n                contextKey:" in page
+    assert "{ ...pending.selection, isDownloaded: true }" in page
+
+
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g. a
     folder with only config.json). The picker must filter those out, or selecting
