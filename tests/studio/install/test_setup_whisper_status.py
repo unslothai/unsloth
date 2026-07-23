@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_shell_setup_distinguishes_release_skew_from_install_failure():
-    script = (ROOT / "studio" / "setup.sh").read_text(encoding="utf-8")
+    script = (ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     assert 'if [ "$_WHISPER_STATUS" -eq 2 ]' in script
     assert "installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}" in script
     assert "whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}" in script
@@ -19,7 +19,7 @@ def test_shell_setup_distinguishes_release_skew_from_install_failure():
 
 
 def test_powershell_setup_distinguishes_release_skew_from_install_failure():
-    script = (ROOT / "studio" / "setup.ps1").read_text(encoding="utf-8")
+    script = (ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
     assert "elseif ($whisperExit -eq 2)" in script
     assert "installed llama.cpp $installedWhisperLlamaTag" in script
     assert "whisper requires $requiredWhisperLlamaTag" in script

@@ -13,7 +13,7 @@ from typing import Optional
 MARKER_NAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class MarkerLookup:
     marker: Optional[dict]
     root: Optional[Path]
@@ -40,7 +40,7 @@ def canonical_install_root(binary_path: Optional[str]) -> Optional[Path]:
 
 def _parse_marker(path: Path) -> tuple[Optional[dict], bool]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, json.JSONDecodeError):
         return None, True
     return (payload, False) if isinstance(payload, dict) else (None, True)

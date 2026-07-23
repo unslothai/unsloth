@@ -148,7 +148,7 @@ def test_check_prebuilt_freshness_reports_stale_when_old_and_behind(monkeypatch,
 
 
 def test_marker_reader_prefers_install_root_over_packaging_marker(tmp_path):
-    root_marker = _write_marker(tmp_path, release_tag="v1.9.1-unsloth.2")
+    root_marker = _write_marker(tmp_path, release_tag = "v1.9.1-unsloth.2")
     binary = _fake_binary(tmp_path)
     (binary.parent / root_marker.name).write_text(
         json.dumps({"backend": "slim", "release_tag": "archive-metadata"})
