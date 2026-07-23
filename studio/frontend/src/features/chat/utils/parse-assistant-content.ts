@@ -90,6 +90,14 @@ function isLiteralThinkClose(
   spanStart: number,
   closeIndex: number,
 ): boolean {
+  // Inside an open ``` fence, a close tag is sample text, not a block end.
+  let fences = 0;
+  let f = raw.indexOf("```", spanStart);
+  while (f !== -1 && f < closeIndex) {
+    fences++;
+    f = raw.indexOf("```", f + 3);
+  }
+  if (fences % 2 === 1) return true;
   const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
   const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
   if (!before || !after) return false;

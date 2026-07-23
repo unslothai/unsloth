@@ -10812,6 +10812,25 @@ class LlamaCppBackend:
                                     # Preserve any visible preface before draining
                                     # the structured tool call.
                                     has_structured_tc = True
+                                    # Flush held reasoning before the wrapper closes
+                                    # so a split literal marker is not dropped.
+                                    if reasoning_markup_buffer:
+                                        from core.inference.chat_template_helpers import (
+                                            neutralize_think_markup_streaming,
+                                        )
+                                        _flushed, reasoning_markup_buffer = (
+                                            neutralize_think_markup_streaming(
+                                                reasoning_markup_buffer,
+                                                finalize = True,
+                                            )
+                                        )
+                                        if _flushed:
+                                            reasoning_accum += _flushed
+                                            if detect_state != _S_DRAINING:
+                                                if not in_thinking:
+                                                    cumulative_display += "<think>"
+                                                    in_thinking = True
+                                                cumulative_display += _flushed
                                     detect_state = _S_DRAINING
                                     # Close the reasoning prefix before the tool card
                                     # (mirrors the is_match path).

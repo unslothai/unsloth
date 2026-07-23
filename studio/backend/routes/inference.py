@@ -10767,6 +10767,17 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     return False
 
 
+def _think_close_is_literal_in_span(span: str, close_idx: int) -> bool:
+    """Literal-close check with span context: fenced code plus quote parity.
+
+    A close tag inside an open ``` fence is sample text; otherwise fall back
+    to the quote-flank + parity heuristic.
+    """
+    if span.count("```", 0, close_idx) % 2 == 1:
+        return True
+    return _is_literal_think_close(span, close_idx)
+
+
 class _ResponsesReasoningExtractor:
     """Split local <think> markup into Responses reasoning and visible text."""
 
@@ -10777,6 +10788,9 @@ class _ResponsesReasoningExtractor:
         reasoning_prefilled: bool = False,
     ) -> None:
         self._buffer = ""
+        # Text already consumed from the CURRENT reasoning block; classification
+        # context so fence state and quote parity survive buffer truncation.
+        self._span_prefix = ""
         # reasoning_prefilled: the template inserts an unclosed <think>, so output begins inside
         # the block; start in reasoning until the first close tag. Existing callers pass False.
         self._in_reasoning = reasoning_prefilled
@@ -10813,11 +10827,15 @@ class _ResponsesReasoningExtractor:
                         reasoning_parts.append(
                             self._buffer[:hold_start].replace(_RESPONSES_THINK_OPEN, "")
                         )
+                        self._span_prefix += self._buffer[:hold_start]
                         self._buffer = self._buffer[hold_start:]
                         break
-                    # Quoted / backticked </think> is content (user echo, script
-                    # discussion), not the structural end of reasoning (#7066).
-                    if _is_literal_think_close(self._buffer, close_idx):
+                    # Quoted / backticked / fenced </think> is content (user
+                    # echo, script discussion), not the end of reasoning (#7066).
+                    if _think_close_is_literal_in_span(
+                        self._span_prefix + self._buffer,
+                        len(self._span_prefix) + close_idx,
+                    ):
                         from core.inference.chat_template_helpers import (
                             neutralize_think_markup,
                         )
@@ -10826,12 +10844,15 @@ class _ResponsesReasoningExtractor:
                             self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                         )
                         reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
-                        self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                        consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
+                        self._span_prefix += self._buffer[:consumed]
+                        self._buffer = self._buffer[consumed:]
                         continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                     )
                     self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
+                    self._span_prefix = ""
                     self._in_reasoning = False
                     continue
                 # Hold back a trailing partial of either marker: the close (clean split across chunks)
@@ -10843,6 +10864,7 @@ class _ResponsesReasoningExtractor:
                     break
                 emit = self._buffer[:-keep] if keep else self._buffer
                 reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
+                self._span_prefix += emit
                 self._buffer = self._buffer[-keep:] if keep else ""
                 break
 
@@ -10855,6 +10877,7 @@ class _ResponsesReasoningExtractor:
             if open_idx != -1:
                 visible_parts.append(self._buffer[:open_idx])
                 self._buffer = self._buffer[open_idx + len(_RESPONSES_THINK_OPEN) :]
+                self._span_prefix = ""
                 self._in_reasoning = True
                 continue
 
