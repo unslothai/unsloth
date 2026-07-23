@@ -7,6 +7,7 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
+import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -2085,6 +2086,13 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
+      const notifyPreStreamRunFinished = () => {
+        // Prompt queues reserve global capacity before adapter validation and
+        // model-load gates run. Release only that failed dispatch; do not pulse
+        // running state, because queues treat a real running on->off transition
+        // as a completed generation and would advance remaining prompts.
+        notifyPromptQueueRunFailed(resolvedThreadId ?? null);
+      };
 
       // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
@@ -2093,6 +2101,7 @@ export function createOpenAIStreamAdapter(
           await waitForModelReady(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
+          notifyPreStreamRunFinished();
           throw error;
         }
       }
@@ -2106,6 +2115,7 @@ export function createOpenAIStreamAdapter(
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
+          notifyPreStreamRunFinished();
           throw error;
         }
         if (!loaded) {
@@ -2120,6 +2130,7 @@ export function createOpenAIStreamAdapter(
             },
           );
           clearSelectedImageEditReference();
+          notifyPreStreamRunFinished();
           throw new Error("Load a model first.");
         }
       }
@@ -2163,6 +2174,7 @@ export function createOpenAIStreamAdapter(
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
         clearSelectedImageEditReference();
+        notifyPreStreamRunFinished();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -2182,6 +2194,7 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and add it again.",
         });
         clearSelectedImageEditReference();
+        notifyPreStreamRunFinished();
         throw new Error("Connection not found.");
       }
       // Local providers and custom Gemini bases allow an empty key.
@@ -2203,6 +2216,7 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and set the API key again.",
         });
         clearSelectedImageEditReference();
+        notifyPreStreamRunFinished();
         throw new Error("Missing connection API key.");
       }
 
@@ -2263,6 +2277,7 @@ export function createOpenAIStreamAdapter(
           description:
             "Select an OpenAI image-generation model, then retry the edit.",
         });
+        notifyPreStreamRunFinished();
         throw new Error("Image generation edit unavailable.");
       }
 
@@ -2298,6 +2313,7 @@ export function createOpenAIStreamAdapter(
             description:
               "The original image reference is missing. Generate the image again, then retry the edit.",
           });
+          notifyPreStreamRunFinished();
           throw new Error("Generated image edit reference missing.");
         }
         let insertAt = outboundMessages.length;
@@ -2477,12 +2493,7 @@ export function createOpenAIStreamAdapter(
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
-          // Flip the per-thread running flag on→off so compare-mode
-          // waitForRunEnd resolves instead of hanging: this gate fires
-          // before the streaming path's setThreadRunning(true).
-          const gatedThreadKey = resolvedThreadId || "__default";
-          runtime.setThreadRunning(gatedThreadKey, true);
-          runtime.setThreadRunning(gatedThreadKey, false);
+          notifyPreStreamRunFinished();
           clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }

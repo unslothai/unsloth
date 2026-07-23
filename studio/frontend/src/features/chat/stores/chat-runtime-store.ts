@@ -1462,13 +1462,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setLoras: (loras) => set({ loras }),
   setThreadRunning: (threadId, running) =>
     set((state) => {
-      const next = { ...state.runningByThreadId };
+      const nextRunning = { ...state.runningByThreadId };
       if (running) {
-        next[threadId] = true;
-      } else {
-        delete next[threadId];
+        nextRunning[threadId] = true;
+        return { runningByThreadId: nextRunning };
       }
-      return { runningByThreadId: next };
+      delete nextRunning[threadId];
+      if (!(threadId in state.cancelByThreadId)) {
+        return { runningByThreadId: nextRunning };
+      }
+      const nextCancel = { ...state.cancelByThreadId };
+      delete nextCancel[threadId];
+      return { runningByThreadId: nextRunning, cancelByThreadId: nextCancel };
     }),
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {
