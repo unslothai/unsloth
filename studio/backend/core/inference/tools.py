@@ -6067,8 +6067,7 @@ def _check_signal_escape_patterns(code: str):
                     (isinstance(func, ast.Name) and func.id in self.pyyaml_registry_setter_aliases)
                     or (
                         isinstance(func, ast.Attribute)
-                        and func.attr
-                        in {"setattr", "delattr", "__setattr__", "__delattr__"}
+                        and func.attr in {"setattr", "delattr", "__setattr__", "__delattr__"}
                     )
                 )
                 and node.args
