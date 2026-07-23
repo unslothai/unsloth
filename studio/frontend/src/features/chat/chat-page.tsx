@@ -176,6 +176,7 @@ import {
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
+import { getPreStreamRunReservationCount } from "./utils/prompt-queue-boundary";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import {
@@ -2246,14 +2247,18 @@ export function ChatPage({
     useState<PendingHubAutoLoad | null>(null);
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
-      if (usePromptQueueUI.getState().isRunning) {
-        toast.info("A prompt queue is still running", {
+      const runtime = useChatRuntimeStore.getState();
+      const backgroundRunActive =
+        Object.values(runtime.runningByThreadId).some(Boolean) ||
+        getPreStreamRunReservationCount() > 0;
+      if (usePromptQueueUI.getState().isRunning || backgroundRunActive) {
+        toast.info("A background response is still running", {
           description:
-            "Stop the queue before changing models so its remaining prompts keep the model they started with.",
+            "Stop it before changing models so the active response keeps the model it started with.",
         });
         return;
       }
-      const store = useChatRuntimeStore.getState();
+      const store = runtime;
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
       if (store.modelLoading) {
@@ -2494,10 +2499,13 @@ export function ChatPage({
       if (isSameLoadedModel && !meta?.forceReload) {
         return;
       }
-      if (usePromptQueueUI.getState().isRunning) {
-        toast.info("A prompt queue is still running", {
+      const backgroundRunActive =
+        Object.values(store.runningByThreadId).some(Boolean) ||
+        getPreStreamRunReservationCount() > 0;
+      if (usePromptQueueUI.getState().isRunning || backgroundRunActive) {
+        toast.info("A background response is still running", {
           description:
-            "Stop the queue before changing models so its remaining prompts keep the model they started with.",
+            "Stop it before changing models so the active response keeps the model it started with.",
         });
         return;
       }

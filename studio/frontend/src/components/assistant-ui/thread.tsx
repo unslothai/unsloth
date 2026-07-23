@@ -92,6 +92,7 @@ import {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   getPreStreamRunReservationCount,
+  releasePreStreamRunReservation,
   tryReservePreStreamRun,
   discardQueuedChatRunSettings,
   registerQueuedChatRunSettings,
@@ -1983,6 +1984,7 @@ const Composer: FC<{
       }
       return null;
     };
+    const pendingSettingsIds = new Set<number>();
     return {
       getDocumentThreadId: () => {
         const state = getThreadListItemState();
@@ -2005,14 +2007,22 @@ const Composer: FC<{
           getQueueThreadIds(),
           runSettingsAtQueueStart,
         );
+        pendingSettingsIds.add(settingsId);
         try {
           thread.append(appendTextToThread(prompt));
         } catch (error) {
+          pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
           throw error;
         }
       },
-      cancel: () => getThreadRuntime()?.cancelRun(),
+      cancel: () => {
+        for (const settingsId of pendingSettingsIds) {
+          discardQueuedChatRunSettings(settingsId);
+        }
+        pendingSettingsIds.clear();
+        getThreadRuntime()?.cancelRun();
+      },
       isIndexing: () =>
         promptQueueTargetMountedRef.current && indexingActiveRef.current,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
@@ -2050,6 +2060,28 @@ const Composer: FC<{
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
+  const sendReservedComposer = useCallback(() => {
+    try {
+      void Promise.resolve(aui.composer().send()).catch((error) => {
+        // Attachment conversion happens before the adapter starts. If it
+        // rejects there, the adapter cannot release the pre-stream slot.
+        if (getPreStreamRunReservationCount() > 0) {
+          releasePreStreamRunReservation();
+        }
+        toast.error("Could not prepare attachments", {
+          description:
+            error instanceof Error ? error.message : "Please retry the send.",
+        });
+      });
+    } catch (error) {
+      releasePreStreamRunReservation();
+      toast.error("Could not prepare attachments", {
+        description:
+          error instanceof Error ? error.message : "Please retry the send.",
+      });
+    }
+  }, [aui]);
+
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
   const interceptSend = useCallback(
@@ -2077,13 +2109,18 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
-      if (!tryReservePreStreamRun()) {
-        toast.error("Wait for the current response to finish");
+      if (!reserveInteractiveRun()) {
         return;
       }
-      aui.composer().send();
+      sendReservedComposer();
     }
-  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+  }, [
+    pendingSend,
+    indexingActive,
+    aui,
+    dismissWaitToast,
+    sendReservedComposer,
+  ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
@@ -2186,6 +2223,11 @@ const Composer: FC<{
       if (!tryReservePreStreamRun()) {
         event.preventDefault();
         toast.error("Wait for the current response to finish");
+        return;
+      }
+      if (hasAttachments || hasPendingAudio) {
+        event.preventDefault();
+        sendReservedComposer();
       }
     },
     [
@@ -2205,6 +2247,7 @@ const Composer: FC<{
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
+      sendReservedComposer,
       shouldBlockSend,
       threadIsRunning,
     ],

@@ -5,6 +5,9 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 const QUEUED_SETTING_KEYS = [
   "supportsTools",
+  "reasoningEnabled",
+  "reasoningEffort",
+  "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
   "imageToolsEnabled",
