@@ -24,18 +24,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import {
-  describeMediaError,
-  describeSpeechError,
-  isMissingDeviceError,
-} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
-import {
-  applyDictationDictionary,
-  recordRecentDictation,
-  resolveDictationLanguage,
-  useVoiceSettingsStore,
-} from "@/features/settings/stores/voice-settings-store";
+  StudioDictationAdapter,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat/adapters/studio-dictation-adapter";
+import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
@@ -80,6 +77,12 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
+  DEFAULT_MAX_SEQ_LENGTH,
+  normalizeMaxSeqLength,
+  resolveInitialConfig,
+  type PerModelConfig,
+} from "@/features/model-picker";
+import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
@@ -91,13 +94,14 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
-  loadedGpuMemoryFieldsUnlessStaged,
+  loadedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
@@ -216,173 +220,95 @@ function formatReasoningDisabledLabel(
 function useDictation(
   setText: (value: string | ((prev: string) => string)) => void,
 ) {
+  // Re-render support state when the user switches recognition engines.
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [isDictating, setIsDictating] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-
-  const streamRef = useRef<MediaStream | null>(null);
+  // True while a stopped recording's final audio is still transcribing; a
+  // second click then cancels the pending transcription instead of re-stopping.
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const sessionRef = useRef<StudioDictationSession | null>(null);
   const startingRef = useRef(false);
-  // Guards the getUserMedia await so a mic opened after unmount is released.
-  const disposedRef = useRef(false);
-
-  const releaseStream = useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-  }, []);
+  const finalizingRef = useRef(false);
 
   const start = useCallback(async () => {
-    const SpeechRecognitionAPI =
-      typeof window !== "undefined" &&
-      (window.SpeechRecognition ??
-        (
-          window as unknown as {
-            webkitSpeechRecognition?: typeof SpeechRecognition;
-          }
-        ).webkitSpeechRecognition);
-    if (!SpeechRecognitionAPI) {
+    if (startingRef.current || sessionRef.current) return;
+    // Unsupported engine (e.g. Firefox): explain and steer to the local model.
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
       return;
     }
-    if (startingRef.current || recognitionRef.current) return;
     startingRef.current = true;
 
-    // Open the microphone chosen in Voice settings, matching the main chat
-    // adapter, so Compare dictation honors the same device selection.
-    let audioTrack: MediaStreamTrack | undefined;
-    const { micDeviceId } = useVoiceSettingsStore.getState();
-    if (navigator.mediaDevices?.getUserMedia) {
-      try {
-        let stream: MediaStream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio:
-              micDeviceId && micDeviceId !== "default"
-                ? { deviceId: { exact: micDeviceId } }
-                : true,
-          });
-        } catch (error) {
-          // Saved mic may be unplugged; fall back to the default device.
-          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: true,
-            });
-          } else {
-            throw error;
-          }
-        }
-        streamRef.current = stream;
-        audioTrack = stream.getAudioTracks()[0];
-      } catch (error) {
-        // Permission/security failure: report it and stop instead of silently
-        // recording from a different default device, matching the main adapter.
-        startingRef.current = false;
-        releaseStream();
-        setIsDictating(false);
-        toast.error(describeMediaError(error));
-        return;
-      }
-    }
-
-    if (disposedRef.current) {
-      releaseStream();
-      startingRef.current = false;
-      return;
-    }
-
-    const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = resolveDictationLanguage();
-    let sessionTranscript = "";
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      // Iterate every result from resultIndex; a single event can carry more
-      // than one finalized phrase and dropping the rest loses dictated words.
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (!result?.isFinal) continue;
-        const transcript = applyDictationDictionary(
-          result[0]?.transcript?.trim() ?? "",
-        );
-        if (!transcript) continue;
-        sessionTranscript = sessionTranscript
-          ? `${sessionTranscript} ${transcript}`
-          : transcript;
-        setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
-      }
-    };
-    recognition.onerror = (event) => {
-      // Report speech-service failures like the main adapter; aborted is a
-      // normal stop, not an error.
-      const errorEvent = event as SpeechRecognitionErrorEvent;
-      if (errorEvent.error !== "aborted") {
-        toast.error(describeSpeechError(errorEvent.error, errorEvent.message));
-      }
-      setIsDictating(false);
-    };
-    recognition.onend = () => {
-      // A stop()+immediate restart can install a new recognizer before this
-      // old one ends; only tear down shared refs when we are still current.
-      if (recognitionRef.current === recognition) {
-        releaseStream();
-        recognitionRef.current = null;
-        setIsDictating(false);
-      }
-      if (sessionTranscript) {
-        recordRecentDictation(sessionTranscript);
-        sessionTranscript = "";
-      }
-    };
+    let session: StudioDictationSession;
     try {
-      if (audioTrack) {
-        try {
-          recognition.start(audioTrack);
-        } catch {
-          // No start(track) overload: recognition captures from the default
-          // device, so release the selected-device stream.
-          releaseStream();
-          recognition.start();
-        }
-      } else {
-        recognition.start();
-      }
+      // Routes to the engine chosen in Voice settings (browser or STT model),
+      // honoring the selected microphone, language, and dictionary. Compare
+      // feeds two panes, so recent dictations must not link the unrelated
+      // single-chat active thread.
+      session = new StudioDictationAdapter({ chatId: null }).listen();
     } catch {
       startingRef.current = false;
-      releaseStream();
+      notifyStudioDictationUnavailable();
       return;
     }
-    recognitionRef.current = recognition;
-    startingRef.current = false;
+    sessionRef.current = session;
     setIsDictating(true);
-  }, [setText, releaseStream]);
+
+    // Append final transcripts; the adapter has already applied the dictionary
+    // and records the session in Recent dictations.
+    session.onSpeech((result) => {
+      if (!result.isFinal) return;
+      const transcript = result.transcript?.trim() ?? "";
+      if (transcript) {
+        setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      }
+    });
+    session.onEnd?.(() => {
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+    });
+    startingRef.current = false;
+  }, [setText]);
 
   const stop = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+    const session = sessionRef.current;
+    if (!session) return;
+    // A second click while the final segment is transcribing discards the
+    // pending transcription instead of leaving the pane stuck until timeout.
+    if (finalizingRef.current) {
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+      return;
     }
-    releaseStream();
-    setIsDictating(false);
-  }, [releaseStream]);
+    finalizingRef.current = true;
+    setIsFinalizing(true);
+    // Keep the session and dictation state alive while its final audio segment
+    // is transcribed. onEnd clears both after the transcript callbacks run.
+    void session.stop().catch((error) => {
+      console.error("Could not stop dictation:", error);
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+    });
+  }, []);
 
   useEffect(() => {
-    disposedRef.current = false;
     return () => {
-      disposedRef.current = true;
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      sessionRef.current?.cancel();
+      sessionRef.current = null;
     };
   }, []);
 
-  const supported =
-    typeof window !== "undefined" &&
-    !!(
-      window.SpeechRecognition ??
-      (window as unknown as { webkitSpeechRecognition?: unknown })
-        .webkitSpeechRecognition
-    );
+  const supported = StudioDictationAdapter.isSupported(dictationEngine);
 
-  return { isDictating, start, stop, supported };
+  return { isDictating, isFinalizing, start, stop, supported };
 }
 
 export type CompareHandles = MutableRefObject<Record<string, CompareHandle>>;
@@ -495,7 +421,23 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  config?: PerModelConfig;
 };
+
+function cleanCompareChatTemplate(
+  value: string | null | undefined,
+): string | null {
+  return value?.trim() ? value : null;
+}
+
+function resolveCompareSpecDraftNMax(
+  speculativeType: string | null,
+  value: number | null,
+): number | null {
+  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
+    ? value
+    : null;
+}
 
 // Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
@@ -790,15 +732,17 @@ export function SharedComposer({
   const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
-  // permissions always show; the rest are conditional.
-  const pillsCompact =
+  // permissions always show; the rest are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
     4 +
-      (showImagePill ? 1 : 0) +
-      (showRagPill && ragEnabled ? 1 : 0) +
-      (showWebFetchPill ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+    (showImagePill ? 1 : 0) +
+    (showRagPill && ragEnabled ? 1 : 0) +
+    (showWebFetchPill ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   // Backwards-compatible alias for call sites still referencing
   // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -809,9 +753,9 @@ export function SharedComposer({
 
   const {
     isDictating,
+    isFinalizing: isDictationFinalizing,
     start: startDictation,
     stop: stopDictation,
-    supported: dictationSupported,
   } = useDictation(setText);
 
   useEffect(() => {
@@ -1023,15 +967,12 @@ export function SharedComposer({
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
-      const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
-        ? chatTemplateOverride
-        : null;
+      const fallbackTensorParallel = store.tensorParallel;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
+      let loadedFromConfig = false;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -1058,7 +999,6 @@ export function SharedComposer({
         // path: an early remember-restore can hold a stale cross-host pick that
         // /load would reject (the device cache is populated by send time).
         selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
-        tensorParallel: store.tensorParallel,
         customContextLength: store.customContextLength,
       };
       // Set when an accepted transformers install unloaded the active model
@@ -1069,15 +1009,68 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        const config = sel.config ?? null;
+        // This pane's effective config: an explicit selection config, else the
+        // remembered store config for this model/quant (never the other pane's).
+        // No saved config resolves to all-null defaults, so settings below fall
+        // through to their session default.
+        const resolved = config
+          ? { config, remembered: true }
+          : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
+        const ownConfig = resolved.config;
+        const ownRemembered = resolved.remembered;
+        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
+        // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
+        // which would silently shrink the shown context.
+        const isGgufLoad =
+          (sel.ggufVariant ?? null) != null ||
+          sel.id.toLowerCase().endsWith(".gguf");
+        // A non-GGUF pane with no saved maxSeqLength falls back to the app default,
+        // not the active model's shared runtime snapshot: else comparing a saved
+        // 128K model against an unconfigured one loads the latter at 128K and OOMs.
+        const effectiveMaxSeqLength =
+          ownConfig.customContextLength ??
+          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
+          (isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);
+        const effectiveChatTemplateOverride = cleanCompareChatTemplate(
+          ownConfig.chatTemplateOverride,
+        );
+        const effectiveSpeculativeType =
+          ownConfig.speculativeType ?? specSettings.speculativeType;
+        const effectiveSpecDraftNMax = ownRemembered
+          ? resolveCompareSpecDraftNMax(
+              effectiveSpeculativeType,
+              ownConfig.specDraftNMax,
+            )
+          : specSettings.specDraftNMax;
+        const effectiveTensorParallel = ownRemembered
+          ? ownConfig.tensorParallel
+          : fallbackTensorParallel;
+        if (ownConfig.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+        }
+        const effectiveGpuMemoryMode =
+          ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode;
+        const effectiveGpuLayers =
+          ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
+        const effectiveNCpuMoe =
+          ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
+        const effectiveSelectedGpuIds =
+          ownConfig.selectedGpuIds !== undefined
+            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
+            : compareLoadKnobs.selectedGpuIds;
+        // A pane's context comes from its own config only: a saved pin, or null
+        // (Auto/native). It must not inherit the active model's shared snapshot --
+        // resolveFitMaxSeqLength would treat that as a pin and load this pane at
+        // the other model's context (changing VRAM/results or OOMing).
+        const effectiveCustomContextLength = ownConfig.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        // Already loaded (gate passed at first load): skip a redundant reload that would
-        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
-        if (isAlreadyActive) {
+        if (isAlreadyActive && !config && !loadedFromConfig) {
           return "ready";
         }
         const targetIsGguf =
@@ -1087,10 +1080,13 @@ export function SharedComposer({
         // layers the load sends 0 / the pinned context, not raw maxSeqLength).
         const compareMaxSeqLength = resolveFitMaxSeqLength(
           targetIsGguf,
-          compareLoadKnobs.gpuMemoryMode,
-          compareLoadKnobs.gpuLayers,
-          compareLoadKnobs.customContextLength,
-          maxSeqLength,
+          effectiveGpuMemoryMode,
+          effectiveGpuLayers,
+          // Prefer this pane's own saved context pin over the shared snapshot,
+          // falling back to its per-pane effective context (GGUF with no saved
+          // context loads at native, not the session maxSeqLength).
+          effectiveCustomContextLength,
+          effectiveMaxSeqLength,
         );
         const validation = await validateModel({
           model_path: sel.id,
@@ -1105,8 +1101,8 @@ export function SharedComposer({
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
             ? {
-                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
-                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                gpu_memory_mode: effectiveGpuMemoryMode,
               }
             : {}),
         });
@@ -1164,27 +1160,28 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
-          speculative_type: specSettings.speculativeType,
-          spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
-          // GGUF-only, like the auto-load path: the picker is a GGUF control,
-          // so a non-GGUF target loads via HF auto-placement instead of being
-          // pinned to a leftover GGUF pick it can't even show.
-          tensor_parallel: compareLoadKnobs.tensorParallel,
+          cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          speculative_type: effectiveSpeculativeType,
+          spec_draft_n_max: effectiveSpecDraftNMax,
+          tensor_parallel: effectiveTensorParallel,
           ...(targetIsGguf
             ? {
-                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
-                gpu_layers: compareLoadKnobs.gpuLayers,
-                n_cpu_moe: compareLoadKnobs.nCpuMoe,
+                gpu_memory_mode: effectiveGpuMemoryMode,
+                gpu_layers: effectiveGpuLayers,
+                n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
-                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
               }
             : {}),
         });
-        saveSpeculativeType(specSettings.speculativeType);
+        // Keep a compare pane's per-model speculative choice load-local: persist
+        // the global preference only when it came from global settings.
+        if (ownConfig.speculativeType == null) {
+          saveSpeculativeType(effectiveSpeculativeType);
+        }
         // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
         // so an applied manual choice survives a restart.
-        persistGpuMemoryModeOnLoad(resp, compareLoadKnobs.gpuMemoryMode);
+        persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1200,9 +1197,9 @@ export function SharedComposer({
         // compare loads don't send the pin, so their baseline clears.
         const keepCustomCtx = targetIsGguf
           ? resolveManualAutoCtxPin(
-              compareLoadKnobs.gpuMemoryMode,
-              compareLoadKnobs.gpuLayers,
-              compareLoadKnobs.customContextLength,
+              effectiveGpuMemoryMode,
+              effectiveGpuLayers,
+              effectiveCustomContextLength,
             )
           : null;
         useChatRuntimeStore.setState({
@@ -1211,37 +1208,52 @@ export function SharedComposer({
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          kvCacheDtype: resp.cache_type_kv ?? null,
+          loadedKvCacheDtype: resp.cache_type_kv ?? null,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
-          customContextLength: keepCustomCtx,
+          defaultChatTemplate: resp.chat_template ?? null,
+          chatTemplateOverride: effectiveChatTemplateOverride,
+          loadedChatTemplateOverride: effectiveChatTemplateOverride,
+          // The context baseline this pane loaded with (see keepCustomCtx above),
+          // so a later Apply/Reset can't silently revert a Manual+Auto pin.
           loadedCustomContextLength: keepCustomCtx,
-          // Seed the loaded GGUF context (interactive/auto-load parity): the
-          // settings sheet keys the GGUF GPU controls off it for a direct .gguf
-          // with no variant, and a later Apply reads it as the resolved context.
-          ...(targetIsGguf
-            ? {
-                ggufContextLength: resp.context_length ?? 131072,
-                ggufMaxContextLength:
-                  resp.max_context_length ?? resp.context_length ?? 131072,
-                ggufNativeContextLength: resp.native_context_length ?? null,
-              }
-            : { ggufContextLength: null }),
-          // Compare loads resolve by id (HF repo / local path), never through a
-          // native-path lease, so a token left by a previously loaded native
-          // GGUF is stale here -- isLoadedGguf keys off it, and a stale token
-          // would dress a non-GGUF compare load in GGUF controls. Mirror the
-          // interactive path, which writes it on every load success.
-          activeNativePathToken: null,
-          // Held under an open staged pick: setCheckpoint preserves a stage on
-          // the empty->active transition, so a compare load can complete with
-          // staged GPU edits still on screen.
-          ...loadedGpuMemoryFieldsUnlessStaged(resp),
+          // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick
+          // plus loaded baselines) so the GPU controls round-trip. (gguf context,
+          // customContextLength and native-path token/expiry clear in the tail below.)
+          ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          // Record the context this pane loaded with (like the single-model path)
+          // so when it becomes the active model, the UI and later reload/save use
+          // its context, not the previous/default one.
+          customContextLength: isGgufLoad
+            ? (ownConfig.customContextLength ?? keepCustomCtx)
+            : null,
+          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
+          ggufNativeContextLength: resp.is_gguf
+            ? (resp.native_context_length ?? null)
+            : null,
+          ggufMaxContextLength: resp.is_gguf
+            ? (resp.max_context_length ?? null)
+            : null,
+          // Compare selections load by repo/variant, never from the file picker,
+          // so they carry no native lease. Clear any prior picked file's
+          // token/expiry so the reload path never sends a stale lease.
+          activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
+        if (!isGgufLoad) {
+          // Non-GGUF panes carry their context in params.maxSeqLength.
+          store.setParams({
+            ...useChatRuntimeStore.getState().params,
+            maxSeqLength: effectiveMaxSeqLength,
+          });
+        }
+        loadedFromConfig = config != null;
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
         // state (e.g. a GGUF whose mmproj arrived after the snapshot).
@@ -1389,7 +1401,7 @@ export function SharedComposer({
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!busy) {
+      if (!busy && !isDictating) {
         send();
       }
     }
@@ -1400,7 +1412,8 @@ export function SharedComposer({
       pendingImages.length > 0 ||
       pendingAudio !== null) &&
     !busy &&
-    !isComposing;
+    !isComposing &&
+    !isDictating;
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
@@ -1496,9 +1509,13 @@ export function SharedComposer({
                   toast.error("No conversation to export yet.");
                   return;
                 }
-                Promise.all(exportThreadIds.map((id) => fn(id))).catch(() =>
-                  toast.error("Export failed."),
-                );
+                (async () => {
+                  for (const id of exportThreadIds) {
+                    await fn(id);
+                  }
+                })().catch((error) => {
+                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
+                });
               }}
             >
               {label}
@@ -1686,7 +1703,7 @@ export function SharedComposer({
       />
       <div className="composer-action-wrapper">
         <div
-          className="flex items-center gap-0.5"
+          className="flex min-w-0 flex-wrap items-center gap-0.5"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <input
@@ -2171,7 +2188,7 @@ export function SharedComposer({
               </button>
             )
           ) : null}
-          {dictationSupported && (
+          {
             <>
               {!isDictating ? (
                 <TooltipIconButton
@@ -2187,19 +2204,27 @@ export function SharedComposer({
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
-                  tooltip="Stop dictation"
+                  tooltip={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                   side="bottom"
                   variant="ghost"
                   size="icon"
                   className="size-8 rounded-full text-destructive"
                   onClick={stopDictation}
-                  aria-label="Stop dictation"
+                  aria-label={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                 >
                   <SquareIcon className="size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
-          )}
+          }
           {isQueueRunning ? (
             <button
               type="button"

@@ -52,7 +52,7 @@ function SourceIcon({
       <span
         data-slot="source-icon-fallback"
         className={cn(
-          `flex ${sizeClass} shrink-0 items-center justify-center rounded-sm bg-muted font-medium text-[10px]`,
+          `flex ${sizeClass} shrink-0 items-center justify-center rounded-sm bg-muted font-medium text-ui-10`,
           className,
         )}
         {...props}

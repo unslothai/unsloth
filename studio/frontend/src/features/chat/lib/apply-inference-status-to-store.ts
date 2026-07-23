@@ -280,12 +280,9 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
-    // A non-GGUF status must also drop a stale native-path token: without this the
-    // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
-    // stays true after switching from a native GGUF to a transformers model, so a
-    // Codex-only detection would auto-select for a model its preflight rejects. A real
-    // GGUF load reports is_gguf: true, so its token is preserved (the load path owns it).
-    ...(status.is_gguf ? {} : { activeNativePathToken: null }),
+    ...(status.is_gguf
+      ? {}
+      : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
@@ -299,13 +296,11 @@ export function applyActiveModelStatusToStore(
     // model changed underneath this tab (auto-switch, another client), the
     // old model's baselines are stale and must adopt the new status.
     ...(seedLoadParams &&
-      prevState.pendingSelection == null &&
       (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
         speculativeType: currentSpecType,
         loadedSpeculativeType: currentSpecType,
       }),
     ...(seedLoadParams &&
-      prevState.pendingSelection == null &&
       status.spec_draft_n_max !== undefined &&
       (hydratingExistingModel ||
         (prevState.loadedSpecDraftNMax === null &&
@@ -314,14 +309,12 @@ export function applyActiveModelStatusToStore(
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
       }),
     ...(seedLoadParams &&
-      prevState.pendingSelection == null &&
       status.cache_type_kv !== undefined &&
       (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
     ...(seedLoadParams &&
-      prevState.pendingSelection == null &&
       status.tensor_parallel !== undefined &&
       (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
@@ -331,7 +324,6 @@ export function applyActiveModelStatusToStore(
     // placement change. gpuStatusFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.
     ...(seedLoadParams &&
-      prevState.pendingSelection == null &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         gpuStatusChanged) &&

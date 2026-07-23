@@ -132,7 +132,7 @@ export function WebUpdateBanner({
                 href={RELEASE_NOTES_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="-ml-2 whitespace-nowrap rounded-full px-2.5 py-2 text-[13px] font-medium text-foreground transition-colors hover:bg-muted"
+                className="-ml-2 whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground transition-colors hover:bg-muted"
                 data-testid="web-update-release-notes-link"
               >
                 Release notes
@@ -142,7 +142,7 @@ export function WebUpdateBanner({
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+                  className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                   onClick={snooze}
                   data-testid="web-update-snooze-button"
                 >
@@ -151,7 +151,7 @@ export function WebUpdateBanner({
                 <Button
                   size="sm"
                   // -mr optically aligns the filled pill's edge with the card padding
-                  className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+                  className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                   onClick={handleCopyCommand}
                   data-testid="web-update-copy-button"
                 >

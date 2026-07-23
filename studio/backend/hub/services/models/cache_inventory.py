@@ -31,9 +31,9 @@ from hub.services.models.common import (
     _is_checkpoint_weight_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
+    _is_mmproj_filename,
     _is_transformers_safetensors_weight_name,
     _local_inventory_id,
-    _prefer_complete_larger,
     _runtime_for_format,
 )
 
@@ -132,6 +132,39 @@ def _repo_has_gguf_files(repo_info) -> bool:
     return _repo_gguf_size_bytes(repo_info) > 0
 
 
+def _blob_mtime(file_obj) -> float:
+    ts = getattr(file_obj, "blob_last_modified", None)
+    if isinstance(ts, (int, float)) and ts > 0:
+        return float(ts)
+    blob_path = getattr(file_obj, "blob_path", None)
+    if blob_path:
+        try:
+            return float(Path(blob_path).stat().st_mtime)
+        except OSError:
+            pass
+    return 0.0
+
+
+def _repo_gguf_last_modified(repo_info) -> float:
+    latest = 0.0
+    for revision in repo_info.revisions:
+        for f in revision.files:
+            if _is_main_gguf_filename(f.file_name):
+                latest = max(latest, _blob_mtime(f))
+    return latest
+
+
+def _repo_has_mmproj(repo_info) -> bool:
+    # An mmproj file only makes a repo vision-capable when it is an actual GGUF
+    # projector; a non-GGUF sidecar (e.g. mmproj_config.json) does not, and the
+    # runtime's projector detection is GGUF-only.
+    return any(
+        _is_gguf_filename(f.file_name) and _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in revision.files
+    )
+
+
 def _cached_repo_file_name(file_obj) -> str:
     file_path = getattr(file_obj, "file_path", None)
     if file_path:
@@ -216,24 +249,46 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
 def _prefer_cache_row(candidate: dict, existing: Optional[dict]) -> bool:
     if existing is None:
         return True
-    return _prefer_complete_larger(
-        bool(candidate.get("partial")),
-        int(candidate.get("size_bytes") or 0),
-        bool(existing.get("partial")),
-        int(existing.get("size_bytes") or 0),
-    )
+    candidate_partial = bool(candidate.get("partial"))
+    existing_partial = bool(existing.get("partial"))
+    if candidate_partial != existing_partial:
+        return not candidate_partial
+    candidate_active = bool(candidate.get("active_cache"))
+    existing_active = bool(existing.get("active_cache"))
+    if candidate_active != existing_active:
+        return candidate_active
+    return int(candidate.get("size_bytes") or 0) > int(existing.get("size_bytes") or 0)
 
 
 def _cache_inventory_fields(
     repo_id: str,
     model_format: ModelFormat,
     *,
+    repo_path: Optional[Path] = None,
+    snapshot_path: Optional[Path] = None,
+    active_hub_cache: Optional[Path] = None,
     partial: bool = False,
     requires_variant: bool = False,
 ) -> dict:
+    load_id = repo_id
+    active_cache = True
+    if repo_path is not None:
+        try:
+            if active_hub_cache is None:
+                from utils.hf_cache_settings import get_hf_cache_paths
+                active_hub_cache = get_hf_cache_paths().hub_cache
+            active_root = active_hub_cache.resolve(strict = False)
+            cached_root = repo_path.parent.resolve(strict = False)
+            if cached_root != active_root:
+                active_cache = False
+                load_id = str(snapshot_path or repo_path.resolve(strict = False))
+        except (OSError, RuntimeError, ValueError):
+            active_cache = False
+            load_id = str(snapshot_path or repo_path)
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
-        "load_id": repo_id,
+        "load_id": load_id,
+        "active_cache": active_cache,
         "model_format": model_format,
         "runtime": _runtime_for_format(model_format),
         "format_variant": None,
@@ -260,6 +315,9 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
 
     seen_lower: dict[str, dict] = {}
     for hf_cache in cache_scans:
@@ -271,7 +329,10 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
-                has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                has_variant_state, variant_state_size = _gguf_variant_state_summary(
+                    repo_id,
+                    hub_cache = repo_path.parent,
+                )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
@@ -291,6 +352,7 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
+                last_modified = _repo_gguf_last_modified(repo_info)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
@@ -300,19 +362,34 @@ def _scan_cached_gguf() -> list[dict]:
                     # per-variant detail lives on GgufVariantDetail.
                     "partial_transport": None,
                 }
+                last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
+                if last_modified > 0:
+                    row["last_modified"] = last_modified
                 row.update(
                     _cache_inventory_fields(
                         repo_id,
                         "gguf",
+                        repo_path = repo_path,
+                        snapshot_path = snapshot_path,
+                        active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                         requires_variant = True,
                     )
                 )
+                if _repo_has_mmproj(repo_info):
+                    row["capabilities"]["supports_vision"] = True
                 # Visible infra variants remain management-only.
                 if is_hidden_infra:
                     row["capabilities"]["can_chat"] = False
                 if _prefer_cache_row(row, existing):
+                    if existing and existing["capabilities"].get("supports_vision"):
+                        row["capabilities"]["supports_vision"] = True
                     seen_lower[key] = row
+                else:
+                    if last_modified > existing.get("last_modified", 0.0):
+                        existing["last_modified"] = last_modified
+                    if row["capabilities"].get("supports_vision"):
+                        existing["capabilities"]["supports_vision"] = True
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
@@ -340,13 +417,14 @@ class _CachedNonGgufPayload(NamedTuple):
     size_bytes: int
     has_runnable_weights: bool
     model_format: ModelFormat
+    last_modified: float
 
 
 def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
-    all_weight_blobs: dict[str, int] = {}
-    adapter_blobs: dict[str, int] = {}
-    safetensors_blobs: dict[str, int] = {}
-    checkpoint_blobs: dict[str, int] = {}
+    all_weight_blobs: dict[str, tuple[int, float]] = {}
+    adapter_blobs: dict[str, tuple[int, float]] = {}
+    safetensors_blobs: dict[str, tuple[int, float]] = {}
+    checkpoint_blobs: dict[str, tuple[int, float]] = {}
     has_config = False
     has_adapter_config = False
     has_adapter_weights = False
@@ -354,12 +432,15 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     has_transformers_safetensors = False
     has_checkpoint = False
 
-    def _record_blob(target: dict[str, int], file_obj, rev_id: str, file_name: str) -> None:
+    def _record_blob(
+        target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
+    ) -> None:
         blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
         key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
-        target[key] = size
-        all_weight_blobs[key] = size
+        value = (size, _blob_mtime(file_obj))
+        target[key] = value
+        all_weight_blobs[key] = value
 
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
@@ -403,18 +484,19 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         or "unknown"
     )
     if model_format == "adapter":
-        size_bytes = sum(adapter_blobs.values())
+        selected_blobs = adapter_blobs
     elif model_format == "safetensors":
-        size_bytes = sum(safetensors_blobs.values())
+        selected_blobs = safetensors_blobs
     elif model_format == "checkpoint":
-        size_bytes = sum(checkpoint_blobs.values())
+        selected_blobs = checkpoint_blobs
     else:
-        size_bytes = sum(all_weight_blobs.values())
+        selected_blobs = all_weight_blobs
 
     return _CachedNonGgufPayload(
-        size_bytes = size_bytes,
+        size_bytes = sum(size for size, _mtime in selected_blobs.values()),
         has_runnable_weights = model_format != "unknown",
         model_format = model_format,
+        last_modified = max((mtime for _size, mtime in selected_blobs.values()), default = 0.0),
     )
 
 
@@ -433,6 +515,19 @@ def _read_json_object(path: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _is_whisper_model_config(config: object) -> bool:
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type.strip().lower() == "whisper":
+        return True
+    architectures = config.get("architectures")
+    return isinstance(architectures, list) and any(
+        isinstance(name, str) and name == "WhisperForConditionalGeneration"
+        for name in architectures
+    )
 
 
 def _read_model_card_frontmatter(path: Path) -> dict:
@@ -465,6 +560,8 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 
     result: dict = {}
     config = _read_json_object(snapshot / "config.json")
+    if _is_whisper_model_config(config):
+        result["_hidden_stt"] = True
     quant_method = (
         config.get("quantization_config", {}).get("quant_method")
         if isinstance(config.get("quantization_config"), dict)
@@ -491,11 +588,15 @@ def _cached_model_local_metadata(repo_path: Path) -> dict:
 def _scan_cached_models() -> list[dict]:
     """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
 
     seen_lower: dict[str, dict] = {}
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
+    skipped_stt = 0
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             inspected += 1
@@ -523,6 +624,10 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 key = repo_id.lower()
                 existing = seen_lower.get(key)
+                local_metadata = _cached_model_local_metadata(repo_path)
+                if local_metadata.pop("_hidden_stt", False):
+                    skipped_stt += 1
+                    continue
                 snapshot_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
@@ -542,27 +647,40 @@ def _scan_cached_models() -> list[dict]:
                         if snapshot_partial
                         else None
                     ),
-                    **_cached_model_local_metadata(repo_path),
+                    **local_metadata,
                 }
+                last_modified = max(
+                    payload.last_modified,
+                    (existing or {}).get("last_modified", 0.0),
+                )
+                if last_modified > 0:
+                    row["last_modified"] = last_modified
                 row.update(
                     _cache_inventory_fields(
                         repo_id,
                         payload.model_format,
+                        repo_path = repo_path,
+                        snapshot_path = snapshot_path,
+                        active_hub_cache = active_hub_cache,
                         partial = bool(row["partial"]),
                     )
                 )
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
+                elif last_modified > existing.get("last_modified", 0.0):
+                    existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
-        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
+        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d "
+        "skipped_stt=%d returned=%d",
         inspected,
         skipped_gguf,
         skipped_no_weights,
+        skipped_stt,
         len(cached),
     )
     return cached

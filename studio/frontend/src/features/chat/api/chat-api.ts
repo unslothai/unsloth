@@ -33,6 +33,7 @@ import type {
 } from "../types/api";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
+export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 /**
  * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
@@ -52,6 +53,13 @@ export class StreamInterruptedError extends Error {
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+  }
+}
+
+function notifyChatProjectsUpdated(): void {
+  notifyChatHistoryUpdated();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(CHAT_PROJECTS_UPDATED_EVENT));
   }
 }
 
@@ -235,6 +243,7 @@ export async function resolveToolConfirmation(
 
 export interface CachedGgufRepo {
   repo_id: string;
+  load_id?: string | null;
   size_bytes: number;
   cache_path: string;
   /** Epoch seconds of the newest downloaded quant; sorts Downloaded
@@ -344,24 +353,28 @@ export async function listLocalModels(
 export async function listCachedGguf(
   signal?: AbortSignal,
 ): Promise<CachedGgufRepo[]> {
-  const response = await authFetch("/api/models/cached-gguf", { signal });
+  const response = await authFetch("/api/hub/cached-gguf", { signal });
   const data = await parseJsonOrThrow<{ cached: CachedGgufRepo[] }>(response);
   return data.cached;
 }
 
 export interface CachedModelRepo {
   repo_id: string;
+  load_id?: string | null;
   size_bytes: number;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** Owning cache dir; sent so a delete targets this copy, not the active
+   * cache. Optional for older-backend compatibility. */
+  cache_path?: string | null;
 }
 
 export async function listCachedModels(
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<CachedModelRepo[]> {
-  const response = await authFetch("/api/models/cached-models", {
+  const response = await authFetch("/api/hub/cached-models", {
     headers: hubTokenHeader(hfToken),
     signal,
   });
@@ -369,14 +382,33 @@ export async function listCachedModels(
   return data.cached;
 }
 
-export async function deleteCachedModel(
+export interface CachedModelPath {
+  path: string;
+  is_dir: boolean;
+}
+
+/** Absolute on-disk path of a cached repo or one of its GGUF variants. */
+export async function getCachedModelPath(
+  repoId: string,
+  variant?: string,
+): Promise<CachedModelPath> {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (variant) params.set("variant", variant);
+  const response = await authFetch(
+    `/api/models/cached-model-path?${params.toString()}`,
+  );
+  return parseJsonOrThrow<CachedModelPath>(response);
+}
+
+/** Reveal a cached repo (or one GGUF variant's file) in the OS file manager. */
+export async function revealCachedModel(
   repoId: string,
   variant?: string,
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
-  const response = await authFetch("/api/models/delete-cached", {
-    method: "DELETE",
+  const response = await authFetch("/api/models/reveal-cached-model", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
@@ -644,7 +676,7 @@ export async function saveChatProject(
     body: JSON.stringify(project),
   });
   const saved = await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
   return saved;
 }
 
@@ -661,7 +693,7 @@ export async function updateChatProject(
     },
   );
   const project = await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
   return project;
 }
 
@@ -677,7 +709,7 @@ export async function deleteChatProject(
     { method: "DELETE" },
   );
   await parseJsonOrThrow<ProjectRecord>(response);
-  notifyChatHistoryUpdated();
+  notifyChatProjectsUpdated();
 }
 
 export async function listChatMessages(
@@ -893,8 +925,19 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
+  options?: {
+    preferLocalCache?: boolean;
+    localPath?: string | null;
+  },
 ): Promise<GgufVariantsResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
+  if (options?.preferLocalCache) {
+    params.set("prefer_local_cache", "true");
+  }
+  const localPath = options?.localPath?.trim();
+  if (localPath) {
+    params.set("local_path", localPath);
+  }
   const response = await authFetch(`/api/models/gguf-variants?${params}`, {
     headers: hubTokenHeader(hfToken),
   });

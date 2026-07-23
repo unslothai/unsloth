@@ -821,10 +821,16 @@ with sync_playwright() as p:
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
     page.wait_for_timeout(400)
-    regen_btn = page.get_by_role(
-        "button",
-        name = re.compile(r"(reload|regenerate)", re.I),
-    ).first
+    # Exclude disabled controls: the picker's new disabled "Reload model"
+    # button also matches and sorts first, so .first would target it.
+    regen_btn = (
+        page.get_by_role(
+            "button",
+            name = re.compile(r"(reload|regenerate)", re.I),
+        )
+        .and_(page.locator("button:not([disabled])"))
+        .first
+    )
     if regen_btn.count() > 0:
         regen_btn.click()
         try:
@@ -930,6 +936,70 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
+    def read_chat_typography():
+        """Read message typography after a user-driven theme transition."""
+        return robust_evaluate(
+            page,
+            """() => {
+                const root = document.documentElement;
+                const assistant = Array.from(
+                    document.querySelectorAll('.aui-assistant-message-root')
+                );
+                const user = Array.from(
+                    document.querySelectorAll('.aui-user-message-root')
+                );
+                if (assistant.length === 0 || user.length === 0) {
+                    return { error: 'chat message roots are missing' };
+                }
+                const ua = navigator.userAgent.toLowerCase();
+                const role = (nodes) => {
+                    const styles = nodes.map((node) => getComputedStyle(node));
+                    return {
+                        fontWeight: [...new Set(styles.map((style) => style.fontWeight))],
+                        letterSpacing: [...new Set(styles.map((style) => style.letterSpacing))],
+                    };
+                };
+                return {
+                    actualRenderLinux: root.classList.contains('render-linux'),
+                    isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
+                    isDark: root.classList.contains('dark'),
+                    usesBaselineTypography: (
+                        root.classList.contains('no-font-smoothing') ||
+                        root.hasAttribute('data-chat-font') ||
+                        root.hasAttribute('data-ui-font')
+                    ),
+                    assistant: role(assistant),
+                    user: role(user),
+                };
+            }""",
+        )
+
+    def assert_chat_typography(label, typography):
+        if typography.get("error"):
+            fail(typography["error"])
+        if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
+            fail(f"desktop Linux detection mismatch: {typography!r}")
+        is_dark = typography["isDark"]
+        expected_spacing = "0.31px" if is_dark else "0.155px"
+        if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
+            expected_weight = "350" if is_dark else "390"
+            if is_dark:
+                expected_spacing = "0.3565px"
+        else:
+            expected_weight = "410"
+        for role in ("assistant", "user"):
+            actual = typography[role]
+            if actual["fontWeight"] != [expected_weight]:
+                fail(
+                    f"chat font weight {label}/{role}: expected {expected_weight}, "
+                    f"got {actual['fontWeight']!r}"
+                )
+            if actual["letterSpacing"] != [expected_spacing]:
+                fail(
+                    f"chat letter spacing {label}/{role}: expected {expected_spacing}, "
+                    f"got {actual['letterSpacing']!r}"
+                )
+
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check
     # (light is near-white >240; dark is near-black <40).
@@ -938,6 +1008,7 @@ with sync_playwright() as p:
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
         observed = []
+        typography_states = []
         for cycle in range(3):
             # Wait for any prior dropdown to fully detach: clicking while
             # the view-transition is still open no-ops silently. The
@@ -1026,6 +1097,9 @@ with sync_playwright() as p:
             }""",
             )
             observed.append(bg)
+            typography = read_chat_typography()
+            assert_chat_typography(f"theme-cycle-{cycle + 1}", typography)
+            typography_states.append(typography)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
         # Across cycles we should see both a near-white (light) and a
@@ -1047,6 +1121,20 @@ with sync_playwright() as p:
                 f"cycles: light_seen={light_seen}, dark_seen={dark_seen} "
                 "(toggle may not flip on this runner's color-scheme)"
             )
+
+        # These are user-driven theme transitions, not synthetic class
+        # changes. A completed three-cycle toggle must expose both typography
+        # states before we check the Linux selector.
+        if len(typography_states) != 3:
+            soft_fail(
+                f"chat typography observed {len(typography_states)} theme state(s), expected 3"
+            )
+        elif {state["isDark"] for state in typography_states} != {False, True}:
+            soft_fail(f"chat typography did not observe both themes: {typography_states!r}")
+        else:
+            info("OK chat typography platform and theme behavior")
+    else:
+        soft_fail("chat typography requires the account-menu theme control")
 
     # ─────────────────────────────────────────────────────
     # 10. Sidebar nav: New Chat, Compare, Search, Recipes.

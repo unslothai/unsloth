@@ -34,6 +34,11 @@ import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html"
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
+import {
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
@@ -102,6 +107,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MicIcon } from "@/lib/mic-icon";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -175,6 +181,7 @@ import {
 } from "react";
 import { create } from "zustand";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -1147,7 +1154,7 @@ const GeneratedImageViewportOverlay: FC<{
               Generated image
             </p>
             {overlay.metadata ? (
-              <p className="truncate text-[11px] font-medium text-muted-foreground">
+              <p className="truncate text-ui-11 font-medium text-muted-foreground">
                 {overlay.metadata}
               </p>
             ) : null}
@@ -1369,7 +1376,13 @@ export const ProjectComposer: FC<{
 }> = ({ disabled, placeholder }) => {
   return (
     <GeneratedImageOverlayProvider>
-      <ComposerAnimated disabled={disabled} placeholder={placeholder} />
+      {/* New chat in a project: queuing follow-ups here misbinds the thread,
+          so the queue only runs once the user is inside a chat session. */}
+      <ComposerAnimated
+        disabled={disabled}
+        placeholder={placeholder}
+        disableQueue
+      />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -1379,11 +1392,17 @@ const ComposerAnimated: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
     <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
-        <Composer disabled={disabled} threadId={threadId} menuSide={menuSide} />
+        <Composer
+          disabled={disabled}
+          threadId={threadId}
+          menuSide={menuSide}
+          disableQueue={disableQueue}
+        />
       </div>
     </div>
   );
@@ -1418,8 +1437,10 @@ const Composer: FC<{
   placeholder?: string;
   threadId?: string | null;
   menuSide?: "top" | "bottom";
-}> = ({ disabled, threadId, menuSide }) => {
+  disableQueue?: boolean;
+}> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
+  const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -1435,14 +1456,16 @@ const Composer: FC<{
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   // More than 4 pills: collapse to icons only. Search, Code, and permissions
-  // always show; Images, RAG, Canvas and MCP are conditional.
-  const pillsCompact =
+  // always show; Images, RAG, Canvas and MCP are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
     3 +
-      (ragEnabled ? 1 : 0) +
-      (supportsBuiltinImageGeneration ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+    (ragEnabled ? 1 : 0) +
+    (supportsBuiltinImageGeneration ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
@@ -1725,6 +1748,11 @@ const Composer: FC<{
 
       if (threadIsRunning || promptQueueActive) {
         event.preventDefault();
+        // Project new-chat composer: never queue, just ask the user to wait.
+        if (disableQueue) {
+          toast.error("Wait for the current response to finish");
+          return;
+        }
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
@@ -1802,6 +1830,7 @@ const Composer: FC<{
       composerText,
       createPromptQueueTarget,
       disabled,
+      disableQueue,
       hasAttachments,
       hasPendingAudio,
       interceptSend,
@@ -1821,85 +1850,113 @@ const Composer: FC<{
 
   const startQueue = useCallback(
     (items: string[], waitForCurrentRun = threadIsRunning) => {
+      // Saved-prompt Run-list calls this directly, so honour disableQueue here
+      // too: queuing from the project new-chat composer misbinds the thread.
+      if (disableQueue) return;
       startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
     },
-    [createPromptQueueTarget, threadIsRunning],
+    [createPromptQueueTarget, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
 
   const composerContent = (
     <>
-      <ComposerAttachments />
-      <PendingAudioChip />
-      <ThreadDocumentsBar
-        threadId={referenceThreadId}
-        onIndexingChange={handleIndexingChange}
-      />
-      <ToolStatusDisplay />
+      {!isDictating ? (
+        <>
+          <ComposerAttachments />
+          <PendingAudioChip />
+        </>
+      ) : null}
+      {/* Keep indexing state subscribed while dictating, but hide its chips so
+          the waveform stays the composer's only status indicator. */}
+      <div className={isDictating ? "hidden" : "contents"}>
+        <ThreadDocumentsBar
+          threadId={referenceThreadId}
+          onIndexingChange={handleIndexingChange}
+        />
+      </div>
+      {!isDictating ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
         // The permission pill is always visible, so keep the two-row layout
-        // expanded and leave the primary tool toggles accessible in every mode.
-        data-expanded="true"
+        // expanded whenever not dictating; dictation collapses to the bar.
+        data-expanded={!isDictating ? "true" : "false"}
+        data-dictating={isDictating ? "true" : undefined}
       >
         <div
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Permission-level pill: always visible and opens the permission
-              level dropdown. */}
-          <PermissionModeComposerPill side={effectiveMenuSide} />
-          <WebSearchToggle />
-          <CodeToolsToggle />
-          <ImagesToggle />
-          <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-          {artifactsEnabled ? <ArtifactsToggle /> : null}
-          {mcpEnabledForChat ? (
-            <McpComposerButton side={effectiveMenuSide} />
+          {/* While dictating, show only the "+"; hide the pill and tool toggles
+              so the waveform is the sole status indicator. */}
+          {!isDictating ? (
+            <>
+              {/* Permission-level pill: always visible, opens the level dropdown. */}
+              <PermissionModeComposerPill side={effectiveMenuSide} />
+              <WebSearchToggle />
+              <CodeToolsToggle />
+              <ImagesToggle />
+              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+              {artifactsEnabled ? <ArtifactsToggle /> : null}
+              {mcpEnabledForChat ? (
+                <McpComposerButton side={effectiveMenuSide} />
+              ) : null}
+            </>
           ) : null}
         </div>
-        <ComposerPrimitive.Input
-          placeholder={
-            overlay ? "Type your edits for your image" : "Ask anything"
-          }
-          ref={inputRef}
-          className="aui-composer-input unsloth-composer-input"
-          minRows={1}
-          maxRows={12}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label={overlay ? "Image edit instructions" : "Message input"}
-          // dir="auto": browser picks LTR/RTL from the first strong char;
-          // no effect on Latin / CJK / Devanagari.
-          dir="auto"
-          {...inputProps}
-        />
-        <ComposerRightControls
-          disabled={
-            disabled ||
-            !hasSendableContent ||
-            isComposing ||
-            hasPendingAttachments
-          }
-          queueDisabled={!canQueueCurrentPrompt}
-          onQueueClick={() => {
-            const queuedPrompt = composerText.trim();
-            if (queuedPrompt.length === 0) {
-              return;
-            }
-            flushResourcesSync(() => {
-              aui.composer().setText("");
-            });
-            startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
-          }}
-          onSendClick={interceptSend}
-          onStopClick={stopQueue}
-          pendingSend={pendingSend}
-          menuSide={effectiveMenuSide}
-          queueThreadIds={promptQueueThreadIds}
-        />
+        {isDictating ? (
+          // The recording UI replaces the input and send controls; only the
+          // left plus stays visible alongside it.
+          <ChatDictationBar />
+        ) : (
+          <>
+            <ComposerPrimitive.Input
+              placeholder={
+                overlay ? "Type your edits for your image" : "Ask anything"
+              }
+              ref={inputRef}
+              className="aui-composer-input unsloth-composer-input"
+              minRows={1}
+              maxRows={12}
+              autoFocus={!disabled}
+              disabled={disabled}
+              aria-label={overlay ? "Image edit instructions" : "Message input"}
+              // dir="auto": browser picks LTR/RTL from the first strong char;
+              // no effect on Latin / CJK / Devanagari.
+              dir="auto"
+              {...inputProps}
+            />
+            <ComposerRightControls
+              disabled={
+                disabled ||
+                !hasSendableContent ||
+                isComposing ||
+                hasPendingAttachments
+              }
+              // disableQueue (project new-chat composer) also blocks the queue
+              // button, so a running thread shows Stop instead of Queue.
+              queueDisabled={disableQueue || !canQueueCurrentPrompt}
+              onQueueClick={() => {
+                if (disableQueue) return;
+                const queuedPrompt = composerText.trim();
+                if (queuedPrompt.length === 0) {
+                  return;
+                }
+                flushResourcesSync(() => {
+                  aui.composer().setText("");
+                });
+                startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
+              }}
+              onSendClick={interceptSend}
+              onStopClick={stopQueue}
+              pendingSend={pendingSend}
+              menuSide={effectiveMenuSide}
+              queueThreadIds={promptQueueThreadIds}
+            />
+          </>
+        )}
       </div>
     </>
   );
@@ -2911,9 +2968,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationRawJsonl(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             Raw JSONL
@@ -2921,9 +2978,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationCsv(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             CSV
@@ -2931,9 +2988,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <DropdownMenuItem
             onSelect={() => {
               if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch(() =>
-                toast.error("Export failed."),
-              );
+              exportConversationShareGPT(activeThreadId).catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
             }}
           >
             ShareGPT JSONL
@@ -3333,32 +3390,36 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  const aui = useAui();
+  // Keep the mic clickable: if the engine can't run here, explain and point to
+  // the local model instead of disabling the button.
+  const startDictation = () => {
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    try {
+      aui.composer().startDictation();
+    } catch {
+      notifyStudioDictationUnavailable();
+    }
+  };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
+      {/* Starts dictation; the recording bar then covers the input row and owns
+          the stop and discard actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <ComposerPrimitive.Dictate asChild={true}>
-          <TooltipIconButton
-            tooltip="Dictate"
-            aria-label="Dictate"
-            variant="ghost"
-            className="size-8 rounded-full text-foreground"
-          >
-            <MicIcon className="size-5" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Dictate>
-      </ComposerPrimitive.If>
-      <ComposerPrimitive.If dictation={true}>
-        <ComposerPrimitive.StopDictation asChild={true}>
-          <TooltipIconButton
-            tooltip="Stop dictation"
-            aria-label="Stop dictation"
-            variant="ghost"
-            className="size-8 rounded-full text-destructive"
-          >
-            <SquareIcon className="size-3 animate-pulse fill-current" />
-          </TooltipIconButton>
-        </ComposerPrimitive.StopDictation>
+        <TooltipIconButton
+          tooltip="Dictate"
+          aria-label="Dictate"
+          type="button"
+          variant="ghost"
+          className="size-8 rounded-full text-foreground"
+          onClick={startDictation}
+        >
+          <MicIcon className="size-5" />
+        </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>
@@ -3516,14 +3577,14 @@ const DiffusionCanvas: FC = () => {
     canvas.total > 0 ? `step ${canvas.step + 1}/${canvas.total}` : "denoising";
   return (
     <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03]">
-      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary/80">
+      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-ui-11 font-medium text-primary/80">
         <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
         <span>Denoising</span>
         <span className="opacity-60">
           block {canvas.block + 1} - {stepLabel}
         </span>
       </div>
-      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[12.5px] leading-relaxed text-foreground/90">
+      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
         {canvas.text}
       </pre>
     </div>
@@ -3597,7 +3658,7 @@ const AssistantMessage: FC = () => {
 
   return (
     <MessagePrimitive.Root
-      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
+      className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
@@ -3710,7 +3771,7 @@ const ForkCountBadge: FC = () => {
   if (count <= 0) return null;
   return (
     <span
-      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+      className="mx-1 inline-flex items-center gap-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-medium text-primary"
       title={`${count} fork${count === 1 ? "" : "s"} from this message`}
     >
       <GitBranchIcon strokeWidth={1.75} className="size-3" />
@@ -3896,6 +3957,21 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+async function exportMessageMarkdown(content: string): Promise<void> {
+  try {
+    await downloadFile(
+      content,
+      `message-${Date.now()}.md`,
+      "text/markdown",
+    );
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Could not save Markdown export.", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -3964,7 +4040,10 @@ const AssistantActionBar: FC = () => {
               <GitBranchIcon strokeWidth={1.75} className="size-icon" />
               Fork in new chat
             </ActionBarMorePrimitive.Item>
-            <ActionBarPrimitive.ExportMarkdown asChild={true}>
+            <ActionBarPrimitive.ExportMarkdown
+              asChild={true}
+              onExport={exportMessageMarkdown}
+            >
               <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                 <HugeiconsIcon
                   icon={Download01Icon}
@@ -4017,7 +4096,7 @@ const UserMessageAudio: FC = () => {
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
+      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
       <UserMessageAttachments />
@@ -4128,7 +4207,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     <BranchPickerPrimitive.Root
       hideWhenSingleBranch={true}
       className={cn(
-        "aui-branch-picker-root inline-flex items-center text-chat-icon-fg text-[13px]",
+        "aui-branch-picker-root inline-flex items-center text-chat-icon-fg text-ui-13",
         className,
       )}
       {...rest}
@@ -4142,7 +4221,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           <ChevronLeftIcon strokeWidth={1.25} className="size-[36px]" />
         </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-mono text-[13px] tabular-nums">
+      <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
         <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>

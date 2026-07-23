@@ -39,7 +39,7 @@ export const es = {
       returnToChat: "Volver al chat",
       compare: "Comparar",
       search: "Buscar",
-      hub: "Hub",
+      hub: "Modelos",
       train: "Entrenar",
       recipes: "Recetas",
       export: "Exportar",
@@ -112,7 +112,7 @@ export const es = {
         "Se usa para cargar modelos restringidos y subir artefactos.",
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
-      tokenSaved: "Token guardado",
+      tokenValidated: "Token validado",
       password: "Contraseña",
       passwordDescription:
         "Cambia la contraseña de esta cuenta de Unsloth.",

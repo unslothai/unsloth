@@ -82,6 +82,63 @@ def _patch_backends(inf, llama):
     return patch.dict(sys.modules, {"core.inference": core_inf, "routes.inference": routes_inf})
 
 
+def _fake_stt_sidecar(
+    *,
+    model = None,
+    device = None,
+    loading = False,
+):
+    sidecar = SimpleNamespace(
+        loaded_model = model,
+        device = device,
+        is_loading = lambda: loading,
+    )
+    sidecar.cancel_pending_load = MagicMock(return_value = loading)
+    sidecar.wait_for_load_to_settle = MagicMock()
+    sidecar.unload = MagicMock()
+    return sidecar
+
+
+def _fake_ggml_sidecar(
+    *,
+    model = None,
+    device = None,
+    loading = False,
+):
+    ggml = SimpleNamespace(
+        loaded_model = model,
+        device = device,
+        is_loading = lambda: loading,
+    )
+    ggml.cancel_pending_load = MagicMock(return_value = loading)
+    ggml.wait_for_load_to_settle = MagicMock()
+    ggml.unload = MagicMock()
+    return ggml
+
+
+def _patch_stt(sidecar):
+    stt_module = types.ModuleType("core.inference.stt_sidecar")
+    stt_module.get_stt_sidecar = lambda: sidecar
+    # A fresh import of the GGUF sidecar pulls names from the fake module
+    # above and fails; fake it too so test ordering cannot break that import.
+    ggml_module = types.ModuleType("core.inference.stt_ggml_sidecar")
+    empty_ggml = _fake_ggml_sidecar()
+    ggml_module.get_ggml_stt_sidecar = lambda: empty_ggml
+    return patch.dict(
+        sys.modules,
+        {
+            "core.inference.stt_sidecar": stt_module,
+            "core.inference.stt_ggml_sidecar": ggml_module,
+        },
+    )
+
+
+def _patch_ggml_stt(sidecar):
+    ggml_module = types.ModuleType("core.inference.stt_ggml_sidecar")
+    ggml_module.get_ggml_stt_sidecar = lambda: sidecar
+    return patch.dict(sys.modules, {"core.inference.stt_ggml_sidecar": ggml_module})
+
+
 # ── summarize_resident_chat ──────────────────────────────────────────────────
 
 
@@ -167,6 +224,49 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
             out = tv.summarize_resident_chat()
         self.assertIsNone(out["hf"])
         self.assertTrue(out["any"])  # GGUF still detected
+
+
+class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
+    def test_reports_resident_model(self):
+        sidecar = _fake_stt_sidecar(model = "small", device = "cuda")
+        with _patch_stt(sidecar):
+            out = tv.summarize_resident_stt()
+        self.assertEqual(out["model"], "small")
+        self.assertEqual(out["device"], "cuda")
+        self.assertTrue(out["any"])
+        self.assertFalse(out["loading"])
+
+    def test_reports_inflight_load(self):
+        sidecar = _fake_stt_sidecar(loading = True)
+        with _patch_stt(sidecar):
+            out = tv.summarize_resident_stt()
+        self.assertTrue(out["any"])
+        self.assertTrue(out["loading"])
+
+    def test_reports_empty_sidecar(self):
+        with _patch_stt(_fake_stt_sidecar()):
+            out = tv.summarize_resident_stt()
+        self.assertFalse(out["any"])
+
+    def test_reports_resident_gguf_when_transformers_idle(self):
+        ggml = _fake_ggml_sidecar(model = "small", device = "whisper.cpp")
+        with _patch_stt(_fake_stt_sidecar()), _patch_ggml_stt(ggml):
+            out = tv.summarize_resident_stt()
+        self.assertEqual(out["model"], "small")
+        self.assertEqual(out["device"], "whisper.cpp")
+        self.assertTrue(out["any"])
+
+    def test_resident_transformers_does_not_mask_loading_gguf(self):
+        # A Transformers model resident on CPU holds no VRAM, but a GGUF
+        # whisper-server still binding its accelerator backend does; the CPU
+        # model must not hide that in-flight startup from training admission.
+        sidecar = _fake_stt_sidecar(model = "small", device = "cpu")
+        ggml = _fake_ggml_sidecar(loading = True)
+        with _patch_stt(sidecar), _patch_ggml_stt(ggml):
+            out = tv.summarize_resident_stt()
+        self.assertEqual(out["model"], "small")
+        self.assertTrue(out["loading"])
+        self.assertTrue(out["any"])
 
 
 # ── can_keep_during_training (auto mode) ─────────────────────────────────────
@@ -436,6 +536,152 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
             freed = tv.free_chat_models_for_training(reason = "test")
         llama.unload_model.assert_called_once()
         self.assertEqual(freed, ["gguf:gemma.gguf"])
+
+
+class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
+    def test_unloads_resident_model(self):
+        sidecar = _fake_stt_sidecar(model = "small", device = "cuda")
+        with _patch_stt(sidecar):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.unload.assert_called_once()
+        self.assertEqual(freed, ["stt:small"])
+
+    def test_cancels_inflight_load_and_waits_to_settle(self):
+        sidecar = _fake_stt_sidecar(loading = True)
+        with _patch_stt(sidecar):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.cancel_pending_load.assert_called_once()
+        # The cancelled loader may still hold VRAM; we wait for it to release.
+        sidecar.wait_for_load_to_settle.assert_called_once()
+        # No model surfaced after the wait, so nothing to unload.
+        sidecar.unload.assert_not_called()
+        self.assertEqual(freed, ["stt:loading"])
+
+    def test_cancels_inflight_load_then_unloads_settled_model(self):
+        # A load that finished before observing the cancel leaves a resident
+        # model behind; it must be unloaded so training reclaims the memory.
+        sidecar = _fake_stt_sidecar(model = "small", loading = True)
+        with _patch_stt(sidecar):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.cancel_pending_load.assert_called_once()
+        sidecar.wait_for_load_to_settle.assert_called_once()
+        sidecar.unload.assert_called_once()
+        self.assertEqual(freed, ["stt:loading"])
+
+    def test_cancelled_load_still_unloads_gguf_sidecar(self):
+        # Cancelling a Transformers load must not skip the GGUF sidecar; both
+        # engines can hold memory at once (engine switch or direct load calls).
+        sidecar = _fake_stt_sidecar(loading = True)
+        ggml = _fake_ggml_sidecar(model = "small")
+        with _patch_stt(sidecar), _patch_ggml_stt(ggml):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.cancel_pending_load.assert_called_once()
+        ggml.unload.assert_called_once()
+        self.assertEqual(freed, ["stt:loading", "stt:small"])
+
+    def test_leaves_empty_sidecar_alone(self):
+        sidecar = _fake_stt_sidecar()
+        with _patch_stt(sidecar):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.unload.assert_not_called()
+        self.assertEqual(freed, [])
+
+    def test_cancels_inflight_gguf_load_and_waits_to_settle(self):
+        # A GGUF whisper-server still in startup has no loaded_model yet, so the
+        # coordinator must cancel and wait for it, not skip it, before training
+        # claims the accelerator memory it is binding.
+        sidecar = _fake_stt_sidecar()  # Transformers idle
+        ggml = _fake_ggml_sidecar(loading = True)
+        with _patch_stt(sidecar), _patch_ggml_stt(ggml):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        ggml.cancel_pending_load.assert_called_once()
+        ggml.wait_for_load_to_settle.assert_called_once()
+        ggml.unload.assert_not_called()  # nothing surfaced after the wait
+        self.assertEqual(freed, ["stt:gguf-loading"])
+
+
+class TestCoordinateModels(_GpuCacheResetMixin, unittest.TestCase):
+    def _run(self, chat, stt, keep_results):
+        keep = MagicMock(side_effect = keep_results)
+        with (
+            patch.object(tv, "summarize_resident_chat", return_value = chat),
+            patch.object(tv, "summarize_resident_stt", return_value = stt),
+            patch.object(
+                tv,
+                "free_stt_model_for_training",
+                return_value = ["stt:small"],
+            ) as free_stt,
+            patch.object(
+                tv,
+                "free_chat_models_for_training",
+                return_value = ["hf:chat"],
+            ) as free_chat,
+        ):
+            freed = tv.coordinate_models_for_training(keep)
+        return freed, keep, free_stt, free_chat
+
+    def test_keeps_everything_when_training_fits(self):
+        chat = {"any": True, "loading": False}
+        stt = {"any": True, "loading": False}
+        freed, keep, free_stt, free_chat = self._run(
+            chat,
+            stt,
+            [(True, {"usable_gb": 40, "required_gb": 10})],
+        )
+        self.assertEqual(freed, [])
+        keep.assert_called_once()
+        free_stt.assert_not_called()
+        free_chat.assert_not_called()
+
+    def test_frees_stt_before_chat(self):
+        chat = {"any": True, "loading": False}
+        stt = {"any": True, "loading": False}
+        freed, keep, free_stt, free_chat = self._run(
+            chat,
+            stt,
+            [
+                (False, {"usable_gb": 8, "required_gb": 10}),
+                (True, {"usable_gb": 12, "required_gb": 10}),
+            ],
+        )
+        self.assertEqual(freed, ["stt:small"])
+        self.assertEqual(keep.call_count, 2)
+        free_stt.assert_called_once()
+        free_chat.assert_not_called()
+
+    def test_frees_chat_when_stt_is_not_enough(self):
+        chat = {"any": True, "loading": False}
+        stt = {"any": True, "loading": False}
+        freed, keep, free_stt, free_chat = self._run(
+            chat,
+            stt,
+            [
+                (False, {"usable_gb": 8, "required_gb": 10}),
+                (False, {"usable_gb": 9, "required_gb": 10}),
+            ],
+        )
+        self.assertEqual(freed, ["stt:small", "hf:chat"])
+        self.assertEqual(keep.call_count, 2)
+        free_stt.assert_called_once()
+        free_chat.assert_called_once()
+
+    def test_frees_loading_models_without_probe(self):
+        chat = {"any": True, "loading": True}
+        stt = {"any": True, "loading": True}
+        freed, keep, free_stt, free_chat = self._run(chat, stt, [])
+        self.assertEqual(freed, ["stt:small", "hf:chat"])
+        keep.assert_not_called()
+        free_stt.assert_called_once()
+        free_chat.assert_called_once()
+
+    def test_cancels_loading_stt_without_probe(self):
+        chat = {"any": False, "loading": False}
+        stt = {"any": True, "loading": True}
+        freed, keep, free_stt, free_chat = self._run(chat, stt, [])
+        self.assertEqual(freed, ["stt:small"])
+        keep.assert_not_called()
+        free_stt.assert_called_once()
+        free_chat.assert_not_called()
 
 
 if __name__ == "__main__":
