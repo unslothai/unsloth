@@ -1559,8 +1559,12 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         parts = Version(version.split("+", 1)[0]).release
         return ".".join(str(p) for p in parts[:2])
 
-    torch_minor = _minor(torch.__version__)
-    codec_minor = _minor(torchcodec_version)
+    try:
+        torch_minor = _minor(torch.__version__)
+        codec_minor = _minor(torchcodec_version)
+    except Exception:
+        # Non-PEP440 version strings must never break `import unsloth`.
+        return None
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
     if allowed is None or codec_minor in allowed:
         return None
