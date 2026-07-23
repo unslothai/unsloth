@@ -907,10 +907,10 @@ type ChatRuntimeStore = {
   /** Picked physical GPU indices (null = use all / automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
-  /** Requested GGUF host-memory residency. null = backend/default behavior. */
+  /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
   ggufMemoryMode: "auto" | "pinned" | "resident" | null;
-  /** Backend-reported GGUF host-memory residency mode (--mlock/--no-mmap),
-   *  used as the loaded baseline for status hydration and rollback. */
+  /** Backend-reported GGUF host-memory loading mode, used as the loaded
+   *  baseline for status hydration and rollback. */
   activeMemoryMode: "auto" | "pinned" | "resident" | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */

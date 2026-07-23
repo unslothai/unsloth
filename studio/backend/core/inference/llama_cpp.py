@@ -7573,9 +7573,10 @@ class LlamaCppBackend:
 
                 server_caps = self.probe_server_capabilities(binary)
 
-                # Memory placement: keep weights resident so idle weights aren't paged
-                # out and re-faulted from disk (#7164). Emitted as a CMD flag (not env)
-                # so it side-steps _clear_manual_placement_env in manual mode.
+                # Host loading policy only. These flags control file mapping and
+                # system-RAM paging, not whether a GPU driver keeps offloaded
+                # tensors in VRAM. Emit them on the command line so they bypass
+                # _clear_manual_placement_env in manual mode.
                 cmd.extend(
                     self._memory_mode_flags(
                         memory_mode,

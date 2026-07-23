@@ -77,7 +77,7 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked physical GPU indices (omit/empty = automatic). */
   gpu_ids?: number[];
-  /** GGUF host-memory placement: auto (default), pinned (--mlock), or resident (--no-mmap --mlock). */
+  /** GGUF host-only loading policy. It does not control GPU VRAM residency. */
   gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }
 
