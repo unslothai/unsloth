@@ -663,6 +663,16 @@ def _is_gpt_oss(model):
     )
 
 
+def _is_vlm(model):
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return hasattr(config, "vision_config") or any(
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
+    )
+
+
 def _qwen3_5_vlm_state_dict_for_save(state_dict):
     remapped_state_dict = {}
     for key, value in state_dict.items():
@@ -2872,13 +2882,7 @@ def unsloth_save_pretrained_gguf(
         )
 
     # Step 1: Check if this is a VLM (Vision-Language Model) and check if gpt-oss
-    is_vlm = False
-    if hasattr(self, "config") and hasattr(self.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in self.config.architectures
-        )
-        is_vlm = is_vlm or hasattr(self.config, "vision_config")
+    is_vlm = _is_vlm(self)
 
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
@@ -4504,13 +4508,7 @@ def _unsloth_save_torchao_with_given_config(
         quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
-    is_vlm = False
-    if hasattr(model, "config") and hasattr(model.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in model.config.architectures
-        )
-        is_vlm = is_vlm or hasattr(model.config, "vision_config")
+    is_vlm = _is_vlm(model)
     auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
     auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
