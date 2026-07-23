@@ -175,6 +175,7 @@ import {
 } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import {
@@ -2245,6 +2246,13 @@ export function ChatPage({
     useState<PendingHubAutoLoad | null>(null);
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
+      if (usePromptQueueUI.getState().isRunning) {
+        toast.info("A prompt queue is still running", {
+          description:
+            "Stop the queue before changing models so its remaining prompts keep the model they started with.",
+        });
+        return;
+      }
       const store = useChatRuntimeStore.getState();
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
@@ -2484,6 +2492,13 @@ export function ChatPage({
         value === currentCheckpoint &&
         (meta?.ggufVariant ?? null) === (currentVariant ?? null);
       if (isSameLoadedModel && !meta?.forceReload) {
+        return;
+      }
+      if (usePromptQueueUI.getState().isRunning) {
+        toast.info("A prompt queue is still running", {
+          description:
+            "Stop the queue before changing models so its remaining prompts keep the model they started with.",
+        });
         return;
       }
       if (meta?.source === "external" || isExternalModelId(value)) {

@@ -93,6 +93,9 @@ import {
   PROMPT_QUEUE_STOP_EVENT,
   getPreStreamRunReservationCount,
   tryReservePreStreamRun,
+  discardQueuedChatRunSettings,
+  registerQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
   composerDraftKey,
   markThreadIncognito,
   type PromptQueueRunFailedEventDetail,
@@ -423,6 +426,19 @@ function getPromptQueueActiveGenerationCount() {
 
 function promptQueueHasCapacity() {
   return getPromptQueueActiveGenerationCount() < PROMPT_QUEUE_GLOBAL_CONCURRENCY;
+}
+
+function reserveInteractiveRun(
+  event?: {
+    preventDefault: () => void;
+    stopPropagation?: () => void;
+  },
+): boolean {
+  if (promptQueueHasCapacity() && tryReservePreStreamRun()) return true;
+  event?.preventDefault();
+  event?.stopPropagation?.();
+  toast.error("Wait for the current response to finish");
+  return false;
 }
 
 function isPromptQueueRunReadyToDispatch(run: PromptQueueRun) {
@@ -1918,6 +1934,8 @@ const Composer: FC<{
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
+    const runSettingsAtQueueStart =
+      snapshotQueuedChatRunSettings(chatStateAtQueueStart);
     const initialRunningThreadIds = [
       initialState.id,
       initialState.remoteId,
@@ -1983,7 +2001,16 @@ const Composer: FC<{
             markThreadIncognito(id);
           }
         }
-        thread.append(appendTextToThread(prompt));
+        const settingsId = registerQueuedChatRunSettings(
+          getQueueThreadIds(),
+          runSettingsAtQueueStart,
+        );
+        try {
+          thread.append(appendTextToThread(prompt));
+        } catch (error) {
+          discardQueuedChatRunSettings(settingsId);
+          throw error;
+        }
       },
       cancel: () => getThreadRuntime()?.cancelRun(),
       isIndexing: () =>
@@ -3846,6 +3873,9 @@ const MessageError: FC = () => {
           <button
             type="button"
             className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+            onClick={(event) => {
+              reserveInteractiveRun(event);
+            }}
           >
             <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
             Retry
@@ -4328,7 +4358,12 @@ const AssistantActionBar: FC = () => {
         <CopyButton />
         <EditAssistantMessageButton />
         <ActionBarPrimitive.Reload asChild={true}>
-          <TooltipIconButton tooltip="Refresh">
+          <TooltipIconButton
+            tooltip="Refresh"
+            onClick={(event) => {
+              reserveInteractiveRun(event);
+            }}
+          >
             <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
@@ -4487,6 +4522,7 @@ const EditComposer: FC = () => {
       return;
     }
     resendAfterCancelRef.current = false;
+    if (!reserveInteractiveRun()) return;
     aui.composer().send();
   });
 
@@ -4527,6 +4563,7 @@ const EditComposer: FC = () => {
                 aui.thread().cancelRun();
                 return;
               }
+              if (!reserveInteractiveRun(event)) return;
               aui.composer().send();
             }}
           >
