@@ -628,6 +628,14 @@ BLOCKING_KINDS: frozenset[str] = frozenset(
         "missing-lockfile",
         "unreadable-lockfile",
         "missing-toml-parser",
+        # An unsupported lockfileVersion means the audit could not walk
+        # the dependency tree at all (the structural rules below only
+        # apply to npm v2/v3). Treating it as advisory would let a v1
+        # downgrade -- a known supply-chain attack shape -- silently
+        # pass CI: the scanner reports the kind, exits 0, and no
+        # blocking finding is raised. Keep this blocking so a checked-in
+        # lockfile cannot be downgraded out of audit coverage.
+        "unsupported-lockfile-version",
     }
 )
 
@@ -686,17 +694,27 @@ def main(argv: list[str] | None = None) -> int:
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
         _invalid_tokens = {"", "1", "0", "true", "false", "yes", "no", "on", "off"}
+        # Both branches echo the user-supplied env var inside a
+        # ``::warning::`` GH Actions workflow command. The raw value can
+        # contain ``%``, ``\r``, ``\n`` or even another ``::error::``
+        # line (workflow-command injection); _gha_escape collapses each
+        # message onto a single annotation line per the GH workflow-
+        # commands spec.
         if _skip.lower() in _invalid_tokens or len(_skip) < 5:
             print(
-                "::warning::Lockfile audit skip REQUIRES a justification "
-                f"value (>=5 chars, not '{_skip_raw}'). Proceeding with "
-                "audit. Use e.g. UNSLOTH_LOCKFILE_AUDIT_SKIP=ticket-1234.",
+                "::warning::"
+                + _gha_escape(
+                    "Lockfile audit skip REQUIRES a justification "
+                    f"value (>=5 chars, not '{_skip_raw}'). Proceeding with "
+                    "audit. Use e.g. UNSLOTH_LOCKFILE_AUDIT_SKIP=ticket-1234."
+                ),
                 file = sys.stderr,
                 flush = True,
             )
         else:
             print(
-                f"::warning::Lockfile audit skipped: reason='{_skip}'",
+                "::warning::"
+                + _gha_escape(f"Lockfile audit skipped: reason='{_skip}'"),
                 file = sys.stderr,
                 flush = True,
             )

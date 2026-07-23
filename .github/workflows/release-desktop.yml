@@ -372,13 +372,23 @@ jobs:
         with:
           node-version: 24
 
+      - name: Lockfile supply-chain audit (pre-install scan)
+        shell: bash
+        # Must run BEFORE any `npm install`. This job has
+        # ``contents: write`` (release upload), so a compromised
+        # lockfile that runs a malicious postinstall script during the
+        # Tauri CLI install or frontend install below could publish
+        # attacker-controlled binaries through the release. The audit
+        # refuses the run before any npm lifecycle script executes.
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
       - name: Install pinned Tauri CLI
         # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
         # required for `vite build`. The pre-install lockfile structural
-        # audit (lockfile_supply_chain_audit.py) is the practical defence
-        # against the npm postinstall-dropper class -- it fires BEFORE any
-        # tarball runs, on the injection pattern itself rather than an
-        # advisory-DB lookup.
+        # audit (lockfile_supply_chain_audit.py) above is the practical
+        # defence against the npm postinstall-dropper class -- it fires
+        # BEFORE any tarball runs, on the injection pattern itself
+        # rather than an advisory-DB lookup.
         run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI

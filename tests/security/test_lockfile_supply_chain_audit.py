@@ -332,3 +332,177 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
         assert "[lockfile-audit] npm:" in c, (
             f"value {bad_val!r} should have fallen through to run audit; " f"got:\n{c}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Followup regression tests for #5604:
+#   - unsupported lockfile versions must block in default mode (v1 downgrade
+#     would otherwise pass with rc=0 because the structural walk only runs
+#     on v2/v3)
+#   - the ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` warning must be routed through
+#     ``_gha_escape()`` so an attacker-controlled value cannot inject a
+#     second workflow-command line via embedded ``\n::error::...``
+#   - the audit script must be invoked BEFORE ``npm install`` in any
+#     workflow that consumes the audited lockfiles
+# ---------------------------------------------------------------------------
+
+
+def test_unsupported_lockfile_version_blocks_default(tmp_path):
+    """A v1 lockfile (or any non-v2/v3 version) means the structural
+    dependency walk never runs, so ``blocked-known-malicious`` /
+    ``known-ioc-string`` findings cannot be produced. Treating that as
+    advisory lets an attacker downgrade a checked-in lockfile to v1
+    and silently exit CI with rc=0. Default mode must refuse.
+    """
+    p = tmp_path / "package-lock.json"
+    p.write_text(
+        "{\n"
+        '  "name": "test",\n'
+        '  "version": "1.0.0",\n'
+        '  "lockfileVersion": 1,\n'
+        '  "dependencies": {"react": {"version": "18.2.0"}}\n'
+        "}\n"
+    )
+    proc = _run_auditor(root = tmp_path, npm_lockfiles = [p])
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 1, (
+        f"v1 lockfile must block default mode (was advisory pre-followup); "
+        f"rc={proc.returncode}\n--- stdout ---\n{proc.stdout}\n"
+        f"--- stderr ---\n{proc.stderr}"
+    )
+    assert "unsupported-lockfile-version" in combined, combined
+
+
+def test_blocking_kinds_contains_unsupported_lockfile_version():
+    """Direct module-level assertion: if anyone moves
+    ``unsupported-lockfile-version`` back out of BLOCKING_KINDS this
+    test trips immediately, before they re-introduce the downgrade
+    bypass."""
+    assert "unsupported-lockfile-version" in lsa.BLOCKING_KINDS
+
+
+def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
+    """An attacker controlling ``UNSLOTH_LOCKFILE_AUDIT_SKIP`` could
+    embed a literal ``\\n::error::...`` and split the warning into a
+    second workflow-command annotation. Both the invalid-skip branch
+    (raw value echoed) and the accepted-skip branch (stripped value
+    echoed) must escape the value via ``_gha_escape()`` so the message
+    is collapsed onto one annotation line -- meaning no stderr line
+    OTHER than the audit's own ``::warning::`` may begin with ``::``.
+    """
+    fixture = FIXTURES / "clean_lockfile.json"
+
+    def _physical_lines_starting_with_double_colon(stderr: str) -> list[str]:
+        # GH Actions parses workflow commands per physical line. Only
+        # lines that START with `::` after any leading whitespace count
+        # as a new annotation. Any such line BEYOND the first warning
+        # is an injected command.
+        return [ln for ln in stderr.splitlines() if ln.lstrip().startswith("::")]
+
+    # Branch A -- invalid skip value (rejected, audit falls through).
+    # Use a value that survives the validation check (not a boolean
+    # token, >=5 chars) BUT contains injection chars. The accepted
+    # branch is the easier-to-trip target; the rejected branch is
+    # exercised in test_skip_env_var_with_short_value_rejected.
+    injected_bad = "%inject\n::error::bad"  # contains %, \n, and ::
+    env_a = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_bad}
+    proc_a = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--root",
+            str(tmp_path),
+            "--npm-lockfile",
+            str(fixture),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = env_a,
+    )
+    # The stripped value is "%inject\n::error::bad" (len 21) and is not
+    # a booleanish token -> accepted-skip path; rc 0, audit skipped.
+    assert proc_a.returncode == 0
+    assert "%0A" in proc_a.stderr and "%25" in proc_a.stderr, (
+        "skip value containing \\n and %% must be %0A / %25 escaped; "
+        f"stderr was:\n{proc_a.stderr}"
+    )
+    cmd_lines_a = _physical_lines_starting_with_double_colon(proc_a.stderr)
+    assert len(cmd_lines_a) == 1 and cmd_lines_a[0].startswith("::warning::"), (
+        "exactly one ::-prefixed physical line expected (the audit's own "
+        f"::warning::); injection split the message into: {cmd_lines_a}"
+    )
+
+    # Branch B -- short skip value with embedded injection.
+    # The PRE-strip raw value is also interpolated in the rejected
+    # branch's warning, so it MUST be escaped too.
+    injected_short = "1\n::error::short-bad"
+    # Critically, this value strips to "1\n::error::short-bad" which is
+    # NOT a booleanish token (the literal newline + tail prevents the
+    # ``_skip.lower() in _invalid_tokens`` match), so the audit ends up
+    # routing it through the ACCEPTED branch, not the rejected one.
+    # That is itself a hardening property worth pinning: an attacker
+    # cannot bypass the length check via embedded control chars without
+    # the warning being escaped on the way out.
+    env_b = {**os.environ, "UNSLOTH_LOCKFILE_AUDIT_SKIP": injected_short}
+    proc_b = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--root",
+            str(tmp_path),
+            "--npm-lockfile",
+            str(fixture),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = env_b,
+    )
+    assert (
+        "%0A" in proc_b.stderr
+    ), f"value with embedded \\n must be %0A-escaped; stderr was:\n{proc_b.stderr}"
+    cmd_lines_b = _physical_lines_starting_with_double_colon(proc_b.stderr)
+    assert all(ln.startswith("::warning::") for ln in cmd_lines_b), (
+        f"injection split the message into a non-::warning:: physical "
+        f"line: {cmd_lines_b}"
+    )
+
+
+def test_audit_runs_before_npm_install_in_consumer_workflows():
+    """Any GH Actions workflow that consumes one of the audited
+    lockfiles via ``npm install`` / ``npm ci`` must run the
+    lockfile_supply_chain_audit step BEFORE that install, otherwise a
+    compromised lockfile's lifecycle scripts execute before the audit
+    can refuse the run. Static text check so a future edit cannot
+    silently reintroduce the asymmetric ordering."""
+    import re
+
+    workflows_dir = REPO_ROOT / ".github" / "workflows"
+    # Match `run:` lines invoking the audit / npm install. We look at
+    # ``run:`` lines specifically so the prose comment block above
+    # each step (which mentions both audit and `npm install`) does
+    # not bias the ordering check.
+    audit_re = re.compile(
+        r"^\s*run:\s*python3\s+scripts/lockfile_supply_chain_audit\.py", re.MULTILINE
+    )
+    install_re = re.compile(
+        r"^\s*run:\s*(?:.*&&\s*)?npm\s+(?:install|ci)\b", re.MULTILINE
+    )
+    for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
+        wf = workflows_dir / wf_name
+        assert wf.is_file(), f"missing workflow: {wf}"
+        text = wf.read_text(encoding = "utf-8")
+        audit_match = audit_re.search(text)
+        assert audit_match, (
+            f"{wf_name}: must invoke lockfile_supply_chain_audit.py "
+            f"via a ``run: python3 scripts/...`` line (none found)"
+        )
+        for install_match in install_re.finditer(text):
+            assert audit_match.start() < install_match.start(), (
+                f"{wf_name}: lockfile audit (offset {audit_match.start()}) "
+                f"must come BEFORE every ``npm install`` / ``npm ci`` run "
+                f"line (offending offset {install_match.start()}); a "
+                f"compromised lockfile's lifecycle scripts would otherwise "
+                f"execute before the audit can refuse the lockfile"
+            )
