@@ -2558,9 +2558,7 @@ def _resolve_trusted_windows_git() -> tuple[str, str]:
     untrusted user shim; scan the remaining PATH entries for a later trusted
     Git so bare ``git`` still resolves (#7317).
     """
-    exts = [
-        e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)
-    ]
+    exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
     candidates: list[str] = []
     primary = shutil.which("git")
     if primary:

@@ -481,9 +481,7 @@ class TestSandboxEnvIsolation:
         monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
         # shutil.which returns the untrusted shim first.
         monkeypatch.setattr(tools_mod.shutil, "which", lambda name: str(shim / "git.EXE"))
-        monkeypatch.setenv(
-            "PATH", os.pathsep.join([str(shim), str(trusted_git)])
-        )
+        monkeypatch.setenv("PATH", os.pathsep.join([str(shim), str(trusted_git)]))
         monkeypatch.setenv("PATHEXT", ".EXE")
         env = _build_safe_env(str(tmp_path))
         parts = env["PATH"].split(os.pathsep)
