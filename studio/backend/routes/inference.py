@@ -10722,6 +10722,17 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
     return 0
 
 
+def _should_hold_quoted_think_close(buffer: str, close_idx: int) -> bool:
+    """Wait for a closing quote when a close tag follows an opening quote."""
+    if close_idx <= 0:
+        return False
+    before = buffer[close_idx - 1]
+    if before not in "\"'`":
+        return False
+    end = close_idx + len(_RESPONSES_THINK_CLOSE)
+    return end >= len(buffer)
+
+
 def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     """True when ``</think>`` looks like quoted/code content, not a block end.
 
@@ -10783,6 +10794,13 @@ class _ResponsesReasoningExtractor:
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
+                    if _should_hold_quoted_think_close(self._buffer, close_idx):
+                        hold_start = close_idx - 1
+                        reasoning_parts.append(
+                            self._buffer[:hold_start].replace(_RESPONSES_THINK_OPEN, "")
+                        )
+                        self._buffer = self._buffer[hold_start:]
+                        break
                     # Quoted / backticked </think> is content (user echo, script
                     # discussion), not the structural end of reasoning (#7066).
                     if _is_literal_think_close(self._buffer, close_idx):
@@ -14181,6 +14199,10 @@ def _build_openai_passthrough_body(
     """
     messages = _openai_messages_for_passthrough(payload)
     system_prompt, _, _ = _extract_content_parts(payload.messages)
+    if system_prompt:
+        from core.inference.chat_template_helpers import neutralize_non_assistant_control_markup
+
+        system_prompt = neutralize_non_assistant_control_markup(system_prompt)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     tool_choice = payload.tool_choice if payload.tool_choice is not None else "auto"
     tools = payload.tools

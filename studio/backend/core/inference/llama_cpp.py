@@ -10197,6 +10197,7 @@ class LlamaCppBackend:
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
         in_thinking = False
+        reasoning_markup_buffer = ""
         _stream_done = False
         _metadata_usage = None
         _metadata_timings = None
@@ -10224,6 +10225,20 @@ class LlamaCppBackend:
                             continue
                         if line == "data: [DONE]":
                             if in_thinking:
+                                if reasoning_markup_buffer:
+                                    from core.inference.chat_template_helpers import (
+                                        neutralize_think_markup_streaming,
+                                    )
+
+                                    flushed, reasoning_markup_buffer = (
+                                        neutralize_think_markup_streaming(
+                                            reasoning_markup_buffer,
+                                            finalize = True,
+                                        )
+                                    )
+                                    if flushed:
+                                        cumulative += flushed
+                                        reasoning_text += flushed
                                 if has_content_tokens:
                                     # Real thinking + content: close the tag
                                     cumulative += "</think>"
@@ -10268,12 +10283,19 @@ class LlamaCppBackend:
                                 reasoning = delta.get("reasoning_content", "")
                                 if reasoning:
                                     from core.inference.chat_template_helpers import (
-                                        neutralize_think_markup,
+                                        neutralize_think_markup_streaming,
                                     )
 
                                     # Literal </think> inside reasoning_content must
                                     # not close the synthetic <think> wrapper (#7066).
-                                    reasoning = neutralize_think_markup(reasoning)
+                                    reasoning_markup_buffer += reasoning
+                                    reasoning, reasoning_markup_buffer = (
+                                        neutralize_think_markup_streaming(
+                                            reasoning_markup_buffer,
+                                        )
+                                    )
+                                    if not reasoning:
+                                        continue
                                     reasoning_text += reasoning
                                     if not in_thinking:
                                         cumulative += "<think>"

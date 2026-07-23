@@ -49,6 +49,37 @@ export function neutralizeThinkMarkup(text: string): string {
     .replaceAll(THINK_OPEN_TAG, `<${THINK_NEUTRAL_ZW}think>`);
 }
 
+/** Trailing chars that may be a prefix of a think marker (split-chunk safe). */
+export function thinkMarkupHoldback(text: string): number {
+  const markers = [THINK_CLOSE_TAG, THINK_OPEN_TAG];
+  const maxLen = Math.max(...markers.map((marker) => marker.length));
+  for (let size = Math.min(text.length, maxLen - 1); size > 0; size -= 1) {
+    const suffix = text.slice(-size);
+    if (markers.some((marker) => marker.startsWith(suffix))) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+/** Neutralize complete think markers in a streaming buffer (#7066). */
+export function drainThinkMarkupBuffer(
+  buffer: string,
+  options?: { finalize?: boolean },
+): { emit: string; buffer: string } {
+  if (!buffer) return { emit: "", buffer: "" };
+  if (options?.finalize) {
+    return { emit: neutralizeThinkMarkup(buffer), buffer: "" };
+  }
+  const keep = thinkMarkupHoldback(buffer);
+  if (keep === buffer.length) return { emit: "", buffer };
+  const rawEmit = keep ? buffer.slice(0, -keep) : buffer;
+  return {
+    emit: neutralizeThinkMarkup(rawEmit),
+    buffer: keep ? buffer.slice(-keep) : "",
+  };
+}
+
 export function parseAssistantContent(raw: string): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {

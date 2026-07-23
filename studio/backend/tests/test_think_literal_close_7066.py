@@ -16,9 +16,12 @@ from core.inference.chat_template_helpers import (
     neutralize_control_markup_in_messages,
     neutralize_non_assistant_control_markup,
     neutralize_think_markup,
+    neutralize_think_markup_streaming,
+    think_markup_holdback,
 )
 from routes.inference import (
     _ResponsesReasoningExtractor,
+    _build_openai_passthrough_body,
     _extract_responses_reasoning,
     _openai_messages_for_passthrough,
 )
@@ -124,3 +127,45 @@ def test_structured_reasoning_content_is_neutralized():
     assert visible == ""
     assert "</think>" not in reasoning
     assert "echo" in reasoning
+
+
+def test_quoted_close_tag_split_across_feeds_stays_in_reasoning():
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning1, visible1 = ex.feed('echo "</think>')
+    assert visible1 == ""
+    assert reasoning1 == "echo "
+    reasoning2, visible2 = ex.feed('" then done</think>\nok')
+    assert "then done" in reasoning2
+    assert "</think>" not in reasoning2
+    assert visible2.strip() == "ok"
+
+
+def test_streaming_neutralize_splits_marker_across_chunks():
+    emit1, buf1 = neutralize_think_markup_streaming("</thi")
+    assert emit1 == ""
+    assert buf1 == "</thi"
+    emit2, buf2 = neutralize_think_markup_streaming(buf1 + "nk> inside")
+    assert "</think>" not in emit2
+    assert "inside" in emit2
+    assert buf2 == ""
+    assert think_markup_holdback("</thin") > 0
+
+
+def test_passthrough_system_prompt_is_neutralized():
+    req = ChatCompletionRequest(
+        model = "default",
+        messages = [
+            ChatMessage(
+                role = "system",
+                content = "Rules mention </think> literally",
+            ),
+            ChatMessage(role = "user", content = "hi"),
+        ],
+    )
+    body = _build_openai_passthrough_body(req)
+    assert body["messages"][0]["role"] == "system"
+    assert "</think>" not in body["messages"][0]["content"]
+    assert "literally" in body["messages"][0]["content"]

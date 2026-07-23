@@ -53,6 +53,39 @@ def neutralize_think_markup(text: str) -> str:
     )
 
 
+def think_markup_holdback(text: str) -> int:
+    """Trailing chars that may be a prefix of a think marker (split-chunk safe)."""
+    markers = (_THINK_CLOSE, _THINK_OPEN)
+    max_marker = max(len(marker) for marker in markers)
+    for size in range(min(len(text), max_marker - 1), 0, -1):
+        suffix = text[-size:]
+        if any(marker.startswith(suffix) for marker in markers):
+            return size
+    return 0
+
+
+def neutralize_think_markup_streaming(
+    buffer: str,
+    *,
+    finalize: bool = False,
+) -> tuple[str, str]:
+    """Neutralize complete think markers in *buffer*, retaining a trailing holdback.
+
+    Returns ``(emit, remaining_buffer)`` for streaming ``reasoning_content`` chunks
+    that may split a literal ``</think>`` across SSE boundaries (#7066).
+    """
+    if not buffer:
+        return "", ""
+    if finalize:
+        return neutralize_think_markup(buffer), ""
+    keep = think_markup_holdback(buffer)
+    if keep == len(buffer):
+        return "", buffer
+    emit = buffer[:-keep] if keep else buffer
+    remaining = buffer[-keep:] if keep else ""
+    return neutralize_think_markup(emit), remaining
+
+
 def neutralize_non_assistant_control_markup(text: str) -> str:
     """Neutralize think + ChatML control markers in user/system/tool text (#7066)."""
     if not text:

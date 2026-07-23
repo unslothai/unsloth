@@ -83,6 +83,7 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  drainThinkMarkupBuffer,
   hasClosedThinkTag,
   neutralizeThinkMarkup,
   parseAssistantContent,
@@ -2583,6 +2584,7 @@ export function createOpenAIStreamAdapter(
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
+      let reasoningMarkupBuffer = "";
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -2718,6 +2720,13 @@ export function createOpenAIStreamAdapter(
         return merged;
       };
       const closeReasoningContent = () => {
+        if (reasoningMarkupBuffer) {
+          const { emit } = drainThinkMarkupBuffer(reasoningMarkupBuffer, {
+            finalize: true,
+          });
+          reasoningMarkupBuffer = "";
+          if (emit) cumulativeText += emit;
+        }
         if (!reasoningContentOpen) return;
         cumulativeText += "</think>";
         reasoningContentOpen = false;
@@ -3914,7 +3923,13 @@ export function createOpenAIStreamAdapter(
                 // Neutralize literal think markers inside reasoning_content so
                 // a mid-thought "</think>" (e.g. echoing the user) cannot close
                 // the synthetic <think> wrapper early (#7066).
-                const safeReasoning = neutralizeThinkMarkup(reasoning);
+                reasoningMarkupBuffer += reasoning;
+                const drained = drainThinkMarkupBuffer(reasoningMarkupBuffer);
+                reasoningMarkupBuffer = drained.buffer;
+                const safeReasoning = drained.emit;
+                if (!safeReasoning) {
+                  continue;
+                }
                 if (!reasoningContentOpen) {
                   cumulativeText += `<think>${safeReasoning}`;
                   reasoningContentOpen = true;
