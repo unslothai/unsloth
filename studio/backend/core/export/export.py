@@ -81,6 +81,37 @@ _PYTORCH_MISSING_MESSAGE = (
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+def _multi_gpu_device_map_kwargs() -> dict:
+    """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
+
+    unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which
+    stacks the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit
+    empty (#7053). Return ``{"device_map": "balanced"}`` only when the CUDA/ROCm
+    host actually exposes more than one GPU (mirrors the inference loader's
+    ``get_device_map`` policy); empty otherwise -- single-GPU, CPU, and MLX
+    loads keep the loader default untouched."""
+    if _IS_MLX:
+        return {}
+    try:
+        from utils.hardware import get_device_map, get_parent_visible_gpu_ids
+
+        visible = get_parent_visible_gpu_ids()
+        if len(visible) > 1:
+            device_map = get_device_map(visible)
+        elif not visible:
+            # UUID/MIG CUDA_VISIBLE_DEVICES masks resolve to no numeric ids;
+            # get_device_map(None) handles exactly that by falling back to the
+            # visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            device_map = get_device_map(None)
+        else:
+            return {}
+        if device_map == "balanced":
+            return {"device_map": device_map}
+    except Exception as exc:
+        logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
+    return {}
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -303,6 +334,10 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
+            # Shard across every visible GPU on a multi-GPU host instead of
+            # stacking the checkpoint on GPU0 (#7053); {} on single-GPU/CPU/MLX.
+            _device_map_kw = _multi_gpu_device_map_kwargs()
+
             # Run the type-detection probes in the forced-offline window (else a gated
             # base 404s); it covers is_vision_model's Hub reads + the transformers-5
             # subprocess, and local_files_only makes detect_audio_type's requests.get skip.
@@ -328,6 +363,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -343,6 +379,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -355,6 +392,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "bicodec":
@@ -368,6 +406,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "dac":
@@ -380,6 +419,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self.is_vision:
@@ -392,6 +432,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -405,6 +446,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             if _IS_MLX:
