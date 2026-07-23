@@ -1953,7 +1953,12 @@ class TestInstallShStructure:
                 "_has_usable_nvidia_gpu() { return 1; }\n"
                 "_has_amd_rocm_gpu() { return 0; }\n"
                 "_infer_linux_amd_gfx_arch() { return 1; }\n"
-                + probe_fn + "\n" + family_fn + "\n" + fn + "\n"
+                + probe_fn
+                + "\n"
+                + family_fn
+                + "\n"
+                + fn
+                + "\n"
                 "get_torch_index_url\n"
             )
             sp = os.path.join(d, "gtiu.sh")
@@ -1965,9 +1970,13 @@ class TestInstallShStructure:
                     f.write("#!/bin/sh\n" + rocminfo_body)
                 os.chmod(os.path.join(d, "rocminfo"), 0o755)
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""), **extra)
-                for var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
-                            "UNSLOTH_PYTORCH_MIRROR", "ROCR_VISIBLE_DEVICES",
-                            "HIP_VISIBLE_DEVICES"):
+                for var in (
+                    "UNSLOTH_TORCH_INDEX_URL",
+                    "UNSLOTH_TORCH_INDEX_FAMILY",
+                    "UNSLOTH_PYTORCH_MIRROR",
+                    "ROCR_VISIBLE_DEVICES",
+                    "HIP_VISIBLE_DEVICES",
+                ):
                     env.pop(var, None)
                 if "UNSLOTH_ROCM_GFX_ARCH" not in extra:
                     env.pop("UNSLOTH_ROCM_GFX_ARCH", None)
@@ -1988,15 +1997,15 @@ class TestInstallShStructure:
             # Unsupported override: the reroute can't map it -> CPU warning stays.
             r2 = run("exit 0\n", UNSLOTH_ROCM_GFX_ARCH = "gfx906")
             assert r2.returncode == 0, f"unsupported-override case aborted: {r2.stderr}"
-            assert "falling back to CPU-only PyTorch" in r2.stderr, (
-                f"an unmappable override must keep the CPU warning: {r2.stderr!r}"
-            )
+            assert (
+                "falling back to CPU-only PyTorch" in r2.stderr
+            ), f"an unmappable override must keep the CPU warning: {r2.stderr!r}"
             # Readable gfx, no override, no version: deliberate CPU fallback.
             r3 = run('echo "  Name:  gfx1151"\n')
             assert r3.returncode == 0, f"readable-gfx case aborted: {r3.stderr}"
-            assert "falling back to CPU-only PyTorch" in r3.stderr, (
-                f"a readable-gfx host without a version keeps the CPU warning: {r3.stderr!r}"
-            )
+            assert (
+                "falling back to CPU-only PyTorch" in r3.stderr
+            ), f"a readable-gfx host without a version keeps the CPU warning: {r3.stderr!r}"
 
     def test_reroute_gate_covers_kfd_only(self):
         """The runtime-less reroute must fire for a KFD-only host: _has_amd_rocm_gpu
