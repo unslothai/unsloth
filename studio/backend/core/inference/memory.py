@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from time import time
@@ -97,7 +99,7 @@ _STOP_WORDS = {
     "yours",
 }
 _SECRET_RE = re.compile(
-    r"(?:api[_ -]?key|password|secret|token|private key)\s*(?::|=|\b(?:is|are)\b)|"
+    r"\b(?:api[_ -]?key|password|passcode|secret|token|private key|credentials?)\b|"
     r"(?:sk-|ghp_|github_pat_|AKIA|xox[baprs]-)[A-Za-z0-9_-]{8,}",
     re.I,
 )
@@ -382,6 +384,9 @@ def edit_memory(*, memory_id: str, content: str, scope: str, project_id: str | N
             },
             maximum = MAX_MEMORIES_PER_SCOPE,
         )
+    except sqlite3.IntegrityError as exc:
+        raise MemoryConflictError("a similar saved memory already exists in this scope") from exc
+
     except ValueError as exc:
         raise MemoryValidationError(
             "memory scope is full; delete or edit a saved memory first"
@@ -584,6 +589,11 @@ def _automatic_operation(
     }
 
 
+def _operation_key(*parts: str) -> str:
+    raw = "\0".join(parts).encode("utf-8")
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
 def _commit_automatic_operations(source_message_id: str, operations: list[dict]) -> list[dict]:
     return (
         apply_chat_memory_capture_operations(
@@ -635,7 +645,7 @@ def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) ->
                     _automatic_operation(
                         action = "add",
                         scope = scope,
-                        operation_key = f"add:{scope.scope}:{normalized.casefold()}",
+                        operation_key = _operation_key("add", scope.scope, normalized.casefold()),
                         source_thread_id = thread_id,
                         source_message_id = source_message_id,
                         content = normalized,
@@ -659,7 +669,7 @@ def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) ->
                     _automatic_operation(
                         action = "forget",
                         scope = scope,
-                        operation_key = f"forget:{target}",
+                        operation_key = _operation_key("forget", target),
                         source_thread_id = thread_id,
                         source_message_id = source_message_id,
                         memory_id = target,
@@ -672,14 +682,33 @@ def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) ->
             normalized = _validate_content(content, automatic = True)
         except MemoryValidationError:
             continue
-        if normalized.casefold() != existing["content"].casefold() and not _duplicates(
-            scope, normalized, target
-        ):
+        duplicates = _duplicates(scope, normalized, target)
+        current_duplicate = next(
+            (
+                row
+                for row in duplicates
+                if row["content"].casefold() == normalized.casefold()
+                and row.get("sourceMessageId") == source_message_id
+            ),
+            None,
+        )
+        if current_duplicate is not None:
+            prepared.append(
+                _automatic_operation(
+                    action = "forget",
+                    scope = scope,
+                    operation_key = _operation_key("merge-replace", target, normalized.casefold()),
+                    source_thread_id = thread_id,
+                    source_message_id = source_message_id,
+                    memory_id = target,
+                )
+            )
+        elif normalized.casefold() != existing["content"].casefold() and not duplicates:
             prepared.append(
                 _automatic_operation(
                     action = "replace",
                     scope = scope,
-                    operation_key = f"replace:{target}:{normalized.casefold()}",
+                    operation_key = _operation_key("replace", target, normalized.casefold()),
                     source_thread_id = thread_id,
                     source_message_id = source_message_id,
                     content = normalized,
@@ -774,7 +803,7 @@ def direct_statement(thread_id: str, source_message_id: str) -> list[dict]:
     operation = _automatic_operation(
         action = "add",
         scope = scope,
-        operation_key = f"heuristic:add:{scope.scope}:{normalized.casefold()}",
+        operation_key = _operation_key("heuristic-add", scope.scope, normalized.casefold()),
         source_thread_id = thread_id,
         source_message_id = source_message_id,
         content = normalized,

@@ -426,6 +426,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
+    whisper_module = ModuleType("routes.whisper")
+    whisper_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -454,6 +456,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
 
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
+    monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
 
     import studio.backend.main as backend_main
 

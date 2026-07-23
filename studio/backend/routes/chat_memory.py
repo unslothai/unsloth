@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject
 from core.inference import memory
-from storage.studio_db import delete_chat_memory, get_chat_memory, list_chat_memories
+from storage.studio_db import delete_chat_memory, list_chat_memories
 
 router = APIRouter(dependencies = [Depends(get_current_subject)])
 
@@ -18,7 +18,7 @@ router = APIRouter(dependencies = [Depends(get_current_subject)])
 class MemoryPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
-    content: str = Field(min_length = 1, max_length = memory.MAX_CONTENT_CHARS * 2)
+    content: str = Field(min_length = 1, max_length = memory.MAX_CONTENT_CHARS)
     scope: Literal["global", "project"]
     projectId: str | None = None
 

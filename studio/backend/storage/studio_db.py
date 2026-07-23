@@ -509,13 +509,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_memory_source_operations (
-            source_message_id TEXT NOT NULL,
+            source_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
             operation_key TEXT NOT NULL,
             created_at INTEGER NOT NULL,
             PRIMARY KEY (source_message_id, operation_key)
         )
         """
     )
+
+    # Older review databases may contain content-bearing operation keys.
+    rows = conn.execute(
+        "SELECT source_message_id, operation_key FROM chat_memory_source_operations "
+        "WHERE operation_key NOT LIKE 'sha256:%'"
+    ).fetchall()
+    for row in rows:
+        digest = "sha256:" + hashlib.sha256(
+            row["operation_key"].encode("utf-8")
+        ).hexdigest()
+        conn.execute(
+            "UPDATE OR IGNORE chat_memory_source_operations SET operation_key = ? "
+            "WHERE source_message_id = ? AND operation_key = ?",
+            (digest, row["source_message_id"], row["operation_key"]),
+        )
+        conn.execute(
+            "DELETE FROM chat_memory_source_operations WHERE source_message_id = ? "
+            "AND operation_key = ?",
+            (row["source_message_id"], row["operation_key"]),
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_settings (

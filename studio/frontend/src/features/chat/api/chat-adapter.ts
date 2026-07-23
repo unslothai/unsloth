@@ -465,7 +465,10 @@ const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
 
 type ThreadAutosaveHandle = {
   registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
-  awaitFirstSave(threadId: string | undefined): Promise<void>;
+  awaitFirstSave(
+    threadId: string | undefined,
+    timeoutMs?: number | null,
+  ): Promise<void>;
 };
 
 const pendingFirstThreadSaves = new Map<string, Promise<void>>();
@@ -647,7 +650,7 @@ export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
     return cleanupPromise;
   },
 
-  async awaitFirstSave(threadId) {
+  async awaitFirstSave(threadId, timeoutMs = FIRST_THREAD_SAVE_TIMEOUT_MS) {
     if (!threadId) {
       return;
     }
@@ -655,7 +658,9 @@ export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
     if (!pending) {
       return;
     }
-    await Promise.race([pending, wait(FIRST_THREAD_SAVE_TIMEOUT_MS)]);
+    await (timeoutMs === null
+      ? pending
+      : Promise.race([pending, wait(timeoutMs)]));
   },
 };
 
@@ -2751,7 +2756,7 @@ export function createOpenAIStreamAdapter(
             .map((part) => part.text)
             .join("\n")
         : "";
-      await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
+      await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);
       const memoryRuntime = useChatRuntimeStore.getState();
       const memoryThreadId = memoryRuntime.activeThreadId || undefined;
       const memoryScope =
@@ -4334,14 +4339,13 @@ export function createOpenAIStreamAdapter(
         if (
           memoryScope &&
           runtime.autoSaveMemories &&
-          resolvedThreadId &&
           latestUserMessage?.id &&
           shouldCaptureMemoryCandidate(latestUserText) &&
           successfulRequestPayload &&
           !abortSignal.aborted
         ) {
           scheduleMemoryCapture({
-            threadId: resolvedThreadId,
+            threadId: memoryScope.thread_id,
             sourceMessageId: latestUserMessage.id,
             checkpoint: params.checkpoint,
             ownsThread,

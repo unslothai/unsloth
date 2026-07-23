@@ -88,6 +88,22 @@ def test_capture_validates_targets_and_is_idempotent(tmp_path, monkeypatch):
     assert studio_db.get_chat_memory(old["id"])["content"] == "I prefer dark mode"
 
 
+def test_capture_merges_a_same_turn_heuristic_replacement(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    old = memory.create_memory(content = "I prefer light mode", scope = "global")
+    direct = memory.direct_statement("thread", "message")
+    assert [item["content"] for item in direct] == ["I prefer dark mode"]
+
+    output = (
+        '{"operations":[{"action":"replace","scope":"global","memory_id":"%s",'
+        '"content":"I prefer dark mode"}]}' % old["id"]
+    )
+    memory.apply_capture(thread_id = "thread", source_message_id = "message", raw_output = output)
+
+    assert [item["content"] for item in studio_db.list_chat_memories()] == ["I prefer dark mode"]
+    assert studio_db.get_chat_memory(old["id"]) is None
+
+
 def test_model_forget_requires_user_correction_evidence(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
     saved = memory.create_memory(content = "I prefer dark mode", scope = "global")
@@ -145,6 +161,9 @@ def test_automatic_capture_rejects_street_addresses(content):
     "content",
     (
         "My password is hunter2",
+        "I use password hunter2 for this project",
+        "I use passcode 123456 for deployments",
+        "My credentials remain in the vault",
         "My API key is abc123secret",
         "My private key is hidden-value",
     ),
@@ -560,8 +579,61 @@ def test_memory_settings_are_global(tmp_path, monkeypatch):
     )
     assert settings["referenceMemories"] is False
     assert studio_db.list_chat_settings()["autoSaveMemories"] is False
-
     assert memory.get_memory_settings() == (False, False)
+
+
+def test_operation_ledger_uses_opaque_keys_and_cascades(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    memory.direct_statement("thread", "message")
+    conn = studio_db.get_connection()
+    try:
+        keys = [
+            row[0]
+            for row in conn.execute("SELECT operation_key FROM chat_memory_source_operations")
+        ]
+        assert keys and all(key.startswith("sha256:") for key in keys)
+        assert all("dark mode" not in key for key in keys)
+    finally:
+        conn.close()
+
+    studio_db.delete_chat_threads(["thread"])
+    conn = studio_db.get_connection()
+    try:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM chat_memory_source_operations").fetchone()[0]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
+def test_edit_translates_unique_index_race_to_conflict(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "Use tabs", scope = "global")
+
+    def conflict(*_args, **_kwargs):
+        raise sqlite3.IntegrityError("unique constraint")
+
+    monkeypatch.setattr(memory, "update_chat_memory", conflict)
+    with pytest.raises(memory.MemoryConflictError):
+        memory.edit_memory(
+            memory_id = saved["id"],
+            content = "Use spaces",
+            scope = "global",
+            project_id = None,
+        )
+
+
+def test_route_content_limit_matches_service_limit():
+    chat_memory.MemoryPayload(
+        content = "x" * memory.MAX_CONTENT_CHARS,
+        scope = "global",
+    )
+    with pytest.raises(ValueError):
+        chat_memory.MemoryPayload(
+            content = "x" * (memory.MAX_CONTENT_CHARS + 1),
+            scope = "global",
+        )
 
 
 def test_schema_enforces_normalized_scope_uniqueness(tmp_path, monkeypatch):
