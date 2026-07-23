@@ -726,8 +726,7 @@ def _is_vlm(model):
         return False
     architectures = getattr(config, "architectures", None) or ()
     return hasattr(config, "vision_config") or any(
-        x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-        for x in architectures
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
 
 
