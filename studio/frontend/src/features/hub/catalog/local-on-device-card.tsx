@@ -247,7 +247,10 @@ export function LocalOnDeviceCard({
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
-      await deleteCachedModel(repoId, undefined, hfToken || undefined);
+      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
+      // the cache snapshot path: pass it so the delete targets the cache this
+      // card shows instead of falling back to the active cache.
+      await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,

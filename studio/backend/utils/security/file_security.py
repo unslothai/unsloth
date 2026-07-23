@@ -158,6 +158,7 @@ def _indexed_shard_paths(
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
+        from utils.hf_cache_settings import active_hf_hub_cache
     except Exception:
         return None
 
@@ -166,7 +167,12 @@ def _indexed_shard_paths(
     for prefix in _index_prefixes(load_subdirs):
         for filename in _TRANSFORMERS_INDEX_FILES:
             try:
-                index_path = hf_hub_download(model_name, prefix + filename, token = hf_token or None)
+                index_path = hf_hub_download(
+                    model_name,
+                    prefix + filename,
+                    token = hf_token or None,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue  # definitively absent, not an error
             except Exception:

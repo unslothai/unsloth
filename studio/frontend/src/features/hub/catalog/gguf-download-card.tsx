@@ -765,7 +765,12 @@ export function GgufDownloadCard({
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
-      await deleteCachedModel(repoId, deleteTarget, hfToken || undefined);
+      await deleteCachedModel(
+        repoId,
+        deleteTarget,
+        hfToken || undefined,
+        cachePath ?? undefined,
+      );
     },
     successMessage: () =>
       `Deleted ${repoId} ${deleteTargetLabel ?? deleteTarget}`,
