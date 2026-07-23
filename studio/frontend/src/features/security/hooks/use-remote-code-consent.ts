@@ -17,6 +17,7 @@ interface ConfirmArgs {
   // Called on approval with the pinning fingerprint.
   onApprove: (fingerprint: string | null) => void;
   dialogOwner?: unknown;
+  signal?: AbortSignal;
 }
 /** Gate a load that may need trust_remote_code: scan, show the consent dialog, and on
  *  approval call onApprove with the pinning fingerprint. Returns false if declined. */
@@ -26,6 +27,7 @@ export async function confirmRemoteCodeIfNeeded({
   requiresTrustRemoteCode,
   onApprove,
   dialogOwner,
+  signal,
 }: ConfirmArgs): Promise<boolean> {
   let scan: RemoteCodeScan;
   try {
@@ -47,6 +49,10 @@ export async function confirmRemoteCodeIfNeeded({
       provider: null,
     };
   }
+
+  // Cancellation can race the scan request. Do not create a new owned dialog
+  // after the cancelling run already tried to dismiss its pending decisions.
+  if (signal?.aborted) return false;
 
   // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing
   // it ship auto_map and hit the dialog below, so the flag is only enabled via approval.

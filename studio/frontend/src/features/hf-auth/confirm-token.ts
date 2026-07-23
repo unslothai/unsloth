@@ -17,6 +17,7 @@ export interface PreparedHfToken {
 interface PrepareHfTokenOptions {
   allowAnonymous?: boolean;
   dialogOwner?: unknown;
+  signal?: AbortSignal;
 }
 
 // A caller can retain the pre-dialog payload while the shared store is cleared.
@@ -46,6 +47,12 @@ export async function prepareHfTokenForUse(
     // A connectivity failure or rate limit cannot prove that a token is bad.
     // Let the real operation proceed and retain its repository-specific error.
     return { proceed: true, token: normalized };
+  }
+
+  // Validation can finish after the owning operation was cancelled. Avoid
+  // opening a new warning after cancellation already dismissed its dialogs.
+  if (options.signal?.aborted) {
+    return { proceed: false, token: normalized };
   }
 
   const decision = await useHfTokenWarningStore
