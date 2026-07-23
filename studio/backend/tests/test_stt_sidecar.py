@@ -1067,6 +1067,25 @@ def test_snapshot_selection_rejects_pickle_only_weights():
         )
 
 
+def test_snapshot_selection_rejects_safe_index_pointing_at_pickle_shards():
+    # A safetensors index can name .bin shards; Transformers dispatches shard
+    # loading by extension, so those shards would still pickle-load. The index
+    # is attacker-controlled, so a non-safetensors shard must fail closed.
+    info = SimpleNamespace(
+        siblings = [
+            _sibling("config.json", 10, "config"),
+            _sibling("model.safetensors.index.json", 5, "index"),
+            _sibling("pytorch_model-00001-of-00001.bin", 90, "shard"),
+        ]
+    )
+
+    with pytest.raises(SttModelCompatibilityError, match = "non-safetensors shards"):
+        stt_sidecar_module._select_snapshot_files(
+            info,
+            lambda _name: {"weight_map": {"a": "pytorch_model-00001-of-00001.bin"}},
+        )
+
+
 def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
     blobs = tmp_path / "hub" / "models--owner--whisper" / "blobs"

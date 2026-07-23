@@ -379,6 +379,14 @@ def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
         shards = set(weight_map.values())
         if not all(isinstance(shard, str) and shard in siblings for shard in shards):
             raise SttModelCompatibilityError(f"Checkpoint index '{index_name}' has missing shards.")
+        # The index JSON is attacker-controlled: a safetensors index can name
+        # pytorch_model-*.bin shards, which Transformers still loads through
+        # torch.load (pickle) since it dispatches per shard by file extension.
+        # Require every shard to be safetensors so no pickle file is selected.
+        if not all(shard.endswith(".safetensors") for shard in shards):
+            raise SttModelCompatibilityError(
+                f"Checkpoint index '{index_name}' references non-safetensors shards."
+            )
         selected.add(index_name)
         selected.update(shards)
 
@@ -448,11 +456,16 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
     # re-resolves and fails closed in _select_snapshot_files).
     index = snapshot / _STT_SAFETENSORS_INDEX
     if index.is_file():
-        # Sharded safetensors checkpoint: every shard must exist.
+        # Sharded safetensors checkpoint: every shard must exist and be
+        # safetensors (a safe index naming .bin shards would still pickle-load
+        # them, matching the _select_snapshot_files guard).
         weight_map = _read_json_object(index).get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
             return False
-        has_weights = all((snapshot / shard).is_file() for shard in set(weight_map.values()))
+        shards = set(weight_map.values())
+        if not all(isinstance(shard, str) and shard.endswith(".safetensors") for shard in shards):
+            return False
+        has_weights = all((snapshot / shard).is_file() for shard in shards)
     else:
         has_weights = (snapshot / _STT_SAFETENSORS_WEIGHTS).is_file()
     # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or

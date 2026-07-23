@@ -167,6 +167,18 @@ def test_pickle_checkpoint_snapshot_is_never_complete(tmp_path):
     assert stt_sidecar_module._snapshot_is_complete(snap) is True
 
 
+def test_safe_index_naming_pickle_shards_is_not_complete(tmp_path):
+    # A safetensors index that references .bin shards would still pickle-load
+    # via Transformers' per-shard dispatch; the cached snapshot must read as
+    # incomplete so it re-resolves and fails closed at selection.
+    snap = _base_snapshot(tmp_path)
+    (snap / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a": "pytorch_model-00001-of-00001.bin"}})
+    )
+    (snap / "pytorch_model-00001-of-00001.bin").write_bytes(b"w" * 8)
+    assert stt_sidecar_module._snapshot_is_complete(snap) is False
+
+
 def test_snapshot_without_tokenizer_assets_is_incomplete(tmp_path):
     snap = _base_snapshot(tmp_path)
     (snap / "model.safetensors").write_bytes(b"w" * 8)
