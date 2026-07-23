@@ -275,7 +275,7 @@ export function ParamsSection(): ReactElement {
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.projectName")}
-              <span className="text-[0.625rem] font-normal text-muted-foreground/70">
+              <span className="text-ui-10 font-normal text-muted-foreground/70">
                 {t("studio.params.optional")}
               </span>
             </span>
@@ -285,7 +285,7 @@ export function ParamsSection(): ReactElement {
               placeholder="customer-support-lora"
               maxLength={80}
             />
-            <p className="text-[0.625rem] text-muted-foreground">
+            <p className="text-ui-10 text-muted-foreground">
               {t("studio.params.projectNameDescription")}
             </p>
           </div>
@@ -374,7 +374,7 @@ export function ParamsSection(): ReactElement {
                 max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                 step={1}
               />
-              <p className="text-[0.625rem] text-muted-foreground">
+              <p className="text-ui-10 text-muted-foreground">
                 {useEpochs
                   ? t("studio.params.epochsDescription")
                   : t("studio.params.maxStepsDescription")}
@@ -462,7 +462,7 @@ export function ParamsSection(): ReactElement {
                 </ComboboxContent>
               </Combobox>
             </div>
-            <p className="text-[0.625rem] text-muted-foreground">
+            <p className="text-ui-10 text-muted-foreground">
               {t("studio.params.contextLengthDescription")}
             </p>
           </div>
@@ -503,7 +503,7 @@ export function ParamsSection(): ReactElement {
               onChange={(e) => store.setLearningRate(Number(e.target.value))}
               className="w-full font-mono"
             />
-            <p className="text-[0.625rem] text-muted-foreground">
+            <p className="text-ui-10 text-muted-foreground">
               {t("studio.params.learningRateDescription")}
             </p>
           </div>
@@ -548,7 +548,7 @@ export function ParamsSection(): ReactElement {
                 }}
                 className="w-full font-mono"
               />
-              <p className="text-[0.625rem] text-muted-foreground">
+              <p className="text-ui-10 text-muted-foreground">
                 {t("studio.params.embeddingLearningRateDescription")}
               </p>
             </div>
@@ -704,7 +704,7 @@ export function ParamsSection(): ReactElement {
                                       : [...store.targetModules, mod],
                                   );
                                 }}
-                                className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-[0.6875rem] font-mono transition-colors ${
+                                className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${
                                   active
                                     ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
                                     : "text-muted-foreground hover:bg-muted/50"
@@ -752,7 +752,7 @@ export function ParamsSection(): ReactElement {
                         }`}
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
-                        <p className="text-[0.625rem] text-muted-foreground">
+                        <p className="text-ui-10 text-muted-foreground">
                           {isMac && opt.value === "loftq"
                             ? "Not supported on Apple Silicon"
                             : opt.desc}

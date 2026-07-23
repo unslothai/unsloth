@@ -653,7 +653,7 @@ function RunDialogBody({
             />
             <Badge
               variant="outline"
-              className="rounded-full text-[0.625rem] text-destructive"
+              className="rounded-full text-ui-10 text-destructive"
             >
               Before you run
             </Badge>

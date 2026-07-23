@@ -67,7 +67,7 @@ export function NativeModelChip({
   }
 
   return (
-    <div className="flex min-w-0 max-w-[544px] items-center gap-2 rounded-lg border border-border/70 bg-muted/70 px-2.5 py-1.5 text-xs">
+    <div className="flex min-w-0 max-w-[34rem] items-center gap-2 rounded-lg border border-border/70 bg-muted/70 px-2.5 py-1.5 text-xs">
       <span className="shrink-0 font-medium text-muted-foreground">Local GGUF</span>
       <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
       <button

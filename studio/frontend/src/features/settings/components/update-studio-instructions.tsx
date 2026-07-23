@@ -91,7 +91,7 @@ function CopyableCommand({
         type="text"
         readOnly={true}
         value={command}
-        className="min-w-0 flex-1 bg-transparent px-2 py-1.5 font-mono text-[0.6875rem] text-foreground outline-none"
+        className="min-w-0 flex-1 bg-transparent px-2 py-1.5 font-mono text-ui-11 text-foreground outline-none"
         title={command}
         aria-label={t("settings.about.update.commandText", {
           label: copyLabel,
@@ -187,7 +187,7 @@ function ShellToggleButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[0.75rem] font-medium transition-colors",
+        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-ui-12 font-medium transition-colors",
         active
           ? "hub-tab-toggle-pill text-foreground"
           : "cursor-pointer text-muted-foreground hover:text-foreground",

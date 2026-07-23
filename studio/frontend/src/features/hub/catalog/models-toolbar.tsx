@@ -194,7 +194,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           aria-checked={tab === "discover"}
           onClick={() => onTabChange("discover")}
           className={cn(
-            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[0.78125rem] transition-colors",
+            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
             tab === "discover"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
@@ -208,7 +208,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           aria-checked={tab === "downloaded"}
           onClick={() => onTabChange("downloaded")}
           className={cn(
-            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-[0.78125rem] transition-colors",
+            "relative z-10 inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
             tab === "downloaded"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
@@ -261,7 +261,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 : "Search all models"
           }
           className={cn(
-            "field-soft h-9 rounded-full !border-0 pl-10 text-[0.8125rem] placeholder:text-muted-foreground/80 focus-visible:!ring-0",
+            "field-soft h-9 rounded-full !border-0 pl-10 text-ui-13 placeholder:text-muted-foreground/80 focus-visible:!ring-0",
             hasTrailing ? "pr-10" : "pr-4",
           )}
         />
@@ -306,7 +306,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 onClick={onManageLocalFolders}
                 className={cn(
                   triggerBase,
-                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-[0.78125rem]",
+                  "field-filter inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3 text-ui-12p5",
                 )}
               >
                 <HugeiconsIcon
@@ -365,7 +365,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                       role="checkbox"
                       aria-checked={fitOnDeviceOnly}
                       onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
-                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[0.78125rem] text-muted-foreground transition-colors hover:text-foreground"
+                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <Checkbox
                         checked={fitOnDeviceOnly}

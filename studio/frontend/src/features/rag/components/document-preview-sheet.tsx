@@ -297,7 +297,7 @@ function PdfPreview({
   );
 }
 
-// Resizable preview width (px). Default matches the prior fixed 704px; drag the
+// Resizable preview width (px). Default matches the prior fixed 44rem; drag the
 // left edge to widen. Persisted so it survives reopen.
 const PREVIEW_WIDTH_KEY = "unsloth-rag-preview-width";
 const MIN_PREVIEW_WIDTH = 384;

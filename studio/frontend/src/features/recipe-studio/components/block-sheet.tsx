@@ -205,12 +205,12 @@ function BlockSheetButton({
             {title}
           </p>
           {badge ? (
-            <Badge variant="outline" className="rounded-full text-[0.625rem]">
+            <Badge variant="outline" className="rounded-full text-ui-10">
               {badge}
             </Badge>
           ) : null}
         </div>
-        <p className="break-words text-[0.6875rem] text-muted-foreground">
+        <p className="break-words text-ui-11 text-muted-foreground">
           {description}
         </p>
       </div>

@@ -301,6 +301,7 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         tags: model.tags,
         libraryName: model.library_name ?? null,

@@ -61,7 +61,7 @@ export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
             </a>
           </TooltipContent>
         </Tooltip>
-        <span className="text-[0.6875rem] text-muted-foreground/70">
+        <span className="text-ui-11 text-muted-foreground/70">
           — select one or more
         </span>
       </div>
@@ -90,10 +90,10 @@ export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
               )}
               {q.label}
               {sizeLabel && (
-                <span className="text-[0.625rem] opacity-60">{sizeLabel}</span>
+                <span className="text-ui-10 opacity-60">{sizeLabel}</span>
               )}
               {q.recommended && !active && (
-                <span className="rounded-full bg-emerald-100 px-1.5 py-0 text-[0.5625rem] font-semibold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">
+                <span className="rounded-full bg-emerald-100 px-1.5 py-0 text-ui-9 font-semibold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">
                   rec
                 </span>
               )}
@@ -103,13 +103,13 @@ export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
       </div>
       {value.length > 0 && (
         <div className="flex items-center gap-3">
-          <span className="text-[0.6875rem] text-muted-foreground">
+          <span className="text-ui-11 text-muted-foreground">
             {value.length} selected
           </span>
           <button
             type="button"
             onClick={() => onChange([])}
-            className="text-[0.6875rem] text-muted-foreground/70 hover:text-foreground transition-colors"
+            className="text-ui-11 text-muted-foreground/70 hover:text-foreground transition-colors"
           >
             Clear all
           </button>

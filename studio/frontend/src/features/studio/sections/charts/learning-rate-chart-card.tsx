@@ -76,7 +76,7 @@ export function LearningRateChartCard({
               tickLine={false}
               axisLine={false}
               tickMargin={8}
-              fontSize="0.625rem"
+              fontSize={10}
               tickFormatter={(value) => formatStepTick(Number(value))}
               interval="preserveStartEnd"
             />
@@ -87,7 +87,7 @@ export function LearningRateChartCard({
               axisLine={false}
               tickMargin={8}
               tickCount={5}
-              fontSize="0.625rem"
+              fontSize={10}
               width={DEFAULT_Y_AXIS_WIDTH}
               tickFormatter={(value) => {
                 const num = Number(value);

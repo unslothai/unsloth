@@ -69,11 +69,11 @@ export function ApiKeyRow({
           <span className="truncate text-sm font-medium text-foreground" title={apiKey.name}>
             {apiKey.name}
           </span>
-          <code className="shrink-0 font-mono text-[0.6875rem] text-muted-foreground">
+          <code className="shrink-0 font-mono text-ui-11 text-muted-foreground">
             {prefix}
           </code>
         </div>
-        <div className="flex flex-wrap gap-x-1.5 text-[0.6875rem] text-muted-foreground">
+        <div className="flex flex-wrap gap-x-1.5 text-ui-11 text-muted-foreground">
           <span>
             {t("settings.apiKeys.created", {
               value: relative(apiKey.created_at, t),

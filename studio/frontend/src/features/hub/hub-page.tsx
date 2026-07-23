@@ -1606,7 +1606,7 @@ export function ModelsPage() {
               />
             </div>
           ) : (
-            <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-[0.8125rem] text-muted-foreground lg:flex">
+            <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-ui-13 text-muted-foreground lg:flex">
               Select a model to preview its details.
             </div>
           )
