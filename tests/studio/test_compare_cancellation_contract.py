@@ -34,3 +34,21 @@ def test_compare_layout_is_frozen_even_before_runtime_hydration():
     assert "getIsLoraCompareFromState(useChatRuntimeStore.getState())" in compare
     assert "modelRuntimeHydrated" not in compare
     assert "liveIsLoraCompare" not in compare
+
+
+def test_same_model_reload_retains_origin_for_stop_reconciliation():
+    composer = _read("shared-composer.tsx")
+    assert "modelSwitchState.originCheckpoint = previousCheckpoint || null;" in composer
+    assert "same-model reload" in composer
+
+
+def test_initial_thread_lookup_does_not_replace_active_submission_ids():
+    page = _read("chat-page.tsx")
+    initial_lookup = page.split(
+        "// Resolve the persisted pair independently of submission state.", 1
+    )[1].split("// Once the initial lookup is known", 1)[0]
+    assert "initialThreadLookupCompleteRef.current = true;" in initial_lookup
+    assert "if (compareSubmittingRef.current) return;" in initial_lookup
+    assert initial_lookup.index("if (compareSubmittingRef.current) return;") < (
+        initial_lookup.index("applyCompareThreadIds(ids);")
+    )
