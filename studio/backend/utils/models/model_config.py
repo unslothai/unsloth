@@ -2172,9 +2172,8 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     def cached_embedding_classification() -> bool:
         if _embedding_marker_in_hf_cache(model_name):
             return True
-        return (
-            _embedding_detection_cache.get(cache_key) is True
-            and hf_cache_snapshot_is_loadable(model_name)
+        return _embedding_detection_cache.get(cache_key) is True and hf_cache_snapshot_is_loadable(
+            model_name
         )
 
     # Offline (remote repo): reclassify from the local cache on every call, before/without the
