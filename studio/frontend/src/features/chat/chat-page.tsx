@@ -2291,15 +2291,8 @@ export function ChatPage({
           }
           return;
         }
-        const stopped = await cancelLoading();
-        if (!stopped) {
-          if (!loadingModel) {
-            toast.info("Another model is already loading", {
-              description: "Wait for it to finish or cancel it first.",
-            });
-          }
-          return;
-        }
+        // selectModel owns superseding cancellation so it can preserve the
+        // working checkpoint as the rollback target for the replacement.
       }
       const wantManagerStage =
         wantManagerDownload ||
@@ -2339,7 +2332,6 @@ export function ChatPage({
       });
     },
     [
-      cancelLoading,
       selectModel,
       loadingModel,
       rememberedConfigFor,

@@ -116,6 +116,7 @@ type ActiveModelLoadRun = {
   completionPromise: Promise<void>;
   resolveCompletion: () => void;
   cancelPromise: Promise<boolean> | null;
+  backendLoadStarted: boolean;
 };
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
@@ -499,7 +500,14 @@ export function useChatModelRuntime() {
           // task to observe the abort. The unload route waits for cancellation
           // to settle before it returns, preventing a late /load activation.
           await unloadModel({ model_path: model.id });
-          await run.completionPromise;
+          // Frontend-only preflights can be blocked on a confirmation promise
+          // that AbortController cannot resolve. Once /unload succeeds there is
+          // no backend activation to await unless this run actually reached
+          // /load; the aborted preflight will clean itself up when its obsolete
+          // dialog eventually settles.
+          if (run.backendLoadStarted) {
+            await run.completionPromise;
+          }
           return true;
         } catch (error) {
           const detail =
@@ -730,6 +738,7 @@ export function useChatModelRuntime() {
         completionPromise,
         resolveCompletion,
         cancelPromise: null,
+        backendLoadStarted: false,
       };
       activeLoadRunRef.current = run;
       try {
@@ -995,6 +1004,7 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
+            run.backendLoadStarted = true;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
