@@ -26,6 +26,295 @@ def _blocked(code: str, *, expect_phrase: str):
     assert expect_phrase in msg, (expect_phrase, msg)
 
 
+class TestPyYamlDeserialization:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import yaml\n"
+                "yaml.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=yaml.Loader"
+                ")"
+            ),
+            (
+                "import yaml as y\n"
+                "y.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=y.Loader"
+                ")"
+            ),
+            (
+                "from yaml import load, Loader\n"
+                "load('!!python/object/apply:os.system [\"echo pwned\"]', Loader=Loader)"
+            ),
+            (
+                "import yaml\n"
+                "yaml.unsafe_load('!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "list(yaml.unsafe_load_all("
+                "'!!python/object/apply:os.system [\"echo pwned\"]'))"
+            ),
+            (
+                "import yaml\n"
+                "list(yaml.load_all("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=yaml.Loader))"
+            ),
+            (
+                "from yaml import unsafe_load_all as loads\n"
+                "list(loads('!!python/object/apply:os.system [\"echo pwned\"]'))"
+            ),
+            (
+                "import yaml\n"
+                "loader = yaml.load\n"
+                "loader('!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=yaml.Loader)"
+            ),
+            (
+                "import yaml\n"
+                "loader = yaml.unsafe_load\n"
+                "loader('!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "from yaml import unsafe_load as loader\n"
+                "runner = loader\n"
+                "runner('!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "loaders = [yaml.unsafe_load]\n"
+                "loaders[0]('!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "def run(loader):\n"
+                "    return loader('!!python/object/apply:os.system [\"echo pwned\"]')\n"
+                "run(yaml.unsafe_load)"
+            ),
+            (
+                "import yaml\n"
+                "Safe = yaml.SafeLoader\n"
+                "Safe = yaml.Loader\n"
+                "yaml.load('!!python/object/apply:os.system [\"echo pwned\"]', Loader=Safe)"
+            ),
+            (
+                "from yaml import SafeLoader\n"
+                "import yaml\n"
+                "SafeLoader = yaml.Loader\n"
+                "yaml.load('!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=SafeLoader)"
+            ),
+            "import yaml\nloader = get_loader()\nyaml.load('a: 1', Loader=loader)",
+            (
+                "from yaml import load\n"
+                "if condition:\n"
+                "    load = print\n"
+                "load('!!python/object/apply:os.system [\"echo pwned\"]', Loader=Loader)"
+            ),
+            (
+                "import yaml\n"
+                "from yaml import SafeLoader\n"
+                "def run(SafeLoader):\n"
+                "    return yaml.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=SafeLoader)\n"
+                "run(yaml.Loader)"
+            ),
+            (
+                "import yaml\n"
+                "from yaml import SafeLoader\n"
+                "for SafeLoader in [yaml.Loader]:\n"
+                "    yaml.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=SafeLoader)"
+            ),
+            (
+                "import yaml\n"
+                "from yaml import SafeLoader\n"
+                "[yaml.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=SafeLoader) for SafeLoader in [yaml.Loader]]"
+            ),
+            (
+                "import yaml\n"
+                "Safe = yaml.SafeLoader\n"
+                "if condition:\n"
+                "    Safe = yaml.Loader\n"
+                "else:\n"
+                "    Safe = yaml.SafeLoader\n"
+                "yaml.load('!!python/object/apply:os.system [\"echo pwned\"]', Loader=Safe)"
+            ),
+            (
+                "import yaml\n"
+                "def run(module):\n"
+                "    return module.unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')\n"
+                "run(yaml)"
+            ),
+            (
+                "import yaml\n"
+                "modules = [yaml]\n"
+                "modules[0].unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "__import__('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "from importlib import import_module\n"
+                "import_module('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "from importlib import import_module as im\n"
+                "im('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import importlib\n"
+                "im = importlib.import_module\n"
+                "im('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "yaml.__dict__['unsafe_load']("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import sys, yaml\n"
+                "sys.modules['yaml'].unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "globals()['yaml'].unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "locals().get('yaml').unsafe_load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            (
+                "import yaml\n"
+                "loader = yaml.Loader("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')\n"
+                "loader.get_single_data()"
+            ),
+            (
+                "from yaml.loader import Loader\n"
+                "loader = Loader("
+                "'!!python/object/apply:os.system [\"echo pwned\"]')\n"
+                "loader.get_single_data()"
+            ),
+            (
+                "from yaml import load\n"
+                "for load in []:\n"
+                "    pass\n"
+                "load('a: 1', Loader=Loader)"
+            ),
+            (
+                "from yaml import load\n"
+                "while condition:\n"
+                "    load = print\n"
+                "load('a: 1', Loader=Loader)"
+            ),
+            (
+                "from yaml import load\n"
+                "try:\n"
+                "    load = may_raise()\n"
+                "except Exception:\n"
+                "    pass\n"
+                "load('a: 1', Loader=Loader)"
+            ),
+            (
+                "from yaml import load\n"
+                "condition and (load := print)\n"
+                "load('a: 1', Loader=Loader)"
+            ),
+            (
+                "from yaml import load\n"
+                "match value:\n"
+                "    case 1:\n"
+                "        load = print\n"
+                "load('a: 1', Loader=Loader)"
+            ),
+        ],
+    )
+    def test_unsafe_pyyaml_loaders_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "from yaml import loader as yl\nyl.Loader('a: 1')",
+            ("from yaml import loader as yl\nloader = yl.Loader\nloader('a: 1')"),
+            "from yaml import loader\nyaml_loader = loader\nyaml_loader.FullLoader('a: 1')",
+            "from yaml import cyaml as yc\nyc.CLoader('a: 1')",
+            "from yaml import cyaml as yc\nyc.load('a: 1', Loader=yc.CLoader)",
+            "from yaml import cyaml\nloader = cyaml.CUnsafeLoader\nloader('a: 1')",
+            "import yaml.cyaml as yc\nyc.CFullLoader('a: 1')",
+            "import yaml\nyaml.full_load('a: 1')",
+            "import yaml as y\nlist(y.full_load_all('a: 1'))",
+            "from yaml import full_load as load_full\nload_full('a: 1')",
+            (
+                "from yaml import full_load_all as load_all_full\n"
+                "runner = load_all_full\n"
+                "list(runner('a: 1'))"
+            ),
+        ],
+    )
+    def test_unsafe_capable_pyyaml_alias_forms_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import yaml\nyaml.safe_load('a: 1')",
+            "import yaml\nlist(yaml.safe_load_all('a: 1\n---\nb: 2'))",
+            "from yaml import safe_load as loads\nloads('a: 1')",
+            ("from yaml import safe_load_all as loads_all\nlist(loads_all('a: 1\n---\nb: 2'))"),
+            "import yaml\nyaml.load('a: 1', Loader=yaml.SafeLoader)",
+            "import yaml\nyaml.load('a: 1', Loader=yaml.BaseLoader)",
+            "import yaml\nyaml.load('a: 1', yaml.CSafeLoader)",
+            "from yaml import load, SafeLoader\nload('a: 1', Loader=SafeLoader)",
+            "from yaml import load, BaseLoader\nload('a: 1', Loader=BaseLoader)",
+            "from yaml import loader as yl\nyl.SafeLoader('a: 1')",
+            "from yaml import loader as yl\nyl.BaseLoader('a: 1')",
+            "from yaml import cyaml as yc\nyc.CSafeLoader('a: 1')",
+            "from yaml import cyaml as yc\nyc.CBaseLoader('a: 1')",
+            "from yaml import cyaml as yc\nyc.load('a: 1', Loader=yc.CSafeLoader)",
+            "import yaml\nSafe = yaml.SafeLoader\nyaml.load('a: 1', Loader=Safe)",
+            "import yaml\nlist(yaml.load_all('a: 1', Loader=yaml.SafeLoader))",
+            (
+                "import yaml\n"
+                "Loader = object()\n"
+                "Loader = yaml.SafeLoader\n"
+                "yaml.load('a: 1', Loader=Loader)"
+            ),
+            (
+                "from yaml import load\n"
+                "def render(load):\n"
+                "    return load('a: 1')\n"
+                "render(print)"
+            ),
+            "__import__('yaml').safe_load('a: 1')",
+            "from importlib import import_module as im\nim('yaml').safe_load('a: 1')",
+            ("import importlib\nim = importlib.import_module\nim('yaml').safe_load('a: 1')"),
+            "import sys, yaml\nsys.modules['yaml'].safe_load('a: 1')",
+            "import yaml\nglobals().get('yaml').safe_load('a: 1')",
+            ("from yaml import load\nload = print\nload('not deserialized')"),
+        ],
+    )
+    def test_safe_pyyaml_loaders_allowed(self, code):
+        _ok(code)
+
+
 class TestMetadataHostDenylist:
     def test_aws_imds_literal_blocked(self):
         _blocked(

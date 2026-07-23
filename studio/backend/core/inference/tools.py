@@ -701,6 +701,162 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # Pickle-backed loaders that can execute code embedded in the file; gated by
 # receiver module (torch.load, joblib.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# PyYAML's safe/base loaders do not construct arbitrary Python objects. Treat
+# yaml.load with any other loader (or a dynamic/missing loader) as unsafe.
+_PYYAML_SAFE_LOADERS = frozenset({"BaseLoader", "CBaseLoader", "SafeLoader", "CSafeLoader"})
+_PYYAML_LOAD_NAMES = frozenset({"load", "load_all"})
+_PYYAML_UNSAFE_LOAD_NAMES = frozenset(
+    {"full_load", "full_load_all", "unsafe_load", "unsafe_load_all"}
+)
+_PYYAML_UNSAFE_LOADERS = frozenset(
+    {"Loader", "CLoader", "FullLoader", "CFullLoader", "UnsafeLoader", "CUnsafeLoader"}
+)
+_PYYAML_SUBMODULE_NAMES = frozenset({"cyaml", "loader"})
+
+
+def _is_dynamic_import_callable(node, dynamic_import_aliases: set[str]) -> bool:
+    return (isinstance(node, ast.Name) and node.id in dynamic_import_aliases) or (
+        isinstance(node, ast.Attribute) and node.attr in {"import_module", "__import__"}
+    )
+
+
+def _is_dynamic_namespace(node) -> bool:
+    if isinstance(node, ast.Attribute) and node.attr == "modules":
+        return True  # sys.modules (including an aliased sys import)
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"globals", "locals", "vars"}
+        and not node.args
+        and not node.keywords
+    )
+
+
+def _is_yaml_string(node) -> bool:
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.split(".", 1)[0] == "yaml"
+    )
+
+
+def _is_pyyaml_module_expr(
+    node,
+    yaml_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in yaml_aliases
+    if isinstance(node, ast.Subscript):
+        return _is_dynamic_namespace(node.value) and _is_yaml_string(node.slice)
+    if not (isinstance(node, ast.Call) and node.args):
+        return False
+    module_name = node.args[0]
+    if not _is_yaml_string(module_name):
+        return False
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and _is_dynamic_namespace(node.func.value)
+    ):
+        return True
+    return _is_dynamic_import_callable(node.func, dynamic_import_aliases)
+
+
+def _pyyaml_attribute_path(
+    node,
+    yaml_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+) -> tuple[str, ...] | None:
+    if _is_pyyaml_module_expr(node, yaml_aliases, dynamic_import_aliases):
+        return ()
+    if not isinstance(node, ast.Attribute):
+        return None
+    parent = _pyyaml_attribute_path(node.value, yaml_aliases, dynamic_import_aliases)
+    return None if parent is None else (*parent, node.attr)
+
+
+def _pyyaml_loader_is_safe(
+    node,
+    yaml_aliases: set[str],
+    safe_loader_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in safe_loader_aliases
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr in _PYYAML_SAFE_LOADERS
+        and _is_pyyaml_module_expr(node.value, yaml_aliases, dynamic_import_aliases)
+    )
+
+
+def _pyyaml_load_reference_kind(
+    node,
+    yaml_aliases: set[str],
+    load_aliases: set[str],
+    unsafe_load_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+) -> str | None:
+    """Identify a direct reference to a PyYAML unsafe-capable load callable."""
+    path = _pyyaml_attribute_path(node, yaml_aliases, dynamic_import_aliases)
+    if path and path[-1] in (_PYYAML_LOAD_NAMES | _PYYAML_UNSAFE_LOAD_NAMES):
+        return path[-1]
+    if isinstance(node, ast.Name):
+        if node.id in unsafe_load_aliases:
+            return "unsafe_load"
+        if node.id in load_aliases:
+            return "load"
+    return None
+
+
+def _pyyaml_unsafe_loader_reference_kind(
+    node,
+    yaml_aliases: set[str],
+    unsafe_loader_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+) -> str | None:
+    path = _pyyaml_attribute_path(node, yaml_aliases, dynamic_import_aliases)
+    if path and path[-1] in _PYYAML_UNSAFE_LOADERS:
+        return path[-1]
+    if isinstance(node, ast.Name) and node.id in unsafe_loader_aliases:
+        return node.id
+    return None
+
+
+def _pyyaml_load_call_is_unsafe(
+    call,
+    yaml_aliases: set[str],
+    load_aliases: set[str],
+    unsafe_load_aliases: set[str],
+    safe_loader_aliases: set[str],
+    dynamic_import_aliases: set[str] = frozenset({"__import__", "import_module"}),
+) -> bool:
+    func = call.func
+    is_load = False
+    if isinstance(func, ast.Attribute):
+        path = _pyyaml_attribute_path(func, yaml_aliases, dynamic_import_aliases)
+        if path and path[-1] in _PYYAML_UNSAFE_LOAD_NAMES:
+            return True
+        is_load = bool(path and path[-1] in _PYYAML_LOAD_NAMES)
+    elif isinstance(func, ast.Name):
+        if func.id in unsafe_load_aliases:
+            return True
+        is_load = func.id in load_aliases
+    if not is_load:
+        return False
+
+    loader = call.args[1] if len(call.args) >= 2 else None
+    for kw in call.keywords or []:
+        if kw.arg is None:
+            return True
+        if kw.arg == "Loader":
+            loader = kw.value
+    return loader is None or not _pyyaml_loader_is_safe(
+        loader, yaml_aliases, safe_loader_aliases, dynamic_import_aliases
+    )
+
+
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -4427,12 +4583,14 @@ def _check_signal_escape_patterns(code: str):
             "error": f"SyntaxError: {e}",
             "signal_tampering": [],
             "exception_catching": [],
+            "unsafe_deserializations": [],
             "warnings": [],
         }
 
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
+    unsafe_deserializations = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -4525,6 +4683,21 @@ def _check_signal_escape_patterns(code: str):
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
             self.subprocess_aliases = {"subprocess"}
+            self.yaml_aliases = {"yaml"}
+            self.yaml_load_aliases: set[str] = set()
+            self.yaml_unsafe_load_aliases: set[str] = set()
+            self.yaml_unsafe_loader_aliases: set[str] = set()
+            self.yaml_safe_loader_aliases = set(_PYYAML_SAFE_LOADERS)
+            self.dynamic_import_aliases = {"__import__", "import_module"}
+            # Direct yaml.load(..., SafeLoader) calls are allowed. References to
+            # either callable in any other position fail closed because Python
+            # can move them through containers, arguments, or aliases before
+            # invoking them beyond this visitor's local data-flow view.
+            self.direct_pyyaml_call_refs: set[int] = set()
+            # A PyYAML module may be used as the base of an inspected direct
+            # attribute, but must not escape through a container, argument, or
+            # return value where the unsafe callable becomes opaque.
+            self.direct_pyyaml_module_refs: set[int] = set()
             # Bare name -> fully-qualified form for from-import tracking
             # (e.g. "system" -> "os.system").
             self.shell_exec_aliases: dict[str, str] = {}
@@ -4540,6 +4713,8 @@ def _check_signal_escape_patterns(code: str):
                     self.os_aliases.add(alias.asname or "os")
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name.split(".", 1)[0] == "yaml":
+                    self.yaml_aliases.add(alias.asname or "yaml")
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -4567,19 +4742,484 @@ def _check_signal_escape_patterns(code: str):
                     fq = f"{node.module}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
+            elif (node.module or "").split(".", 1)[0] == "yaml":
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    if alias.name == "*":
+                        self.yaml_load_aliases.update(_PYYAML_LOAD_NAMES)
+                        self.yaml_unsafe_load_aliases.update(_PYYAML_UNSAFE_LOAD_NAMES)
+                        self.yaml_unsafe_loader_aliases.update(_PYYAML_UNSAFE_LOADERS)
+                        self.yaml_safe_loader_aliases.update(_PYYAML_SAFE_LOADERS)
+                    elif alias.name in _PYYAML_SUBMODULE_NAMES:
+                        self.yaml_aliases.add(bound)
+                    elif alias.name in _PYYAML_LOAD_NAMES:
+                        self.yaml_load_aliases.add(bound)
+                    elif alias.name in _PYYAML_UNSAFE_LOAD_NAMES:
+                        self.yaml_unsafe_load_aliases.add(bound)
+                    elif alias.name in _PYYAML_UNSAFE_LOADERS:
+                        self.yaml_unsafe_loader_aliases.add(bound)
+                    elif alias.name in _PYYAML_SAFE_LOADERS:
+                        self.yaml_safe_loader_aliases.add(bound)
+            elif node.module in {"importlib", "builtins"}:
+                for alias in node.names:
+                    if alias.name in {"import_module", "__import__"}:
+                        self.dynamic_import_aliases.add(alias.asname or alias.name)
             self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            self.visit(node.value)
+            self._update_pyyaml_bindings(node.targets, node.value)
+            for target in node.targets:
+                self.visit(target)
+
+        def visit_AnnAssign(self, node):
+            if node.annotation is not None:
+                self.visit(node.annotation)
+            if node.value is not None:
+                self.visit(node.value)
+                self._update_pyyaml_bindings([node.target], node.value)
+            self.visit(node.target)
+
+        def visit_NamedExpr(self, node):
+            self.visit(node.value)
+            self._update_pyyaml_bindings([node.target], node.value)
+            self.visit(node.target)
+
+        def _update_pyyaml_bindings(self, targets, value):
+            def target_names(target):
+                if isinstance(target, ast.Name):
+                    return {target.id}
+                if isinstance(target, (ast.Tuple, ast.List)):
+                    return set().union(*(target_names(elt) for elt in target.elts))
+                return set()
+
+            names = set().union(*(target_names(target) for target in targets))
+            if not names:
+                return
+
+            safe_loader = value is not None and _pyyaml_loader_is_safe(
+                value,
+                self.yaml_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+            )
+            yaml_alias = value is not None and _is_pyyaml_module_expr(
+                value, self.yaml_aliases, self.dynamic_import_aliases
+            )
+            dynamic_import_alias = value is not None and _is_dynamic_import_callable(
+                value, self.dynamic_import_aliases
+            )
+            reference_kind = _pyyaml_load_reference_kind(
+                value,
+                self.yaml_aliases,
+                self.yaml_load_aliases,
+                self.yaml_unsafe_load_aliases,
+                self.dynamic_import_aliases,
+            )
+            unsafe_loader_kind = _pyyaml_unsafe_loader_reference_kind(
+                value,
+                self.yaml_aliases,
+                self.yaml_unsafe_loader_aliases,
+                self.dynamic_import_aliases,
+            )
+
+            # This is the exact state after a sequential assignment. Control-
+            # flow joins below union dangerous aliases and intersect safe ones.
+            self.yaml_aliases.difference_update(names)
+            self.yaml_load_aliases.difference_update(names)
+            self.yaml_unsafe_load_aliases.difference_update(names)
+            self.yaml_unsafe_loader_aliases.difference_update(names)
+            self.yaml_safe_loader_aliases.difference_update(names)
+            self.dynamic_import_aliases.difference_update(names)
+
+            if safe_loader:
+                self.yaml_safe_loader_aliases.update(names)
+            if yaml_alias:
+                self.yaml_aliases.update(names)
+            if reference_kind in _PYYAML_LOAD_NAMES:
+                self.yaml_load_aliases.update(names)
+            elif reference_kind in _PYYAML_UNSAFE_LOAD_NAMES:
+                self.yaml_unsafe_load_aliases.update(names)
+            if unsafe_loader_kind is not None:
+                self.yaml_unsafe_loader_aliases.update(names)
+            if dynamic_import_alias:
+                self.dynamic_import_aliases.update(names)
+
+        def _pyyaml_scope_state(self):
+            return (
+                self.yaml_aliases.copy(),
+                self.yaml_load_aliases.copy(),
+                self.yaml_unsafe_load_aliases.copy(),
+                self.yaml_unsafe_loader_aliases.copy(),
+                self.yaml_safe_loader_aliases.copy(),
+                self.dynamic_import_aliases.copy(),
+            )
+
+        def _restore_pyyaml_scope_state(self, state):
+            (
+                self.yaml_aliases,
+                self.yaml_load_aliases,
+                self.yaml_unsafe_load_aliases,
+                self.yaml_unsafe_loader_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+            ) = state
+
+        def _merge_pyyaml_scope_states(self, *states):
+            if not states:
+                return
+            self.yaml_aliases = set().union(*(state[0] for state in states))
+            self.yaml_load_aliases = set().union(*(state[1] for state in states))
+            self.yaml_unsafe_load_aliases = set().union(*(state[2] for state in states))
+            self.yaml_unsafe_loader_aliases = set().union(*(state[3] for state in states))
+            self.yaml_safe_loader_aliases = set.intersection(*(state[4] for state in states))
+            self.dynamic_import_aliases = set().union(*(state[5] for state in states))
+
+        def visit_If(self, node):
+            self.visit(node.test)
+            base_state = self._pyyaml_scope_state()
+
+            self._restore_pyyaml_scope_state(tuple(part.copy() for part in base_state))
+            for statement in node.body:
+                self.visit(statement)
+            body_state = self._pyyaml_scope_state()
+
+            self._restore_pyyaml_scope_state(tuple(part.copy() for part in base_state))
+            for statement in node.orelse:
+                self.visit(statement)
+            else_state = self._pyyaml_scope_state()
+
+            self._merge_pyyaml_scope_states(body_state, else_state)
+
+        def visit_IfExp(self, node):
+            self.visit(node.test)
+            base_state = self._pyyaml_scope_state()
+
+            self._restore_pyyaml_scope_state(tuple(part.copy() for part in base_state))
+            self.visit(node.body)
+            body_state = self._pyyaml_scope_state()
+
+            self._restore_pyyaml_scope_state(tuple(part.copy() for part in base_state))
+            self.visit(node.orelse)
+            else_state = self._pyyaml_scope_state()
+            self._merge_pyyaml_scope_states(body_state, else_state)
+
+        def visit_BoolOp(self, node):
+            # ``and``/``or`` may stop after any operand, so preserve every
+            # possible binding state produced by a visited prefix.
+            exit_states = []
+            for value in node.values:
+                self.visit(value)
+                exit_states.append(self._pyyaml_scope_state())
+            self._merge_pyyaml_scope_states(*exit_states)
+
+        @staticmethod
+        def _match_bound_names(pattern):
+            names = set()
+            for item in ast.walk(pattern):
+                if isinstance(item, ast.MatchAs) and item.name:
+                    names.add(item.name)
+                elif isinstance(item, ast.MatchStar) and item.name:
+                    names.add(item.name)
+                elif isinstance(item, ast.MatchMapping) and item.rest:
+                    names.add(item.rest)
+            return names
+
+        def visit_Match(self, node):
+            self.visit(node.subject)
+            base_state = self._pyyaml_scope_state()
+            exit_states = [base_state]
+            for case in node.cases:
+                self._restore_pyyaml_scope_state(tuple(part.copy() for part in base_state))
+                self.visit(case.pattern)
+                bound_names = self._match_bound_names(case.pattern)
+                self._update_pyyaml_bindings(
+                    [ast.Name(id = name, ctx = ast.Store()) for name in bound_names], None
+                )
+                if case.guard is not None:
+                    self.visit(case.guard)
+                for statement in case.body:
+                    self.visit(statement)
+                exit_states.append(self._pyyaml_scope_state())
+            self._merge_pyyaml_scope_states(*exit_states)
+
+        def visit_Try(self, node):
+            base_state = self._pyyaml_scope_state()
+            for statement in node.body:
+                self.visit(statement)
+            body_state = self._pyyaml_scope_state()
+
+            self._restore_pyyaml_scope_state(tuple(part.copy() for part in body_state))
+            for statement in node.orelse:
+                self.visit(statement)
+            success_state = self._pyyaml_scope_state()
+
+            self._merge_pyyaml_scope_states(base_state, body_state)
+            handler_start = self._pyyaml_scope_state()
+            exit_states = [success_state]
+            for handler in node.handlers:
+                self._restore_pyyaml_scope_state(tuple(part.copy() for part in handler_start))
+                if handler.type is not None:
+                    self.visit(handler.type)
+                if handler.name:
+                    self._update_pyyaml_bindings([ast.Name(id = handler.name, ctx = ast.Store())], None)
+                for statement in handler.body:
+                    self.visit(statement)
+                exit_states.append(self._pyyaml_scope_state())
+
+            self._merge_pyyaml_scope_states(*exit_states)
+            for statement in node.finalbody:
+                self.visit(statement)
+
+        def visit_TryStar(self, node):
+            self.visit_Try(node)
+
+        @staticmethod
+        def _argument_names(args):
+            positional = [*getattr(args, "posonlyargs", ()), *args.args, *args.kwonlyargs]
+            names = {arg.arg for arg in positional}
+            if args.vararg:
+                names.add(args.vararg.arg)
+            if args.kwarg:
+                names.add(args.kwarg.arg)
+            return names
+
+        def _visit_function_scope(self, node):
+            # Decorators/defaults/annotations are evaluated in the enclosing
+            # scope, before parameters become local bindings.
+            for decorator in getattr(node, "decorator_list", ()):
+                self.visit(decorator)
+            for default in [*node.args.defaults, *node.args.kw_defaults]:
+                if default is not None:
+                    self.visit(default)
+            for arg in [
+                *getattr(node.args, "posonlyargs", ()),
+                *node.args.args,
+                *node.args.kwonlyargs,
+            ]:
+                if arg.annotation is not None:
+                    self.visit(arg.annotation)
+            for arg in (node.args.vararg, node.args.kwarg):
+                if arg is not None and arg.annotation is not None:
+                    self.visit(arg.annotation)
+            returns = getattr(node, "returns", None)
+            if returns is not None:
+                self.visit(returns)
+            for type_param in getattr(node, "type_params", ()):
+                self.visit(type_param)
+
+            state = self._pyyaml_scope_state()
+            try:
+                arg_names = self._argument_names(node.args)
+                self._update_pyyaml_bindings(
+                    [ast.Name(id = name, ctx = ast.Store()) for name in arg_names], None
+                )
+                if isinstance(node, ast.Lambda):
+                    self.visit(node.body)
+                else:
+                    for statement in node.body:
+                        self.visit(statement)
+            finally:
+                self._restore_pyyaml_scope_state(state)
+
+        def visit_FunctionDef(self, node):
+            self._visit_function_scope(node)
+
+        def visit_AsyncFunctionDef(self, node):
+            self._visit_function_scope(node)
+
+        def visit_Lambda(self, node):
+            self._visit_function_scope(node)
+
+        def visit_ClassDef(self, node):
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            for base in node.bases:
+                self.visit(base)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+            for type_param in getattr(node, "type_params", ()):
+                self.visit(type_param)
+            state = self._pyyaml_scope_state()
+            try:
+                for statement in node.body:
+                    self.visit(statement)
+            finally:
+                self._restore_pyyaml_scope_state(state)
+
+        def _visit_comprehension_scope(self, node, result_nodes):
+            state = self._pyyaml_scope_state()
+            try:
+                # Comprehension targets are local bindings. Visit in runtime
+                # order so the target shadows an imported SafeLoader before
+                # the element expression is classified.
+                for generator in node.generators:
+                    self.visit(generator.iter)
+                    self._update_pyyaml_bindings([generator.target], None)
+                    for condition in generator.ifs:
+                        self.visit(condition)
+                for result in result_nodes:
+                    self.visit(result)
+            finally:
+                self._restore_pyyaml_scope_state(state)
+
+        def visit_ListComp(self, node):
+            self._visit_comprehension_scope(node, [node.elt])
+
+        def visit_SetComp(self, node):
+            self._visit_comprehension_scope(node, [node.elt])
+
+        def visit_GeneratorExp(self, node):
+            self._visit_comprehension_scope(node, [node.elt])
+
+        def visit_DictComp(self, node):
+            self._visit_comprehension_scope(node, [node.key, node.value])
+
+        def _record_unsafe_pyyaml(self, node, description):
+            if not any(item["description"] == description for item in unsafe_deserializations):
+                unsafe_deserializations.append(
+                    {
+                        "type": "unsafe_pyyaml_deserialization",
+                        "line": node.lineno,
+                        "description": description,
+                    }
+                )
+
+        def visit_Name(self, node):
+            if id(node) not in self.direct_pyyaml_module_refs and node.id in self.yaml_aliases:
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization module reference escapes direct policy inspection",
+                )
+            if id(node) not in self.direct_pyyaml_call_refs:
+                kind = _pyyaml_load_reference_kind(
+                    node,
+                    self.yaml_aliases,
+                    self.yaml_load_aliases,
+                    self.yaml_unsafe_load_aliases,
+                    self.dynamic_import_aliases,
+                )
+                if kind is not None:
+                    self._record_unsafe_pyyaml(
+                        node,
+                        f"Unsafe PyYAML deserialization callable reference ({kind})",
+                    )
+                loader_kind = _pyyaml_unsafe_loader_reference_kind(
+                    node,
+                    self.yaml_aliases,
+                    self.yaml_unsafe_loader_aliases,
+                    self.dynamic_import_aliases,
+                )
+                if loader_kind is not None:
+                    self._record_unsafe_pyyaml(
+                        node,
+                        f"Unsafe PyYAML deserialization loader reference ({loader_kind})",
+                    )
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            if id(node) not in self.direct_pyyaml_call_refs:
+                kind = _pyyaml_load_reference_kind(
+                    node,
+                    self.yaml_aliases,
+                    self.yaml_load_aliases,
+                    self.yaml_unsafe_load_aliases,
+                    self.dynamic_import_aliases,
+                )
+                if kind is not None:
+                    self._record_unsafe_pyyaml(
+                        node,
+                        f"Unsafe PyYAML deserialization callable reference ({kind})",
+                    )
+                loader_kind = _pyyaml_unsafe_loader_reference_kind(
+                    node,
+                    self.yaml_aliases,
+                    self.yaml_unsafe_loader_aliases,
+                    self.dynamic_import_aliases,
+                )
+                if loader_kind is not None:
+                    self._record_unsafe_pyyaml(
+                        node,
+                        f"Unsafe PyYAML deserialization loader reference ({loader_kind})",
+                    )
+
+            attribute_path = _pyyaml_attribute_path(
+                node, self.yaml_aliases, self.dynamic_import_aliases
+            )
+            if attribute_path and any(part.startswith("__") for part in attribute_path):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization via reflective module access",
+                )
+
+            module_base = (
+                node.value
+                if _is_pyyaml_module_expr(
+                    node.value, self.yaml_aliases, self.dynamic_import_aliases
+                )
+                else None
+            )
+            if module_base is not None:
+                self.direct_pyyaml_module_refs.add(id(module_base))
+            try:
+                self.generic_visit(node)
+            finally:
+                if module_base is not None:
+                    self.direct_pyyaml_module_refs.discard(id(module_base))
 
         def visit_While(self, node):
+            self.visit(node.test)
+            base_state = self._pyyaml_scope_state()
             self.loop_depth += 1
-            self.generic_visit(node)
-            self.loop_depth -= 1
+            try:
+                for statement in node.body:
+                    self.visit(statement)
+            finally:
+                self.loop_depth -= 1
+            body_state = self._pyyaml_scope_state()
+            self._merge_pyyaml_scope_states(base_state, body_state)
+            for statement in node.orelse:
+                self.visit(statement)
 
         def visit_For(self, node):
+            self.visit(node.iter)
+            base_state = self._pyyaml_scope_state()
+            self._update_pyyaml_bindings([node.target], None)
+            self.visit(node.target)
             self.loop_depth += 1
-            self.generic_visit(node)
-            self.loop_depth -= 1
+            try:
+                for statement in node.body:
+                    self.visit(statement)
+            finally:
+                self.loop_depth -= 1
+            body_state = self._pyyaml_scope_state()
+            self._merge_pyyaml_scope_states(base_state, body_state)
+            for statement in node.orelse:
+                self.visit(statement)
+
+        def visit_AsyncFor(self, node):
+            self.visit_For(node)
+
+        def visit_With(self, node):
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    self._update_pyyaml_bindings([item.optional_vars], None)
+                    self.visit(item.optional_vars)
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_AsyncWith(self, node):
+            self.visit_With(node)
 
         def visit_Call(self, node):
+            if id(node) not in self.direct_pyyaml_module_refs and _is_pyyaml_module_expr(
+                node, self.yaml_aliases, self.dynamic_import_aliases
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization dynamic module escapes direct policy inspection",
+                )
             func = node.func
             func_name = None
             if isinstance(func, ast.Attribute):
@@ -4726,7 +5366,32 @@ def _check_signal_escape_patterns(code: str):
                                 }
                             )
 
-            self.generic_visit(node)
+            pyyaml_reference_kind = _pyyaml_load_reference_kind(
+                node.func,
+                self.yaml_aliases,
+                self.yaml_load_aliases,
+                self.yaml_unsafe_load_aliases,
+                self.dynamic_import_aliases,
+            )
+            if _pyyaml_load_call_is_unsafe(
+                node,
+                self.yaml_aliases,
+                self.yaml_load_aliases,
+                self.yaml_unsafe_load_aliases,
+                self.yaml_safe_loader_aliases,
+                self.dynamic_import_aliases,
+            ):
+                self._record_unsafe_pyyaml(
+                    node,
+                    "Unsafe PyYAML deserialization via yaml load/full-load APIs",
+                )
+
+            if pyyaml_reference_kind is not None:
+                self.direct_pyyaml_call_refs.add(id(node.func))
+            try:
+                self.generic_visit(node)
+            finally:
+                self.direct_pyyaml_call_refs.discard(id(node.func))
 
         def visit_ExceptHandler(self, node):
             if self.loop_depth == 0:
@@ -5345,6 +6010,7 @@ def _check_signal_escape_patterns(code: str):
         len(signal_tampering) == 0
         and len(exception_catching) == 0
         and len(shell_escapes) == 0
+        and len(unsafe_deserializations) == 0
         and len(network_calls) == 0
         and len(sensitive_file_reads) == 0
     )
@@ -5352,6 +6018,7 @@ def _check_signal_escape_patterns(code: str):
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "unsafe_deserializations": unsafe_deserializations,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
@@ -5375,13 +6042,23 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
+        deserialize_reasons = [
+            item.get("description", "") for item in info.get("unsafe_deserializations", [])
+        ]
         network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
         all_reasons = [
             r
-            for r in reasons + shell_reasons + exception_reasons + network_reasons + file_reasons
+            for r in (
+                reasons
+                + shell_reasons
+                + exception_reasons
+                + deserialize_reasons
+                + network_reasons
+                + file_reasons
+            )
             if r
         ]
         if all_reasons:
