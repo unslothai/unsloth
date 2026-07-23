@@ -525,11 +525,7 @@ export function VoiceTab() {
         >
           {hasLabels ? (
             <Select value={micDeviceId} onValueChange={setMicDeviceId}>
-              <SelectTrigger
-                aria-label="Microphone"
-                className="min-w-56 max-w-72"
-                size="sm"
-              >
+              <SelectTrigger aria-label="Microphone" className="min-w-56 max-w-72" size="sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

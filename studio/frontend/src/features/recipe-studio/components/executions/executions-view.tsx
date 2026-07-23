@@ -168,7 +168,7 @@ export function ExecutionsView({
         const value = formatCellValue(rawValue);
         const isWide = wideColumns.has(name);
         return (
-          <div className={cn(isWide ? "min-w-[768px]" : "min-w-[192px]")}>
+          <div className={cn(isWide ? "min-w-[48rem]" : "min-w-[12rem]")}>
             <p className="whitespace-pre-wrap break-all">{value}</p>
           </div>
         );

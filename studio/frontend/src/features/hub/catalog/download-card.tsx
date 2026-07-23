@@ -140,7 +140,7 @@ export function CardUpdateButton({
               e.stopPropagation();
               onClick();
             }}
-            className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-[0.75rem] font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
+            className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-ui-12 font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
           >
             <HugeiconsIcon
               icon={ArrowReloadHorizontalIcon}

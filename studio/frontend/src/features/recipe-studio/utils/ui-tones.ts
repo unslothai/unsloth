@@ -27,10 +27,10 @@ export const RECIPE_STUDIO_USER_NODE_TONE =
 
 export const RECIPE_STUDIO_REFERENCE_BADGE_TONES = {
   user:
-    "corner-squircle border-amber-500/25 bg-amber-500/10 font-mono text-[0.6875rem] text-amber-700 dark:text-amber-300",
+    "corner-squircle border-amber-500/25 bg-amber-500/10 font-mono text-ui-11 text-amber-700 dark:text-amber-300",
   seed:
-    "corner-squircle border-blue-500/25 bg-blue-500/10 font-mono text-[0.6875rem] text-blue-700 dark:text-blue-300",
-  default: "corner-squircle font-mono text-[0.6875rem]",
+    "corner-squircle border-blue-500/25 bg-blue-500/10 font-mono text-ui-11 text-blue-700 dark:text-blue-300",
+  default: "corner-squircle font-mono text-ui-11",
 } as const;
 
 export const RECIPE_STUDIO_WARNING_BADGE_TONE =

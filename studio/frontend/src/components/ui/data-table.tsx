@@ -100,7 +100,7 @@ export function DataTable<TData, TValue>({
                 {row.getVisibleCells().map((cell) => (
                   <TableCell
                     key={cell.id}
-                    className="border-r border-border/20 last:border-r-0 text-[0.8125rem] py-3 px-4 align-top whitespace-normal"
+                    className="border-r border-border/20 last:border-r-0 text-ui-13 py-3 px-4 align-top whitespace-normal"
                   >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>

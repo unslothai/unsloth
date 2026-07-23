@@ -86,7 +86,7 @@ export const MessageTiming: FC<{
           data-slot="message-timing-trigger"
           aria-label="Message timing"
           className={cn(
-            "flex items-center rounded-[10px] p-1 font-mono text-chat-icon-fg text-[0.8125rem] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
+            "flex items-center rounded-[10px] p-1 font-mono text-chat-icon-fg text-ui-13 tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >

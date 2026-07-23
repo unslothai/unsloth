@@ -111,7 +111,7 @@ function UnsafeFileCard({ file }: { file: UnsafeFile }) {
       <Badge
         variant="outline"
         className={cn(
-          "shrink-0 text-[0.625rem] font-semibold uppercase tracking-wide",
+          "shrink-0 text-ui-10 font-semibold uppercase tracking-wide",
           severityTone("CRITICAL"),
         )}
       >
@@ -134,7 +134,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
         <Badge
           variant="outline"
           className={cn(
-            "shrink-0 text-[0.625rem] font-semibold tracking-wide",
+            "shrink-0 text-ui-10 font-semibold tracking-wide",
             severityTone(finding.severity),
           )}
         >
@@ -266,7 +266,7 @@ export function RemoteCodeConsentDialog() {
                   <p className="text-xs font-medium text-muted-foreground">
                     Our automatic scanner flagged issues including:
                   </p>
-                  <div className="max-h-[224px] min-w-0 space-y-2 overflow-y-auto pr-1">
+                  <div className="max-h-[14rem] min-w-0 space-y-2 overflow-y-auto pr-1">
                     {unsafeFiles.map((f, i) => (
                       <UnsafeFileCard key={`${f.path}-${i}`} file={f} />
                     ))}
@@ -279,7 +279,7 @@ export function RemoteCodeConsentDialog() {
                   <p className="text-xs font-medium text-muted-foreground">
                     Our automatic scanner flagged issues including:
                   </p>
-                  <div className="max-h-[352px] min-w-0 space-y-3 overflow-y-auto pr-1">
+                  <div className="max-h-[22rem] min-w-0 space-y-3 overflow-y-auto pr-1">
                     {findings.map((f, i) => (
                       <FindingCard key={i} finding={f} />
                     ))}

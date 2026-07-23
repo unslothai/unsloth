@@ -191,7 +191,7 @@ export function ProfilePersonalizationPanel() {
           name={previewName}
           imageUrl={shownAvatar}
           size="lg"
-          className="size-[124px] text-[3.15rem]"
+          className="size-[124px] text-[calc(3.15rem*var(--ui-font-scale,1))]"
         />
         <input
           ref={fileInputRef}
@@ -288,7 +288,7 @@ export function ProfilePersonalizationPanel() {
               onClick={() => setAvatarShape(shape)}
               aria-pressed={avatarShape === shape}
               className={cn(
-                "inline-flex h-8 items-center rounded-full px-4 text-[0.8125rem] font-medium transition-colors",
+                "inline-flex h-8 items-center rounded-full px-4 text-ui-13 font-medium transition-colors",
                 avatarShape === shape
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -366,7 +366,7 @@ export function ProfilePersonalizationPanel() {
               shownAvatar === null && "ring-ring-strong hover:ring-ring-strong",
             )}
           >
-            <span className="text-[0.6875rem] font-medium">
+            <span className="text-ui-11 font-medium">
               {t("settings.profile.noneLabel")}
             </span>
           </button>

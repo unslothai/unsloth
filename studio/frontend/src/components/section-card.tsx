@@ -77,7 +77,7 @@ export function SectionCard({
           <div className="flex items-center gap-2 pb-1">
             <h3 className="text-sm font-semibold">{title}</h3>
             {badge && (
-              <span className="rounded-full bg-control-accent/15 px-2 py-0.5 text-[0.625rem] font-semibold text-control-accent">
+              <span className="rounded-full bg-control-accent/15 px-2 py-0.5 text-ui-10 font-semibold text-control-accent">
                 {badge}
               </span>
             )}

@@ -188,14 +188,14 @@ function CachedSizeChipLive({
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-[0.6875rem] text-white/70"
+                    className="text-ui-11 text-white/70"
                   />
                 </span>
               </li>
             ))}
           </ul>
         ) : (
-          <span className="block max-w-52 text-[0.6875rem] leading-4 text-muted-foreground">
+          <span className="block max-w-52 text-ui-11 leading-4 text-muted-foreground">
             {variantMessage}
           </span>
         )}
@@ -225,7 +225,7 @@ export function StatChip({
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[0.625rem] font-medium leading-none tabular-nums text-muted-foreground/75",
+        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-ui-10 font-medium leading-none tabular-nums text-muted-foreground/75",
         className,
       )}
     >
@@ -482,7 +482,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
-              <p className="truncate text-[0.75rem] font-medium leading-[1.125rem] tracking-[-0.005em] text-foreground">
+              <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
                 {row.repo}
               </p>
               <AccessGlyphs
@@ -518,7 +518,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-[0.71875rem] leading-[1rem] text-muted-foreground/85">
+          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
@@ -528,7 +528,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 />
               )}
             </span>
-            <span className="shrink-0 text-[0.65625rem] tabular-nums">
+            <span className="shrink-0 text-ui-10p5 tabular-nums">
               {formatRelativeShort(row.result.updatedAt)}
             </span>
           </div>
@@ -666,7 +666,7 @@ export const InventoryRow = memo(function InventoryRow({
           <span className="hub-chip tabular-nums">{paramLabel}</span>
         )}
         {quantLabel && (
-          <span className="hub-chip font-mono text-[0.65625rem] uppercase">
+          <span className="hub-chip font-mono text-ui-10p5 uppercase">
             {quantLabel}
           </span>
         )}
@@ -716,7 +716,7 @@ export const InventoryRow = memo(function InventoryRow({
     ) : null;
 
   const ownerLine = (
-    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[0.71875rem] leading-[0.9375rem] text-muted-foreground/80">
+    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
       <span className="truncate">{subLabel}</span>
       {subLabel.toLowerCase() === "unsloth" && (
         <span
@@ -817,17 +817,17 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
-            className="size-8 shrink-0 rounded-[9px] text-[0.75rem]"
+            className="size-8 shrink-0 rounded-[9px] text-ui-12"
             remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[0.78125rem] font-semibold leading-[1rem] text-foreground">
+              <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
                 {title}
               </span>
               {compactMarkers}
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[0.65625rem] leading-[0.875rem] text-muted-foreground/75">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-10p5 leading-ui-14 text-muted-foreground/75">
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate">{subLabel}</span>
                 {subLabel.toLowerCase() === "unsloth" && (
@@ -851,7 +851,7 @@ export const InventoryRow = memo(function InventoryRow({
               )}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-2 text-[0.65625rem] tabular-nums text-muted-foreground/70">
+          <div className="flex shrink-0 items-center gap-2 text-ui-10p5 tabular-nums text-muted-foreground/70">
             {row.kind === "cache" ? (
               <CachedSizeChip
                 repoId={row.repoId}
@@ -894,7 +894,7 @@ export const InventoryRow = memo(function InventoryRow({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-[0.84375rem] font-semibold leading-[1.0625rem] text-foreground">
+              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
                 {title}
               </span>
               {statusMarkers}
@@ -915,11 +915,11 @@ export const InventoryRow = memo(function InventoryRow({
               cachePath={row.cachePath}
             />
           ) : trailing ? (
-            <span className="truncate text-[0.71875rem] tabular-nums text-muted-foreground/70">
+            <span className="truncate text-ui-11p5 tabular-nums text-muted-foreground/70">
               {trailing}
             </span>
           ) : sourceLabel ? (
-            <span className="truncate text-[0.71875rem] text-muted-foreground/55">
+            <span className="truncate text-ui-11p5 text-muted-foreground/55">
               {sourceLabel}
             </span>
           ) : null}

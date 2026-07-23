@@ -38,20 +38,20 @@ export function NetworkErrorState({
         <HugeiconsIcon icon={icon} strokeWidth={1.6} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[0.875rem] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           {title}
         </p>
-        <p className="max-w-md text-[0.78125rem] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           {body}
         </p>
-        <p className="text-[0.6875rem] text-muted-foreground/70">{message}</p>
+        <p className="text-ui-11 text-muted-foreground/70">{message}</p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
         {onSwitchDevice ? (
           <button
             type="button"
             onClick={onSwitchDevice}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
           >
             On Device
           </button>
@@ -59,7 +59,7 @@ export function NetworkErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={Refresh01Icon}
@@ -92,10 +92,10 @@ export function DiscoverFetchMoreState({
         <HugeiconsIcon icon={FilterIcon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[0.875rem] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           No matches yet
         </p>
-        <p className="max-w-md text-[0.78125rem] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           Scanned {scannedCount.toLocaleString()} results. Load another page to
           keep searching Hugging Face.
         </p>
@@ -105,7 +105,7 @@ export function DiscoverFetchMoreState({
           <button
             type="button"
             onClick={onClearFilters}
-            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+            className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
           >
             Clear filters
           </button>
@@ -114,7 +114,7 @@ export function DiscoverFetchMoreState({
           type="button"
           onClick={onFetchMore}
           disabled={isLoadingMore}
-          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={Refresh01Icon}
@@ -141,7 +141,7 @@ export function DiscoverFetchMoreFooter({
     <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
       {/* Only warn about hidden results when a filter is actually narrowing them. */}
       {hasActiveFilters && (
-        <p className="text-[0.71875rem] leading-4 text-muted-foreground">
+        <p className="text-ui-11p5 leading-4 text-muted-foreground">
           Some results may be hidden by your filters.
         </p>
       )}
@@ -149,7 +149,7 @@ export function DiscoverFetchMoreFooter({
         type="button"
         onClick={onFetchMore}
         disabled={isLoadingMore}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
       >
         <HugeiconsIcon
           icon={Refresh01Icon}
@@ -175,10 +175,10 @@ export function InventoryErrorState({
         <HugeiconsIcon icon={CloudOffIcon} strokeWidth={1.6} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[0.875rem] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           Couldn't load your library
         </p>
-        <p className="max-w-md text-[0.78125rem] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           Something went wrong reading your downloaded{" "}
           {isDataset ? "datasets" : "models"}. Check that the backend is running
           and try again.
@@ -187,7 +187,7 @@ export function InventoryErrorState({
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
       >
         <HugeiconsIcon icon={Refresh01Icon} strokeWidth={1.75} className="size-3.5" />
         Try again
@@ -213,10 +213,10 @@ export function EmptyState({
         <HugeiconsIcon icon={icon} strokeWidth={1.5} className="size-5" />
       </div>
       <div className="space-y-1">
-        <p className="text-[0.875rem] font-semibold tracking-tight text-foreground">
+        <p className="text-ui-14 font-semibold tracking-tight text-foreground">
           {title}
         </p>
-        <p className="max-w-md text-[0.78125rem] leading-5 text-muted-foreground">
+        <p className="max-w-md text-ui-12p5 leading-5 text-muted-foreground">
           {body}
         </p>
       </div>
