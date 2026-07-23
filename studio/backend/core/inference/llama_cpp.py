@@ -6404,6 +6404,22 @@ class LlamaCppBackend:
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
+                # Backstop for the relaxed Vulkan validation gate: /load and
+                # /validate only reject a CONFIRMED-diffusion pick up front, so an
+                # uncached GGUF that turns out to be diffusion after download can
+                # still arrive here with a pin. On a Vulkan build gpu_ids are ggml
+                # Vulkan ordinals, but _diffusion_gpu_arg forwards gpu_ids[0] as a
+                # CUDA/DG_GPU token -- an ordinal there would target the wrong
+                # card. Drop the unmappable pin so the runner uses its default
+                # device selection instead (same as an unpinned diffusion load).
+                if gpu_ids and is_vulkan_backend:
+                    logger.warning(
+                        "Ignoring gpu_ids %s for diffusion GGUF on a Vulkan build: "
+                        "the diffusion runner cannot map ggml Vulkan ordinals; "
+                        "serving on the default device.",
+                        gpu_ids,
+                    )
+                    gpu_ids = None
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")

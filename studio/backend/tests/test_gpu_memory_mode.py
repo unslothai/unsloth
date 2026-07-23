@@ -658,6 +658,33 @@ def test_start_diffusion_server_resets_tensor_parallel():
     assert "self._tensor_parallel = False" in src
 
 
+def test_vulkan_gpu_gate_allows_unclassified_gguf():
+    # The pre-download /load + /validate Vulkan gates must reject only a
+    # CONFIRMED-diffusion pick (`is True`). `None` -- the ordinary first-load
+    # case for an uncached Hub GGUF with no local header -- has to pass, or the
+    # GPU picker is unusable for first-time remote GGUF loads (Codex #7356).
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    # Both Vulkan validation sites (/load, /validate) gate on `is True`...
+    assert route_src.count("_classify_diffusion_gguf(config) is True") == 2
+    # ...and no diffusion *rejection* keys off the old over-broad `is not False`
+    # (which also caught the unclassifiable None). The training guard keeps its
+    # own conservative `diffusion_kind is not False` sizing -- a different name.
+    assert "_classify_diffusion_gguf(config) is not False" not in route_src
+
+
+def test_diffusion_vulkan_load_drops_unmappable_gpu_pin():
+    # Backstop for the relaxed gate: an uncached GGUF that turns out to be
+    # diffusion after download can reach the diffusion branch still carrying a
+    # Vulkan pin. ggml Vulkan ordinals can't be forwarded as the runner's
+    # CUDA/DG token, so load_model must drop the pin before the spawn.
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    diff_branch = src[src.index("if self._is_diffusion:") :]
+    guard = diff_branch.index("if gpu_ids and is_vulkan_backend:")
+    drop = diff_branch.index("gpu_ids = None")
+    spawn = diff_branch.index("_start_diffusion_server(")
+    assert guard < drop < spawn
+
+
 def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
     # The route-level reload dedupe mirrors the backend: for a loaded diffusion
     # model it compares the request against the single recorded device, not the

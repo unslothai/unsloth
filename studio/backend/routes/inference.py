@@ -4459,10 +4459,13 @@ async def _load_model_impl(
                 # Diffusion GGUFs bypass llama-server: the diffusion runner
                 # forwards gpu_ids[0] as a CUDA/DG_GPU device token, NOT
                 # --device Vulkan<i>, so a Vulkan ordinal would target the wrong
-                # card. Reject the pick for anything that can route there
-                # (diffusion or not-yet-classifiable), matching the training
-                # guard's `diffusion_kind is not False` treatment.
-                if _classify_diffusion_gguf(config) is not False:
+                # card. Reject only a CONFIRMED diffusion GGUF (`is True`) here:
+                # `None` is the ordinary first-load case for an uncached Hub GGUF
+                # (no local header to classify yet), and rejecting it would make
+                # the picker unusable for remote GGUFs. An uncached model that
+                # turns out to be diffusion is caught post-download by the
+                # spawn-time Vulkan backstop in load_model.
+                if _classify_diffusion_gguf(config) is True:
                     raise HTTPException(
                         status_code = 400,
                         detail = (
@@ -5089,10 +5092,13 @@ async def validate_model(
                 )
             # Mirror /load: a Vulkan build validates the pick in ggml's own
             # Vulkan ordinal space (the space the --device pin uses), and rejects
-            # picks for diffusion GGUFs (their runner takes a CUDA/DG_GPU token,
-            # not --device Vulkan<i>, so an ordinal targets the wrong card).
+            # picks for CONFIRMED diffusion GGUFs (their runner takes a CUDA/DG_GPU
+            # token, not --device Vulkan<i>, so an ordinal targets the wrong card).
+            # `None` (uncached, unclassifiable) is allowed through so first-time
+            # remote GGUF loads still work; the spawn-time backstop catches an
+            # uncached model that turns out to be diffusion after download.
             if LlamaCppBackend._is_vulkan_backend():
-                if _classify_diffusion_gguf(config) is not False:
+                if _classify_diffusion_gguf(config) is True:
                     raise HTTPException(
                         status_code = 400,
                         detail = (
