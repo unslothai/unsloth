@@ -121,6 +121,7 @@ type ActiveModelLoadRun = {
   resolveCompletion: () => void;
   cancelPromise: Promise<boolean> | null;
   backendLoadStarted: boolean;
+  backendLoadModelId: string | null;
   rollbackCheckpoint: string | null;
   rollbackConfig?: PerModelConfig;
   previousCheckpointWasUnloaded: boolean;
@@ -494,6 +495,7 @@ export function useChatModelRuntime() {
       if (run.cancelPromise) return run.cancelPromise;
 
       const model = run.info;
+      const backendLoadModelId = run.backendLoadModelId ?? model.id;
       run.abortController.abort();
       useHfTokenWarningStore.getState().resolve("cancel", run);
       useRemoteCodeConsentDialogStore.getState().resolve(false, run);
@@ -522,7 +524,7 @@ export function useChatModelRuntime() {
           // in-flight backend load, so send it before waiting for the frontend
           // task to observe the abort. The unload route waits for cancellation
           // to settle before it returns, preventing a late /load activation.
-          await unloadModel({ model_path: model.id });
+          await unloadModel({ model_path: backendLoadModelId });
           if (
             run.rollbackCheckpoint &&
             (run.backendLoadStarted ||
@@ -589,11 +591,11 @@ export function useChatModelRuntime() {
   );
 
   const cancelLoading = useCallback(
-    (): Promise<boolean> => {
+    (preserveCheckpoint = false): Promise<boolean> => {
       const localRun = activeLoadRunRef.current;
-      if (localRun) return cancelLoadRun(localRun);
+      if (localRun) return cancelLoadRun(localRun, preserveCheckpoint);
       const shared = sharedModelLoadHandle;
-      return shared ? shared.cancel() : Promise.resolve(false);
+      return shared ? shared.cancel(preserveCheckpoint) : Promise.resolve(false);
     },
     [cancelLoadRun],
   );
@@ -823,6 +825,7 @@ export function useChatModelRuntime() {
         resolveCompletion,
         cancelPromise: null,
         backendLoadStarted: false,
+        backendLoadModelId: null,
         rollbackCheckpoint: previousCheckpoint,
         rollbackConfig: previousConfig,
         previousCheckpointWasUnloaded: replacementNeedsRollback,
@@ -1103,6 +1106,7 @@ export function useChatModelRuntime() {
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             run.backendLoadStarted = true;
+            run.backendLoadModelId = modelId;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
@@ -1332,6 +1336,8 @@ export function useChatModelRuntime() {
                 }
               }
               try {
+                run.backendLoadStarted = true;
+                run.backendLoadModelId = previousCheckpoint;
                 const rollbackResponse = await loadModel({
                   model_path: previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
@@ -1361,7 +1367,13 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                }, {
+                  dialogOwner: run,
+                  signal: abortCtrl.signal,
                 });
+                if (abortCtrl.signal.aborted) {
+                  throw new Error("Cancelled");
+                }
                 // The rollback restored the previous checkpoint, so a
                 // replacement must unload it before starting its own load.
                 previousWasUnloaded = false;

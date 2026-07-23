@@ -2499,7 +2499,7 @@ export function ChatPage({
           store.modelLoading || store.loadingModelPick,
         );
         if (hadLocalLoad) {
-          const stopped = await cancelLoading();
+          const stopped = await cancelLoading(true);
           if (!isModelSelectionIntentCurrent(selectionIntentId)) return;
           if (!stopped) {
             toast.error("Could not stop the current model load", {
