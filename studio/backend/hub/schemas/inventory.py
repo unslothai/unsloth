@@ -99,6 +99,10 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether this HF entry belongs to the current download cache.",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",

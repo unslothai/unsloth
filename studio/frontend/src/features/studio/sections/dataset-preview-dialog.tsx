@@ -261,7 +261,7 @@ export function DatasetPreviewDialog({
       accessorKey: colName,
       header: () => (
         <div className="flex flex-col gap-2">
-          <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+          <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
             {colName}
           </span>
           {mappingEnabled && (
@@ -308,7 +308,7 @@ export function DatasetPreviewDialog({
         const text = formatCell(value);
         if (!text) {
           return (
-            <span className="text-muted-foreground/40 italic text-[13px]">
+            <span className="text-muted-foreground/40 italic text-ui-13">
               --
             </span>
           );
@@ -316,7 +316,7 @@ export function DatasetPreviewDialog({
         const full = typeof value === "string" ? value : JSON.stringify(value);
         return (
           <p
-            className="text-[13px] leading-relaxed line-clamp-6"
+            className="text-ui-13 leading-relaxed line-clamp-6"
             title={full}
           >
             {text}
@@ -331,11 +331,11 @@ export function DatasetPreviewDialog({
         id: "__system_generated",
         header: () => (
           <div className="flex flex-col gap-2">
-            <span className="font-heading text-[13px] font-semibold tracking-tight text-foreground">
+            <span className="font-heading text-ui-13 font-semibold tracking-tight text-foreground">
               System <span className="text-muted-foreground font-normal">(generated)</span>
             </span>
             {mappingEnabled && (
-              <Badge variant="outline" className="h-6 w-fit text-[10px] px-2 py-0 border-dashed text-muted-foreground">
+              <Badge variant="outline" className="h-6 w-fit text-ui-10 px-2 py-0 border-dashed text-muted-foreground">
                 System
               </Badge>
             )}
@@ -343,7 +343,7 @@ export function DatasetPreviewDialog({
         ),
         cell: () => (
           <p
-            className="text-[13px] leading-relaxed line-clamp-6 text-muted-foreground italic"
+            className="text-ui-13 leading-relaxed line-clamp-6 text-muted-foreground italic"
             title={datasetSystemPrompt}
           >
             {datasetSystemPrompt}
@@ -443,7 +443,7 @@ export function DatasetPreviewDialog({
                         <Badge
                           key={col}
                           variant="outline"
-                          className="text-[11px] font-mono h-5"
+                          className="text-ui-11 font-mono h-5"
                         >
                           {col}
                         </Badge>
@@ -493,7 +493,7 @@ export function DatasetPreviewDialog({
 
               {/* Footer */}
               <div className="mt-3">
-                <p className="text-[11px] text-muted-foreground/60 text-center tabular-nums">
+                <p className="text-ui-11 text-muted-foreground/60 text-center tabular-nums">
                   Showing {rows.length}
                   {data.total_rows != null &&
                     ` of ${data.total_rows.toLocaleString()}`}{" "}
@@ -501,7 +501,7 @@ export function DatasetPreviewDialog({
                 </p>
 
                 {mode === "preview" && mappingEnabled && (
-                  <p className="mt-2 text-[11px] text-muted-foreground/70 text-center">
+                  <p className="mt-2 text-ui-11 text-muted-foreground/70 text-center">
                     Mapping is saved automatically. You can start training anytime.
                   </p>
                 )}
@@ -540,7 +540,7 @@ function MetaRow({
       <span className="text-muted-foreground font-medium text-xs w-24 shrink-0">
         {label}:
       </span>
-      <span className="text-foreground text-[13px] min-w-0">{value}</span>
+      <span className="text-foreground text-ui-13 min-w-0">{value}</span>
     </div>
   );
 }
