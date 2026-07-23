@@ -163,7 +163,7 @@ function ReasoningContent({
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-[0.84375rem] outline-none",
+        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",

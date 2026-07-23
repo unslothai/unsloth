@@ -95,7 +95,7 @@ export function UpdateBanner({
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-32px)] max-w-[400px]"
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
               : "pointer-events-auto w-full",
           )}
           data-testid="tauri-update-banner"
@@ -142,7 +142,7 @@ export function UpdateBanner({
                     </span>
                   </p>
                 )}
-                <p className="mt-1 text-[0.6875rem] text-muted-foreground/70">
+                <p className="mt-1 text-ui-11 text-muted-foreground/70">
                   {showFailure
                     ? "Backend recovered. Diagnostics are still available."
                     : isManualLinuxPackage
@@ -166,7 +166,7 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[0.8125rem] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={() => {
                       handleCopyDiagnostics().catch(console.error);
                     }}
@@ -176,14 +176,14 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[0.8125rem] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[0.8125rem]"
+                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
@@ -195,14 +195,14 @@ export function UpdateBanner({
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-[0.8125rem] font-medium text-foreground"
+                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Remind me later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[0.8125rem]"
+                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
@@ -219,7 +219,7 @@ export function UpdateBanner({
                 readOnly={true}
                 value={manualReport}
                 onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-[0.625rem] text-muted-foreground"
+                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
               />
             )}
           </div>

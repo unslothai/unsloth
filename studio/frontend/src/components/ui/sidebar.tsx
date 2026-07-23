@@ -30,8 +30,8 @@ import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
-const SIDEBAR_WIDTH = "280px"
-const SIDEBAR_WIDTH_ICON = "48px"
+const SIDEBAR_WIDTH = "17.5rem"
+const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 type SidebarContextProps = {
@@ -228,7 +228,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[288px] p-0 [&>button]:hidden"
+          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[18rem] p-0 [&>button]:hidden"
           side={side}
         >
           <SheetHeader className="sr-only">
@@ -471,7 +471,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        "text-[#94a3b8] dark:text-[#666] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-[0.625rem] font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
+        "text-[#94a3b8] dark:text-[#666] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-ui-10 font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
         className
       )}
       {...props}

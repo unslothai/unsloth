@@ -106,7 +106,7 @@ export function ModelTypeStep(): ReactElement {
                 {isDisabled && (
                   <Badge
                     variant="secondary"
-                    className="absolute top-2 right-2 text-[0.625rem]"
+                    className="absolute top-2 right-2 text-ui-10"
                   >
                     Coming Soon
                   </Badge>

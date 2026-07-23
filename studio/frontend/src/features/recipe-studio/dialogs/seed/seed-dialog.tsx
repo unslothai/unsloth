@@ -319,7 +319,7 @@ export function GithubRepoSeedForm({
             hint="Prefer the server GH_TOKEN / GITHUB_TOKEN env var. Use public_repo for public repos or repo for private repos."
           />
           {usingEnvToken && (
-            <span className="shrink-0 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[0.625rem] font-medium text-emerald-700 dark:text-emerald-300">
+            <span className="shrink-0 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-ui-10 font-medium text-emerald-700 dark:text-emerald-300">
               Using server env var
             </span>
           )}

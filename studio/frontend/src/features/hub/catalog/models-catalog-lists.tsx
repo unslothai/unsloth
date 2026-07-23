@@ -68,7 +68,7 @@ export function InventoryWarningRow({
   onRetry: () => void;
 }) {
   return (
-    <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[0.78125rem] text-muted-foreground">
+    <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-12p5 text-muted-foreground">
       <div className="flex items-center justify-between gap-3">
         <span>
           Some on-device sources couldn't be scanned. Showing available{" "}
@@ -76,7 +76,7 @@ export function InventoryWarningRow({
         </span>
         <button
           type="button"
-          className="shrink-0 text-[0.75rem] font-medium text-foreground transition-colors hover:text-primary"
+          className="shrink-0 text-ui-12 font-medium text-foreground transition-colors hover:text-primary"
           onClick={onRetry}
         >
           Retry
@@ -388,7 +388,7 @@ export function DownloadedList({
 
   if (!downloadedReady && !hasInventoryRows) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center gap-3 text-[0.8125rem] text-muted-foreground">
+      <div className="flex min-h-[240px] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
         <Spinner className="size-4" />
         Loading local inventory...
       </div>
@@ -416,7 +416,7 @@ export function DownloadedList({
               <button
                 type="button"
                 onClick={onClearFilters}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-[0.75rem] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
               >
                 Show all types
               </button>
@@ -444,7 +444,7 @@ export function DownloadedList({
     <>
       {pinnedItems.length > 0 && (
         <>
-          <div className="flex items-center gap-1.5 px-1 pb-2 pt-3 text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="flex items-center gap-1.5 px-1 pb-2 pt-3 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">
             <HugeiconsIcon
               icon={PinIcon}
               strokeWidth={1.75}
@@ -474,7 +474,7 @@ export function DownloadedList({
             ))}
           </div>
           {unpinnedItems.length > 0 && (
-            <div className="px-1 pb-2 pt-2 text-[0.6875rem] font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="px-1 pb-2 pt-2 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">
               All {isDataset ? "datasets" : "models"}
             </div>
           )}

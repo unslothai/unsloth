@@ -83,7 +83,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface rounded-3xl! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-32px)] gap-0 p-0 ring-0 sm:max-w-[635px]"
+      className="chat-search-surface rounded-3xl! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
       <Command className="rounded-3xl p-0" shouldFilter={false}>
@@ -143,10 +143,10 @@ export function ChatSearchDialog() {
                   strokeWidth={2}
                   className="size-4 shrink-0 text-muted-foreground"
                 />
-                <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">
+                <span className="min-w-0 flex-1 truncate text-ui-13 font-medium">
                   {item.title || "Untitled chat"}
                 </span>
-                <span className="shrink-0 text-[0.6875rem] text-muted-foreground">
+                <span className="shrink-0 text-ui-11 text-muted-foreground">
                   {formatRelative(item.createdAt)}
                 </span>
               </CommandPrimitive.Item>

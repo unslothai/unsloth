@@ -145,12 +145,12 @@ export function ArtifactCard({
             <span className="truncate text-sm font-medium leading-tight text-foreground">
               {isCode ? "HTML Code" : artifact.title}
             </span>
-            <span className="truncate text-[0.6875rem] leading-none text-muted-foreground">
+            <span className="truncate text-ui-11 leading-none text-muted-foreground">
               HTML canvas
             </span>
           </span>
           {isStreaming && !isCode ? (
-            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[0.625rem] font-medium text-primary motion-reduce:animate-none">
+            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-ui-10 font-medium text-primary motion-reduce:animate-none">
               Generating
             </span>
           ) : null}

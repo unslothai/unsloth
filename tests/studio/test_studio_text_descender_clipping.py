@@ -30,7 +30,7 @@ def _read(path: Path) -> str:
 def test_model_selector_trigger_label_uses_leading_tight():
     src = _read(MODEL_SELECTOR)
     pattern = re.compile(
-        r'<span\s+className="[^"]*\bmin-w-0\b[^"]*\bflex-1\b[^"]*\btruncate\b[^"]*\bfont-heading\b[^"]*\btext-\[1rem\][^"]*"',
+        r'<span\s+className="[^"]*\bmin-w-0\b[^"]*\bflex-1\b[^"]*\btruncate\b[^"]*\bfont-heading\b[^"]*\btext-ui-16[^"]*"',
     )
     matches = pattern.findall(src)
     assert matches, "could not find ModelSelectorTrigger model-name span"
