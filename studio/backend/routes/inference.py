@@ -8162,6 +8162,12 @@ async def openai_chat_completions(
             tools_to_use = await _select_request_tools(
                 payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
             )
+            # Selected tools (client + MCP-discovered schemas) are rendered into
+            # the chat template as prompt text and the nudge, so neutralize their
+            # control markers here too, matching the non-loop path (#7066).
+            from core.inference.chat_template_helpers import neutralize_tools_control_markup
+
+            tools_to_use = neutralize_tools_control_markup(tools_to_use)
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
             # the caller didn't opt into. Callers who omit enabled_tools still
@@ -9520,6 +9526,12 @@ async def openai_chat_completions(
         _sf_tools_to_use = await _select_request_tools(
             payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
         )
+        # Selected tools (client + MCP-discovered schemas) reach local chat
+        # template rendering and the nudge, so neutralize their control markers
+        # here too, matching the non-loop path (#7066).
+        from core.inference.chat_template_helpers import neutralize_tools_control_markup
+
+        _sf_tools_to_use = neutralize_tools_control_markup(_sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
         # survived, so a model-emitted built-in call can't piggy-back on the
         # empty allow-list.
@@ -13220,10 +13232,17 @@ async def anthropic_count_tokens(
     openai_messages = _coalesce_consecutive_user_turns(
         _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(openai_messages))
     )
-    from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+    from core.inference.chat_template_helpers import (
+        neutralize_control_markup_in_messages,
+        neutralize_tools_control_markup,
+    )
 
     openai_messages = neutralize_control_markup_in_messages(openai_messages)
-    openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
+    # Generation neutralizes tool schemas before rendering (see /v1/messages), so
+    # neutralize here too or the count reflects a different prompt (#7066).
+    openai_tools = (
+        neutralize_tools_control_markup(anthropic_tools_to_openai(payload.tools or [])) or None
+    )
 
     try:
         count = await asyncio.to_thread(

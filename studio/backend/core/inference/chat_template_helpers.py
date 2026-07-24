@@ -37,6 +37,11 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     (_THINK_OPEN, f"<{_THINK_NEUTRAL_ZW}think>"),
     ("<|im_start|>", f"<|{_THINK_NEUTRAL_ZW}im_start|>"),
     ("<|im_end|>", f"<|{_THINK_NEUTRAL_ZW}im_end|>"),
+    # Gemma-4 GGUF templates render thinking with these channel sentinels, so a
+    # non-assistant turn carrying them raw could inject a fake thought channel
+    # (#7066). Neutralizing them everywhere is a no-op for other templates.
+    (_GEMMA_CHANNEL_START, f"<|{_THINK_NEUTRAL_ZW}channel>"),
+    (_GEMMA_THOUGHT_CLOSE, f"<{_THINK_NEUTRAL_ZW}channel|>"),
 )
 
 
@@ -151,9 +156,18 @@ def neutralize_tool_call_arguments(tool_calls):
     for call in tool_calls:
         if isinstance(call, dict):
             fn = call.get("function")
-            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
-                new_args = neutralize_non_assistant_control_markup(fn["arguments"])
-                if new_args != fn["arguments"]:
+            if isinstance(fn, dict) and fn.get("arguments") is not None:
+                args = fn["arguments"]
+                if isinstance(args, str):
+                    new_args = neutralize_non_assistant_control_markup(args)
+                else:
+                    # Strict tool templates take the retry path where
+                    # _normalize_tool_call_arguments() has already parsed the
+                    # JSON string into a dict/list, so a control marker inside a
+                    # parsed value would otherwise render raw. Deep-neutralize
+                    # non-string arguments too (#7066).
+                    new_args = neutralize_control_markup_deep(args)
+                if new_args is not args and new_args != args:
                     call = {**call, "function": {**fn, "arguments": new_args}}
                     changed = True
         out.append(call)
