@@ -588,7 +588,9 @@ with sync_playwright() as p:
                 if page_crashed(page, exc):
                     runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
                     page = recover_or_replace_page(
-                        page, ctx, default_timeout_ms = 60_000,
+                        page,
+                        ctx,
+                        default_timeout_ms = 60_000,
                         info = lambda m: info(f"recovery: {m}"),
                     )
                 else:
