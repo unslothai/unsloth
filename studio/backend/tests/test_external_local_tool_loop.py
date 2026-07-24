@@ -869,3 +869,155 @@ def test_stop_during_final_synthesis_unblocks(monkeypatch):
     assert isinstance(out, list)
     # Confirms the final synthesis pass was actually reached and then abandoned.
     assert client.calls == 2
+
+
+RENDER_HTML_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_html",
+        "description": "Render HTML to the canvas",
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string"}},
+            "required": ["code"],
+        },
+    },
+}
+
+
+def _full_tool_call_stream(call_id, name, arguments_json):
+    return [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": arguments_json},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+
+
+def test_stream_external_local_tool_loop_dedupes_repeated_tool_call(monkeypatch):
+    # A remote model that repeats the same successful call in a later round must not
+    # re-execute the side effect: the second identical call is an internal no-op, matching
+    # the local GGUF/safetensors loops (#7282).
+    client = _FakeClient(
+        [
+            _full_tool_call_stream("c1", "web_search", '{"query":"x"}'),
+            _full_tool_call_stream("c2", "web_search", '{"query":"x"}'),  # identical
+            [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"],
+        ]
+    )
+    calls = {"n": 0}
+
+    def fake_execute_tool(name, arguments, *args, **kwargs):
+        calls["n"] += 1
+        return "search hits: 3"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "search please"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    # The duplicate call is not executed.
+    assert calls["n"] == 1
+    events = _parse_events(lines)
+    # Only the real execution surfaces a visible tool card.
+    assert len([e for e in events if e.get("type") == "tool_start"]) == 1
+    assert len([e for e in events if e.get("type") == "tool_end"]) == 1
+    # The third round still carries a role=tool reply for the deduped call_id so the
+    # assistant tool_call stays matched, and its content is the duplicate no-op nudge.
+    third_msgs = client.requests[2]["messages"]
+    dup_tool_msg = next(
+        m for m in third_msgs if m.get("role") == "tool" and m.get("tool_call_id") == "c2"
+    )
+    assert "not executed" in dup_tool_msg["content"]
+    assert "identical call" in dup_tool_msg["content"]
+
+
+def test_stream_external_local_tool_loop_dedupes_one_shot_render_html(monkeypatch):
+    # render_html is one-shot: once it has run successfully, a later render_html call (even
+    # with different args) is a no-op, mirroring the local loops (#7282).
+    client = _FakeClient(
+        [
+            _full_tool_call_stream("r1", "render_html", '{"code":"<h1>hi</h1>"}'),
+            _full_tool_call_stream("r2", "render_html", '{"code":"<h2>bye</h2>"}'),
+            [_sse_chunk(content = "done", finish_reason = "stop"), "data: [DONE]"],
+        ]
+    )
+    calls = {"n": 0}
+
+    def fake_execute_tool(name, arguments, *args, **kwargs):
+        calls["n"] += 1
+        return "<rendered>"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "draw please"}],
+            model = "remote-model",
+            tools = [RENDER_HTML_TOOL],
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    lines = asyncio.run(_run())
+    assert calls["n"] == 1
+    third_msgs = client.requests[2]["messages"]
+    repeat_msg = next(
+        m for m in third_msgs if m.get("role") == "tool" and m.get("tool_call_id") == "r2"
+    )
+    assert "render_html completed successfully earlier" in repeat_msg["content"]
+
+
+def test_merge_system_nudge_preserves_structured_system_content():
+    # Codex #7330: a leading system message with structured list content (text/image
+    # parts preserved for vision-capable Connections) must stay a parts list -- the nudge
+    # is appended as a text part, never str()-ed into a Python-repr string.
+    from routes.inference import _merge_system_nudge
+
+    loop_messages = [
+        {"role": "system", "content": [{"type": "text", "text": "You are helpful."}]},
+        {"role": "user", "content": "hi"},
+    ]
+    out = _merge_system_nudge(loop_messages, "NUDGE")
+    assert isinstance(out[0]["content"], list)
+    assert out[0]["content"][0] == {"type": "text", "text": "You are helpful."}
+    assert out[0]["content"][-1] == {"type": "text", "text": "NUDGE"}
+    # No Python repr of the list leaked into any text part.
+    assert not any("[{" in str(p.get("text", "")) for p in out[0]["content"])
+    # Later messages are untouched.
+    assert out[1] == {"role": "user", "content": "hi"}
+
+
+def test_merge_system_nudge_appends_to_string_system_content():
+    from routes.inference import _merge_system_nudge
+    out = _merge_system_nudge([{"role": "system", "content": "Base."}], "NUDGE")
+    assert out[0]["content"] == "Base.\n\nNUDGE"
+
+
+def test_merge_system_nudge_prepends_when_no_leading_system_message():
+    from routes.inference import _merge_system_nudge
+
+    out = _merge_system_nudge([{"role": "user", "content": "hi"}], "NUDGE")
+    assert out[0] == {"role": "system", "content": "NUDGE"}
+    assert out[1] == {"role": "user", "content": "hi"}

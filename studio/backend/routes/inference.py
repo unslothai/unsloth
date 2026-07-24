@@ -9649,6 +9649,28 @@ def _build_external_messages(
     return result
 
 
+def _merge_system_nudge(loop_messages: list[dict], nudge: str) -> list[dict]:
+    """Merge the tool-action nudge into the leading system message (or prepend one).
+
+    A leading system message with structured `content` (a list of text/image parts
+    that `_build_external_messages` preserves for vision-capable Connections) stays a
+    parts list: the nudge is appended as a text part rather than `str()`-ing the list
+    into its Python repr, which would send `[{...}]` to the model instead of the prompt
+    (#7282).
+    """
+    if not nudge:
+        return loop_messages
+    if loop_messages and loop_messages[0].get("role") == "system":
+        merged = dict(loop_messages[0])
+        content = merged.get("content")
+        if isinstance(content, list):
+            merged["content"] = [*content, {"type": "text", "text": nudge}]
+        else:
+            merged["content"] = (str(content or "").rstrip() + "\n\n" + nudge).strip()
+        return [merged, *loop_messages[1:]]
+    return [{"role": "system", "content": nudge}, *loop_messages]
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
@@ -9785,16 +9807,7 @@ async def _proxy_to_external_provider(
         # Inject the same tool-action nudge local GGUF turns get so small remote models know when to call tools.
         _nudge = _build_tool_action_nudge(tools = tools_to_use, model_name = model)
         _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
-        loop_messages = list(chat_messages)
-        if _nudge:
-            if loop_messages and loop_messages[0].get("role") == "system":
-                merged = dict(loop_messages[0])
-                merged["content"] = (
-                    str(merged.get("content") or "").rstrip() + "\n\n" + _nudge
-                ).strip()
-                loop_messages = [merged, *loop_messages[1:]]
-            else:
-                loop_messages = [{"role": "system", "content": _nudge}, *loop_messages]
+        loop_messages = _merge_system_nudge(list(chat_messages), _nudge)
 
         _confirm = _permission_mode_confirm(payload)
         cancel_event = threading.Event()

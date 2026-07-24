@@ -28,6 +28,7 @@ import uuid
 from typing import Any, AsyncGenerator, Optional
 
 from core.inference.tool_loop_controller import (
+    ToolLoopController,
     strip_result_for_model,
     tool_event_provenance,
 )
@@ -189,6 +190,13 @@ async def stream_external_local_tool_loop(
         if isinstance(t, dict) and isinstance(t.get("function"), dict)
     }
     enabled_names.discard(None)
+
+    # Mirror the local GGUF/safetensors loops (ToolLoopController): a repeated successful
+    # call, or a render_html after it already ran, becomes an internal no-op instead of
+    # re-executing. Without this a looping remote model re-applies a terminal/MCP side
+    # effect every round until the budget is exhausted (#7282). tools=None keeps this to
+    # duplicate/one-shot detection; the enabled-tool gate below already rejects disabled calls.
+    tool_controller = ToolLoopController(tools = None)
 
     for _iteration in range(max_tool_iterations):
         if cancel_event.is_set():
@@ -385,6 +393,23 @@ async def stream_external_local_tool_loop(
                 )
                 continue
 
+            # Duplicate / one-shot repeat gate (parity with the local loops): a call whose
+            # (name, args) already succeeded, or a render_html after it already ran, is fed
+            # back as an internal no-op result instead of re-executing the side effect. A
+            # role=tool reply keeps every assistant tool_call matched for the next round.
+            dedup_decision = tool_controller.prepare_call(tc)
+            if not dedup_decision.should_execute:
+                completion = tool_controller.record_noop(dedup_decision)
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": name,
+                        "content": strip_result_for_model(completion.result),
+                    }
+                )
+                continue
+
             needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
             if needs_confirm and permission_mode == "auto":
                 # auto only pauses calls flagged unsafe; always-safe tools skip.
@@ -446,6 +471,10 @@ async def stream_external_local_tool_loop(
                     abort_tool_decision(decision_slot, approval_id)
 
             model_result = result if isinstance(result, str) else str(result)
+            if not denied:
+                # Ledger the executed result so a later identical call is deduped; a
+                # failed/errored result is not marked successful, so a retry still runs.
+                tool_controller.record_result(dedup_decision, model_result)
             yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': model_result, 'provenance': _prov}, ensure_ascii = False)}"
             conversation.append(
                 {
