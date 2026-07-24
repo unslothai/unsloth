@@ -16,9 +16,13 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from routes.inference import _validate_native_gguf_companion
+from routes.inference import _request_matches_loaded_settings
+from core.inference.llama_cpp import LlamaCppBackend
+from models.inference import LoadRequest
 
 
 def _write_pair(tmp_path: Path, folder: str | None = None) -> tuple[Path, Path]:
+    tmp_path.mkdir(parents = True, exist_ok = True)
     weight = tmp_path / "model.gguf"
     weight.write_bytes(b"model")
     parent = tmp_path if folder is None else tmp_path / folder
@@ -39,6 +43,60 @@ def test_native_mtp_companion_allows_mtp_directory(tmp_path, folder):
     _validate_native_gguf_companion(
         str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
     )
+
+
+def test_native_mtp_companion_allows_repo_root_mtp_directory(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    weight, _ = _write_pair(quant_dir)
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model.gguf"
+    companion.write_bytes(b"draft")
+
+    _validate_native_gguf_companion(
+        str(companion),
+        str(weight),
+        "MTP drafter",
+        allow_mtp_subdir = True,
+        mtp_search_root = str(tmp_path),
+    )
+
+
+def test_native_mtp_companion_rejects_unrelated_search_root(tmp_path):
+    quant_dir = tmp_path / "repo" / "Q4_0"
+    weight, _ = _write_pair(quant_dir)
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model.gguf"
+    companion.write_bytes(b"draft")
+
+    with pytest.raises(HTTPException, match = "must live beside"):
+        _validate_native_gguf_companion(
+            str(companion),
+            str(weight),
+            "MTP drafter",
+            allow_mtp_subdir = True,
+            mtp_search_root = str(tmp_path),
+        )
+
+
+def test_reload_dedup_finds_repo_root_mtp_companion(tmp_path, monkeypatch):
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model.gguf"
+    companion.write_bytes(b"draft")
+
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._gguf_path = str(weight)
+    backend._mtp_draft_path = str(companion)
+
+    request = LoadRequest(model_path = str(weight))
+    assert _request_matches_loaded_settings(request, backend)
 
 
 def test_native_vision_companion_rejects_mtp_directory(tmp_path):

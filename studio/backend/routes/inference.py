@@ -1020,6 +1020,7 @@ try:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1059,6 +1060,7 @@ except ImportError:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -3077,6 +3079,7 @@ def _validate_native_gguf_companion(
     label: str,
     *,
     allow_mtp_subdir: bool = False,
+    mtp_search_root: str | Path | None = None,
 ) -> None:
     """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
     would otherwise hand to llama-server: must be a regular file (no symlink
@@ -3103,7 +3106,10 @@ def _validate_native_gguf_companion(
         )
     try:
         if not native_gguf_companion_parent_allowed(
-            companion, gguf, allow_mtp_subdir = allow_mtp_subdir
+            companion,
+            gguf,
+            allow_mtp_subdir = allow_mtp_subdir,
+            mtp_search_root = mtp_search_root,
         ):
             location = (
                 "beside the selected GGUF or in its MTP directory"
@@ -3337,7 +3343,10 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            detected = detect_mtp_file(llama_backend.gguf_path)
+            companion_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_mtp_file(llama_backend.gguf_path, search_root = companion_root)
             stored = llama_backend.mtp_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
@@ -4656,11 +4665,15 @@ async def _load_model_impl(
                         # The drafter is optional (unlike mmproj for a vision
                         # model): drop it rather than fail the load.
                         try:
+                            mtp_search_root = _local_gguf_companion_search_root(
+                                config.gguf_file, config.gguf_file
+                            )
                             _validate_native_gguf_companion(
                                 config.gguf_mtp_file,
                                 config.gguf_file,
                                 "MTP drafter",
                                 allow_mtp_subdir = True,
+                                mtp_search_root = mtp_search_root,
                             )
                         except HTTPException as exc:
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)

@@ -1471,7 +1471,11 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
         if weight_name is None:
             return True
         stem = _pairing_stem(candidate.name)
-        return bool(stem) and weight_name.startswith(stem)
+        return (
+            bool(stem)
+            and weight_name.startswith(stem)
+            and (len(weight_name) == len(stem) or not weight_name[len(stem)].isalnum())
+        )
 
     def _precision_rank(candidate: Path) -> tuple[int, str]:
         name = candidate.name.lower()

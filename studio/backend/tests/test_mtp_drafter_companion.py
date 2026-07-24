@@ -259,6 +259,20 @@ def test_detect_mtp_file_subdir_skips_foreign_drafter(tmp_path):
     assert detect_mtp_file(str(weight)) is None
 
 
+@pytest.mark.parametrize(
+    "companion_path",
+    ["mtp-gemma-4-E4B-it-Q4_0.gguf", "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf"],
+)
+def test_detect_mtp_file_requires_model_name_boundary(tmp_path, companion_path):
+    weight = tmp_path / "gemma-4-E4B-item-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    companion = tmp_path / companion_path
+    companion.parent.mkdir(parents = True, exist_ok = True)
+    companion.write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) is None
+
+
 def test_detect_mtp_file_accepts_case_variant_subdir(tmp_path):
     weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
     weight.write_bytes(b"x")
