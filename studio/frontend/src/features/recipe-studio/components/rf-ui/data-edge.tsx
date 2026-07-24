@@ -4,6 +4,7 @@
 import {
   BaseEdge,
   type Edge,
+  EdgeLabelRenderer,
   type EdgeProps,
   type Position,
   getBezierPath,
@@ -12,15 +13,17 @@ import {
   useStore,
 } from "@xyflow/react";
 import { type ReactElement, useMemo } from "react";
-import { collectEdgeObstacles } from "../../utils/graph/edge-obstacles";
+import { collectObstacles } from "../../utils/graph/edge-obstacles";
 import {
   laneOffsetFromId,
   routeOrthogonalPath,
 } from "../../utils/graph/orthogonal-router";
+import { WireLabel } from "../wire-label";
 
 export type DataEdge = Edge<{
   path?: "auto" | "bezier" | "smoothstep" | "step" | "straight" | "orthogonal";
   active?: boolean;
+  label?: string;
 }>;
 
 export function DataEdge({
@@ -28,12 +31,10 @@ export function DataEdge({
   id,
   markerEnd,
   selected,
-  source,
   sourcePosition,
   sourceX,
   sourceY,
   style,
-  target,
   targetPosition,
   targetX,
   targetY,
@@ -43,10 +44,7 @@ export function DataEdge({
   });
   const isActive = Boolean(data.active);
   const nodeLookup = useStore((store) => store.nodeLookup);
-  const obstacles = useMemo(
-    () => collectEdgeObstacles(nodeLookup, source, target),
-    [nodeLookup, source, target],
-  );
+  const obstacles = useMemo(() => collectObstacles(nodeLookup), [nodeLookup]);
   const edgePath =
     resolvedPathType === "orthogonal"
       ? routeOrthogonalPath({
@@ -78,7 +76,24 @@ export function DataEdge({
   };
 
   return (
-    <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={edgeStyle} />
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={edgeStyle}
+      />
+      {data.label ? (
+        <EdgeLabelRenderer>
+          <WireLabel
+            label={data.label}
+            x={sourceX}
+            y={sourceY}
+            active={isActive || Boolean(selected)}
+          />
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
   );
 }
 

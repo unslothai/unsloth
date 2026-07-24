@@ -726,14 +726,12 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   loadRecipe: (snapshot) =>
     set((state) => ({
       configs: snapshot.configs,
-      nodes: applyLayoutDirectionToNodes(
-        snapshot.nodes,
-        snapshot.configs,
-        snapshot.layoutDirection,
-      ),
+      // Gate-logic wiring is horizontal only: pins are left-in / right-out, so
+      // ignore any saved TB direction and always lay out left-to-right.
+      nodes: applyLayoutDirectionToNodes(snapshot.nodes, snapshot.configs, "LR"),
       edges: snapshot.edges,
       processors: snapshot.processors,
-      layoutDirection: snapshot.layoutDirection,
+      layoutDirection: "LR",
       nextId: snapshot.nextId,
       nextY: snapshot.nextY,
       auxNodePositions: snapshot.auxNodePositions ?? {},

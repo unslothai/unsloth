@@ -18,7 +18,7 @@ import {
   normalizeRecipeHandleId,
 } from "../handles";
 import { readNodeHeight, readNodeWidth } from "../rf-node-dimensions";
-import { isSemanticRelation } from "./relations";
+import { edgeSignalLabel, isSemanticRelation } from "./relations";
 
 type DisplayGraphInput = {
   nodes: RecipeNode[];
@@ -131,8 +131,17 @@ function normalizeEdge(
     ...displayEdge,
     type: semantic ? "semantic" : "canvas",
     data: semantic
-      ? { ...(displayEdge.data ?? {}), active: isActiveEdge }
-      : { ...(displayEdge.data ?? {}), path: "orthogonal", active: isActiveEdge },
+      ? {
+          ...(displayEdge.data ?? {}),
+          active: isActiveEdge,
+          label: edgeSignalLabel(source, target),
+        }
+      : {
+          ...(displayEdge.data ?? {}),
+          path: "orthogonal",
+          active: isActiveEdge,
+          label: edgeSignalLabel(source, target),
+        },
     sourceHandle,
     targetHandle,
     animated: isActiveEdge,

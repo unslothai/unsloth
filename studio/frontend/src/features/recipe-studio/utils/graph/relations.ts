@@ -29,3 +29,30 @@ export function isSemanticRelation(
     target.llm_type === "code"
   );
 }
+
+/** Relation labels keyed by `${source.kind}>${target.kind}`. */
+const SEMANTIC_EDGE_LABELS: Record<string, string> = {
+  "model_provider>model_config": "provider",
+  "model_config>llm": "model",
+  "tool_config>llm": "tools",
+  "llm>validator": "code",
+  "validator>llm": "scores",
+};
+
+/**
+ * Short net label for a wire, schematic-style (like D0 / Out). Semantic links
+ * read as their relation ("provider", "model", "tools", "scores", "code");
+ * data links read as the upstream signal they carry (the source node's name).
+ */
+export function edgeSignalLabel(
+  source: NodeConfig | undefined,
+  target: NodeConfig | undefined,
+): string {
+  if (source && target) {
+    const relation = SEMANTIC_EDGE_LABELS[`${source.kind}>${target.kind}`];
+    if (relation) {
+      return relation;
+    }
+  }
+  return source?.name ?? "";
+}

@@ -152,7 +152,6 @@ export function RecipeStudioPage({
     setDialogOpen,
     resetRecipe,
     loadRecipe,
-    setLayoutDirection,
     applyLayout,
     setAuxNodePosition,
     setExecutionLocked,
@@ -192,7 +191,6 @@ export function RecipeStudioPage({
       setDialogOpen: state.setDialogOpen,
       resetRecipe: state.resetRecipe,
       loadRecipe: state.loadRecipe,
-      setLayoutDirection: state.setLayoutDirection,
       applyLayout: state.applyLayout,
       setAuxNodePosition: state.setAuxNodePosition,
       setExecutionLocked: state.setExecutionLocked,
@@ -298,10 +296,6 @@ export function RecipeStudioPage({
     () => buildDialogOptions(configList),
     [configList],
   );
-
-  const handleToggleDirection = useCallback(() => {
-    setLayoutDirection(layoutDirection === "LR" ? "TB" : "LR");
-  }, [layoutDirection, setLayoutDirection]);
 
   const payloadResult = useMemo(
     () =>
@@ -668,11 +662,7 @@ export function RecipeStudioPage({
         fitView={false}
         className="h-full w-full rounded-t-none"
       >
-        <LayoutControls
-          direction={layoutDirection}
-          onLayout={applyLayout}
-          onToggleDirection={handleToggleDirection}
-        />
+        <LayoutControls onLayout={applyLayout} />
         <InternalsSync nodeIds={displayNodeIds} />
         <Background
           variant={BackgroundVariant.Dots}

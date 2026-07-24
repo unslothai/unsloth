@@ -23,9 +23,13 @@ export type Rect = { x: number; y: number; width: number; height: number };
 type Pt = { x: number; y: number };
 
 /** Padding added around every node box so wires keep a visible gap. */
-const CLEARANCE = 12;
-/** Straight run out of each handle before the wire is allowed to turn. */
-const STUB = 18;
+const CLEARANCE = 14;
+/**
+ * Straight run out of each handle before the wire is allowed to turn. Must
+ * exceed CLEARANCE so a pin lead clears its own card's inflated box (every
+ * card, including this edge's endpoints, is an obstacle).
+ */
+const STUB = 26;
 /** Extra cost per 90° turn — higher = straighter, fewer-bend routes. */
 const TURN_PENALTY = 24;
 /** Corner rounding radius on emitted paths. */
