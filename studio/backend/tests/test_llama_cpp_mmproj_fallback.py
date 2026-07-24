@@ -250,6 +250,201 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "-fa"]) == ["llama-server", "-fa=off"]
 
 
+_drop_env_v = LlamaCppBackend._drop_env_quantized_v_cache
+
+
+class TestFlashAttnOffQuantizedKvCache:
+    """Only the V cache requires flash attention in llama.cpp (init aborts with
+    "V cache quantization requires flash_attn"); a quantized K cache runs fine
+    without FA. Studio launches FA on, so a quantized --cache-type-v is legal at
+    launch but would make the FA-off crash-recovery retry crash on init. The
+    fallback must reset a quantized V cache (main and draft) to f16 while leaving
+    the K cache and non-quantized (f16/bf16/f32) types unchanged -- resetting K
+    would needlessly enlarge it and can OOM a memory-constrained config."""
+
+    _QUANTIZED = ["q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"]
+    _NON_QUANTIZED = ["f16", "bf16", "f32"]
+
+    @pytest.mark.parametrize("qtype", _QUANTIZED)
+    def test_quantized_v_reset_k_preserved(self, qtype):
+        cmd = [
+            "llama-server",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            qtype,
+            "--cache-type-v",
+            qtype,
+        ]
+        out = _flash_off(cmd)
+        assert out is not None
+        # FA flipped off AND the V axis reset to f16; the K axis is preserved so
+        # the FA-off retry keeps its memory budget (quantized K is FA-independent).
+        assert out[out.index("--flash-attn") + 1] == "off"
+        assert out[out.index("--cache-type-k") + 1] == qtype
+        assert out[out.index("--cache-type-v") + 1] == "f16"
+        assert len(out) == len(cmd)
+
+    @pytest.mark.parametrize("qtype", _QUANTIZED)
+    def test_quantized_draft_v_reset(self, qtype):
+        # The draft context shares the global --flash-attn flag, so its quantized
+        # V cache aborts too and must be reset; the draft K cache is preserved.
+        for v_flag, k_flag in (
+            ("--cache-type-v-draft", "--cache-type-k-draft"),
+            ("--spec-draft-type-v", "--spec-draft-type-k"),
+            ("-ctvd", "-ctkd"),
+        ):
+            cmd = ["llama-server", "-fa", "on", k_flag, qtype, v_flag, qtype]
+            out = _flash_off(cmd)
+            assert out is not None
+            assert out[out.index(v_flag) + 1] == "f16"
+            assert out[out.index(k_flag) + 1] == qtype
+
+    @pytest.mark.parametrize("ntype", _NON_QUANTIZED)
+    def test_nonquantized_cache_left_unchanged(self, ntype):
+        cmd = [
+            "llama-server",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            ntype,
+            "--cache-type-v",
+            ntype,
+        ]
+        out = _flash_off(cmd)
+        assert out is not None
+        # Only FA flips; the non-quantized cache type is preserved verbatim.
+        assert out[out.index("--flash-attn") + 1] == "off"
+        assert out[out.index("--cache-type-k") + 1] == ntype
+        assert out[out.index("--cache-type-v") + 1] == ntype
+
+    def test_equals_form_quantized_v_reset(self):
+        out = _flash_off(["llama-server", "--flash-attn=on", "--cache-type-v=q8_0"])
+        assert out == ["llama-server", "--flash-attn=off", "--cache-type-v=f16"]
+
+    def test_equals_form_quantized_k_preserved(self):
+        out = _flash_off(["llama-server", "--flash-attn=on", "--cache-type-k=q8_0"])
+        assert out == ["llama-server", "--flash-attn=off", "--cache-type-k=q8_0"]
+
+    def test_short_alias_v_reset_k_preserved(self):
+        out = _flash_off(["llama-server", "-fa", "on", "-ctk", "q4_0", "-ctv", "q4_0"])
+        assert out == ["llama-server", "-fa", "off", "-ctk", "q4_0", "-ctv", "f16"]
+
+    def test_asymmetric_cache_only_v_reset(self):
+        # Quantized V, non-quantized K: reset V, keep K untouched.
+        out = _flash_off(
+            [
+                "llama-server",
+                "--flash-attn",
+                "on",
+                "--cache-type-k",
+                "f16",
+                "--cache-type-v",
+                "q8_0",
+            ]
+        )
+        assert out[out.index("--cache-type-k") + 1] == "f16"
+        assert out[out.index("--cache-type-v") + 1] == "f16"
+
+    def test_no_cache_flags_still_flips_fa(self):
+        out = _flash_off(["llama-server", "--flash-attn", "on", "-c", "4096"])
+        assert out == ["llama-server", "--flash-attn", "off", "-c", "4096"]
+
+    def test_quantized_k_only_still_flips_fa_but_keeps_k(self):
+        # A quantized K cache with no V flag is a valid FA-off launch; the retry
+        # must not touch the K cache (it would waste memory for nothing).
+        out = _flash_off(["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"])
+        assert out == ["llama-server", "--flash-attn", "off", "--cache-type-k", "q8_0"]
+
+    def test_input_not_mutated(self):
+        cmd = ["llama-server", "--flash-attn", "on", "--cache-type-v", "q8_0"]
+        _flash_off(cmd)
+        assert cmd[-1] == "q8_0"
+
+    @pytest.mark.parametrize(
+        "flag",
+        ["--cache_type_v", "--cache-type_v", "--cache_type-v"],
+    )
+    def test_underscore_alias_v_reset(self, flag):
+        # llama.cpp normalizes '_' to '-' in any '--' long option before
+        # matching, so a pass-through --cache_type_v enables a quantized V cache
+        # and must be reset by the FA-off retry too (else init aborts).
+        out = _flash_off(["llama-server", "--flash-attn", "on", flag, "q8_0"])
+        assert out is not None
+        assert out[out.index("--flash-attn") + 1] == "off"
+        # The user's flag spelling is preserved; llama.cpp normalizes it anyway.
+        assert out[out.index(flag) + 1] == "f16"
+
+    def test_underscore_alias_draft_v_reset(self):
+        out = _flash_off(["llama-server", "-fa", "on", "--spec_draft_type_v", "q4_0"])
+        assert out is not None
+        assert out[out.index("--spec_draft_type_v") + 1] == "f16"
+
+    def test_underscore_alias_equals_form_v_reset(self):
+        out = _flash_off(["llama-server", "--flash-attn=on", "--cache_type_v=q8_0"])
+        assert out == ["llama-server", "--flash-attn=off", "--cache_type_v=f16"]
+
+    def test_underscore_value_not_normalized_for_nonquantized(self):
+        # Only the flag name is canonicalized; a non-quantized type value is
+        # matched verbatim and left untouched (no spurious reset).
+        out = _flash_off(["llama-server", "--flash-attn", "on", "--cache_type_v", "f16"])
+        assert out[out.index("--cache_type_v") + 1] == "f16"
+        assert out[out.index("--flash-attn") + 1] == "off"
+
+    def test_short_alias_underscore_not_applied(self):
+        # Short flags are never underscore-normalized by llama.cpp; -ctv still
+        # matches and resets, and an unrelated short token is left alone.
+        out = _flash_off(["llama-server", "-fa", "on", "-ctv", "q8_0"])
+        assert out == ["llama-server", "-fa", "off", "-ctv", "f16"]
+
+
+class TestDropEnvQuantizedVCache:
+    """The argv rewrite can't reach a cache type set purely through the
+    environment (Studio deliberately lets an env-only type reach the child), so
+    the FA-off retry separately drops a quantized V-cache env var. Only V is
+    dropped: a quantized K cache is FA-independent and must survive."""
+
+    _QUANTIZED = ["q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"]
+
+    @pytest.mark.parametrize("qtype", _QUANTIZED)
+    def test_drops_quantized_main_v_env(self, qtype):
+        env = {"LLAMA_ARG_CACHE_TYPE_V": qtype, "PATH": "/usr/bin"}
+        assert _drop_env_v(env) is True
+        assert "LLAMA_ARG_CACHE_TYPE_V" not in env
+        assert env["PATH"] == "/usr/bin"
+
+    @pytest.mark.parametrize("qtype", _QUANTIZED)
+    def test_drops_quantized_draft_v_env(self, qtype):
+        env = {"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": qtype}
+        assert _drop_env_v(env) is True
+        assert "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V" not in env
+
+    def test_preserves_quantized_k_env(self):
+        # A quantized K cache runs without FA, so its env must not be dropped.
+        env = {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q4_0"}
+        assert _drop_env_v(env) is False
+        assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
+        assert env["LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K"] == "q4_0"
+
+    @pytest.mark.parametrize("ntype", ["f16", "bf16", "f32", "F16", " q8_0 "])
+    def test_preserves_nonquantized_v_env(self, ntype):
+        # Non-quantized V env values (and whitespace/case variants of them) run
+        # fine without FA; only a genuinely quantized value is dropped.
+        if ntype.strip().lower() in ("q8_0",):
+            env = {"LLAMA_ARG_CACHE_TYPE_V": ntype}
+            assert _drop_env_v(env) is True
+            assert "LLAMA_ARG_CACHE_TYPE_V" not in env
+        else:
+            env = {"LLAMA_ARG_CACHE_TYPE_V": ntype}
+            assert _drop_env_v(env) is False
+            assert env["LLAMA_ARG_CACHE_TYPE_V"] == ntype
+
+    def test_noop_on_empty_env(self):
+        env = {}
+        assert _drop_env_v(env) is False
+        assert env == {}
+
+
 class TestNonProjectorDiagnostic:
     """_output_has_nonprojector_diagnostic gates the signal-only text-only retry:
     a hard crash that already names OOM / a bad arch / a TP limit must surface
