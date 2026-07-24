@@ -4,6 +4,7 @@
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { useMemo } from "react";
 import type { PerModelConfig } from "../model-config/per-model-config";
+import { cachedPinnableGpuIndexKind } from "@/hooks/use-gpu-info";
 
 export interface ActiveModelConfigState {
   checkpoint: string | null;
@@ -56,6 +57,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       gpuLayers,
       nCpuMoe,
       selectedGpuIds,
+      selectedGpuIndexKind:
+        selectedGpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null),
     };
   }, [
     checkpoint,

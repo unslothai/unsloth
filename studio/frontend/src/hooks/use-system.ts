@@ -40,8 +40,7 @@ export interface SystemInfoResponse {
   gpu: {
     available: boolean;
     backend?: string;
-    /** Whether GGUF loads accept an explicit gpu_ids pick (false on XPU hosts
-     * and Vulkan-only builds, where /load and /validate 400 picks). */
+    /** Whether GGUF loads accept the device indices declared by index_kind. */
     gguf_gpu_ids_supported?: boolean;
     backend_cuda_visible_devices?: string | null;
     parent_visible_gpu_ids?: number[];

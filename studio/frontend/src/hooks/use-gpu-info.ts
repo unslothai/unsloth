@@ -17,16 +17,18 @@ export interface GpuInfo {
 
 export interface SystemGpuDevice {
   index: number;
+  indexKind: GpuIndexKind | null;
   name: string;
   memoryTotalGb: number;
   /** Free VRAM at fetch time. Degrades to the total when the utilization
    * probe had no usage data; 0 only when the total is unknown too. */
   memoryFreeGb: number;
-  /** "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
-   *  "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
-   *  backend can't map back, so the picker must not offer it. */
-  physicalIndex: boolean;
+  /** True when `index` is safe to send as gpu_ids. This covers CUDA/HIP
+   *  physical IDs and ggml Vulkan ordinals, but not unresolved relative IDs. */
+  pinnable: boolean;
 }
+
+export type GpuIndexKind = "physical" | "vulkan";
 
 const DEFAULT_GPU: GpuInfo = {
   available: false,
@@ -82,24 +84,25 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // Unpinnable configurations must hide every pick surface: XPU indices are
-  // torch-xpu ordinals no applicator speaks, and Vulkan-only builds pin ggml's
-  // own ordinals -- /load and /validate 400 picks on both, so the backend
-  // reports gpu.gguf_gpu_ids_supported and every gate keyed on physicalIndex
-  // (picker, persisted-pick reconcile) follows it. The device flavor lives on
-  // the TOP-LEVEL device_backend field; absent support info defaults to
-  // pinnable (older backend).
-  const pinnableBackend =
-    data?.device_backend !== "xpu" &&
-    data?.gpu?.gguf_gpu_ids_supported !== false;
+  // The backend owns the index contract. CUDA/HIP expose stable physical IDs,
+  // while Vulkan exposes compact ggml ordinals. XPU and unresolved relative
+  // masks report support=false. Missing support info preserves compatibility
+  // with older backends.
+  const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
       index: d.index as number,
+      indexKind:
+        d.index_kind === "physical" || d.index_kind === "vulkan"
+          ? d.index_kind
+          : null,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
-      physicalIndex: pinnableBackend && d.index_kind === "physical",
+      pinnable:
+        pinnableBackend &&
+        (d.index_kind === "physical" || d.index_kind === "vulkan"),
     }));
 }
 
@@ -166,7 +169,21 @@ export async function ensureGpuDeviceCache(): Promise<void> {
  */
 export function cachedPinnableGpuIndices(): number[] | null {
   if (!cachedSystem) return null;
-  const physical = toGpuDevices(cachedSystem).filter((d) => d.physicalIndex);
-  // Mirrors the sheet's showGpuPicker gate: only a 2+ physical-GPU host can pin.
-  return physical.length > 1 ? physical.map((d) => d.index) : [];
+  const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
+  // Mirrors the sheet's showGpuPicker gate: only a 2+ pinnable-GPU host can pin.
+  return pinnable.length > 1 ? pinnable.map((d) => d.index) : [];
+}
+
+/** Index namespace for persisted gpu_ids. Undefined means the cache is cold;
+ * null means the current host has no single pinnable namespace. */
+export function cachedPinnableGpuIndexKind():
+  | GpuIndexKind
+  | null
+  | undefined {
+  if (!cachedSystem) return undefined;
+  const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
+  const kinds = new Set(pinnable.map((d) => d.indexKind).filter((k) => k));
+  return pinnable.length > 1 && kinds.size === 1
+    ? ([...kinds][0] as GpuIndexKind)
+    : null;
 }

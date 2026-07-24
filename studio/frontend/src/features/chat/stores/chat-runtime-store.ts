@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndexKind,
+  cachedPinnableGpuIndices,
+  type GpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -585,8 +589,18 @@ export function rebalanceSplit(
 // unpopulated device cache leaves the pick alone (the backend still guards).
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
 ): number[] | null {
   if (ids == null) return ids;
+  if (arguments.length >= 2) {
+    const currentIndexKind = cachedPinnableGpuIndexKind();
+    if (
+      currentIndexKind !== undefined &&
+      currentIndexKind !== savedIndexKind
+    ) {
+      return null;
+    }
+  }
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));

@@ -250,12 +250,20 @@ function GpuMemorySettings({
   const moeLayersMax = moeLayerCount ?? 0;
   const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
+  const gpuIndexKind =
+    gpuDevices.length > 0 &&
+    gpuDevices[0].indexKind !== null &&
+    gpuDevices.every((device) => device.indexKind === gpuDevices[0].indexKind)
+      ? gpuDevices[0].indexKind
+      : null;
   const singleGpuInUse =
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
-  // Multi-GPU only, and only with physical indices (relative ordinals from a
-  // CUDA_VISIBLE_DEVICES mask can't be mapped back to pin a device). null = all (auto).
+  // Multi-GPU only, and only when every index belongs to one pinnable
+  // namespace. null = all (auto).
   const showGpuPicker =
-    gpuDevices.length > 1 && gpuDevices.every((d) => d.physicalIndex);
+    gpuDevices.length > 1 &&
+    gpuIndexKind !== null &&
+    gpuDevices.every((d) => d.pinnable);
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
   const toggleGpu = (index: number) => {
@@ -265,7 +273,11 @@ function GpuMemorySettings({
       ? current.filter((i) => i !== index)
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
-    update({ selectedGpuIds: next.length === all.length ? null : next });
+    const selectsAll = next.length === all.length;
+    update({
+      selectedGpuIds: selectsAll ? null : next,
+      selectedGpuIndexKind: selectsAll ? null : gpuIndexKind,
+    });
   };
   return (
     <>
@@ -300,6 +312,7 @@ function GpuMemorySettings({
                     gpuLayers: undefined,
                     nCpuMoe: undefined,
                     selectedGpuIds: undefined,
+                    selectedGpuIndexKind: undefined,
                   },
             )
           }

@@ -680,6 +680,22 @@ def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
     assert _target_state_gpu_ids(backend, None) is False
 
 
+def test_vulkan_system_gpu_info_uses_probe_ordinals(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_get_gpu_free_memory_vulkan",
+        staticmethod(lambda binary = None: [(0, 4096, 8192), (2, 2048, 4096)]),
+    )
+
+    devices = LlamaCppBackend._get_vulkan_gpu_info("/fake/llama-server")
+
+    assert [device["index"] for device in devices] == [0, 2]
+    assert all(device["index_kind"] == "vulkan" for device in devices)
+    assert devices[0]["name"] == "Vulkan 0"
+    assert devices[0]["memory_total_gb"] == 8
+    assert devices[0]["vram_free_gb"] == 4
+
+
 def test_start_diffusion_server_resets_tensor_parallel():
     # A prior tensor-parallel chat load leaves self._tensor_parallel True (load_model
     # phase 1 only kills the process, it skips the unload reset). Diffusion is never
@@ -687,6 +703,7 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
+    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
 
 
 def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():

@@ -3492,6 +3492,37 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _get_vulkan_gpu_info(binary: Optional[str] = None) -> list[dict]:
+        """Vulkan-ordinal device records suitable for ``/api/system``.
+
+        The existing memory probe and ``--device VulkanN`` use the same compact
+        ggml ordinal space, so these indices are safe for the GGUF picker.
+        """
+        devices = []
+        for idx, free_mib, total_mib in LlamaCppBackend._get_gpu_free_memory_vulkan(binary):
+            free_gb = round(free_mib / 1024, 2)
+            total_gb = round(total_mib / 1024, 2) if total_mib > 0 else free_gb
+            used_gb = round(max(0, total_gb - free_gb), 2) if total_mib > 0 else None
+            devices.append(
+                {
+                    "index": idx,
+                    "visible_ordinal": idx,
+                    "index_kind": "vulkan",
+                    "name": f"Vulkan {idx}",
+                    "memory_total_gb": total_gb,
+                    "vram_total_gb": total_gb,
+                    "vram_free_gb": free_gb,
+                    "vram_used_gb": used_gb,
+                    "vram_utilization_pct": (
+                        round((used_gb / total_gb) * 100, 1)
+                        if used_gb is not None and total_gb > 0
+                        else None
+                    ),
+                }
+            )
+        return devices
+
+    @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
         neither is readable. On a unified-memory APU this, not the ROCm-reported
@@ -5064,9 +5095,10 @@ class LlamaCppBackend:
         # above), not the whole pick, and clears any explicit pin from a prior
         # chat load; a multi-GPU list would misreport placement and mis-dedup.
         self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
-        # Keep the raw-pin record in sync so a stale value can't leak (diffusion
-        # dedupe still compares the collapsed effective pin, not this) (#7239).
-        self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        # The frontend prefers requested_gpu_ids when hydrating the picker.
+        # Diffusion uses only one device, so echo the collapsed effective pin,
+        # not unused members of the original request.
+        self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:

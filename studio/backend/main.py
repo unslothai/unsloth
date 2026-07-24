@@ -1190,22 +1190,30 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
-        # Whether GGUF loads accept an explicit gpu_ids pick: /load and
-        # /validate 400 picks on XPU hosts (no visibility mask speaks torch-xpu
-        # ordinals) and on Vulkan-only builds (--device pins ggml's own
-        # ordinals), so the picker must not offer them.
+        # Vulkan has its own compact ordinal space, independent of torch and
+        # CUDA_VISIBLE_DEVICES. Replace torch's view with records from the same
+        # ggml probe that /load validates and pins as --device VulkanN.
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
-            gpu_ids_supported = (
-                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
-            )
+
+            is_vulkan = LlamaCppBackend._is_vulkan_backend()
+            if is_vulkan:
+                enriched_devices = LlamaCppBackend._get_vulkan_gpu_info()
+                visibility_info = {
+                    "available": bool(enriched_devices),
+                    "backend": "vulkan",
+                }
+                gpu_ids_supported = bool(enriched_devices)
+            else:
+                gpu_ids_supported = get_device() != DeviceType.XPU
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True
         gpu_info = {
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
+            "backend": visibility_info.get("backend"),
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)
