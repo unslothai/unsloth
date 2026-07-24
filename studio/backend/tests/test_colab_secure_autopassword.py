@@ -222,3 +222,66 @@ def test_mint_same_tab_link_token_exchangeable_once():
     # It is a real, single-use token bound to the admin.
     assert exchange_link_token(token) == admin
     assert exchange_link_token(token) is None
+
+
+# ── post-merge: start() routes credentials through the auto-password path ─────
+
+
+def _patch_start_for_cloudflare(monkeypatch, *, finalize_calls, embed_kwargs):
+    """Stub start()'s side effects so it runs to the keepalive loop, then bails.
+
+    Records any call to _finalize_colab_admin_password (the #7349 bootstrap-finalize +
+    plaintext disk-cache path) and the kwargs passed to _show_and_embed.
+    """
+    import time
+
+    monkeypatch.setattr(colab, "_is_studio_healthy", lambda port: True)
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "_finalize_colab_admin_password",
+        lambda: finalize_calls.append("finalize") or ("unsloth", "secret"),
+    )
+    monkeypatch.setattr(
+        colab, "start_cloudflare_tunnel", lambda port: "https://share.trycloudflare.com"
+    )
+    monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda url: None)
+    monkeypatch.setattr(colab, "_mint_same_tab_link_token", lambda: "same-tab-token")
+    monkeypatch.setattr(
+        colab, "_show_and_embed", lambda port, **kwargs: embed_kwargs.update(kwargs)
+    )
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: None)
+    monkeypatch.setattr(time, "sleep", lambda _: (_ for _ in ()).throw(KeyboardInterrupt))
+
+
+def test_start_cloudflare_never_finalizes_or_caches_credentials(monkeypatch):
+    # Post-merge invariant: on the shared-link path start() must NOT call the #7349
+    # finalize/disk-cache flow. Doing so would clear the must-change gate before
+    # start_cloudflare_tunnel runs (defeating the auto-generate rotation) and would
+    # persist the admin password in plaintext on disk, both of which #7392 forbids.
+    finalize_calls: list[str] = []
+    embed_kwargs: dict = {}
+    _patch_start_for_cloudflare(
+        monkeypatch, finalize_calls = finalize_calls, embed_kwargs = embed_kwargs
+    )
+
+    colab.start(cloudflare = True)
+
+    assert finalize_calls == []  # credential handled by start_cloudflare_tunnel only
+    assert "colab_login" not in embed_kwargs or embed_kwargs["colab_login"] is None
+    # No opt-in link token requested -> the same-tab URL carries none.
+    assert embed_kwargs.get("same_tab_link_token") is None
+
+
+def test_start_threads_same_tab_link_token_when_opted_in(monkeypatch):
+    # The opt-in one-time link token reaches _show_and_embed (same-tab URL only).
+    finalize_calls: list[str] = []
+    embed_kwargs: dict = {}
+    _patch_start_for_cloudflare(
+        monkeypatch, finalize_calls = finalize_calls, embed_kwargs = embed_kwargs
+    )
+
+    colab.start(cloudflare = True, link_token = True)
+
+    assert finalize_calls == []
+    assert embed_kwargs.get("same_tab_link_token") == "same-tab-token"

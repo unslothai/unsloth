@@ -11,6 +11,7 @@ import {
   type Preset,
   getPresetSource,
 } from "../presets/preset-policy";
+import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   type ChatLoraSummary,
@@ -1159,13 +1160,17 @@ function getHydratedCustomPresets(
   state: ChatRuntimeStore,
 ): Preset[] {
   return (
-    settings.customPresets?.map((preset) => ({
-      name: preset.name,
-      params: {
-        ...DEFAULT_INFERENCE_PARAMS,
-        ...preset.params,
-      },
-    })) ?? state.customPresets
+    settings.customPresets?.map((preset) => {
+      const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
+      return {
+        name: preset.name,
+        params: {
+          ...DEFAULT_INFERENCE_PARAMS,
+          ...preset.params,
+        },
+        ...(loadConfig ? { loadConfig } : {}),
+      };
+    }) ?? state.customPresets
   );
 }
 
