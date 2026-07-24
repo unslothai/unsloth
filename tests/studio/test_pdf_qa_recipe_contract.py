@@ -32,7 +32,7 @@ FORMAT_DETECTION_PATH = REPO / "studio/backend/utils/datasets/format_detection.p
 
 
 def _load_payload() -> dict:
-    return json.loads(RECIPE_PATH.read_text(encoding="utf-8"))
+    return json.loads(RECIPE_PATH.read_text(encoding = "utf-8"))
 
 
 def _render_expression(template: str, row: dict) -> str:
@@ -114,7 +114,7 @@ def test_pdf_qa_canvas_edges_cover_expression_dependencies():
 
 
 def test_pdf_qa_fields_match_studio_alpaca_mapping():
-    source = TRAINING_ACTIONS_PATH.read_text(encoding="utf-8")
+    source = TRAINING_ACTIONS_PATH.read_text(encoding = "utf-8")
     assert 'alpaca: { user: "instruction", system: "input", assistant: "output" }' in source
     assert 'if (fmt === "alpaca") return roles.has("instruction") && roles.has("output");' in source
 
@@ -133,9 +133,9 @@ def test_pdf_qa_fields_are_detected_as_alpaca():
 
 
 def test_unstructured_seed_drop_toggle_round_trip_contract():
-    builder = SEED_BUILDER_PATH.read_text(encoding="utf-8")
-    importer = RECIPE_IMPORTER_PATH.read_text(encoding="utf-8")
-    parser = SEED_PARSER_PATH.read_text(encoding="utf-8")
+    builder = SEED_BUILDER_PATH.read_text(encoding = "utf-8")
+    importer = RECIPE_IMPORTER_PATH.read_text(encoding = "utf-8")
+    parser = SEED_PARSER_PATH.read_text(encoding = "utf-8")
 
     assert 'if (seedSourceType === "unstructured")' in builder
     assert "if (!config.drop)" in builder
@@ -199,11 +199,11 @@ def test_pdf_qa_recipe_runs_with_pinned_data_designer(tmp_path, monkeypatch):
     from core.data_recipe import service
 
     source_path = tmp_path / "facts.txt"
-    source_path.write_text("Paris is the capital of France.", encoding="utf-8")
+    source_path.write_text("Paris is the capital of France.", encoding = "utf-8")
     monkeypatch.setattr(service, "recipe_datasets_root", lambda: tmp_path / "artifacts")
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), _MockOpenAIHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
     thread.start()
     try:
         recipe = copy.deepcopy(_load_payload()["recipe"])
@@ -224,7 +224,7 @@ def test_pdf_qa_recipe_runs_with_pinned_data_designer(tmp_path, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
-        thread.join(timeout=5)
+        thread.join(timeout = 5)
 
     assert dataset == [
         {
