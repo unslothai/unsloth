@@ -6081,6 +6081,21 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _canonical_long_flag(name: str) -> str:
+        """Return ``name`` with llama.cpp's long-option underscore normalization.
+
+        llama.cpp runs ``std::replace(arg.begin(), arg.end(), '_', '-')`` on any
+        argv token that starts with ``--`` before looking it up, so a legal
+        pass-through spelling like ``--cache_type_v`` parses as
+        ``--cache-type-v``. Mirror that here so managed-flag matching sees the
+        same canonical name. Short flags (``-ctv``) never carry underscores and
+        keep their exact spelling; pass only the flag name (no attached value).
+        """
+        if name.startswith("--"):
+            return name.replace("_", "-")
+        return name
+
+    @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
@@ -6134,12 +6149,21 @@ class LlamaCppBackend:
         )
         _cache_reset = False
         for i, tok in enumerate(out):
-            if tok.startswith(tuple(f"{f}=" for f in _v_cache_flags)):
+            # llama.cpp rewrites '_' to '-' for any argv token starting with
+            # '--' before matching, so a legal pass-through spelling such as
+            # --cache_type_v parses as --cache-type-v and still enables a
+            # quantized V cache. Canonicalize the flag name the same way so the
+            # reset recognizes the underscore aliases too; short flags (-ctv)
+            # and the type value are left untouched.
+            name = LlamaCppBackend._canonical_long_flag(tok.partition("=")[0])
+            if name not in _v_cache_flags:
+                continue
+            if "=" in tok:
                 flag, _, value = tok.partition("=")
                 if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i] = f"{flag}=f16"
                     _cache_reset = True
-            elif tok in _v_cache_flags and i + 1 < len(out):
+            elif i + 1 < len(out):
                 if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i + 1] = "f16"
                     _cache_reset = True

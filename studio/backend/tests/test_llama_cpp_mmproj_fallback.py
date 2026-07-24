@@ -361,6 +361,44 @@ class TestFlashAttnOffQuantizedKvCache:
         _flash_off(cmd)
         assert cmd[-1] == "q8_0"
 
+    @pytest.mark.parametrize(
+        "flag",
+        ["--cache_type_v", "--cache-type_v", "--cache_type-v"],
+    )
+    def test_underscore_alias_v_reset(self, flag):
+        # llama.cpp normalizes '_' to '-' in any '--' long option before
+        # matching, so a pass-through --cache_type_v enables a quantized V cache
+        # and must be reset by the FA-off retry too (else init aborts).
+        out = _flash_off(["llama-server", "--flash-attn", "on", flag, "q8_0"])
+        assert out is not None
+        assert out[out.index("--flash-attn") + 1] == "off"
+        # The user's flag spelling is preserved; llama.cpp normalizes it anyway.
+        assert out[out.index(flag) + 1] == "f16"
+
+    def test_underscore_alias_draft_v_reset(self):
+        out = _flash_off(
+            ["llama-server", "-fa", "on", "--spec_draft_type_v", "q4_0"]
+        )
+        assert out is not None
+        assert out[out.index("--spec_draft_type_v") + 1] == "f16"
+
+    def test_underscore_alias_equals_form_v_reset(self):
+        out = _flash_off(["llama-server", "--flash-attn=on", "--cache_type_v=q8_0"])
+        assert out == ["llama-server", "--flash-attn=off", "--cache_type_v=f16"]
+
+    def test_underscore_value_not_normalized_for_nonquantized(self):
+        # Only the flag name is canonicalized; a non-quantized type value is
+        # matched verbatim and left untouched (no spurious reset).
+        out = _flash_off(["llama-server", "--flash-attn", "on", "--cache_type_v", "f16"])
+        assert out[out.index("--cache_type_v") + 1] == "f16"
+        assert out[out.index("--flash-attn") + 1] == "off"
+
+    def test_short_alias_underscore_not_applied(self):
+        # Short flags are never underscore-normalized by llama.cpp; -ctv still
+        # matches and resets, and an unrelated short token is left alone.
+        out = _flash_off(["llama-server", "-fa", "on", "-ctv", "q8_0"])
+        assert out == ["llama-server", "-fa", "off", "-ctv", "f16"]
+
 
 class TestDropEnvQuantizedVCache:
     """The argv rewrite can't reach a cache type set purely through the
