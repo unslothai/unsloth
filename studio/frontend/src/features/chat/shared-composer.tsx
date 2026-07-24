@@ -1058,7 +1058,10 @@ export function SharedComposer({
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds, {
-                fromPersisted: true,
+                // Only a resolveInitialConfig storage hit is a real restore; an
+                // explicit sel.config is a fresh current-space pane pick, so it
+                // must stay live and never take the index-space invalidation.
+                fromPersisted: !config && ownRemembered,
               })
             : compareLoadKnobs.selectedGpuIds;
         // A pane's context comes from its own config only: a saved pin, or null
