@@ -36,6 +36,9 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_extra")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
+# The Voice-picker media-access crash is specific to headless Chromium on macos-14; only there do we
+# downgrade a renderer crash to a warning. Linux/Windows strict smoke jobs keep hard crash coverage.
+MACOS_RUNNER = os.environ.get("RUNNER_OS", "").lower() == "macos" or sys.platform == "darwin"
 # Longer turn timeout: gemma-3-270m CPU inference is 3-5x slower on macos-14 runners.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
@@ -558,8 +561,8 @@ with sync_playwright() as p:
         else:
             # The dictation-engine dropdown touches a media-access path that can crash headless
             # Chromium on macos-14 (CheckMediaAccessPermission). A resulting TargetClosedError is CI
-            # flakiness, not a product bug, so a crash here is a runtime warning + page recovery; a
-            # live-page failure (missing control, wheel that does not scroll) stays a hard fail.
+            # flakiness there, not a product bug, so on macOS a crash is a runtime warning + page
+            # recovery; on Linux/Windows a crash and any live-page failure stay a hard fail.
             try:
                 voice_tab.click()
                 page.get_by_label("Dictation engine").click()
@@ -585,7 +588,7 @@ with sync_playwright() as p:
                 )
                 info("OK Voice model picker mouse wheel changed scrollTop")
             except Exception as exc:
-                if page_crashed(page, exc):
+                if page_crashed(page, exc) and MACOS_RUNNER:
                     runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
                     page = recover_or_replace_page(
                         page,
