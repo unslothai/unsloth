@@ -38,6 +38,7 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  providerSupportsLocalToolRuntime,
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
@@ -2244,6 +2245,20 @@ export function createOpenAIStreamAdapter(
             externalProvider.baseUrl,
           ),
       );
+      // OAI-compat Connections drive Unsloth's local tool runtime against the remote model (#7282).
+      const localToolRuntimeForThisTurn = Boolean(
+        externalProvider &&
+          providerSupportsLocalToolRuntime(externalProvider.providerType),
+      );
+      const localWebSearchEnabledForThisTurn = Boolean(
+        localToolRuntimeForThisTurn && supportsTools && toolsEnabled,
+      );
+      const localCodeToolsEnabledForThisTurn = Boolean(
+        localToolRuntimeForThisTurn && supportsTools && codeToolsEnabled,
+      );
+      const localMcpEnabledForThisTurn = Boolean(
+        localToolRuntimeForThisTurn && supportsTools && mcpEnabledForChat,
+      );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
       // separately). Sourced from `webFetchToolsEnabled`; on providers
       // without web_fetch the toggle is forced off in chat-page setState.
@@ -2842,13 +2857,17 @@ export function createOpenAIStreamAdapter(
           tools: {
             search:
               webSearchEnabledForThisTurn ||
+              localWebSearchEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && toolsEnabled),
             fetch: webFetchEnabledForThisTurn,
             code:
               codeExecEnabledForThisTurn ||
+              localCodeToolsEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            mcp:
+              localMcpEnabledForThisTurn ||
+              (!isExternalRequest && supportsTools && mcpEnabledForChat),
             docs:
               !isExternalRequest &&
               supportsTools &&
@@ -3021,6 +3040,9 @@ export function createOpenAIStreamAdapter(
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
+              cancel_id: cancelId,
+              ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+              ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject
               // temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
@@ -3046,8 +3068,8 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // enabled_tools from active pills; backend maps each name
-              // to the provider's tool schema.
+              // Hosted providers: enabled_tools maps to server-side builtins. OAI-compat
+              // Connections: enable the local tool runtime (web_search / python / terminal / MCP) (#7282).
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||
@@ -3063,7 +3085,34 @@ export function createOpenAIStreamAdapter(
                         : []),
                     ],
                   }
-                : {}),
+                : localToolRuntimeForThisTurn &&
+                    (localWebSearchEnabledForThisTurn ||
+                      localCodeToolsEnabledForThisTurn ||
+                      localMcpEnabledForThisTurn)
+                  ? {
+                      enable_tools: true,
+                      enabled_tools: [
+                        ...(localWebSearchEnabledForThisTurn
+                          ? ["web_search"]
+                          : []),
+                        ...(localCodeToolsEnabledForThisTurn
+                          ? ["python", "terminal"]
+                          : []),
+                      ],
+                      mcp_enabled: localMcpEnabledForThisTurn,
+                      permission_mode: permissionMode,
+                      confirm_tool_calls:
+                        permissionMode === "ask" || permissionMode === "auto",
+                      bypass_permissions: bypassPermissions,
+                      max_tool_calls_per_message:
+                        useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                      tool_call_timeout: (() => {
+                        const mins =
+                          useChatRuntimeStore.getState().toolCallTimeout;
+                        return mins >= 9999 ? 9999 : mins * 60;
+                      })(),
+                    }
+                  : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
