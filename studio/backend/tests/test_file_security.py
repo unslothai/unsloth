@@ -170,7 +170,10 @@ def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
     # from the models--org--repo/snapshots/<rev> layout and scan it, not exempt it.
     snapshot = tmp_path / "models--evil--repo" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
-    status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+    }
     with _patch_status(status) as model_info:
         d = evaluate_file_security(str(snapshot))
     assert d.blocked is True
