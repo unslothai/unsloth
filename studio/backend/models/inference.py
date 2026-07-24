@@ -336,6 +336,9 @@ class ValidateModelResponse(BaseModel):
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     display_name: Optional[str] = Field(None, description = "Display name derived from identifier")
     is_gguf: bool = Field(False, description = "Whether this is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether this is a block-diffusion model (DiffusionGemma)"
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     is_vision: bool = Field(False, description = "Whether this is a vision-capable model")
     requires_trust_remote_code: bool = Field(

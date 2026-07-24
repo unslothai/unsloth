@@ -11,6 +11,7 @@ interface SidebarModelConfigProps {
   modelId: string;
   ggufVariant: string | null;
   isGguf: boolean;
+  isDiffusion: boolean;
   nativeContextLength: number | null;
   loadedContextLength: number | null;
   loadedConfig: PerModelConfig;
@@ -55,6 +56,7 @@ export function SidebarModelConfig({
   modelId,
   ggufVariant,
   isGguf,
+  isDiffusion,
   nativeContextLength,
   loadedContextLength,
   loadedConfig,
@@ -86,6 +88,7 @@ export function SidebarModelConfig({
       loadedConfig={loadedConfig}
       loadedContextLength={loadedContextLength}
       variant="sidebar"
+      isDiffusion={isDiffusion}
     />
   );
 }

@@ -368,7 +368,7 @@ def test_fixed_layer_gguf_pins_displayed_context():
     instead of sending native/0 and recreating the OOM."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const pinFixedLayerContext =" in src
-    assert 'config.gpuMemoryMode === "manual"' in src
+    assert 'loadableConfig.gpuMemoryMode === "manual"' in src
     assert "customContextLength: activeLoadedContext" in src
 
 
@@ -500,6 +500,23 @@ def test_model_switch_clears_host_memory_mode_before_validation():
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "const validateMemoryMode = resetsPerModelSettings" in src
     assert "gguf_memory_mode: validateMemoryMode" in src
+
+
+def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
+    api = _read("features/chat/api/chat-api.ts")
+    assert "isDiffusion: res.is_diffusion ?? false" in api
+
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'className={isDiffusion ? "hidden" : ROW_CLASS}' in page
+    assert "withoutUnsupportedDiffusionMemory(config)" in page
+    assert "stagedMetadataPending ||" in page
+    for field in (
+        'gpuMemoryMode: "auto"',
+        "gpuLayers: undefined",
+        "nCpuMoe: undefined",
+        "ggufMemoryMode: undefined",
+    ):
+        assert field in page
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():

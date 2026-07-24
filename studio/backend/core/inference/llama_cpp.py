@@ -2875,7 +2875,6 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
-                "supports_fit_target": False,
                 "supports_load_mode": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
@@ -2897,7 +2896,6 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
-        supports_fit_target = False
         supports_load_mode = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
@@ -3003,7 +3001,6 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
-            supports_fit_target = _is_real("--fit-target")
             supports_load_mode = _is_real("--load-mode")
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
@@ -3040,7 +3037,6 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
-            "supports_fit_target": supports_fit_target,
             "supports_load_mode": supports_load_mode,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,

@@ -566,17 +566,12 @@ def test_manual_allows_tensor_parallel_via_split_mode():
 def test_fit_keeps_upstream_target_margin():
     # Manual + Auto must keep llama.cpp's default fit target. Reducing its
     # headroom is especially risky on integrated GPUs that share system RAM.
-    caps = {"supports_fit_target": True}
-    flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, caps)
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, {})
     assert "--fit-target" not in flags
     # Not emitted on the legacy auto path (fit on but not auto_fit).
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, {})
     # Not emitted when fit is off.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
-    # Not emitted when the binary lacks support.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
-        1, True, True, 0, 0, {"supports_fit_target": False}
-    )
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, {})
 
 
 # ── GPU picker (gpu_ids -> CUDA_VISIBLE_DEVICES) ─────────────────────

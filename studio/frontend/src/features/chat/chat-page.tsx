@@ -1932,6 +1932,9 @@ export function ChatPage({
   } = useActiveModelConfig();
   const activeModelIsGguf =
     runtimeCheckpoint != null && !isExternalModel && runtimeModelIsGguf;
+  const activeModelIsDiffusion = useChatRuntimeStore(
+    (s) => s.loadedIsDiffusion,
+  );
   const activeModelIsLora = useMemo(() => {
     const checkpoint = inferenceParams.checkpoint;
     if (!checkpoint || isExternalModel) return false;
@@ -3368,6 +3371,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isDiffusion={activeModelIsDiffusion}
               nativeContextLength={ggufNativeContextLength}
               loadedContextLength={ggufContextLength}
               loadedConfig={activeModelConfig}

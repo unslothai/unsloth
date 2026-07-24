@@ -89,6 +89,7 @@ export interface ValidateModelResponse {
   identifier?: string | null;
   display_name?: string | null;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;

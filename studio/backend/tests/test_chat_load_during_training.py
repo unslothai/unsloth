@@ -943,6 +943,43 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertEqual(guard_called, [])
 
+    def test_metadata_probe_reports_diffusion(self):
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "unsloth/DiffusionGemma-GGUF",
+            include_context_length = True,
+        )
+        cfg = SimpleNamespace(
+            identifier = "unsloth/DiffusionGemma-GGUF",
+            display_name = "DiffusionGemma-GGUF",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = None,
+            gguf_hf_repo = "unsloth/DiffusionGemma-GGUF",
+            gguf_variant = None,
+            path = None,
+            base_model = None,
+        )
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = (
+                    "unsloth/DiffusionGemma-GGUF",
+                    "unsloth/DiffusionGemma-GGUF",
+                    False,
+                ),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+        ):
+            response = asyncio.run(
+                self.route.validate_model(request, current_subject = "u")
+            )
+        self.assertTrue(response.is_diffusion)
+
     def test_gguf_validate_rejects_inherited_draft_device_before_unload(self):
         # Validate inherited draft placement before the client unloads.
         from models.inference import ValidateModelRequest
@@ -975,6 +1012,11 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             patch.object(self.route, "load_inference_config", return_value = {}),
             patch.object(self.route, "_requires_trust_remote_code_for_model", return_value = False),
             patch.object(self.route, "get_llama_cpp_backend", return_value = loaded),
+            patch.object(
+                self.route,
+                "_resolve_gguf_gpu_ids_for_request",
+                return_value = ([0], False),
+            ),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
             with self.assertRaises(HTTPException) as ctx:
@@ -1219,6 +1261,11 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             ),
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
             patch.object(self.route, "_reject_diffusion_memory_mode", return_value = None),
+            patch.object(
+                self.route,
+                "_resolve_gguf_gpu_ids_for_request",
+                return_value = ([0], False),
+            ),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
@@ -1281,6 +1328,11 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
             patch.object(self.route, "_reject_diffusion_memory_mode", return_value = None),
             patch.object(self.route, "_request_matches_loaded_settings", return_value = False),
+            patch.object(
+                self.route,
+                "_resolve_gguf_gpu_ids_for_request",
+                return_value = ([0], False),
+            ),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),

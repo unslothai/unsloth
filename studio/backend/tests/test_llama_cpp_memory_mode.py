@@ -928,6 +928,7 @@ def test_remote_diffusion_load_rejects_vulkan_ordinal_after_download(tmp_path):
     backend = LlamaCppBackend()
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: True
+    backend._get_gpu_memory = lambda _binary = None: [(1, 8 * 1024**3, 8 * 1024**3)]
     backend._download_gguf = lambda **_kwargs: str(gguf)
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
     backend._start_diffusion_server = lambda **_kwargs: pytest.fail(

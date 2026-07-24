@@ -103,6 +103,9 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
   const { selectModel } = useChatModelRuntime();
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeModelIsDiffusion = useChatRuntimeStore(
+    (s) => s.loadedIsDiffusion,
+  );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufNativeContextLength = useChatRuntimeStore(
     (s) => s.ggufNativeContextLength,
@@ -235,6 +238,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
                   modelId={checkpoint}
                   ggufVariant={activeGgufVariant ?? null}
                   isGguf={activeModelIsGguf}
+                  isDiffusion={activeModelIsDiffusion}
                   nativeContextLength={ggufNativeContextLength}
                   loadedContextLength={ggufContextLength}
                   loadedConfig={activeModelConfig}

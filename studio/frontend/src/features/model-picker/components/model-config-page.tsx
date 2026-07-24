@@ -88,6 +88,26 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   );
 }
 
+function withoutUnsupportedDiffusionMemory(
+  config: PerModelConfig,
+): PerModelConfig {
+  if (
+    (config.gpuMemoryMode ?? "auto") === "auto" &&
+    config.gpuLayers == null &&
+    config.nCpuMoe == null &&
+    config.ggufMemoryMode == null
+  ) {
+    return config;
+  }
+  return {
+    ...config,
+    gpuMemoryMode: "auto",
+    gpuLayers: undefined,
+    nCpuMoe: undefined,
+    ggufMemoryMode: undefined,
+  };
+}
+
 function ChatTemplateSetting({
   config,
   onEditTemplate,
@@ -233,11 +253,13 @@ function GpuMemorySettings({
   update,
   layerCount,
   moeLayerCount,
+  isDiffusion,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
 }) {
   const gpuDevices = useGpuDevices();
   const mode = config.gpuMemoryMode ?? "auto";
@@ -282,7 +304,7 @@ function GpuMemorySettings({
   };
   return (
     <>
-      <div className={ROW_CLASS}>
+      <div className={isDiffusion ? "hidden" : ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>GPU Memory</span>
           <InfoHint>
@@ -302,9 +324,7 @@ function GpuMemorySettings({
         <Select
           value={mode}
           onValueChange={(v) =>
-            // Returning to Default must clear the Manual-only knobs, else a
-            // remembered config keeps stale gpuLayers/nCpuMoe/GPU pick that a
-            // later load re-applies while the page shows Default.
+            // Default clears every Manual-only setting.
             update(
               v === "manual"
                 ? { gpuMemoryMode: "manual" }
@@ -332,7 +352,7 @@ function GpuMemorySettings({
           </SelectContent>
         </Select>
       </div>
-      {isManual && (
+      {!isDiffusion && isManual && (
         <>
           <AdvancedGpuSlider
             label="GPU Layers"
@@ -400,7 +420,7 @@ function GpuMemorySettings({
           </div>
         </div>
       )}
-      <div className={ROW_CLASS}>
+      <div className={isDiffusion ? "hidden" : ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Host Memory</span>
           <InfoHint>
@@ -450,6 +470,7 @@ function GgufAdvancedSettings({
   onEditTemplate,
   layerCount,
   moeLayerCount,
+  isDiffusion,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -458,6 +479,7 @@ function GgufAdvancedSettings({
   onEditTemplate: () => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
 }) {
   return (
     <>
@@ -586,6 +608,7 @@ function GgufAdvancedSettings({
         update={update}
         layerCount={layerCount}
         moeLayerCount={moeLayerCount}
+        isDiffusion={isDiffusion}
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -600,6 +623,7 @@ interface ModelConfigPageProps {
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
+  isDiffusion?: boolean;
   variant?: "page" | "sidebar";
 }
 
@@ -610,6 +634,7 @@ export function ModelConfigPage({
   loadedConfig = null,
   loadedContextLength = null,
   initialConfig = null,
+  isDiffusion = false,
   variant = "page",
 }: ModelConfigPageProps) {
   const rememberId = useId();
@@ -640,7 +665,11 @@ export function ModelConfigPage({
     return resolved;
   };
   const [initial] = useState(resolveInitial);
-  const [config, setConfig] = useState<PerModelConfig>(() => initial.config);
+  const [config, setConfig] = useState<PerModelConfig>(() =>
+    isDiffusion
+      ? withoutUnsupportedDiffusionMemory(initial.config)
+      : initial.config,
+  );
   const [remember, setRemember] = useState(() => initial.remembered);
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
@@ -683,6 +712,7 @@ export function ModelConfigPage({
     contextLength: number | null;
     layerCount: number | null;
     moeLayerCount: number | null;
+    isDiffusion: boolean;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
@@ -698,6 +728,9 @@ export function ModelConfigPage({
       .then((dims) => {
         if (!cancelled) {
           setFetchedStagedDims({ key: contextFetchKey, ...dims });
+          if (dims.isDiffusion) {
+            setConfig(withoutUnsupportedDiffusionMemory);
+          }
         }
       })
       .catch(() => {
@@ -707,6 +740,7 @@ export function ModelConfigPage({
             contextLength: null,
             layerCount: null,
             moeLayerCount: null,
+            isDiffusion: false,
           });
         }
       });
@@ -722,6 +756,13 @@ export function ModelConfigPage({
   ]);
   const stagedDims =
     fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
+  const stagedMetadataPending =
+    contextFetchKey != null &&
+    stagedDims == null &&
+    (config.gpuMemoryMode === "manual" ||
+      config.ggufMemoryMode != null);
+  const resolvedIsDiffusion =
+    isDiffusion || stagedDims?.isDiffusion === true;
 
   const isMtp =
     config.speculativeType != null &&
@@ -751,7 +792,10 @@ export function ModelConfigPage({
   );
   const setContextLength = (v: number) =>
     update({ customContextLength: v });
-  const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
+  const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
+  const baseline = resolvedIsDiffusion
+    ? withoutUnsupportedDiffusionMemory(rawBaseline)
+    : rawBaseline;
   const atBaseline = perModelConfigsEqual(config, baseline);
   // An explicit customContextLength equal to the native ceiling is still an
   // override (Reset stays enabled). "At default" means no override at all AND the
@@ -780,21 +824,24 @@ export function ModelConfigPage({
   // customContextLength stays null. If the user fixes GPU Layers (Manual) and
   // remembers, pin that shown context so a later fresh load keeps the fitted
   // placement instead of sending native/0 for fixed layers and recreating the OOM.
+  const loadableConfig = resolvedIsDiffusion
+    ? withoutUnsupportedDiffusionMemory(config)
+    : config;
   const pinFixedLayerContext =
     target.isGguf &&
-    config.gpuMemoryMode === "manual" &&
-    config.gpuLayers != null &&
-    config.gpuLayers >= 0 &&
-    config.customContextLength == null &&
+    loadableConfig.gpuMemoryMode === "manual" &&
+    loadableConfig.gpuLayers != null &&
+    loadableConfig.gpuLayers >= 0 &&
+    loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
   // Persisted record: keep config as-is (non-GGUF keeps maxSeqLength null) so
   // isDefaultConfig recognises it and clears a remembered override instead of
   // pinning the app default.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
-      ? { ...config, customContextLength: activeLoadedContext }
-      : config
-    : config;
+      ? { ...loadableConfig, customContextLength: activeLoadedContext }
+      : loadableConfig
+    : loadableConfig;
   // Load request needs a concrete max length; substitute the fallback here only,
   // never in the persisted runtimeConfig.
   const loadConfig = target.isGguf
@@ -937,6 +984,7 @@ export function ModelConfigPage({
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
+                isDiffusion={resolvedIsDiffusion}
               />
             )}
 
@@ -1021,7 +1069,10 @@ export function ModelConfigPage({
             type="button"
             size="sm"
             className="h-8"
-            disabled={isActiveModel && atBaseline && !rememberChanged}
+            disabled={
+              stagedMetadataPending ||
+              (isActiveModel && atBaseline && !rememberChanged)
+            }
             onClick={handleRun}
           >
             {primaryActionLabel}
