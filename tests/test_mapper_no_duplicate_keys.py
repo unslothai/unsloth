@@ -1,18 +1,7 @@
-"""Guard against duplicate literal keys in the ``__INT_TO_FLOAT_MAPPER`` model
-registry in ``unsloth/models/mapper.py``.
+"""Guard against duplicate keys in the ``__INT_TO_FLOAT_MAPPER`` registry.
 
-The registry is a hand-maintained dict literal with hundreds of entries. Python
-keeps only the *last* value for a duplicated literal key, silently dropping the
-earlier one -- with no error at parse, import, or runtime. When the duplicated
-key carries a different value this corrupts model resolution everywhere
-downstream (see ``test_gemma_2b_mapper_key.py`` for a concrete incident where the
-base Gemma-2B repo resolved to the instruct model). Even an *exact* duplicate is
-a latent trap: the next edit to one copy silently reintroduces the bug.
-
-This test catches the whole class instead of one model at a time. We parse the
-dict literal with ``ast`` rather than executing it so a duplicate is visible in
-the *source* (post-exec, the duplicate is already gone), and so we never import
-``unsloth`` (which requires a GPU).
+Duplicate keys in the dict literal silently overwrite earlier entries. 
+We inspect the source with ``ast`` to ensure there are no duplicates.
 """
 
 import ast
