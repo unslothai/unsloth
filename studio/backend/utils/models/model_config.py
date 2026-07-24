@@ -444,6 +444,31 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-VL-8B-Instruct",
         "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
     ],
+    # Qwen3.5 models (vision-language, hybrid linear attention)
+    "unsloth_Qwen3.5-0.8B.yaml": [
+        "unsloth/Qwen3.5-0.8B",
+        "Qwen/Qwen3.5-0.8B",
+    ],
+    "unsloth_Qwen3.5-2B.yaml": [
+        "unsloth/Qwen3.5-2B",
+        "Qwen/Qwen3.5-2B",
+    ],
+    "unsloth_Qwen3.5-4B.yaml": [
+        "unsloth/Qwen3.5-4B",
+        "Qwen/Qwen3.5-4B",
+    ],
+    "unsloth_Qwen3.5-9B.yaml": [
+        "unsloth/Qwen3.5-9B",
+        "Qwen/Qwen3.5-9B",
+    ],
+    "unsloth_Qwen3.5-27B.yaml": [
+        "unsloth/Qwen3.5-27B",
+        "Qwen/Qwen3.5-27B",
+    ],
+    "unsloth_Qwen3.5-35B-A3B.yaml": [
+        "unsloth/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-35B-A3B",
+    ],
     "sesame_csm-1b.yaml": [
         "sesame/csm-1b",
         "unsloth/csm-1b",
