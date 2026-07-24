@@ -390,9 +390,12 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
         # torch.loads any not ending in .safetensors. A base safetensors makes it skip the pytorch
         # index; a safetensors index is itself chosen, so its non-safetensors targets always load.
         for index_path in entries:
-            if index_path.name not in _TORCH_INDEX_FILES:
+            # Case-insensitive like the weight/safetensors matches above: a case-insensitive volume
+            # (Windows/macOS) opens an oddly-cased index when the loader asks for the canonical name.
+            name = index_path.name.lower()
+            if name not in _TORCH_INDEX_FILES:
                 continue
-            if index_path.name == "pytorch_model.bin.index.json" and has_base_safetensors:
+            if name == "pytorch_model.bin.index.json" and has_base_safetensors:
                 continue
             for shard_path in _indexed_pickle_shards(index_path, root, snapshot):
                 _add(shard_path)

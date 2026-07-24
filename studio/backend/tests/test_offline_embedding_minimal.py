@@ -460,6 +460,27 @@ def test_gate_blocks_indexed_shard_with_no_pickle_extension(hf_cache):
     assert any(u["path"] == "shards/payload" for u in decision.unsafe_files)
 
 
+def test_gate_blocks_uppercase_index_filename(hf_cache):
+    # On case-insensitive volumes (Windows/macOS) from_pretrained opens an oddly-cased index when it
+    # requests the canonical lowercase name, so the index-name match must be case-insensitive too.
+    _make_cache(
+        hf_cache,
+        "org/upper-index",
+        {
+            "PYTORCH_MODEL.BIN.INDEX.JSON": (
+                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "shards/pytorch_model-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/upper-index")
+    assert decision.blocked is True
+    assert any(
+        u["path"] == "shards/pytorch_model-00001-of-00001.bin" for u in decision.unsafe_files
+    )
+
+
 def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):
     # A weight index inside a sentence-transformers module load root points at a nested pickle shard.
     _make_cache(
