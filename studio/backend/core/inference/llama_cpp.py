@@ -2522,6 +2522,22 @@ class LlamaCppBackend:
         effective = self._gpu_ids or None
         return requested == raw or requested == effective
 
+    def _record_matching_gpu_request(self, gpu_ids: Optional[List[int]]) -> None:
+        """Adopt the caller's explicit pool after a full already-loaded match.
+
+        Matching an effective subset avoids a reload, but the incoming request
+        is still the user's latest placement intent. Record it so status and a
+        later reload do not restore GPUs the user just removed.
+        """
+        if self._is_diffusion:
+            self._requested_gpu_ids = (
+                [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            )
+        else:
+            self._requested_gpu_ids = (
+                sorted(int(x) for x in gpu_ids) if gpu_ids else None
+            )
+
     @property
     def n_layers(self) -> Optional[int]:
         """Model layer count (GGUF block_count), or None if unknown."""
@@ -3490,37 +3506,6 @@ class LlamaCppBackend:
                 + ", ".join(f"VK{idx}={free}MiB" for idx, free, _total in gpus)
             )
         return gpus
-
-    @staticmethod
-    def _get_vulkan_gpu_info(binary: Optional[str] = None) -> list[dict]:
-        """Vulkan-ordinal device records suitable for ``/api/system``.
-
-        The existing memory probe and ``--device VulkanN`` use the same compact
-        ggml ordinal space, so these indices are safe for the GGUF picker.
-        """
-        devices = []
-        for idx, free_mib, total_mib in LlamaCppBackend._get_gpu_free_memory_vulkan(binary):
-            free_gb = round(free_mib / 1024, 2)
-            total_gb = round(total_mib / 1024, 2) if total_mib > 0 else free_gb
-            used_gb = round(max(0, total_gb - free_gb), 2) if total_mib > 0 else None
-            devices.append(
-                {
-                    "index": idx,
-                    "visible_ordinal": idx,
-                    "index_kind": "vulkan",
-                    "name": f"Vulkan {idx}",
-                    "memory_total_gb": total_gb,
-                    "vram_total_gb": total_gb,
-                    "vram_free_gb": free_gb,
-                    "vram_used_gb": used_gb,
-                    "vram_utilization_pct": (
-                        round((used_gb / total_gb) * 100, 1)
-                        if used_gb is not None and total_gb > 0
-                        else None
-                    ),
-                }
-            )
-        return devices
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
@@ -9022,6 +9007,7 @@ class LlamaCppBackend:
             current = list(self._extra_args) if self._extra_args is not None else []
             if list(extra_args) != current:
                 return False
+        self._record_matching_gpu_request(gpu_ids)
         return True
 
     def _classify_gpu_offload(

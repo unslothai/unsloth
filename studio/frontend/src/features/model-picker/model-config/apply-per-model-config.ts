@@ -15,7 +15,6 @@ import {
   type PerModelConfig,
   normalizeMaxSeqLength,
 } from "./per-model-config";
-import { cachedPinnableGpuIndexKind } from "@/hooks/use-gpu-info";
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
@@ -53,10 +52,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     splitRatio: null,
     selectedGpuIds:
       config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(
-            config.selectedGpuIds,
-            config.selectedGpuIndexKind,
-          )
+        ? reconcilePersistedGpuIds(config.selectedGpuIds)
         : null,
   });
 }
@@ -90,8 +86,6 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
-    selectedGpuIndexKind:
-      s.selectedGpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null),
   };
 }
 
@@ -125,7 +119,6 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.selectedGpuIds == null
       ? "all"
       : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
-    config.selectedGpuIndexKind ?? "untagged",
   ].join("|");
 }
 

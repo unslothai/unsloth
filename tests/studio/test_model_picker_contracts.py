@@ -137,13 +137,7 @@ def test_active_model_config_round_trips_gpu_fields():
     a sidebar/hub-gear reload cannot silently reset manual GPU settings, and
     "Remember settings" cannot persist a GPU-less config over a saved one."""
     src = _read("features/model-picker/hooks/use-active-model-config.ts")
-    for field in (
-        "gpuMemoryMode",
-        "gpuLayers",
-        "nCpuMoe",
-        "selectedGpuIds",
-        "selectedGpuIndexKind",
-    ):
+    for field in ("gpuMemoryMode", "gpuLayers", "nCpuMoe", "selectedGpuIds"):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     for rel in (
@@ -176,7 +170,7 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "ownConfig.selectedGpuIndexKind," in src
+    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds)" in src
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -429,25 +423,6 @@ def test_default_gpu_mode_clears_manual_knobs():
     assert "gpuLayers: undefined," in src
     assert "nCpuMoe: undefined," in src
     assert "selectedGpuIds: undefined," in src
-    assert "selectedGpuIndexKind: undefined," in src
-
-
-def test_vulkan_gpu_picker_uses_backend_declared_index_namespace():
-    gpu_info = _read("hooks/use-gpu-info.ts")
-    assert 'export type GpuIndexKind = "physical" | "vulkan";' in gpu_info
-    assert 'd.index_kind === "physical" || d.index_kind === "vulkan"' in gpu_info
-    assert "cachedPinnableGpuIndexKind" in gpu_info
-
-    picker = _read("features/model-picker/components/model-config-page.tsx")
-    assert "selectedGpuIndexKind: selectsAll ? null : gpuIndexKind" in picker
-    assert "gpuDevices.every((d) => d.pinnable)" in picker
-
-    config = _read("features/model-picker/model-config/per-model-config.ts")
-    assert '"selectedGpuIndexKind"' in config
-
-    reconcile = _read("features/chat/stores/chat-runtime-store.ts")
-    assert 'const persistedIndexKind = savedIndexKind ?? "physical";' in reconcile
-    assert "currentIndexKind !== persistedIndexKind" in reconcile
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():

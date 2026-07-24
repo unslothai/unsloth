@@ -657,8 +657,12 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
 
     # The original request still matches after the fitter narrows it.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert backend.requested_gpu_ids == [0, 1]
     # The status response echoes the effective pin, which must also round-trip.
+    # Treat the incoming subset as the latest intent so status and a future
+    # reload do not restore GPU 1 after the user removed it.
     assert _target_state_gpu_ids(backend, [0]) is True
+    assert backend.requested_gpu_ids == [0]
     # A genuinely different placement pool still reloads.
     assert _target_state_gpu_ids(backend, [1]) is False
     assert _target_state_gpu_ids(backend, None) is False
@@ -673,27 +677,12 @@ def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
     backend._is_diffusion = True
     backend._gpu_ids = [1]  # loaded on the lowest of an earlier [3, 1] pick
     assert _target_state_gpu_ids(backend, [3, 1]) is True
+    assert backend.requested_gpu_ids == [1]
     assert _target_state_gpu_ids(backend, [1]) is True
     # Lowest device changes (2, not 1) -> reload.
     assert _target_state_gpu_ids(backend, [3, 2]) is False
     # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
-
-
-def test_vulkan_system_gpu_info_uses_probe_ordinals(monkeypatch):
-    monkeypatch.setattr(
-        LlamaCppBackend,
-        "_get_gpu_free_memory_vulkan",
-        staticmethod(lambda binary = None: [(0, 4096, 8192), (2, 2048, 4096)]),
-    )
-
-    devices = LlamaCppBackend._get_vulkan_gpu_info("/fake/llama-server")
-
-    assert [device["index"] for device in devices] == [0, 2]
-    assert all(device["index_kind"] == "vulkan" for device in devices)
-    assert devices[0]["name"] == "Vulkan 0"
-    assert devices[0]["memory_total_gb"] == 8
-    assert devices[0]["vram_free_gb"] == 4
 
 
 def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
@@ -762,6 +751,7 @@ def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
     assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
+    assert "llama_backend._record_matching_gpu_request(request.gpu_ids)" in match_impl
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────

@@ -4013,8 +4013,10 @@ def _guard_chat_load_against_training(
     effective quantization (see _effective_load_in_4bit). Manual chat-GGUF
     placement is an explicit override: Auto layers delegate fitting to
     llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
-    estimated here. Other loads raise HTTP 409 when they would not fit beside
-    training.
+    estimated here. Diffusion is still guarded because its mode-agnostic runner
+    ignores those controls and uses one GPU. An unclassified GGUF is guarded as
+    potentially diffusion until its local header proves otherwise. Other loads
+    raise HTTP 409 when they would not fit beside training.
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
@@ -4027,10 +4029,9 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    if is_gguf and gpu_memory_mode == "manual":
-        return
-
     diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
+    if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
+        return
 
     # Vulkan GGUF pins are ggml ordinals, not CUDA physical IDs. Detect this
     # before deriving a possible diffusion fallback device so an unknown remote
@@ -4377,6 +4378,7 @@ async def _load_model_impl(
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
+                llama_backend._record_matching_gpu_request(request.gpu_ids)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"

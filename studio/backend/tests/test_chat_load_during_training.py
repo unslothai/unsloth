@@ -506,10 +506,10 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             with patch.object(self.route, "LlamaCppBackend", _Probe):
                 self.assertFalse(self.route._classify_diffusion_gguf(config))
 
-    def test_manual_gguf_always_bypasses_training_estimate(self):
+    def test_manual_known_normal_gguf_bypasses_training_estimate(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
-        with patch.object(self.route, "_classify_diffusion_gguf") as classify:
+        with patch.object(self.route, "_classify_diffusion_gguf", return_value = False) as classify:
             self._guard(
                 config = config,
                 captured = captured,
@@ -518,8 +518,32 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 gpu_memory_mode = "manual",
                 requested_gpu_ids = [1, 3],
             )
-        classify.assert_not_called()
+        classify.assert_called_once_with(config)
         self.assertEqual(captured, [])
+
+    def test_manual_diffusion_keeps_single_device_training_guard(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_effective_gpu_count",
+                return_value = 2,
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+                gpu_memory_mode = "manual",
+                requested_gpu_ids = [3, 1],
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["single_device_gpu"], "1")
+        self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
