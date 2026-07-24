@@ -308,7 +308,15 @@ class TestFlashAttnOffQuantizedKvCache:
     def test_asymmetric_cache_only_quantized_axis_reset(self):
         # Quantized K, non-quantized V: reset K, keep V.
         out = _flash_off(
-            ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
+            [
+                "llama-server",
+                "--flash-attn",
+                "on",
+                "--cache-type-k",
+                "q8_0",
+                "--cache-type-v",
+                "f16",
+            ]
         )
         assert out[out.index("--cache-type-k") + 1] == "f16"
         assert out[out.index("--cache-type-v") + 1] == "f16"
