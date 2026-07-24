@@ -71,9 +71,12 @@ def test_auto_generate_noop_when_password_already_set():
 def test_start_cloudflare_tunnel_autogenerates_then_proceeds(monkeypatch):
     admin = _seed_admin(must_change_password = True)
     shown = {}
-    monkeypatch.setattr(
-        colab, "_display_admin_credentials", lambda u, p: shown.update(user = u, pw = p)
-    )
+
+    def _fake_display(u, p):
+        shown.update(user = u, pw = p)
+        return True
+
+    monkeypatch.setattr(colab, "_display_admin_credentials", _fake_display)
     # start_cloudflare_tunnel does `from cloudflare_tunnel import start_studio_tunnel`;
     # patch the module attribute so no real cloudflared is spawned.
     import cloudflare_tunnel
@@ -144,10 +147,53 @@ def test_display_admin_credentials_no_display_channel_is_silent(monkeypatch, cap
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _blocked_import)
-    colab._display_admin_credentials("unsloth", "Another-Secret-Pw-999")
+    displayed = colab._display_admin_credentials("unsloth", "Another-Secret-Pw-999")
+    assert displayed is False  # no channel -> caller must fail closed
     out = capsys.readouterr()
     assert "Another-Secret-Pw-999" not in out.out
     assert "Another-Secret-Pw-999" not in out.err
+
+
+def test_display_admin_credentials_returns_true_on_success(monkeypatch):
+    # A successful publish through the display channel reports True so the caller
+    # may proceed to publish the shared link.
+    import IPython.display as ipd
+
+    monkeypatch.setattr(ipd, "display", lambda *a, **k: None)
+    assert colab._display_admin_credentials("unsloth", "Shown-Pw-123") is True
+
+
+def test_display_admin_credentials_returns_false_when_display_raises(monkeypatch):
+    # Both the HTML and the plain-text publish raise (e.g. a broken display hook):
+    # nothing was shown, so report False and never fall back to stdout/logging.
+    import IPython.display as ipd
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("display channel is broken")
+
+    monkeypatch.setattr(ipd, "display", _boom)
+    assert colab._display_admin_credentials("unsloth", "Never-Shown-Pw-9") is False
+
+
+def test_start_cloudflare_tunnel_fails_closed_when_display_fails(monkeypatch):
+    # The password is rotated and committed, but it cannot be surfaced in the
+    # notebook (display returns False). Publishing the shared link would expose it
+    # under a password nobody ever saw, so fail closed: no tunnel is started.
+    _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_admin_credentials", lambda u, p: False)
+
+    import cloudflare_tunnel
+
+    started = {"called": False}
+
+    def _spy(port):
+        started["called"] = True
+        return "https://example.trycloudflare.com"
+
+    monkeypatch.setattr(cloudflare_tunnel, "start_studio_tunnel", _spy)
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert started["called"] is False  # link never published
 
 
 # ── opt-in same-tab link token ───────────────────────────────────────

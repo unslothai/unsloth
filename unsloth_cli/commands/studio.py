@@ -682,6 +682,30 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
+def _one_time_secret_console_stream():
+    """Return a usable console stream to surface a one-time secret, or None.
+
+    Mirrors run.py's ``_one_time_secret_stream`` fail-closed contract for the CLI
+    parent: the auto-generated admin password must reach the operator's console
+    BEFORE we rotate away the seeded bootstrap credential. Prefers stderr, then
+    stdout. Returns None when neither is usable -- e.g. a Windows pythonw/service
+    wrapper (both absent) or a closed stream -- in which case ``typer.echo`` would
+    silently no-op and the only new credential would be lost after the bootstrap
+    password was already deleted, locking the operator out. The CLI parent has no
+    session-log tee, so no _TeeStream unwrapping is needed here.
+    """
+    for candidate in (sys.stderr, sys.stdout):
+        try:
+            if candidate is None or getattr(candidate, "closed", False):
+                continue
+            if not callable(getattr(candidate, "write", None)):
+                continue
+        except (AttributeError, ValueError):
+            continue
+        return candidate
+    return None
+
+
 def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
@@ -743,23 +767,30 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
                 )
 
 
-def _echo_auto_generated_credentials(username: str, password: str) -> None:
-    """Surface an auto-generated admin credential once, on the parent's stderr.
+def _echo_auto_generated_credentials(username: str, password: str, *, out = None) -> None:
+    """Surface an auto-generated admin credential once, on the parent's console.
 
-    Mirrors run.py's ``_print_auto_generated_credentials``. Never logged elsewhere
-    and never persisted; the re-exec'd child then sees must_change=0 and no-ops.
+    Writes to the pre-resolved *out* stream (the one the caller verified was usable
+    before it rotated the seeded recovery password) so the credential lands on the
+    exact console the fail-closed preflight checked; falls back to ``typer.echo`` on
+    stderr for callers that do not resolve one. Mirrors run.py's
+    ``_print_auto_generated_credentials``. Never logged elsewhere and never
+    persisted; the re-exec'd child then sees must_change=0 and no-ops.
     """
     line = "=" * 70
-    typer.echo(
+    banner = (
         f"\n{line}\n"
         "  Unsloth Studio admin login (auto-generated for this public launch)\n"
         f"    Username: {username}\n"
         f"    Password: {password}\n"
         "  Save this now: it is shown once, not written to disk, and not in the\n"
         "  process list. Rotate later with `unsloth studio reset-password`.\n"
-        f"{line}",
-        err = True,
+        f"{line}"
     )
+    if out is None:
+        typer.echo(banner, err = True)
+    else:
+        print(banner, file = out, flush = True)
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
@@ -1121,9 +1152,28 @@ def _enforce_password_change_before_exposure(
             # default credential. Surface it once here, before any re-exec, so the
             # secret never crosses to the child argv. child_self_suppresses is no
             # longer consulted here: rotating a real password protects every child.
+            # Resolve the console stream that will surface the one-time credential
+            # BEFORE rotating the seeded recovery password. On a non-interactive
+            # launch stderr/stdout can be absent (a Windows pythonw/service wrapper)
+            # or closed, in which case typer.echo(err=True) silently no-ops and the
+            # only new credential is lost after the bootstrap password was deleted,
+            # locking the operator out. Mirror run.py's _one_time_secret_stream
+            # fail-closed preflight: with no usable console, refuse WITHOUT rotating
+            # so the seeded bootstrap password stays intact for local recovery.
+            out = _one_time_secret_console_stream()
+            if out is None:
+                typer.echo(
+                    "Error: refusing to rotate the Unsloth admin password: no usable "
+                    "console (stderr/stdout) to show the auto-generated credential, so "
+                    "it would be lost. The seeded bootstrap password is preserved; "
+                    "change the password first (`unsloth studio` locally with a "
+                    "terminal attached, or `unsloth studio reset-password`).",
+                    err = True,
+                )
+                raise typer.Exit(1)
             generated = secrets.token_urlsafe(24)
             _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, generated)
-            _echo_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated)
+            _echo_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out)
             return
         password_salt, password_hash = row[0], row[1]
 

@@ -297,6 +297,62 @@ def test_studio_default_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp
     assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
+def test_one_time_secret_console_stream_prefers_stderr_then_stdout(monkeypatch):
+    # Unit: prefer stderr, fall back to stdout, None when neither is usable (absent
+    # or closed). Mirrors run._one_time_secret_stream so the CLI parent never rotates
+    # the recovery credential when there is nowhere to surface the replacement.
+    studio_mod = _studio()
+
+    class _Stream:
+        def __init__(self, *, closed = False):
+            self.closed = closed
+
+        def write(self, *_a, **_k):
+            pass
+
+    real_err, real_out = _Stream(), _Stream()
+
+    monkeypatch.setattr(sys, "stderr", real_err)
+    monkeypatch.setattr(sys, "stdout", real_out)
+    assert studio_mod._one_time_secret_console_stream() is real_err  # stderr wins
+
+    monkeypatch.setattr(sys, "stderr", None)
+    assert studio_mod._one_time_secret_console_stream() is real_out  # falls back
+
+    monkeypatch.setattr(sys, "stderr", _Stream(closed = True))
+    monkeypatch.setattr(sys, "stdout", _Stream(closed = True))
+    assert studio_mod._one_time_secret_console_stream() is None  # no usable console
+
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(sys, "stdout", None)
+    assert studio_mod._one_time_secret_console_stream() is None  # pythonw wrapper
+
+
+def test_studio_default_non_tty_no_console_preserves_bootstrap(monkeypatch, tmp_path):
+    # Non-interactive launch with no usable console (a Windows pythonw/service
+    # wrapper leaves stderr/stdout absent): the auto-generated password could never
+    # be shown, so rotating the seeded recovery credential would lock the operator
+    # out. Fail closed WITHOUT rotating -- the bootstrap password and must_change
+    # flag are preserved, and the launch aborts before any re-exec.
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    before = _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda: None)
+
+    result = _invoke_studio_default(monkeypatch, events, ["--secure"])
+
+    assert result.exit_code == 1, result.output
+    # No rotation and no re-exec: recovery credential intact.
+    assert bootstrap_file.exists()
+    after = _auth_state(studio_mod)
+    assert after["must_change_password"] == 1
+    assert after["password_hash"] == before["password_hash"]
+    assert after["jwt_secret"] == before["jwt_secret"]
+    assert "exec" not in [k for k, _ in events], events
+
+
 def test_studio_default_reexec_outer_runpy_autogenerates(monkeypatch, tmp_path):
     # Even when the re-exec target is THIS install's own run.py (self-suppressing),
     # the parent auto-generates and commits a strong password so it is surfaced

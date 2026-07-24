@@ -276,3 +276,36 @@ def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
     # The refresh token minted mid-race was revoked, so it cannot be redeemed.
     assert len(minted) == 1
     assert storage.consume_refresh_token(minted[0]) is None
+
+
+# ── oversized-token DoS hardening ────────────────────────────────────
+
+
+def test_link_token_schema_caps_length():
+    # /api/auth/link-exchange is unauthenticated and public; a well-formed token is
+    # only a few hundred bytes, so the schema bounds it. This rejects an oversized
+    # token before exchange_link_token_with_secret() scans/decodes/HMACs it.
+    from pydantic import ValidationError
+
+    from models.auth import LINK_TOKEN_MAX_LENGTH, LinkTokenRequest
+
+    ok = authentication.create_link_token(_seed_admin())
+    assert len(ok) <= LINK_TOKEN_MAX_LENGTH
+    assert LinkTokenRequest(link_token = ok).link_token == ok
+
+    with pytest.raises(ValidationError):
+        LinkTokenRequest(link_token = "x" * (LINK_TOKEN_MAX_LENGTH + 1))
+
+
+def test_link_exchange_route_rejects_oversized_token():
+    # The route enforces the cap: an oversized token is a 422 validation error, not
+    # a 401, so the exchange path never runs on attacker-sized input.
+    _seed_admin()
+    from models.auth import LINK_TOKEN_MAX_LENGTH
+
+    client = _auth_client()
+    resp = client.post(
+        "/api/auth/link-exchange",
+        json = {"link_token": "x" * (LINK_TOKEN_MAX_LENGTH + 1)},
+    )
+    assert resp.status_code == 422, resp.text

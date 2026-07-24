@@ -154,7 +154,7 @@ def _auto_generate_colab_admin_password() -> "str | None":
         return None
 
 
-def _display_admin_credentials(username: str, password: str) -> None:
+def _display_admin_credentials(username: str, password: str) -> bool:
     """Show an auto-generated admin credential once, in the notebook cell.
 
     Renders a branded HTML card with a plain-text fallback. Both paths publish
@@ -163,11 +163,15 @@ def _display_admin_credentials(username: str, password: str) -> None:
     (see run._setup_server_disk_logging). It is never logged or persisted; if no
     display channel is available we intentionally show nothing rather than fall
     back to stdout/logging, which would retain the password in the log file.
+
+    Returns True only when the credential was published to the display channel, and
+    False when no channel is available or every publish raised, so the caller can
+    fail closed rather than expose a shared link under a password nobody ever saw.
     """
     try:
         from IPython.display import HTML, display
     except Exception:
-        return
+        return False
     try:
         display(
             HTML(f"""
@@ -182,6 +186,7 @@ def _display_admin_credentials(username: str, password: str) -> None:
     </div>
     """)
         )
+        return True
     except Exception:
         # HTML render failed; show a plain-text copy through the SAME display
         # channel (still iopub, never sys.stdout, so still not written to disk).
@@ -196,8 +201,9 @@ def _display_admin_credentials(username: str, password: str) -> None:
                 },
                 raw = True,
             )
+            return True
         except Exception:
-            pass
+            return False
 
 
 def _mint_same_tab_link_token() -> "str | None":
@@ -249,8 +255,19 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     from auth.storage import DEFAULT_ADMIN_USERNAME
 
     generated = _auto_generate_colab_admin_password()
-    if generated is not None:
-        _display_admin_credentials(DEFAULT_ADMIN_USERNAME, generated)
+    if generated is not None and not _display_admin_credentials(DEFAULT_ADMIN_USERNAME, generated):
+        # The password was rotated and committed, but it could not be surfaced in
+        # this notebook (no IPython display channel, or every publish raised). The
+        # shared link would then be live under a password nobody saw, locking every
+        # user out. Fail closed: do NOT publish the tunnel, and never fall back to
+        # stdout/logging (which the server tees to an on-disk log). Tell the operator
+        # to reset the credential.
+        logger.warning(
+            "Cloudflare link not started: the auto-generated admin password could not "
+            "be shown in this notebook, so the shared link would be unusable. Reset it "
+            "with `unsloth studio reset-password`, then re-run start(cloudflare=True)."
+        )
+        return None
     if _bootstrap_password_pending():
         # Auto-generation is the primary protection; only reached if it failed
         # (e.g. the auth DB could not be read/written). Fail safe: no shared link.
