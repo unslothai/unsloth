@@ -8,6 +8,7 @@ import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "./model-identity";
+import { normalizeLlamaExtraArgs } from "./llama-extra-args";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -25,6 +26,8 @@ export interface PerModelConfig {
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  /** Extra llama-server flags (e.g. --cpu-moe --no-mmap), GGUF-only. */
+  llamaExtraArgs?: string[];
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -88,6 +91,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "gpuLayers",
   "nCpuMoe",
   "selectedGpuIds",
+  "llamaExtraArgs",
 ]);
 
 function normalizeGpuFields(partial: RawConfig): {
@@ -459,6 +463,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? partial.chatTemplateOverride
         : null,
     ...normalizeGpuFields(partial),
+    llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
   };
 }
 
@@ -590,7 +595,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&
-    gpuFieldsAtDefault(config)
+    gpuFieldsAtDefault(config) &&
+    (config.llamaExtraArgs?.length ?? 0) === 0
   );
 }
 

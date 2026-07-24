@@ -48,6 +48,10 @@ import {
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
+import {
+  formatLlamaExtraArgs,
+  parseLlamaExtraArgsInput,
+} from "../model-config/llama-extra-args";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
 import { NumericValueInput } from "./numeric-value-input";
@@ -82,7 +86,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
-    config.selectedGpuIds != null
+    config.selectedGpuIds != null ||
+    (config.llamaExtraArgs?.length ?? 0) > 0
   );
 }
 
@@ -391,6 +396,59 @@ function GpuMemorySettings({
   );
 }
 
+function LlamaExtraArgsSetting({
+  config,
+  update,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+}) {
+  const [draft, setDraft] = useState(() =>
+    formatLlamaExtraArgs(config.llamaExtraArgs),
+  );
+  useEffect(() => {
+    setDraft(formatLlamaExtraArgs(config.llamaExtraArgs));
+  }, [config.llamaExtraArgs]);
+  const commit = () => {
+    const parsed = parseLlamaExtraArgsInput(draft);
+    const next = parsed.length > 0 ? parsed : undefined;
+    const current = config.llamaExtraArgs;
+    const same =
+      (current?.length ?? 0) === (next?.length ?? 0) &&
+      (current ?? []).every((token, index) => token === next?.[index]);
+    if (!same) {
+      update({ llamaExtraArgs: next });
+    }
+  };
+  return (
+    <div className="space-y-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS_WRAP}>Custom llama-server Args</span>
+        <InfoHint>
+          Extra flags passed to llama-server after Unsloth&apos;s defaults.
+          Useful for large MoE models on consumer GPUs, e.g.{" "}
+          <code className="text-[11px]">--cpu-moe --no-mmap</code>. Unsloth-managed
+          flags (model path, port, parallel slots) are rejected.
+        </InfoHint>
+      </div>
+      <input
+        type="text"
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+        }}
+        placeholder="--cpu-moe --no-mmap"
+        aria-label="Custom llama-server arguments"
+        className={`h-8 w-full min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
+      />
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -535,6 +593,8 @@ function GgufAdvancedSettings({
         layerCount={layerCount}
         moeLayerCount={moeLayerCount}
       />
+
+      <LlamaExtraArgsSetting config={config} update={update} />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
     </>

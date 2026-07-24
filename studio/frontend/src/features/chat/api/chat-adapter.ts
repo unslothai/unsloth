@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
-import { resolveInitialConfig } from "@/features/model-picker";
+import { resolveInitialConfig, llamaExtraArgsForLoad } from "@/features/model-picker";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -1554,6 +1554,7 @@ async function autoLoadSmallestModel(): Promise<{
       config.gpuMemoryMode ?? currentStore.gpuMemoryMode;
     const effectiveGpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
     const effectiveNCpuMoe = config.nCpuMoe ?? 0;
+    const effectiveLlamaExtraArgs = llamaExtraArgsForLoad(config.llamaExtraArgs);
     if (config.selectedGpuIds != null) {
       // Warm the device cache first: on a cold cache the reconcile passes the
       // saved pick through unvalidated, and a stale cross-host pick then fails
@@ -1626,6 +1627,7 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
+            llama_extra_args: effectiveLlamaExtraArgs,
           }
         : {}),
     });

@@ -63,6 +63,7 @@ import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
   type PerModelConfig,
+  llamaExtraArgsForLoad,
 } from "@/features/model-picker";
 import type {
   ChatLoraSummary,
@@ -658,6 +659,7 @@ export function useChatModelRuntime() {
           let loadGpuLayers = stateBeforeUnload.gpuLayers;
           let loadNCpuMoe = stateBeforeUnload.nCpuMoe;
           let loadSplitRatio = stateBeforeUnload.splitRatio;
+          let loadLlamaExtraArgs = stateBeforeUnload.llamaExtraArgs;
           // Reconcile the persisted pick against the GPUs present now, so a stale
           // cross-host / now-hidden pick is dropped before /load rather than
           // rejected there. Warm the device cache first: load-on-selection can
@@ -809,6 +811,7 @@ export function useChatModelRuntime() {
                 // A Manual+Auto context pin is per-model; clear it so a different
                 // model loads at Auto/native, not the previous model's pin.
                 customContextLength: null,
+                llamaExtraArgs: null,
               });
               loadSpeculativeType = persistedSpeculativeType;
               loadSpecDraftNMax = null;
@@ -820,6 +823,7 @@ export function useChatModelRuntime() {
               loadGpuLayers = GPU_LAYERS_AUTO;
               loadNCpuMoe = 0;
               loadSplitRatio = null;
+              loadLlamaExtraArgs = null;
             }
 
             // Pinning layers on the SAME model keeps the currently resolved
@@ -879,6 +883,7 @@ export function useChatModelRuntime() {
               n_cpu_moe: loadNCpuMoe,
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
+              llama_extra_args: llamaExtraArgsForLoad(loadLlamaExtraArgs ?? undefined),
             });
 
             // If cancelled while loading, don't update UI to show
@@ -993,6 +998,8 @@ export function useChatModelRuntime() {
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
               ...loadedGpuMemoryFields(loadResponse),
+              llamaExtraArgs: loadLlamaExtraArgs,
+              loadedLlamaExtraArgs: loadLlamaExtraArgs,
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
@@ -1108,6 +1115,9 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  llama_extra_args: llamaExtraArgsForLoad(
+                    stateBeforeUnload.loadedLlamaExtraArgs ?? undefined,
+                  ),
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,

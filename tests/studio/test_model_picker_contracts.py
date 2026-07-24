@@ -442,3 +442,28 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_per_model_config_persists_llama_extra_args():
+    """Custom llama-server flags must round-trip through per-model config storage."""
+    src = _read("features/model-picker/model-config/per-model-config.ts")
+    assert "llamaExtraArgs" in src
+    assert '"llamaExtraArgs"' in src
+
+
+def test_gguf_load_paths_forward_llama_extra_args():
+    """GGUF /load requests must forward per-model llama_extra_args."""
+    for rel in (
+        "features/chat/api/chat-adapter.ts",
+        "features/chat/hooks/use-chat-model-runtime.ts",
+        "features/chat/shared-composer.tsx",
+    ):
+        src = _read(rel)
+        assert "llama_extra_args:" in src, rel
+        assert "llamaExtraArgsForLoad" in src, rel
+
+
+def test_model_config_page_exposes_custom_llama_server_args():
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "LlamaExtraArgsSetting" in src
+    assert "parseLlamaExtraArgsInput" in src

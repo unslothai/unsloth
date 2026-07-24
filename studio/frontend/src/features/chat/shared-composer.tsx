@@ -81,6 +81,7 @@ import {
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
+  llamaExtraArgsForLoad,
 } from "@/features/model-picker";
 import {
   confirmTransformersUpgradeIfNeeded,
@@ -1000,6 +1001,7 @@ export function SharedComposer({
         // /load would reject (the device cache is populated by send time).
         selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
         customContextLength: store.customContextLength,
+        llamaExtraArgs: store.llamaExtraArgs,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1055,6 +1057,9 @@ export function SharedComposer({
           ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
         const effectiveNCpuMoe =
           ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
+        const effectiveLlamaExtraArgs = llamaExtraArgsForLoad(
+          ownConfig.llamaExtraArgs ?? compareLoadKnobs.llamaExtraArgs ?? undefined,
+        );
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
@@ -1171,6 +1176,7 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                llama_extra_args: effectiveLlamaExtraArgs,
               }
             : {}),
         });

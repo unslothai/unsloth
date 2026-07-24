@@ -77,6 +77,8 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked physical GPU indices (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** Extra llama-server flags appended after Unsloth-managed args (GGUF-only). */
+  llama_extra_args?: string[];
 }
 
 export interface ValidateModelResponse {
