@@ -24,6 +24,7 @@ from urllib.parse import urlencode, urlparse
 
 import click
 import typer
+from typer.core import TyperCommand
 
 from unsloth_cli._inference import (
     _USER_AGENT,
@@ -91,54 +92,116 @@ _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 _OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+
+class _PassthroughCommand(TyperCommand):
+    """Preserve the option separator when forwarding arguments to an agent."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        raw_args = list(args)
+        try:
+            separator = raw_args.index("--")
+        except ValueError:
+            return super().parse_args(ctx, args)
+        trailing_count = len(raw_args) - separator - 1
+        remaining = super().parse_args(ctx, args)
+        insert_at = max(0, len(remaining) - trailing_count)
+        if insert_at >= len(remaining) or remaining[insert_at] != "--":
+            remaining.insert(insert_at, "--")
+            ctx.args = remaining
+        return remaining
+
+
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
+# Help is grouped into rich panels so `--help` reads as Model / Server / Session
+# instead of one long unaligned list.
+_PANEL_MODEL = "Model"
+_PANEL_SERVER = "Server"
+_PANEL_SESSION = "Agent session"
+
 _MODEL_OPTION = typer.Option(
-    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Unsloth."
-)
-_KEY_OPTION = typer.Option(
     None,
-    "--api-key",
-    envvar = "UNSLOTH_API_KEY",
-    help = (
-        "Unsloth API key. For a local Unsloth it is minted automatically and "
-        "remembered per server. For a remote server, pass one with --api-key "
-        "(or UNSLOTH_API_KEY); it is remembered for next time."
-    ),
+    "--model",
+    "-m",
+    rich_help_panel = _PANEL_MODEL,
+    help = "Model for the agent, or a bare `org/name(:variant)` positional. "
+    "Defaults to the one loaded in Unsloth.",
 )
-_LAUNCH_OPTION = typer.Option(
-    True,
-    "--launch/--no-launch",
-    help = "--no-launch prints the env and command instead (remote shells, WSL).",
-)
-_SERVE_OPTION = typer.Option(
-    True,
-    "--serve/--no-serve",
-    help = (
-        "If no Unsloth server is running, auto-start one for --model and keep it available "
-        "after the agent exits. --no-serve keeps the old behavior of erroring out."
-    ),
-)
-# Model-load knobs mirrored from `unsloth run`; only used when --model triggers a
-# load on the server. Server-startup flags (--host/--port/--cloudflare/...) do not
-# apply here because `unsloth start` attaches to an already-running server.
 _GGUF_VARIANT_OPTION = typer.Option(
-    None, "--gguf-variant", help = "GGUF quant variant to load (e.g. UD-Q4_K_XL)."
+    None,
+    "--gguf-variant",
+    rich_help_panel = _PANEL_MODEL,
+    help = "GGUF quant variant to load (e.g. UD-Q4_K_XL). Defaults to UD-Q4_K_XL for "
+    "unsloth/* GGUF repos, else Q4_K_M.",
 )
 _CONTEXT_OPTION = typer.Option(
     0,
     "--max-seq-length",
     "--context-length",
+    rich_help_panel = _PANEL_MODEL,
     help = "Context length in tokens for the load (0 = model default).",
 )
 _LOAD_4BIT_OPTION = typer.Option(
-    True, "--load-in-4bit/--no-load-in-4bit", help = "Load hub models in 4-bit (ignored for GGUF)."
+    True,
+    "--load-in-4bit/--no-load-in-4bit",
+    rich_help_panel = _PANEL_MODEL,
+    help = "Load hub models in 4-bit (ignored for GGUF).",
 )
 _TENSOR_PARALLEL_OPTION = typer.Option(
     False,
     "--tensor-parallel/--no-tensor-parallel",
+    rich_help_panel = _PANEL_MODEL,
     help = "Split a GGUF across GPUs by tensor instead of by layer (multi-GPU only).",
+)
+
+# Server knobs. Only used when `unsloth start` auto-starts the server (--serve);
+# they have no effect when attaching to a server someone else already started.
+_SERVE_OPTION = typer.Option(
+    True,
+    "--serve/--no-serve",
+    rich_help_panel = _PANEL_SERVER,
+    help = "If no Unsloth server is running, auto-start one for --model and keep it "
+    "available after the agent exits. --no-serve errors out instead.",
+)
+_ENABLE_TOOLS_OPTION = typer.Option(
+    False,
+    "--enable-tools/--disable-tools",
+    rich_help_panel = _PANEL_SERVER,
+    help = "Server-side tools (web search, code execution) for the auto-started server. "
+    "Default off so the agent's own tools are relayed unchanged.",
+)
+_TOOL_CALL_HEALING_OPTION = typer.Option(
+    None,
+    "--enable-tool-call-healing/--disable-tool-call-healing",
+    rich_help_panel = _PANEL_SERVER,
+    help = "Promote text-form tool calls from small GGUFs back into structured calls. On by "
+    "default; when the flag is omitted an inherited UNSLOTH_DISABLE_TOOL_CALL_HEALING is kept.",
+)
+_TOOL_CALL_NUDGING_OPTION = typer.Option(
+    None,
+    "--enable-tool-call-nudging/--disable-tool-call-nudging",
+    rich_help_panel = _PANEL_SERVER,
+    help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
+    "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
+)
+
+# Agent-session knobs.
+_KEY_OPTION = typer.Option(
+    None,
+    "--api-key",
+    envvar = "UNSLOTH_API_KEY",
+    rich_help_panel = _PANEL_SESSION,
+    help = "Unsloth API key. For a local Unsloth it is minted automatically and "
+    "remembered per server. For a remote server, pass one with --api-key "
+    "(or UNSLOTH_API_KEY); it is remembered for next time.",
+)
+_LAUNCH_OPTION = typer.Option(
+    True,
+    "--launch/--no-launch",
+    rich_help_panel = _PANEL_SESSION,
+    help = "--no-launch prints the env and command instead (remote shells, WSL).",
 )
 # One normalized "run tools without prompting" switch. Each agent spells this
 # differently and it's easy to forget which is which, so accept every spelling and
@@ -148,14 +211,14 @@ _YOLO_OPTION = typer.Option(
     "--yolo",
     "--dangerously-skip-permissions",
     "--dangerously-bypass-approvals-and-sandbox",
-    help = (
-        "Auto-approve all tool actions for this session; routed to the agent's own "
-        "flag/config. Any of the three spellings works for any agent."
-    ),
+    rich_help_panel = _PANEL_SESSION,
+    help = "Auto-approve all tool actions for this session; routed to the agent's own "
+    "flag/config. Any of the three spellings works for any agent.",
 )
 _PERSIST_OPTION = typer.Option(
     False,
     "--persist/--no-persist",
+    rich_help_panel = _PANEL_SESSION,
     help = (
         "Keep this agent's Unsloth-managed session dir so you can resume it later. "
         "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
@@ -171,6 +234,7 @@ _PERSIST_OPTION = typer.Option(
 _AS_SUBAGENT_OPTION = typer.Option(
     False,
     "--as-subagent",
+    rich_help_panel = _PANEL_SESSION,
     help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
 
@@ -319,6 +383,14 @@ class LoadOptions(NamedTuple):
     tensor_parallel: bool = False
 
 
+class ServerOptions(NamedTuple):
+    """Tool-call knobs forwarded to an auto-started `unsloth run` server."""
+
+    enable_tools: bool = False
+    tool_call_healing: Optional[bool] = None
+    tool_call_nudging: Optional[bool] = None
+
+
 def _split_repo_variant(model: str) -> tuple:
     """Split ``org/name:QUANT`` into ``(repo, variant)`` -> ``("org/name", "QUANT")``.
 
@@ -340,6 +412,32 @@ def _split_repo_variant(model: str) -> tuple:
     if not repo or not variant or "/" in variant:
         return s, None
     return repo, variant
+
+
+def _looks_like_model(token: str) -> bool:
+    """True for a bare `org/name(:variant)` hub id that is not a flag or a local path.
+
+    Reuses `_is_hub_model_id`, so a relative dir like `owner/repo` that actually exists
+    is left for the agent (e.g. OpenCode opens it as a project) instead of being taken
+    as a model; a non-existent `org/name` is treated as a hub id.
+    """
+    if not token or token.startswith("-") or " " in token:
+        return False
+    repo, _ = _split_repo_variant(token)
+    return _is_hub_model_id(repo)
+
+
+def _consume_positional_model(model: Optional[str], args: list) -> tuple:
+    """Route a leading `org/name` positional to --model when --model was not given.
+
+    Only the FIRST token is considered so an option value like `--profile owner/repo`
+    is never stolen, and only when --model is absent so an explicit --model always wins.
+    Returns (model, remaining_args) with the consumed token removed from the passthrough.
+    """
+    args = list(args)
+    if model or not args or not _looks_like_model(args[0]):
+        return model, args
+    return args[0], args[1:]
 
 
 def _display_model_spec(model: str, variant: Optional[str]) -> str:
@@ -771,13 +869,20 @@ def _keep_auto_served() -> bool:
     return server is not None and server.poll() is None
 
 
-def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess.Popen:
+def _start_studio_server(
+    base: str,
+    model: str,
+    load: LoadOptions,
+    server: ServerOptions = ServerOptions(),
+) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server
     unsloth = shutil.which("unsloth") or "unsloth"
     parsed = urlparse(base)
-    # --disable-tools = passthrough mode (relay the agent's own tools); --no-cloudflare =
-    # loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh.
+    # Tools default off = passthrough mode (relay the agent's own tools); --no-cloudflare =
+    # loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh. Healing/nudging
+    # travel via the child env below (version-agnostic) rather than new run flags that an
+    # older re-exec'd run could mistake for llama-server args.
     command = [
         unsloth,
         "run",
@@ -785,7 +890,7 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
         parsed.hostname or "127.0.0.1",
         "-p",
         str(parsed.port or 8888),
-        "--disable-tools",
+        "--enable-tools" if server.enable_tools else "--disable-tools",
         "--no-cloudflare",
         "--model",
         model,
@@ -814,6 +919,19 @@ def _start_studio_server(base: str, model: str, load: LoadOptions) -> subprocess
     # Pass the marker via env so an older launcher ignores it instead of treating an
     # unknown CLI flag as a llama-server arg; new launchers preserve it across re-exec.
     child_env[_START_API_KEY_MARKER_ENV] = "1"
+    # Convey healing/nudging through the env; `unsloth run` reads these when its own
+    # flags are omitted, so this works even if run re-execs into an older Studio venv.
+    # Only write when the operator set the flag explicitly; otherwise keep whatever they
+    # already exported (child_env is a copy of os.environ), falling back to the start
+    # defaults (healing on, nudging on) when nothing was inherited.
+    if server.tool_call_healing is not None:
+        child_env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "0" if server.tool_call_healing else "1"
+    elif "UNSLOTH_DISABLE_TOOL_CALL_HEALING" not in child_env:
+        child_env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "0"
+    if server.tool_call_nudging is not None:
+        child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if server.tool_call_nudging else "0"
+    elif "UNSLOTH_TOOL_CALL_NUDGE" not in child_env:
+        child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
     kwargs: dict = {
         "stdout": log,
         "stderr": subprocess.STDOUT,
@@ -896,6 +1014,7 @@ def _require_studio(
     *,
     serve: bool = False,
     launch: bool = True,
+    server_options: ServerOptions = ServerOptions(),
 ) -> tuple:
     """Return (base, server). server is a Popen only when WE auto-started it."""
     base = find_studio_server()
@@ -916,7 +1035,11 @@ def _require_studio(
         # Normalize to the port unsloth run actually binds, so the health poll and the
         # returned base hit the same server we launch (not a portless :80).
         expected = _effective_base(expected)
-        return expected, _start_studio_server(expected, model, load or LoadOptions())
+        load = load or LoadOptions()
+        # Leave a bare GGUF repo's variant unset: the server's own quant preference already
+        # picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back
+        # when that exact quant is missing, which forcing a fixed variant here would break.
+        return expected, _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
     _fail(
         f"No running Unsloth server found at {expected}.{model_hint} start one with "
@@ -1987,6 +2110,11 @@ def _launch(
         for name in unset_env:
             child_env.pop(name, None)
     child_env.update(env)
+    if os.name != "nt" and not wsl_env_bridge:
+        # Keep POSIX child processes from seeing a stale inherited PWD when
+        # subprocess cwd was changed by the caller. Some Node CLIs use PWD for
+        # project-root discovery instead of process.cwd().
+        child_env["PWD"] = os.getcwd()
     # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
@@ -2004,6 +2132,7 @@ def _connect(
     *,
     serve: bool = False,
     launch: bool = True,
+    server_options: ServerOptions = ServerOptions(),
 ) -> tuple:
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`.
     # Split it before we match/serve so the attach path resolves against the already-loaded
@@ -2015,7 +2144,9 @@ def _connect(
             model = repo
             if not load.gguf_variant:
                 load = load._replace(gguf_variant = variant)
-    base, server = _require_studio(model, load, serve = serve, launch = launch)
+    base, server = _require_studio(
+        model, load, serve = serve, launch = launch, server_options = server_options
+    )
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
         # A server we just started has exactly the requested model loaded, so resolve to
@@ -2453,7 +2584,7 @@ def write_pi_subagent_config(base: str, key: str, model: dict, path: Path) -> No
     )
 
 
-@start_app.command("claude", context_settings = _PASSTHROUGH)
+@start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2463,18 +2594,24 @@ def claude(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
+        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
     )
     model_id = entry["id"]
     install_hint = (
@@ -2548,7 +2685,7 @@ def claude(
     )
 
 
-@start_app.command("codex", context_settings = _PASSTHROUGH)
+@start_app.command("codex", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def codex(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2558,18 +2695,24 @@ def codex(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenAI Codex at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
+        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
     )
     # This preflight runs after _connect may have auto-started a server but before _run
     # takes over its lifecycle, so tear the server down here if it rejects the model
@@ -2617,7 +2760,7 @@ def codex(
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
 
 
-@start_app.command("openclaw", context_settings = _PASSTHROUGH)
+@start_app.command("openclaw", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def openclaw(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2627,11 +2770,16 @@ def openclaw(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenClaw at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("openclaw", ctx.args)
     base, key, entry = _connect(
         api_key,
@@ -2639,6 +2787,7 @@ def openclaw(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
+        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
     )
     openclaw_args = list(ctx.args)
     # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller
@@ -2675,7 +2824,7 @@ def openclaw(
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
-@start_app.command("opencode", context_settings = _PASSTHROUGH)
+@start_app.command("opencode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def opencode(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2685,18 +2834,24 @@ def opencode(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point OpenCode at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
+        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
     )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -2813,7 +2968,7 @@ def opencode(
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g opencode-ai")
 
 
-@start_app.command("hermes", context_settings = _PASSTHROUGH)
+@start_app.command("hermes", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def hermes(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2823,11 +2978,16 @@ def hermes(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("hermes", ctx.args)
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
@@ -2837,6 +2997,7 @@ def hermes(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
+        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
     )
     install_hint = _hermes_install_hint()
     with _session_config("hermes", launch, persist = persist) as home:
@@ -2847,7 +3008,7 @@ def hermes(
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
-@start_app.command("pi", context_settings = _PASSTHROUGH)
+@start_app.command("pi", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def pi(
     ctx: typer.Context,
     model: Optional[str] = _MODEL_OPTION,
@@ -2857,18 +3018,24 @@ def pi(
     max_seq_length: int = _CONTEXT_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
 ):
     """Point Pi (coding agent) at the running Unsloth server and start it."""
+    # Route a leading `org/name` positional to --model; forward the rest to the agent.
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     base, key, entry = _connect(
         api_key,
         model,
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
+        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
     )
     install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     if as_subagent:

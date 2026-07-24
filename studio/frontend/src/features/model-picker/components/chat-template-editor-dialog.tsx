@@ -132,7 +132,7 @@ export function ChatTemplateEditorDialog({
           placeholder={defaultLoading ? "Loading model default..." : ""}
         />
         {readOnly ? null : (
-          <div className="flex items-center justify-between gap-3 px-0.5 text-[11px]">
+          <div className="flex items-center justify-between gap-3 px-0.5 text-ui-11">
             <span
               className={overLimit ? "text-amber-500" : "text-muted-foreground"}
             >

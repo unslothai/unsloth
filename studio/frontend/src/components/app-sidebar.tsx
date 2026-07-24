@@ -323,7 +323,7 @@ function NavItem({
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
-          <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
+          <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
           {spinner && (
             <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
@@ -969,10 +969,10 @@ export function AppSidebar() {
         : "group/recent-item relative";
     const actionClass =
       variant === "project"
-        ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-        : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
+        ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+        : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
-      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
+      "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
       // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
@@ -980,13 +980,14 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[8.5px]",
       variant === "project"
         ? // Room for the hover pin quick-action plus the kebab.
-          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
+          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8 [@media(pointer:coarse)]:pr-14"
         : isPinned
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
           : // Hover room for the kebab only; title keeps one more character.
-            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
+            // Touch rows clear the full always-visible kebab hit area (pr-10).
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
     );
 
     const isSelectableRecent =
@@ -1011,7 +1012,7 @@ export function AppSidebar() {
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
               // No pill or box; edit in place as plain highlighted text.
-              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-[14.5px] leading-[19px] font-medium tracking-nav outline-none",
+              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none",
               variant === "project" ? "pl-[39px]" : "pl-3",
             )}
           />
@@ -1081,7 +1082,7 @@ export function AppSidebar() {
               togglePinnedChat(item.id);
             }}
             aria-label={isPinned ? "Unpin chat" : "Pin chat"}
-            className="sidebar-row-action is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
           >
             <span className="sidebar-row-action-glyph">
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
@@ -1096,7 +1097,7 @@ export function AppSidebar() {
               togglePinnedChat(item.id);
             }}
             aria-label="Unpin chat"
-            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
           >
             <span className="sidebar-row-action-glyph">
               <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
@@ -1278,15 +1279,17 @@ export function AppSidebar() {
                   aria-disabled={chatDisabled}
                   tabIndex={chatDisabled ? -1 : undefined}
                 >
+                  {/* Logo lockup follows the UI font size at half rate:
+                      base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="h-[34px] w-[34px] rounded-full object-cover"
+                    className="h-[calc(26px+0.5rem*var(--ui-font-scale,1))] w-[calc(26px+0.5rem*var(--ui-font-scale,1))] rounded-full object-cover"
                   />
-                  <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                  <span className="font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
                     unsloth
                   </span>
-                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                  <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
                     {t("shell.beta")}
                   </span>
                 </Link>
@@ -1313,7 +1316,7 @@ export function AppSidebar() {
                     hidden={isMobile}
                   >
                     {t("shell.navigation.search")}
-                    <kbd className="rounded bg-black/10 px-1 py-px text-[10px] font-medium leading-none dark:bg-white/15">
+                    <kbd className="rounded bg-black/10 px-1 py-px text-ui-10 font-medium leading-none dark:bg-white/15">
                       {isMacPlatform ? "⌘K" : "Ctrl+K"}
                     </kbd>
                   </TooltipContent>
@@ -1630,7 +1633,7 @@ export function AppSidebar() {
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
                           >
                             <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
-                            <span className="truncate text-[14.5px] leading-[19px] tracking-nav">{project.name}</span>
+                            <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
                           </SidebarMenuButton>
                           {/* New chat in this project */}
                           <button
@@ -1724,7 +1727,7 @@ export function AppSidebar() {
                                 // Show more would otherwise match the chat rows.
                                 className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
                               >
-                                <span className="text-[13px] leading-[18px] tracking-nav">
+                                <span className="text-ui-13 leading-ui-18 tracking-nav">
                                   {showAll ? "Show less" : "Show more"}
                                 </span>
                               </SidebarMenuButton>
@@ -1754,18 +1757,18 @@ export function AppSidebar() {
               </SidebarGroupLabel>
               <CollapsibleContent>
                 <SidebarGroupContent className="pl-1.5 pr-2">
-                  <SidebarBulkSelectionBar
-                    count={chatRecentsSelection.selectedCount}
-                    onClear={chatRecentsSelection.clearSelection}
-                    onDelete={() => {
-                      const items = recentChatItems.filter((item) =>
-                        chatRecentsSelection.isItemSelected(item.id),
-                      );
-                      if (items.length === 0) return;
-                      setConfirmingDelete({ kind: "chats-bulk", items });
-                    }}
-                  />
                   <div ref={chatRecentsListRef}>
+                    <SidebarBulkSelectionBar
+                      count={chatRecentsSelection.selectedCount}
+                      onClear={chatRecentsSelection.clearSelection}
+                      onDelete={() => {
+                        const items = recentChatItems.filter((item) =>
+                          chatRecentsSelection.isItemSelected(item.id),
+                        );
+                        if (items.length === 0) return;
+                        setConfirmingDelete({ kind: "chats-bulk", items });
+                      }}
+                    />
                     <SidebarMenu>
                       {recentChatItems.map((item, index) =>
                         renderChatSidebarItem(item, "recent", index),
@@ -1799,18 +1802,18 @@ export function AppSidebar() {
             </SidebarGroupLabel>
             <CollapsibleContent>
               <SidebarGroupContent className="pl-1.5 pr-2">
-                <SidebarBulkSelectionBar
-                  count={runRecentsSelection.selectedCount}
-                  onClear={runRecentsSelection.clearSelection}
-                  onDelete={() => {
-                    const runs = runItems.filter((run) =>
-                      runRecentsSelection.isItemSelected(run.id),
-                    );
-                    if (runs.length === 0) return;
-                    setConfirmingDelete({ kind: "runs-bulk", runs });
-                  }}
-                />
                 <div ref={runRecentsListRef}>
+                  <SidebarBulkSelectionBar
+                    count={runRecentsSelection.selectedCount}
+                    onClear={runRecentsSelection.clearSelection}
+                    onDelete={() => {
+                      const runs = runItems.filter((run) =>
+                        runRecentsSelection.isItemSelected(run.id),
+                      );
+                      if (runs.length === 0) return;
+                      setConfirmingDelete({ kind: "runs-bulk", runs });
+                    }}
+                  />
                   <SidebarMenu>
                     {runItems.map((run, index) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -1831,7 +1834,7 @@ export function AppSidebar() {
                         <SidebarMenuButton
                           isActive={isActiveRun}
                           className={cn(
-                            "sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium",
+                            "sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-ui-14p5 tracking-nav font-medium",
                             isSelected && "bg-primary/10 hover:bg-primary/15",
                           )}
                           onPointerDown={(event) =>
@@ -1865,7 +1868,7 @@ export function AppSidebar() {
                             <span className="truncate">
                               {getTrainingRunDisplayTitle(run)}
                             </span>
-                            <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
+                            <span className="ml-auto mr-0.5 shrink-0 text-ui-10 text-muted-foreground">
                               {formatRelativeShort(run.started_at)}
                             </span>
                           </div>
@@ -1967,11 +1970,11 @@ export function AppSidebar() {
                   />
                 </span>
                 <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                  <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                  <span className="truncate font-heading text-ui-13p5 font-semibold text-nav-fg">
                     {t("shell.updateAvailable")}
                   </span>
                   {updateVersion && (
-                    <span className="truncate text-[11.5px] text-muted-foreground">
+                    <span className="truncate text-ui-11p5 text-muted-foreground">
                       v{updateVersion}
                     </span>
                   )}
@@ -2008,8 +2011,8 @@ export function AppSidebar() {
                   {/* min-w-0 so long names truncate instead of overflowing;
                       pr on the button reserves room for the settings cog */}
                   <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
-                    <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
+                    <span className="truncate font-heading text-ui-13p5 tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
+                    <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
                 </SidebarMenuButton>
               </DropdownMenuTrigger>

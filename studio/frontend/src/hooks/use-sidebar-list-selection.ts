@@ -17,6 +17,7 @@ const AUTO_SCROLL_STEP_PX = 10;
 type DragState = {
   anchorIndex: number;
   pointerId: number;
+  pointerType: string;
   startX: number;
   startY: number;
   lastClientY: number;
@@ -56,7 +57,9 @@ export function useSidebarListSelection({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
+  const autoScrollDirectionRef = useRef<-1 | 1 | null>(null);
   const anchorIndexRef = useRef<number | null>(null);
+  const suppressClickRef = useRef(false);
   const updateDragSelectionRef = useRef<(clientY: number) => void>(() => undefined);
 
   const clearSelection = useCallback(() => {
@@ -106,11 +109,19 @@ export function useSidebarListSelection({
       window.clearInterval(autoScrollRef.current);
       autoScrollRef.current = null;
     }
+    autoScrollDirectionRef.current = null;
   }, []);
 
   const startAutoScroll = useCallback(
     (direction: -1 | 1) => {
-      if (autoScrollRef.current != null) return;
+      if (
+        autoScrollRef.current != null &&
+        autoScrollDirectionRef.current === direction
+      ) {
+        return;
+      }
+      stopAutoScroll();
+      autoScrollDirectionRef.current = direction;
       autoScrollRef.current = window.setInterval(() => {
         const container = scrollContainerRef.current;
         const drag = dragRef.current;
@@ -119,7 +130,7 @@ export function useSidebarListSelection({
         updateDragSelectionRef.current(drag.lastClientY);
       }, 16);
     },
-    [scrollContainerRef],
+    [scrollContainerRef, stopAutoScroll],
   );
 
   const updateDragSelection = useCallback(
@@ -161,6 +172,7 @@ export function useSidebarListSelection({
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || event.pointerId !== drag.pointerId) return;
+      if (drag.pointerType !== "mouse") return;
 
       const dx = event.clientX - drag.startX;
       const dy = event.clientY - drag.startY;
@@ -177,6 +189,9 @@ export function useSidebarListSelection({
     const onPointerUp = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag || event.pointerId !== drag.pointerId) return;
+      if (drag.dragging) {
+        suppressClickRef.current = true;
+      }
       dragRef.current = null;
       stopAutoScroll();
     };
@@ -216,10 +231,11 @@ export function useSidebarListSelection({
 
   const handleItemPointerDown = useCallback(
     (index: number, event: ReactPointerEvent) => {
-      if (event.button !== 0) return;
+      if (event.button !== 0 || event.pointerType !== "mouse") return;
       dragRef.current = {
         anchorIndex: index,
         pointerId: event.pointerId,
+        pointerType: event.pointerType,
         startX: event.clientX,
         startY: event.clientY,
         lastClientY: event.clientY,
@@ -235,12 +251,10 @@ export function useSidebarListSelection({
       id: string,
       event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
     ): boolean => {
-      const drag = dragRef.current;
-      if (drag?.dragging) {
-        dragRef.current = null;
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
         return true;
       }
-      dragRef.current = null;
 
       const modifier = event.metaKey || event.ctrlKey;
       if (event.shiftKey && anchorIndexRef.current != null) {
