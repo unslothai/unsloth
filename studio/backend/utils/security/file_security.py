@@ -348,7 +348,9 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
         if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
             raise OSError(f"weight index escapes the snapshot: {index_path}")
         shard_path = Path(joined)
-        if not shard_path.name.lower().endswith(".safetensors") and shard_path.is_file():
+        # Case-SENSITIVE, mirroring load_state_dict's own endswith(".safetensors"): a shard named
+        # payload.SAFETENSORS is not treated as safetensors by the loader and falls to torch.load.
+        if not shard_path.name.endswith(".safetensors") and shard_path.is_file():
             shards.append(shard_path)
     return shards
 
@@ -379,6 +381,8 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             continue  # unreadable module subdir: nothing loadable to attest here
         has_base_safetensors = any(_BASE_SAFETENSORS_RE.match(p.name) for p in entries)
         has_adapter_safetensors = any(_ADAPTER_SAFETENSORS_RE.match(p.name) for p in entries)
+        # A complete direct model.safetensors outranks BOTH sharded indexes in from_pretrained.
+        has_direct_base_safetensors = any(p.name.lower() == "model.safetensors" for p in entries)
         for path in entries:
             if not _PICKLE_WEIGHT_RE.match(path.name):
                 continue
@@ -387,13 +391,16 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             if not has_alternative:
                 _add(path)
         # A torch weight index makes from_pretrained load nested shards iterdir never sees; the loader
-        # torch.loads any not ending in .safetensors. A base safetensors makes it skip the pytorch
-        # index; a safetensors index is itself chosen, so its non-safetensors targets always load.
+        # torch.loads any not ending in .safetensors. A direct model.safetensors wins over BOTH
+        # indexes; failing that, a base safetensors still outranks the pytorch index, while a
+        # safetensors index is itself the chosen archive, so its non-safetensors targets always load.
         for index_path in entries:
             # Case-insensitive like the weight/safetensors matches above: a case-insensitive volume
             # (Windows/macOS) opens an oddly-cased index when the loader asks for the canonical name.
             name = index_path.name.lower()
             if name not in _TORCH_INDEX_FILES:
+                continue
+            if has_direct_base_safetensors:
                 continue
             if name == "pytorch_model.bin.index.json" and has_base_safetensors:
                 continue

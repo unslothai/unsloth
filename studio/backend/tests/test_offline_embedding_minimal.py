@@ -481,6 +481,41 @@ def test_gate_blocks_uppercase_index_filename(hf_cache):
     )
 
 
+def test_gate_blocks_indexed_shard_with_uppercase_safetensors_suffix(hf_cache):
+    # load_state_dict's endswith(".safetensors") is case-sensitive, so a shard named payload.SAFETENSORS
+    # falls to torch.load. The gate must classify shard suffixes case-sensitively to match it.
+    _make_cache(
+        hf_cache,
+        "org/upper-suffix",
+        {
+            "pytorch_model.bin.index.json": '{"weight_map": {"w": "shards/payload.SAFETENSORS"}}',
+            "shards/payload.SAFETENSORS": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/upper-suffix")
+    assert decision.blocked is True
+    assert any(u["path"] == "shards/payload.SAFETENSORS" for u in decision.unsafe_files)
+
+
+def test_gate_allows_stale_safetensors_index_beside_direct_safetensors(hf_cache):
+    # A complete direct model.safetensors is selected before either index, so a stale
+    # model.safetensors.index.json referencing a .bin shard never deserializes -> must not block.
+    _make_cache(
+        hf_cache,
+        "org/direct-plus-stale-index",
+        {
+            "model.safetensors": "tensors",
+            "model.safetensors.index.json": (
+                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "shards/pytorch_model-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        assert _offline_decision("org/direct-plus-stale-index").blocked is False
+
+
 def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):
     # A weight index inside a sentence-transformers module load root points at a nested pickle shard.
     _make_cache(
