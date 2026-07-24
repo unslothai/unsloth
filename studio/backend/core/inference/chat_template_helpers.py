@@ -42,6 +42,14 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     # (#7066). Neutralizing them everywhere is a no-op for other templates.
     (_GEMMA_CHANNEL_START, f"<|{_THINK_NEUTRAL_ZW}channel>"),
     (_GEMMA_THOUGHT_CLOSE, f"<{_THINK_NEUTRAL_ZW}channel|>"),
+    # Llama-3 family templates delimit every turn with these header/eot
+    # sentinels (chat_eos.py / tool_call_parser.py already treat them as turn
+    # ends). A non-assistant turn carrying them raw could close its own turn and
+    # inject a fake assistant turn (``<|eot_id|><|start_header_id|>assistant``),
+    # so neutralize them too. A no-op for templates that never emit them (#7066).
+    ("<|eot_id|>", f"<|{_THINK_NEUTRAL_ZW}eot_id|>"),
+    ("<|start_header_id|>", f"<|{_THINK_NEUTRAL_ZW}start_header_id|>"),
+    ("<|end_header_id|>", f"<|{_THINK_NEUTRAL_ZW}end_header_id|>"),
 )
 
 
