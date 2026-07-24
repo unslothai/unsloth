@@ -338,6 +338,65 @@ def test_one_time_secret_stream_prefers_stderr_then_stdout():
         assert run._one_time_secret_stream() is None  # no real console anywhere
 
 
+def test_one_time_secret_stream_skips_closed_and_nonwritable(monkeypatch):
+    # A headless launch can inherit a stderr/stdout whose raw stream is a CLOSED
+    # or non-writable stream (not None). Printing the one-time credential to it
+    # raises ValueError -- but only AFTER _auto_generate_admin_password already
+    # rotated the seeded recovery credential, locking the operator out. The stream
+    # selector must treat such streams as unusable and skip them, mirroring the CLI
+    # _one_time_secret_console_stream closed/writable preflight.
+    log = io.StringIO()
+
+    class _NonWritable:
+        closed = False
+        write = None  # not callable -> unusable
+
+    closed_err = io.StringIO()
+    closed_err.close()
+    real_out = io.StringIO()
+
+    # A closed raw stderr behind the tee is skipped; falls back to the usable stdout.
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(closed_err, log))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(real_out, log))
+    assert run._one_time_secret_stream() is real_out
+
+    # A non-writable raw stderr is skipped too.
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(_NonWritable(), log))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(real_out, log))
+    assert run._one_time_secret_stream() is real_out
+
+    # Closed on both -> no usable console anywhere -> None (caller fails closed).
+    closed_out = io.StringIO()
+    closed_out.close()
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(closed_err, log))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(closed_out, log))
+    assert run._one_time_secret_stream() is None
+
+
+def test_gate_fails_closed_when_console_stream_closed(monkeypatch):
+    # Regression: a headless `python run.py --secure` launch whose raw stderr is a
+    # CLOSED stream (and stdout absent) must NOT rotate the seeded recovery
+    # credential. Previously _one_time_secret_stream only checked for None, so it
+    # returned the closed stream; the gate committed the generated password (clearing
+    # the bootstrap credential) and then _print_auto_generated_credentials raised
+    # ValueError on the closed stream, so the operator never received the only new
+    # password and was locked out. It must fail closed WITHOUT rotating.
+    log_fh = io.StringIO()
+    closed_err = io.StringIO()
+    closed_err.close()
+    monkeypatch.setattr(sys, "stdin", _Stream(isatty = False))
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(closed_err, log_fh))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(None, log_fh))
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    # No rotation, and nothing written into the retained on-disk session log.
+    assert calls == []
+    assert log_fh.getvalue() == ""
+
+
 def test_gate_treats_broken_streams_as_non_interactive(monkeypatch):
     # A closed/None stdin must take the headless path (auto-generate), not blow up.
     stderr = _Stream(isatty = False)

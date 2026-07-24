@@ -1097,15 +1097,28 @@ def _one_time_secret_stream():
     Prefers sys.stderr, then sys.stdout, unwrapping the _TeeStream session-log
     wrapper (see _console_only_stream) so the secret bypasses the retained
     logs/server/server-*.log (CWE-532: never write credentials to log files).
-    Returns None when neither has a usable raw stream -- e.g. a Windows
-    pythonw/service wrapper where sys.stderr and sys.stdout are both None. The
-    caller MUST then fail closed: with no real console, print(file=None) would
-    fall back to the tee'd sys.stdout and persist the credential to disk.
+    Returns None when neither yields a usable raw stream -- e.g. a Windows
+    pythonw/service wrapper where sys.stderr and sys.stdout are both None, OR a
+    headless launch where the inherited stderr/stdout is a closed or non-writable
+    stream. The caller MUST then fail closed: with no real console, print(file=None)
+    would fall back to the tee'd sys.stdout and persist the credential to disk, and
+    printing to a closed stream raises ValueError -- AFTER the seeded credential was
+    already rotated -- so it must never be treated as usable. Mirrors the CLI's
+    _one_time_secret_console_stream closed/writable preflight so the direct
+    `python run.py` path makes the same fail-closed decision before rotating.
     """
     for candidate in (sys.stderr, sys.stdout):
         raw = _console_only_stream(candidate)
-        if raw is not None:
-            return raw
+        if raw is None:
+            continue
+        try:
+            if getattr(raw, "closed", False):
+                continue
+            if not callable(getattr(raw, "write", None)):
+                continue
+        except (AttributeError, ValueError):
+            continue
+        return raw
     return None
 
 
