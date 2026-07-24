@@ -195,13 +195,11 @@ class TestColabStartupRegression:
     def test_baseline_reproduces_crash_without_fix(self, monkeypatch):
         # Prove the test exercises the real path: swapping the console identity
         # (what the tee does) makes the absl-like close hit #867.
-        _, _, out_stream, err_stream, handlers = self._make_console_and_handlers(
-            monkeypatch
-        )
+        _, _, out_stream, err_stream, handlers = self._make_console_and_handlers(monkeypatch)
         try:
             monkeypatch.setattr(sys, "stdout", io.StringIO())
             monkeypatch.setattr(sys, "stderr", io.StringIO())
-            with pytest.raises(AttributeError, match="watch_fd_thread"):
+            with pytest.raises(AttributeError, match = "watch_fd_thread"):
                 logging.shutdown([weakref.ref(h) for h in handlers])
         finally:
             # Neutralize so a lingering handler can't crash global teardown.
@@ -214,9 +212,7 @@ class TestColabStartupRegression:
                     pass
 
     def test_startup_survives_with_harden_and_tee(self, monkeypatch):
-        out_sink, _, out_stream, err_stream, handlers = (
-            self._make_console_and_handlers(monkeypatch)
-        )
+        out_sink, _, out_stream, err_stream, handlers = self._make_console_and_handlers(monkeypatch)
 
         # Exactly what _setup_server_disk_logging does before serving:
         run_mod._harden_console_close(sys.stdout)
