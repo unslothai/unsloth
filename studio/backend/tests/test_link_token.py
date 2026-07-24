@@ -86,7 +86,9 @@ def test_password_change_deletes_outstanding_link_tokens():
 
     conn = storage.get_connection()
     try:
-        assert conn.execute("SELECT 1 FROM link_tokens WHERE jti = ?", (jti,)).fetchone() is not None
+        assert (
+            conn.execute("SELECT 1 FROM link_tokens WHERE jti = ?", (jti,)).fetchone() is not None
+        )
     finally:
         conn.close()
 
