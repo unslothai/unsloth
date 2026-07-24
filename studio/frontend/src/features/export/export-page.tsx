@@ -895,7 +895,7 @@ export function ExportPage() {
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
-          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+          <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
             Export Model
           </h1>
           <p className="text-sm text-muted-foreground">
@@ -964,21 +964,21 @@ export function ExportPage() {
                         <TabsTrigger
                           value="local"
                           indicatorClassName="hub-tab-toggle-pill rounded-full"
-                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                          className="h-9 rounded-full border-0 px-3 text-ui-12p5 text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
                         >
                           Local Model
                         </TabsTrigger>
                         <TabsTrigger
                           value="checkpoint"
                           indicatorClassName="hub-tab-toggle-pill rounded-full"
-                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                          className="h-9 rounded-full border-0 px-3 text-ui-12p5 text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
                         >
                           Fine-tuned
                         </TabsTrigger>
                         <TabsTrigger
                           value="hf"
                           indicatorClassName="hub-tab-toggle-pill rounded-full"
-                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                          className="h-9 rounded-full border-0 px-3 text-ui-12p5 text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
                         >
                           Hugging Face
                         </TabsTrigger>
@@ -1289,7 +1289,7 @@ export function ExportPage() {
                                         <span className="block min-w-0 flex-1 truncate">
                                           {model?.display_name ?? id}
                                         </span>
-                                        <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                                        <span className="ml-auto shrink-0 text-ui-10 text-muted-foreground">
                                           {source}
                                         </span>
                                       </ComboboxItem>
@@ -1300,15 +1300,15 @@ export function ExportPage() {
                             </Combobox>
                           </div>
                           {isLoadingLocalModels ? (
-                            <p className="text-[10px] text-muted-foreground">
+                            <p className="text-ui-10 text-muted-foreground">
                               Scanning local models...
                             </p>
                           ) : localModelsError ? (
-                            <p className="text-[10px] text-red-500">
+                            <p className="text-ui-10 text-red-500">
                               {localModelsError}
                             </p>
                           ) : (
-                            <p className="text-[10px] text-muted-foreground">
+                            <p className="text-ui-10 text-muted-foreground">
                               {exportableLocalModels.length > 0
                                 ? `${exportableLocalModels.length} local/cached models found`
                                 : "No local models found. Enter path manually."}
@@ -1318,7 +1318,7 @@ export function ExportPage() {
                       )}
 
                       <div className="rounded-xl bg-foreground/[0.04] p-3">
-                        <p className="text-[11px] text-muted-foreground">
+                        <p className="text-ui-11 text-muted-foreground">
                           Direct model exports currently support GGUF only.
                         </p>
                       </div>
@@ -1327,7 +1327,7 @@ export function ExportPage() {
 
                   {sourceMode === "checkpoint" && (
                     <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
-                      <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                      <span className="text-ui-11 font-medium text-muted-foreground uppercase tracking-wider">
                         Training Info
                       </span>
                       <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
@@ -1374,7 +1374,7 @@ export function ExportPage() {
                         key={step}
                         className="flex items-start gap-2 text-xs text-muted-foreground"
                       >
-                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[10px] font-semibold">
+                        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-foreground/10 text-ui-10 font-semibold">
                           {i + 1}
                         </span>
                         {step}
@@ -1422,7 +1422,7 @@ export function ExportPage() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="text-sm font-medium">Precision</div>
-                      <span className="text-[11px] text-muted-foreground/70">
+                      <span className="text-ui-11 text-muted-foreground/70">
                         — select one or more
                       </span>
                     </div>
@@ -1479,7 +1479,7 @@ export function ExportPage() {
                                       {f.label}
                                       {f.needsCalibration ? " *" : ""}
                                     </span>
-                                    <span className="text-[10px] text-muted-foreground">
+                                    <span className="text-ui-10 text-muted-foreground">
                                       {f.hint}
                                     </span>
                                   </span>
@@ -1492,7 +1492,7 @@ export function ExportPage() {
 
                     {selectedFormats.length > 0 && (
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="text-[11px] text-muted-foreground">
+                        <span className="text-ui-11 text-muted-foreground">
                           {selectedFormats.length} selected:{" "}
                           {selectedFormats
                             .map(
@@ -1506,7 +1506,7 @@ export function ExportPage() {
                           <button
                             type="button"
                             onClick={() => setSelectedFormats(["16-bit"])}
-                            className="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
+                            className="text-ui-11 text-muted-foreground/70 hover:text-foreground transition-colors"
                           >
                             Reset to 16-bit
                           </button>
@@ -1515,7 +1515,7 @@ export function ExportPage() {
                     )}
 
                     {hubMultiFormat && (
-                      <div className="text-[11px] text-amber-600 dark:text-amber-500">
+                      <div className="text-ui-11 text-amber-600 dark:text-amber-500">
                         Hub export supports one format at a time (each writes to
                         the repository root). Select a single format, or export
                         locally to produce several at once.
@@ -1527,13 +1527,13 @@ export function ExportPage() {
                         MERGED_FORMATS.find((f) => f.value === v)
                           ?.needsCalibration,
                     ) && (
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-ui-11 text-muted-foreground">
                         * calibrates on data (uses a small calibration set).
                       </div>
                     )}
 
                     {!hasNvidia && (
-                      <div className="text-[11px] text-muted-foreground">
+                      <div className="text-ui-11 text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.

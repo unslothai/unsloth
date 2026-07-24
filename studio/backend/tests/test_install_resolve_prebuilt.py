@@ -200,14 +200,9 @@ def _gpu_linux_host(caps):
     )
 
 
-def test_host_is_blackwell_includes_datacenter_parts():
-    assert ilp._host_is_blackwell(_gpu_linux_host(["10.0"])) is True  # B200 sm_100
-    assert ilp._host_is_blackwell(_gpu_linux_host(["10.3"])) is True  # B300 sm_103
-    assert ilp._host_is_blackwell(_gpu_linux_host(["12.0"])) is True  # RTX 50 sm_120
-    assert ilp._host_is_blackwell(_gpu_linux_host(["12.1"])) is True  # DGX Spark sm_121
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0"])) is False  # Hopper
-    assert ilp._host_is_blackwell(_gpu_linux_host(["8.0"])) is False  # Ampere
-    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0", "10.0"])) is True  # highest cap wins
+# _host_is_blackwell / _blackwell_min_toolkit_for_host are prebuilt_core
+# re-exports; their value tables moved verbatim to
+# tests/studio/install/test_prebuilt_core.py.
 
 
 def _linux_cuda_artifact(runtime_line, supported_sms, min_sm, max_sm, profile):
@@ -283,16 +278,6 @@ def test_drop_blackwell_incapable_windows_cuda_applies_to_datacenter():
     )
     kept = ilp._drop_blackwell_incapable_windows_cuda(host, [cuda124, cuda13])
     assert [a.name for a in kept] == [cuda13.name]
-
-
-def test_blackwell_min_toolkit_is_sm_aware():
-    # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
-    f = ilp._blackwell_min_toolkit_for_host
-    assert f(_gpu_linux_host(["10.0"])) == (12, 8)  # B200
-    assert f(_gpu_linux_host(["12.0"])) == (12, 8)  # RTX 50
-    assert f(_gpu_linux_host(["10.3"])) == (12, 9)  # B300
-    assert f(_gpu_linux_host(["12.1"])) == (12, 9)  # DGX Spark
-    assert f(_gpu_linux_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
 
 
 def test_sm103_host_drops_cuda128_windows_build():

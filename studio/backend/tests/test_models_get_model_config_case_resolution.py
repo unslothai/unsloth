@@ -84,7 +84,7 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, mon
     # covers the active cache; discard deletes case-insensitively, so detection must too,
     # else a decline deletes a pre-existing user repo).
     import utils.paths as paths_pkg
-    import huggingface_hub.constants as hf_constants
+    import hub.utils.paths as hub_paths
 
     active = tmp_path / "active"
     legacy = tmp_path / "legacy"
@@ -96,9 +96,12 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, mon
 
     # No active-cache variant; case resolution is a no-op here.
     monkeypatch.setattr(paths_pkg, "resolve_cached_repo_id_case", lambda name: name)
-    monkeypatch.setattr(paths_pkg, "legacy_hf_cache_dir", lambda: legacy)
-    monkeypatch.setattr(paths_pkg, "hf_default_cache_dir", lambda: default)
-    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(active))
+    monkeypatch.setattr(hub_paths, "legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr(hub_paths, "hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches",
+        lambda: [active],
+    )
 
     assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
     # Absent from every cache -> reported absent.

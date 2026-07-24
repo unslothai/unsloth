@@ -1657,6 +1657,14 @@ def _consume_legacy_short_aliases(
     return value, out
 
 
+# Help panels so `unsloth run --help` groups options instead of one long list.
+_RUN_PANEL_MODEL = "Model"
+_RUN_PANEL_SERVER = "Server & network"
+_RUN_PANEL_TOOLS = "Tool calls"
+_RUN_PANEL_SAMPLING = "Sampling"
+_RUN_PANEL_ADVANCED = "Advanced"
+
+
 @studio_app.command(
     context_settings = {
         "allow_extra_args": True,
@@ -1673,6 +1681,7 @@ def run(
         # `-m` / `-hfr` removed (Click would cluster `-mg`/`-md`/...).
         # Exact-match `-m`/`-hfr` still work via the legacy shim below.
         # `-hf` stays (multi-char shorts don't cluster).
+        rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Model path or HF repo. Accepts llama.cpp-style "
             "`org/repo:variant` syntax. `-hf` / `--hf-repo` match "
@@ -1680,12 +1689,16 @@ def run(
         ),
     ),
     gguf_variant: Optional[str] = typer.Option(
-        None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
+        None,
+        "--gguf-variant",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "GGUF quant variant (e.g. UD-Q4_K_XL)",
     ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
         "-v",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
         help = "Log every API request, including the high-frequency polling that is "
         "deduplicated by default.",
     ),
@@ -1693,35 +1706,115 @@ def run(
         0,
         "--max-seq-length",
         "--context-length",
+        rich_help_panel = _RUN_PANEL_MODEL,
         help = "Runtime context length in tokens (0 = model default for GGUF; 2048 for hub models)",
     ),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
-    api_key_name: str = typer.Option(
-        "cli", "--api-key-name", help = "Label for the auto-generated API key"
+    load_in_4bit: bool = typer.Option(
+        True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
-    port: int = typer.Option(8888, "--port", "-p"),
-    host: str = typer.Option("127.0.0.1", "--host", "-H"),
+    api_key_name: str = typer.Option(
+        "cli",
+        "--api-key-name",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
+        help = "Label for the auto-generated API key",
+    ),
+    port: int = typer.Option(8888, "--port", "-p", rich_help_panel = _RUN_PANEL_SERVER),
+    host: str = typer.Option("127.0.0.1", "--host", "-H", rich_help_panel = _RUN_PANEL_SERVER),
     # `-f` removed (clustered `-fa`/`-fit*`); studio_default keeps it.
-    frontend: Optional[Path] = typer.Option(None, "--frontend"),
+    frontend: Optional[Path] = typer.Option(None, "--frontend", rich_help_panel = _RUN_PANEL_SERVER),
     api_only: bool = typer.Option(
         False,
         "--api-only",
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = "Serve only the API (no web UI), for a headless model server. "
         "Pairs with --secure to expose the API over the Cloudflare link alone.",
     ),
-    silent: bool = typer.Option(False, "--silent", "-q"),
+    silent: bool = typer.Option(False, "--silent", "-q", rich_help_panel = _RUN_PANEL_ADVANCED),
     enable_tools: Optional[bool] = typer.Option(
         None,
         "--enable-tools/--disable-tools",
+        rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
             "every request. Default: on for every bind."
         ),
     ),
+    tool_call_healing: Optional[bool] = typer.Option(
+        None,
+        "--enable-tool-call-healing/--disable-tool-call-healing",
+        rich_help_panel = _RUN_PANEL_TOOLS,
+        help = (
+            "Promote text-form tool calls (small GGUFs often emit <tool_call>...) "
+            "back into structured calls on the client-tool passthrough. Default: on. "
+            "An explicit --disable-tool-call-healing is an absolute server kill-switch."
+        ),
+    ),
+    tool_call_nudging: Optional[bool] = typer.Option(
+        None,
+        "--enable-tool-call-nudging/--disable-tool-call-nudging",
+        rich_help_panel = _RUN_PANEL_TOOLS,
+        help = (
+            "On the non-streaming client-tool passthrough, retry once with a short "
+            "nudge when the model emitted a tool signal that healing could not repair. "
+            "Default: on. No effect on streaming requests or the server-side agentic loop."
+        ),
+    ),
+    temperature: Optional[float] = typer.Option(
+        None,
+        "--temperature",
+        min = 0.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = (
+            "Pin the sampling temperature for every request that omits it, overriding the "
+            "model's recommended value. Default: unset (use the per-model recommendation)."
+        ),
+    ),
+    top_p: Optional[float] = typer.Option(
+        None,
+        "--top-p",
+        min = 0.0,
+        max = 1.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
+    ),
+    top_k: Optional[int] = typer.Option(
+        None,
+        "--top-k",
+        min = -1,
+        max = 100,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin top-k sampling. Default: unset (per-model recommendation).",
+    ),
+    min_p: Optional[float] = typer.Option(
+        None,
+        "--min-p",
+        min = 0.0,
+        max = 1.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin min-p sampling threshold. Default: unset (per-model recommendation).",
+    ),
+    repetition_penalty: Optional[float] = typer.Option(
+        None,
+        "--repetition-penalty",
+        min = 1.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin the repetition penalty. Default: unset (per-model recommendation).",
+    ),
+    presence_penalty: Optional[float] = typer.Option(
+        None,
+        "--presence-penalty",
+        min = 0.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
         "-y",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
         help = "Accepted for backward compatibility; the tool policy no longer prompts.",
     ),
     parallel: int = typer.Option(
@@ -1731,6 +1824,7 @@ def run(
         "-np",
         min = _PARALLEL_MIN,
         max = _PARALLEL_MAX,
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = (
             "llama-server parallel decode slots. N requests share one "
             "loaded model; each slot gets ctx/N KV cache. Default "
@@ -1740,6 +1834,7 @@ def run(
     cloudflare: Optional[bool] = typer.Option(
         None,
         "--cloudflare/--no-cloudflare",
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = "Expose Unsloth on a PUBLIC internet URL via a free Cloudflare HTTPS "
         "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
         "pass --cloudflare to enable it (--secure implies it). --no-cloudflare forces "
@@ -1748,6 +1843,7 @@ def run(
     secure: bool = typer.Option(
         False,
         "--secure/--no-secure",
+        rich_help_panel = _RUN_PANEL_SERVER,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
@@ -1761,6 +1857,7 @@ def run(
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
+        rich_help_panel = _RUN_PANEL_MODEL,
         help = (
             "Split a GGUF across GPUs by tensor (--split-mode tensor) instead of "
             "by layer. Multi-GPU only (no effect on one GPU); dense models gain "
@@ -1776,6 +1873,7 @@ def run(
     password: str = typer.Option(
         "",
         "--password",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
         help = "Set the INITIAL admin password non-interactively (headless setups), "
         "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
         "`--password -` to read one line from stdin. A literal value is visible in the "
@@ -1795,7 +1893,7 @@ def run(
 
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
-        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42 --parallel 8
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
@@ -1807,6 +1905,37 @@ def run(
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # Tool-call healing/nudging are read from the env at backend import. Resolve here
+    # (before any re-exec/import) so the in-venv child inherits the decision. When the
+    # flag is omitted, respect a value the parent already set (e.g. `unsloth start`
+    # forwards its choice via the env) and otherwise apply the default: healing on,
+    # nudging on for a CLI-launched server.
+    _healing_disabled = (
+        os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING") == "1"
+        if tool_call_healing is None
+        else not tool_call_healing
+    )
+    os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] = "1" if _healing_disabled else "0"
+    if tool_call_nudging is not None:
+        os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if tool_call_nudging else "0"
+    elif "UNSLOTH_TOOL_CALL_NUDGE" not in os.environ:
+        os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
+
+    # Sampling overrides: the backend resolver reads UNSLOTH_SAMPLING_* to hard-pin a field
+    # (winning over both the client and the per-model recommendation). Only write a flag that
+    # was set explicitly so an omitted flag inherits any value the parent forwarded (e.g.
+    # `unsloth start`) and, when nothing is set, leaves the per-model recommendation in charge.
+    for _sampling_env, _sampling_value in (
+        ("UNSLOTH_SAMPLING_TEMPERATURE", temperature),
+        ("UNSLOTH_SAMPLING_TOP_P", top_p),
+        ("UNSLOTH_SAMPLING_TOP_K", top_k),
+        ("UNSLOTH_SAMPLING_MIN_P", min_p),
+        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", repetition_penalty),
+        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", presence_penalty),
+    ):
+        if _sampling_value is not None:
+            os.environ[_sampling_env] = str(_sampling_value)
 
     # Set before any re-exec so the in-venv server inherits it via the env.
     # `run --verbose` used to pass through to llama-server (its own -v); keep
