@@ -376,9 +376,7 @@ class TestFlashAttnOffQuantizedKvCache:
         assert out[out.index(flag) + 1] == "f16"
 
     def test_underscore_alias_draft_v_reset(self):
-        out = _flash_off(
-            ["llama-server", "-fa", "on", "--spec_draft_type_v", "q4_0"]
-        )
+        out = _flash_off(["llama-server", "-fa", "on", "--spec_draft_type_v", "q4_0"])
         assert out is not None
         assert out[out.index("--spec_draft_type_v") + 1] == "f16"
 
