@@ -1,6 +1,6 @@
 """Guard against duplicate keys in the ``__INT_TO_FLOAT_MAPPER`` registry.
 
-Duplicate keys in the dict literal silently overwrite earlier entries. 
+Duplicate keys in the dict literal silently overwrite earlier entries.
 We inspect the source with ``ast`` to ensure there are no duplicates.
 """
 
