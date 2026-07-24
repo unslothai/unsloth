@@ -201,9 +201,7 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 }
 
 # Import strings in auto_map remote .py that only exist in transformers>=5.x.
-_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
-    "tokenization_utils_tokenizers",
-)
+_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = ("tokenization_utils_tokenizers",)
 
 # Import strings in auto_map remote modeling code that require transformers>=5.10.
 _TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
@@ -610,7 +608,11 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return _adapter_base_from_hf_cache(model_name)
 
 
-def _read_repo_text_file(model_name: str, filename: str, hf_token: str | None = None) -> str | None:
+def _read_repo_text_file(
+    model_name: str,
+    filename: str,
+    hf_token: str | None = None,
+) -> str | None:
     """Return a repo-relative text file's contents; local first, else HuggingFace raw fetch."""
     local_path = Path(model_name) / filename
     if _safe_is_file(local_path):
@@ -639,7 +641,11 @@ def _read_repo_text_file(model_name: str, filename: str, hf_token: str | None = 
         return None
 
 
-def _load_repo_json_file(model_name: str, filename: str, hf_token: str | None = None) -> dict | None:
+def _load_repo_json_file(
+    model_name: str,
+    filename: str,
+    hf_token: str | None = None,
+) -> dict | None:
     """Parsed JSON from a repo-relative file; local first, else HuggingFace raw fetch."""
     if filename == "config.json":
         return _load_config_json(model_name, hf_token)
