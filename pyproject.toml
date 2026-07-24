@@ -1360,3 +1360,6 @@ ignore = [
 # etc. The CI security job runs `pytest tests/security` explicitly.
 testpaths = ["tests/security"]
 pythonpath = ["."]
+markers = [
+    "pdf_qa_integration: opt-in managed Studio PDF recipe to QLoRA integration coverage",
+]

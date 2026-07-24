@@ -164,17 +164,22 @@ export function buildSeedDropProcessor(
 ): Record<string, unknown> | null {
   const seedSourceType = config.seed_source_type ?? "hf";
   const loadedCols = (config.seed_columns ?? []).map((c) => c.trim()).filter(Boolean);
+  const selectedDropColumns = (config.seed_drop_columns ?? [])
+    .map((c) => c.trim())
+    .filter(Boolean);
   let cols: string[] = [];
 
   if (seedSourceType === "unstructured") {
     if (!config.drop) {
       return null;
     }
-    cols = loadedCols;
+    cols =
+      selectedDropColumns.length > 0
+        ? selectedDropColumns
+        : loadedCols.length > 0
+          ? loadedCols
+          : ["chunk_text", "source_file"];
   } else {
-    const selectedDropColumns = (config.seed_drop_columns ?? [])
-      .map((c) => c.trim())
-      .filter(Boolean);
     if (selectedDropColumns.length === 0) {
       return null;
     }

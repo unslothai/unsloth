@@ -478,6 +478,7 @@ export function importRecipePayload(
     nextId += 1;
     const seedConfig = parseSeedConfig(recipe.seed_config, id, {
       preferredSourceType: uiSeedSourceType,
+      drop: payloadSeedDropColumns.length > 0,
       seed_columns: uiSeedColumns,
       seed_drop_columns:
         uiSeedDropColumns && uiSeedDropColumns.length > 0

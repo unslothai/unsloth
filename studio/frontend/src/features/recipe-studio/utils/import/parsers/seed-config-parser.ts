@@ -193,6 +193,7 @@ export function parseSeedConfig(
   id: string,
   options?: {
     preferredSourceType?: SeedSourceType;
+    drop?: boolean;
     seed_columns?: string[];
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
@@ -229,6 +230,7 @@ export function parseSeedConfig(
     ...makeDefaultSeedConfig(id),
     ...parsed, // payload-only fields override ui defaults
     seed_source_type: sourceType,
+    ...(options?.drop !== undefined ? { drop: options.drop } : {}),
     ...(options?.seed_columns ? { seed_columns: options.seed_columns } : {}),
     ...(options?.seed_drop_columns
       ? { seed_drop_columns: options.seed_drop_columns }
