@@ -486,6 +486,9 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
     }
     # Never fetch weights implicitly; the Model Hub owns downloads.
     assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
+    # The weight load forces safetensors so a pickle checkpoint cannot execute.
+    model_kwargs = next(kwargs for kind, _, kwargs in calls if kind == "model")
+    assert model_kwargs.get("use_safetensors") is True
 
 
 def test_model_cache_preflight_uses_shared_offline_resolver(monkeypatch):
@@ -1044,6 +1047,43 @@ def test_snapshot_selection_includes_every_indexed_shard():
         "model-00001-of-00002.safetensors",
         "model-00002-of-00002.safetensors",
     }
+
+
+def test_snapshot_selection_rejects_pickle_only_weights():
+    # A custom repo shipping only pytorch_model.bin (pickle) must fail closed:
+    # selecting it would download a checkpoint that runs code at load time.
+    info = SimpleNamespace(
+        siblings = [
+            _sibling("config.json", 10, "config"),
+            _sibling("preprocessor_config.json", 20, "preprocessor"),
+            _sibling("tokenizer.json", 30, "tokenizer"),
+            _sibling("pytorch_model.bin", 110, "torch"),
+        ]
+    )
+
+    with pytest.raises(SttModelCompatibilityError, match = "safetensors"):
+        stt_sidecar_module._select_snapshot_files(
+            info, lambda _name: pytest.fail("pickle weights must not be selected")
+        )
+
+
+def test_snapshot_selection_rejects_safe_index_pointing_at_pickle_shards():
+    # A safetensors index can name .bin shards; Transformers dispatches shard
+    # loading by extension, so those shards would still pickle-load. The index
+    # is attacker-controlled, so a non-safetensors shard must fail closed.
+    info = SimpleNamespace(
+        siblings = [
+            _sibling("config.json", 10, "config"),
+            _sibling("model.safetensors.index.json", 5, "index"),
+            _sibling("pytorch_model-00001-of-00001.bin", 90, "shard"),
+        ]
+    )
+
+    with pytest.raises(SttModelCompatibilityError, match = "non-safetensors shards"):
+        stt_sidecar_module._select_snapshot_files(
+            info,
+            lambda _name: {"weight_map": {"a": "pytorch_model-00001-of-00001.bin"}},
+        )
 
 
 def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypatch, tmp_path):

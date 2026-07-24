@@ -27,7 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
-from utils.hardware import prepare_gpu_selection
+from utils.hardware import get_device, prepare_gpu_selection
 
 # Re-exported from the shared helper so GGUF, training, and inference share one
 # type; kept importable here for backwards compatibility.
@@ -1012,6 +1012,8 @@ class InferenceOrchestrator:
             )
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
+            # Parent-detected backend for the worker's apply_gpu_ids().
+            sub_config["device_backend"] = get_device().value
 
             # Recheck the sidecar reservation BEFORE tearing the old worker down,
             # for REPAIRS only: an install holds this same lifecycle gate, so it
