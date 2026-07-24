@@ -75,13 +75,14 @@ class LoadRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU indices to use, for example [0, 1]. Omit or pass [] to use "
-            "automatic selection. The index space is backend-specific: CUDA/HIP "
-            "uses physical IDs, Intel XPU supports stable root IDs only in "
-            "COMPOSITE hierarchy, and a Vulkan GGUF build uses ggml's compact "
-            "Vulkan ordinals. UUID/MIG entries, XPU subdevice tokens, and FLAT "
-            "tile handles cannot be resolved safely. Vulkan enumerates "
-            "independently of CUDA_VISIBLE_DEVICES."
+            "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
+            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
+            "physical IDs are unsupported when the parent visibility mask uses "
+            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
+            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "models the fitter may pin the smallest subset of this pool that fits."
         ),
     )
     speculative_type: Optional[str] = Field(
@@ -531,13 +532,13 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Effective GPU indices the model is using, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
     )
     requested_gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU indices requested by the user before fit-time narrowing, or "
-            "None for automatic selection."
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
         ),
     )
     gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
@@ -706,13 +707,13 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Effective GPU indices the model is using, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
     )
     requested_gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU indices requested by the user before fit-time narrowing, or "
-            "None for automatic selection."
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
         ),
     )
     gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(

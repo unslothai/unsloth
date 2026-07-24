@@ -3708,12 +3708,16 @@ if ($LocalLlamaCppLinked) {
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
         } elseif ($llamaBackend -eq "vulkan") {
-            $explicitVulkanBackend = $true
-            Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
+            if ($IsMacOS) {
+                Write-Host "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
+            } else {
+                $explicitVulkanBackend = $true
+                Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
+            }
         } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "vulkan")) {
             Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
         }
-        if ($llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
+        if (-not $IsMacOS -and $llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
             $explicitVulkanBackend = $true
         }
         $prevEAPPrebuilt = $ErrorActionPreference

@@ -399,6 +399,37 @@ def test_get_visible_gpu_count_empty_mask_is_zero(spoof_xpu):
     assert hw.get_visible_gpu_count() == 0
 
 
+def test_flat_numeric_mask_reports_relative_ordinals(spoof_xpu):
+    hw, _ = spoof_xpu(ze_mask = "4,7", device_count = 2)
+    hw.detect_hardware()
+
+    spec = hw._get_parent_visible_gpu_spec()
+    assert spec["numeric_ids"] is None
+    assert spec["supports_explicit_gpu_ids"] is False
+
+    for result in (hw.get_visible_gpu_utilization(), hw.get_backend_visible_gpu_info()):
+        assert result["available"] is True
+        assert result["index_kind"] == "relative"
+        assert result["parent_visible_gpu_ids"] == []
+        assert [device["index"] for device in result["devices"]] == [0, 1]
+
+
+def test_composite_numeric_mask_reports_physical_ids(spoof_xpu, monkeypatch):
+    hw, _ = spoof_xpu(ze_mask = "4,7", device_count = 2)
+    monkeypatch.setenv("ZE_FLAT_DEVICE_HIERARCHY", "COMPOSITE")
+    hw.detect_hardware()
+
+    spec = hw._get_parent_visible_gpu_spec()
+    assert spec["numeric_ids"] == [4, 7]
+    assert spec["supports_explicit_gpu_ids"] is True
+
+    for result in (hw.get_visible_gpu_utilization(), hw.get_backend_visible_gpu_info()):
+        assert result["available"] is True
+        assert result["index_kind"] == "physical"
+        assert result["parent_visible_gpu_ids"] == [4, 7]
+        assert [device["index"] for device in result["devices"]] == [4, 7]
+
+
 def test_get_device_map_multi_is_balanced(spoof_xpu):
     hw, _ = spoof_xpu(ze_mask = "0,1", device_count = 2)
     hw.detect_hardware()
@@ -461,11 +492,26 @@ def test_per_device_info_mem_get_info_ok(spoof_xpu):
     assert info[0]["used_gb"] == pytest.approx(1.0, abs = 0.1)
 
 
-def test_per_device_info_mem_get_info_runtimeerror_drops_device(spoof_xpu):
-    # Arc B580 / Lunar Lake: mem_get_info raises. Must drop the device, not crash.
-    hw, _ = spoof_xpu(mem_get_info = "raise")
+def test_mem_get_info_runtimeerror_keeps_device_with_unknown_usage(spoof_xpu):
+    # Arc B580 and Lunar Lake can reject mem_get_info while remaining usable.
+    hw, _ = spoof_xpu(mem_get_info = "raise", total_gb = 16.0, device_count = 2)
     hw.detect_hardware()
-    assert hw._torch_get_per_device_info([0]) == []
+
+    info = hw._torch_get_per_device_info([0])
+    assert len(info) == 1
+    assert info[0]["total_gb"] == pytest.approx(16.0, abs = 0.1)
+    assert info[0]["used_gb"] is None
+
+    utilization = hw.get_visible_gpu_utilization()
+    assert utilization["available"] is True
+    assert len(utilization["devices"]) == 2
+    assert all(device["vram_total_gb"] == pytest.approx(16.0) for device in utilization["devices"])
+    assert all(device["vram_used_gb"] is None for device in utilization["devices"])
+
+    visibility = hw.get_backend_visible_gpu_info()
+    assert visibility["available"] is True
+    assert len(visibility["devices"]) == 2
+    assert all(device["memory_total_gb"] == pytest.approx(16.0) for device in visibility["devices"])
 
 
 def test_per_device_info_no_mem_get_info_uses_none(spoof_xpu):

@@ -630,11 +630,25 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             # raise RuntimeError "doesn't support querying free memory" here,
             # dropping just that device rather than crashing.
             if hasattr(mod, "mem_get_info"):
-                free_bytes, total_bytes = mod.mem_get_info(ordinal)
-                used_bytes = total_bytes - free_bytes
-                # free==total is the broken-API sentinel, not an idle GPU.
-                if _win_rocm and free_bytes == total_bytes:
+                try:
+                    free_bytes, total_bytes = mod.mem_get_info(ordinal)
+                    used_bytes = total_bytes - free_bytes
+                except Exception as e:
+                    if device != DeviceType.XPU:
+                        raise
+                    # Arc B580 and Lunar Lake can report properties while
+                    # rejecting free-memory queries. Preserve the usable
+                    # device and its total memory with unknown utilization.
+                    logger.debug(
+                        "XPU free-memory query failed for ordinal %d: %s",
+                        ordinal,
+                        e,
+                    )
                     used_bytes = None
+                else:
+                    # free==total is the broken-API sentinel, not an idle GPU.
+                    if _win_rocm and free_bytes == total_bytes:
+                        used_bytes = None
             elif device == DeviceType.XPU:
                 # XPU without mem_get_info: memory_allocated() is process-local
                 # and misleading for placement, so return None for the
@@ -1745,15 +1759,15 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "supports_explicit_gpu_ids": False,
             }
 
-        # FLAT numeric entries are tile handles, not physical GPU IDs: expose
-        # in numeric_ids for telemetry but reject as explicit gpu_ids so
-        # callers don't pin to a tile thinking it's a GPU.
+        # FLAT numeric entries are tile handles, not physical GPU IDs. Keep
+        # numeric_ids unresolved so every telemetry and picker consumer uses
+        # relative torch ordinals and cannot advertise them as pinnable roots.
         if not composite:
             tokens = [token.strip() for token in xpu_mask.split(",") if token.strip()]
             if tokens and all(token.isdecimal() for token in tokens):
                 return {
                     "raw": xpu_mask,
-                    "numeric_ids": [int(token) for token in tokens],
+                    "numeric_ids": None,
                     "supports_explicit_gpu_ids": False,
                 }
             return {
@@ -1779,7 +1793,6 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             "numeric_ids": roots_with_dupes,
             "supports_explicit_gpu_ids": True,
         }
-
     # ROCm uses HIP/ROCR_VISIBLE_DEVICES on top of CUDA_VISIBLE_DEVICES; check
     # them first. Explicit None checks (not `or`) so "" reads as "no visible GPUs".
     cuda_visible = None
@@ -2413,12 +2426,13 @@ def auto_select_gpu_ids(
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected
             logger.debug(
-                "Selected GPUs automatically",
-                model_name = model_name,
-                selected_gpu_ids = selected,
-                usable_gb = metadata["usable_gb"],
-                required_gb = metadata.get("required_gb"),
-                multi_gpu_overhead = multi_gpu_overhead,
+                "Selected GPUs automatically: model=%s selected=%s usable_gb=%s "
+                "required_gb=%s multi_gpu_overhead=%s",
+                model_name,
+                selected,
+                metadata["usable_gb"],
+                metadata.get("required_gb"),
+                multi_gpu_overhead,
             )
             return selected, metadata
 
@@ -2434,12 +2448,13 @@ def auto_select_gpu_ids(
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
     logger.warning(
-        "Falling back to all visible GPUs -- model may not fit",
-        model_name = model_name,
-        selected_gpu_ids = fallback_all,
-        usable_gb = metadata["usable_gb"],
-        required_gb = metadata.get("required_gb"),
-        multi_gpu_overhead = multi_gpu_overhead,
+        "Falling back to all visible GPUs; model may not fit: model=%s "
+        "selected=%s usable_gb=%s required_gb=%s multi_gpu_overhead=%s",
+        model_name,
+        fallback_all,
+        metadata["usable_gb"],
+        metadata.get("required_gb"),
+        multi_gpu_overhead,
     )
     return fallback_all, metadata
 

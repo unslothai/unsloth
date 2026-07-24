@@ -222,7 +222,9 @@ export function applyActiveModelStatusToStore(
     incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
   const incomingSplit =
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
-  const incomingGpuIds = status.is_gguf ? (status.gpu_ids ?? null) : null;
+  const incomingGpuIds = status.is_gguf
+    ? (status.requested_gpu_ids ?? status.gpu_ids ?? null)
+    : null;
   const incomingMemoryMode = status.is_gguf
     ? (status.gguf_memory_mode ?? null)
     : null;

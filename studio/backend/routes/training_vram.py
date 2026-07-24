@@ -284,7 +284,9 @@ def can_load_chat_during_training(
             }
 
         # Explicit GPUs, or GGUF: size directly and check live free VRAM.
-        if single_device_gpu is not None:
+        if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
+            mode = "gguf_vulkan"
+        elif single_device_gpu is not None:
             mode = "single_device"
         elif is_gguf:
             mode = "gguf"
@@ -297,7 +299,30 @@ def can_load_chat_during_training(
             return False, {"mode": mode, "reason": "estimate_unavailable"}
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
-        if single_device_gpu is not None:
+        if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
+            # Vulkan ordinals enumerate independently of the CUDA index space free_by_index
+            # uses, so the target physical card is unknown. Budget the least-free
+            # possible subset and require each selected device to hold its shard.
+            free_vals = list(free_by_index.values())
+            if not free_vals:
+                return False, {"mode": "gguf_vulkan", "reason": "no_visible_gpus"}
+            needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
+            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
+            min_free_gb = min(free_vals)
+            n_pins = min(len(requested_gpu_ids), len(free_vals))
+            ranked = sorted(sorted(free_vals)[:n_pins], reverse = True)
+            usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+            aggregate_fits = usable_gb >= needed_gb
+            per_gpu_fits = min_free_gb >= per_gpu_needed_gb
+            return per_gpu_fits and aggregate_fits, {
+                "mode": "gguf_vulkan",
+                "required_gb": round(required_gb, 3),
+                "needed_gb": round(needed_gb, 3),
+                "usable_gb": round(usable_gb, 3),
+                "per_gpu_needed_gb": round(per_gpu_needed_gb, 3),
+                "min_free_gb": round(min_free_gb, 3),
+            }
+        elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
                 # Empty token = a CPU-only single-device runner (e.g. a CPU
@@ -317,40 +342,6 @@ def can_load_chat_during_training(
                 free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
-        elif requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
-            # Vulkan ordinals enumerate independently of the CUDA index space free_by_index
-            # uses (the loader skips resolve_requested_gpu_ids for them), so the target
-            # physical card is unknown. Require a fit on the least-free visible GPU so no
-            # ordinal->physical mapping can approve a load that then OOMs training (#7188).
-            free_vals = list(free_by_index.values())
-            if not free_vals:
-                return False, {"mode": "gguf_vulkan", "reason": "no_visible_gpus"}
-            needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
-            # A multi-GPU pin shards the model (~needed/N per device), so require each
-            # visible GPU to hold one shard, not the whole model. With the mapping unknown,
-            # min_free is the safe bound: if the least-free card holds a shard, any mapping
-            # does. Also apply the aggregate multi-GPU overhead so a sharded load does not
-            # start with too little protected headroom and OOM the training run (#7188).
-            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
-            min_free_gb = min(free_vals)
-            # The pin lands on some N-of-visible subset (mapping unknown), so budget the
-            # aggregate over the least-free N cards, not all visible: the N smallest minimize
-            # usable_gb = max + overhead*rest, so if they fit, any N-subset does. Using all
-            # visible would over-count headroom the pinned cards may not have (e.g. four 50 GB
-            # cards make a two-card 100 GB pin look like it fits when no pair holds it).
-            n_pins = min(len(requested_gpu_ids), len(free_vals))
-            ranked = sorted(sorted(free_vals)[:n_pins], reverse = True)
-            usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
-            aggregate_fits = usable_gb >= needed_gb
-            per_gpu_fits = min_free_gb >= per_gpu_needed_gb
-            return per_gpu_fits and aggregate_fits, {
-                "mode": "gguf_vulkan",
-                "required_gb": round(required_gb, 3),
-                "needed_gb": round(needed_gb, 3),
-                "usable_gb": round(usable_gb, 3),
-                "per_gpu_needed_gb": round(per_gpu_needed_gb, 3),
-                "min_free_gb": round(min_free_gb, 3),
-            }
         elif requested_gpu_ids:
             # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
             try:
@@ -359,7 +350,8 @@ def can_load_chat_during_training(
                 return True, {"mode": mode, "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
         else:
-            # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.
+            # GGUF self-placement / auto Vulkan (no requested ids): llama.cpp picks
+            # the GPU(s), so any visible GPU is a candidate -> size the whole pool.
             free_vals = list(free_by_index.values())
 
         if not free_vals:

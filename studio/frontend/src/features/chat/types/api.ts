@@ -192,7 +192,7 @@ export interface LoadModelResponse {
   n_moe_layers?: number;
   /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
-  /** User-requested GPU set before fit-time narrowing. */
+  /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
   /** GGUF host-memory placement mode the load was invoked with. */
   gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
@@ -249,7 +249,7 @@ export interface InferenceStatusResponse {
   requested_context_length?: number | null;
   /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
-  /** User-requested GPU set before fit-time narrowing. */
+  /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
   /** Active GGUF host-memory placement mode (from /status). */
   gguf_memory_mode?: "auto" | "pinned" | "resident" | null;

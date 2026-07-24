@@ -3246,26 +3246,18 @@ def _request_matches_loaded_settings(
             )
         ):
             return False
-    # A changed GPU pick must reload. The diffusion runner collapses a multi-GPU
-    # request to its single lowest device (it drives one device only), so the
-    # backend records just that device; compare the request the same way, or a
-    # multi-GPU pick that resolves to the same device needlessly reloads.
-    if llama_backend.is_diffusion:
-        _req_gpu_ids = [sorted(request.gpu_ids)[0]] if request.gpu_ids else None
-        _loaded_gpu_ids = llama_backend.gpu_ids
-    else:
-        _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
-        _loaded_gpu_ids = llama_backend.requested_gpu_ids
-    if _req_gpu_ids != _loaded_gpu_ids:
+    # A regular GGUF may narrow the requested placement pool. Accept either the
+    # original request or the effective status-echoed subset; diffusion keeps
+    # its single-device normalization.
+    if not llama_backend.matches_gpu_ids(request.gpu_ids):
         return False
     # GGUF host-memory placement mode is first-class; any change must reload (#7164).
     if LlamaCppBackend._canonical_memory_mode(
         request.gguf_memory_mode
     ) != LlamaCppBackend._canonical_memory_mode(llama_backend.memory_mode):
         return False
-    # An explicit memory_mode (incl. 'auto') over a child with inherited LLAMA_ARG_* flags
-    # must reload so the scrub runs; the canonical check above treats 'auto' as omitted and
-    # would leave the child mlocked/no-mmap (#7164).
+    # An explicit memory_mode, including "auto", over a child with inherited
+    # LLAMA_ARG_* flags must reload so the scrub runs.
     if request.gguf_memory_mode is not None and llama_backend.launched_with_inherited_mem_env:
         return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above
@@ -3940,18 +3932,22 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before it is loaded.
 
     ``None`` is important here: a remote GGUF whose header is not cached can
-    still be routed to the single-GPU diffusion runner after download. Treating
-    that case as normal would let Manual mode skip the training guard even
-    though the runner ignores Manual's llama-server placement controls.
-
-    The local header is authoritative and checked first: the loader routes on
-    the decoded architecture (LlamaCppBackend._is_diffusion), never the path, so
-    a normal llama-server GGUF whose directory/repo name merely contains
-    "diffusion" must classify as normal (else its memory-placement feature is
-    rejected on a false name match). The name is only a fallback when no local
-    header is readable -- an uncached remote GGUF -- where it conservatively
-    flags a likely-diffusion download (#7188).
+    still be routed to the single-GPU diffusion runner after download. Default
+    placement keeps that unknown case guarded until the header is available.
     """
+    identity = " ".join(
+        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
+    ).lower()
+    # Name-only hint, used ONLY as a pre-download fallback, scoped to the
+    # DiffusionGemma runner family: a bare "diffusion" substring is common in
+    # ordinary text-model names/paths (e.g. "stable-diffusion-prompt"), and treating
+    # those as diffusion falsely rejects a valid Vulkan+gpu_ids GGUF (#7239). Normalize
+    # non-alphanumerics so "DiffusionGemma"/"diffusion-gemma" collapse to one token.
+    # The local header below stays authoritative.
+    name_says_diffusion = "diffusiongemma" in _re.sub(r"[^a-z0-9]+", "", identity)
+
+    # The local header is authoritative. The name is only a fallback when no
+    # local header is readable, such as an uncached remote GGUF.
     try:
         main = getattr(config, "gguf_file", None)
         if not (main and Path(main).is_file()):
@@ -3961,33 +3957,29 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
                 from hub.utils.gguf import resolve_local_gguf_path
                 main = resolve_local_gguf_path(repo, variant)
         if main and Path(main).is_file():
+            # The local GGUF header is authoritative (same probe the loader uses), so
+            # it can't be fooled by a "diffusion"-flavored name/path.
             probe = LlamaCppBackend()
             probe._read_gguf_metadata(str(main))
             if probe.is_diffusion:
                 return True
-            # A successfully decoded architecture proves that this is a normal
-            # llama-server GGUF, even if the path/name contains "diffusion".
+            # A decoded architecture proves a normal llama-server GGUF; no architecture
+            # means the probe was inconclusive, so fall through to the name hint below.
             if getattr(probe, "_architecture", None):
                 return False
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
-
-    # No readable local header: use only the DiffusionGemma family name as a
-    # hint. A bare "diffusion" substring is common in otherwise normal model
-    # names and must not route them to the single-GPU diffusion runner.
-    identity = " ".join(
-        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
-    ).lower()
-    normalized_identity = _re.sub(r"[^a-z0-9]+", "", identity)
-    return True if "diffusiongemma" in normalized_identity else None
+    # Header unavailable (remote uncached) or inconclusive: True only for the
+    # DiffusionGemma name family; otherwise None keeps an unknown remote GGUF guarded.
+    return True if name_says_diffusion else None
 
 
 def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str]) -> None:
     """Raise 400 if a DiffusionGemma GGUF was given an explicit gguf_memory_mode.
 
     The diffusion runner is single-GPU (DG_GPU) with no --mlock/--no-mmap plumbing.
-    Called by BOTH /validate and /load before either tears down the active model, so
-    they agree and a placement /load will reject isn't validated post-unload (#7188).
+    Called by both /validate and /load before either tears down the active model,
+    so the endpoints agree before any unload (#7188).
     gpu_ids for diffusion is handled by the runner (collapsed to a single device), so
     only the host-memory mode is rejected here."""
     if not config.is_gguf:
@@ -4002,6 +3994,82 @@ def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str
                 "(DiffusionGemma) GGUF models."
             ),
         )
+
+
+
+async def _resolve_gguf_gpu_ids_for_request(
+    config: ModelConfig, gpu_ids: Optional[List[int]]
+) -> tuple[Optional[List[int]], bool]:
+    """Resolve and fully validate an explicit GGUF GPU placement pool.
+
+    CUDA and ROCm use physical IDs. Vulkan uses ggml ordinals, so its device
+    existence check comes from the same ggml probe used by the loader. Both
+    /load and /validate call this before their training guard or any teardown.
+    The boolean result records whether the resolved IDs are Vulkan ordinals.
+    """
+    if not gpu_ids:
+        return None, False
+
+    from utils.hardware import DeviceType, get_device
+    from utils.hardware.hardware import resolve_requested_gpu_ids
+
+    llama_backend = get_llama_cpp_backend()
+    is_vulkan_build = await asyncio.to_thread(llama_backend.is_vulkan_build)
+    confirmed_diffusion = _classify_diffusion_gguf(config) is True
+    ids_are_vulkan_ordinals = is_vulkan_build and not confirmed_diffusion
+    device = get_device()
+    lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
+
+    if device == DeviceType.XPU and not ids_are_vulkan_ordinals:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "GPU selection (gpu_ids) is not supported on Intel XPU. "
+                "Omit gpu_ids to use all devices."
+            ),
+        )
+
+    if (
+        device == DeviceType.CUDA
+        and not ids_are_vulkan_ordinals
+        and not confirmed_diffusion
+        and callable(lacks_gpu_lib)
+        and await asyncio.to_thread(lacks_gpu_lib)
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Requested gpu_ids {list(gpu_ids)} but the llama.cpp build has "
+                "no GPU backend (CPU-only build); it would ignore the pin and run "
+                "on CPU. Omit gpu_ids to run on CPU."
+            ),
+        )
+
+    try:
+        resolved = resolve_requested_gpu_ids(
+            gpu_ids,
+            is_vulkan = ids_are_vulkan_ordinals,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    if ids_are_vulkan_ordinals and resolved:
+        binary = LlamaCppBackend._find_llama_server_binary()
+        if binary:
+            probed = {
+                gpu[0] for gpu in await asyncio.to_thread(LlamaCppBackend._get_gpu_memory, binary)
+            }
+            wanted = {int(gpu_id) for gpu_id in resolved}
+            if not wanted.issubset(probed):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"Requested Vulkan GPU ordinal(s) {sorted(wanted)} not "
+                        f"present. Available Vulkan devices: {sorted(probed)}."
+                    ),
+                )
+
+    return resolved, ids_are_vulkan_ordinals
 
 
 def _guard_chat_load_against_training(
@@ -4397,6 +4465,7 @@ async def _load_model_impl(
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
             ):
+                llama_backend._record_matching_gpu_request(request.gpu_ids)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4519,126 +4588,48 @@ async def _load_model_impl(
         # it validates an explicit pin below.
         _gpu_ids_are_vulkan_ordinals: Optional[bool] = None
 
-        # GGUF supports gpu_ids: validate the pick up front (before the training
-        # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
-        # negative / out-of-range / duplicate ids and UUID/MIG parents. XPU hosts
-        # are rejected outright unless the llama.cpp build is Vulkan, in which case
-        # the Vulkan ordinal namespace is the intended target and the picker's
-        # torch-xpu ordinals don't apply; allow it through so the later Vulkan
-        # branch can validate/pin via --device Vulkan<i> (#7188).
-        if config.is_gguf and effective_gpu_ids is not None:
-            from utils.hardware import DeviceType, get_device
-            from utils.hardware.hardware import resolve_requested_gpu_ids
-            from core.inference.llama_cpp import _extra_args_draft_device_pin
+        # Validate the full GGUF placement pool before the training guard so an
+        # invalid physical ID or Vulkan ordinal is a clean 400, not a masked VRAM
+        # 409. The same helper is used by /validate.
+        gguf_gpu_ids: Optional[List[int]] = None
+        if config.is_gguf:
+            (
+                gguf_gpu_ids,
+                _gpu_ids_are_vulkan_ordinals,
+            ) = await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
+            if gguf_gpu_ids:
+                from core.inference.llama_cpp import _extra_args_draft_device_pin
 
-            _llama_backend = get_llama_cpp_backend()
-            _gguf_vulkan_build = await asyncio.to_thread(_llama_backend.is_vulkan_build)
-            # A confirmed diffusion GGUF is served by the visual-server runner, which takes a
-            # CUDA physical id via --gpu/DG_GPU (it remasks CUDA_VISIBLE_DEVICES), never a
-            # Vulkan ordinal. Route its gpu_ids through the CUDA resolver even on a Vulkan
-            # build, matching the training guard's diffusion_gpu handling (#7188).
-            _gguf_confirmed_diffusion = _classify_diffusion_gguf(config) is True
-
-            if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
-            # A draft-device override in extras (--spec-draft-device / -devd / --device-draft)
-            # naming a real GPU would place the MTP drafter outside the budgeted gpu_ids and
-            # OOM training on an unreserved card. Reject before teardown; drop the flag to
-            # follow the pin, or set it to cpu to offload (cpu/none allowed). llama_extra_args
-            # None means "inherit the running server's extras" on a same-model reload, and
-            # draft-device flags survive that inherit, so check the effective extras: the
-            # request's when provided, else the loaded same-model backend's (#7188).
-            _draft_extra = request.llama_extra_args
-            if _draft_extra is None:
-                _loaded_llama = get_llama_cpp_backend()
-                if _loaded_llama.is_loaded and _loaded_llama.extra_args:
-                    source = _loaded_llama.extra_args_source
-                    resolved_variant = (config.gguf_variant or "").lower()
+                draft_args = extra_llama_args
+                if request.llama_extra_args is None:
+                    loaded_llama = get_llama_cpp_backend()
+                    source = getattr(loaded_llama, "extra_args_source", None)
+                    stored_args = getattr(loaded_llama, "extra_args", None)
+                    resolved_variant = (getattr(config, "gguf_variant", None) or "").lower()
                     request_variant = (request.gguf_variant or "").lower()
                     stored_variant = (source[1] or "").lower() if source else ""
                     same_model = bool(
                         source and source[0] and source[0].lower() == model_identifier.lower()
                     )
-                    if request.gguf_variant:
-                        variant_mismatch = request_variant != stored_variant
-                    else:
-                        variant_mismatch = bool(
-                            stored_variant and resolved_variant != stored_variant
-                        )
+                    variant_mismatch = (
+                        request_variant != stored_variant
+                        if request.gguf_variant
+                        else bool(stored_variant and resolved_variant != stored_variant)
+                    )
                     if same_model and not variant_mismatch:
-                        _draft_extra = _loaded_llama.extra_args
-            _draft_dev_pin = _extra_args_draft_device_pin(_draft_extra)
-            if _draft_dev_pin is not None:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        f"A draft-model device override ('{_draft_dev_pin}') cannot be "
-                        "combined with explicit gpu_ids: it would place the speculative "
-                        "drafter outside the pinned GPUs the training guard budgeted. "
-                        "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
-                    ),
-                )
-            # A Vulkan build treats gpu_ids as Vulkan ordinals (never remapped through
-            # CUDA_VISIBLE_DEVICES), so defer to the backend probe even on a CUDA-visible
-            # host, else the CUDA resolver would 400 a valid Vulkan id under a CUDA/HIP
-            # mask (#7188). Otherwise keep the CUDA physical-ID resolver (#6414). A confirmed
-            # diffusion GGUF always takes the CUDA path: its runner uses CUDA ids, not the
-            # Vulkan llama-server, so a Vulkan build must not send it to the ordinal branch.
-            if get_device() == DeviceType.CUDA and (
-                not _gguf_vulkan_build or _gguf_confirmed_diffusion
-            ):
-                _gpu_ids_are_vulkan_ordinals = False
-                # The CUDA resolver only validates the physical-ID mask; it can't tell the
-                # llama.cpp build is CPU-only. A CPU-only build ignores CUDA_VISIBLE_DEVICES,
-                # so the pin would silently run on CPU while /load reports gpu_ids active --
-                # reject before teardown here too (mirrors the non-CUDA resolvable check) (#7188).
-                # Diffusion GGUF models bypass llama-server (the diffusion runner
-                # handles gpu_ids via --gpu/DG_GPU), so the llama.cpp GPU-lib
-                # check is irrelevant for them (#7188).
-                if not _gguf_confirmed_diffusion and await asyncio.to_thread(
-                    _llama_backend._backend_lacks_gpu_lib
-                ):
+                        draft_args = stored_args
+
+                draft_device = _extra_args_draft_device_pin(draft_args)
+                if draft_device is not None:
                     raise HTTPException(
                         status_code = 400,
                         detail = (
-                            f"Requested gpu_ids {list(effective_gpu_ids)} but the llama.cpp "
-                            "build has no GPU backend (CPU-only build); it would ignore the "
-                            "pin and run on CPU. Omit gpu_ids to run on CPU."
+                            f"A draft-model device override ('{draft_device}') cannot be "
+                            "combined with explicit gpu_ids: it would place the speculative "
+                            "drafter outside the pinned GPUs the training guard budgeted. "
+                            "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
                         ),
                     )
-                try:
-                    resolve_requested_gpu_ids(effective_gpu_ids)
-                except ValueError as exc:
-                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
-            else:
-                _gpu_ids_are_vulkan_ordinals = bool(
-                    _gguf_vulkan_build and not _gguf_confirmed_diffusion
-                )
-                # Non-CUDA GGUF host or a Vulkan build on any host: the CUDA resolver can't
-                # enumerate llama.cpp's devices, so gate on the backend probe and reject
-                # before teardown (#7188). A torch-less Vulkan host reports CPU but its
-                # probe is non-empty, so it falls through.
-                if not await asyncio.to_thread(_llama_backend.has_gpu_backend):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            "gpu_ids selection is not supported: no GPU backend "
-                            "detected on this host."
-                        ),
-                    )
-                try:
-                    await asyncio.to_thread(
-                        _llama_backend.assert_requested_gpu_ids_resolvable,
-                        effective_gpu_ids,
-                    )
-                except ValueError as exc:
-                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
                 status_code = 400,
@@ -4762,10 +4753,11 @@ async def _load_model_impl(
                 gpu_layers = request.gpu_layers,
                 n_cpu_moe = request.n_cpu_moe,
                 tensor_split = request.tensor_split,
-                gpu_ids = effective_gpu_ids,
                 gpu_ids_are_vulkan_ordinals = _gpu_ids_are_vulkan_ordinals,
                 memory_mode = request.gguf_memory_mode,
                 n_parallel = _n_parallel,
+                # Issue #7164: explicit GPU pin resolved to physical ids above.
+                gpu_ids = gguf_gpu_ids,
             )
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
@@ -5237,103 +5229,41 @@ async def validate_model(
         # Apply the same training coexistence policy as /load before the frontend
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
-        # a clean 400) before the guard sizes the model against training VRAM.
-        # XPU-host picks are rejected unless the llama.cpp build is Vulkan, in
-        # which case the Vulkan ordinal namespace is the intended target (#7188).
-        if config.is_gguf and effective_gpu_ids is not None:
-            from utils.hardware import DeviceType, get_device
-            from utils.hardware.hardware import resolve_requested_gpu_ids
-            from core.inference.llama_cpp import _extra_args_draft_device_pin
+        if config.is_gguf:
+            validated_gpu_ids, _ = await _resolve_gguf_gpu_ids_for_request(
+                config,
+                effective_gpu_ids,
+            )
+            if validated_gpu_ids:
+                from core.inference.llama_cpp import _extra_args_draft_device_pin
 
-            _loaded_llama = get_llama_cpp_backend()
-            _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)
-            # Mirror /load: a confirmed diffusion GGUF uses the visual-server runner (CUDA
-            # ids via --gpu/DG_GPU), not the Vulkan llama-server, so route its gpu_ids
-            # through the CUDA resolver even on a Vulkan build (#7188).
-            _gguf_confirmed_diffusion = _classify_diffusion_gguf(config) is True
-
-            if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
-            # Mirror /load's draft-device reject for the validate-then-unload flow: a
-            # same-model reload inherits the running server's stored extras, and a
-            # stored --spec-draft-device naming a real GPU would escape the new gpu_ids
-            # pin. ValidateModelRequest carries no llama_extra_args, so only the
-            # inherited backend extras are checkable here (#7188).
-            if _loaded_llama.is_loaded and _loaded_llama.extra_args:
-                source = _loaded_llama.extra_args_source
-                resolved_variant = (config.gguf_variant or "").lower()
-                request_variant = (request.gguf_variant or "").lower()
-                stored_variant = (source[1] or "").lower() if source else ""
-                same_model = bool(
-                    source and source[0] and source[0].lower() == model_identifier.lower()
-                )
-                if request.gguf_variant:
-                    variant_mismatch = request_variant != stored_variant
-                else:
-                    variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
-                if same_model and not variant_mismatch:
-                    _draft_dev_pin = _extra_args_draft_device_pin(_loaded_llama.extra_args)
-                    if _draft_dev_pin is not None:
-                        raise HTTPException(
-                            status_code = 400,
-                            detail = (
-                                f"A draft-model device override ('{_draft_dev_pin}') cannot be "
-                                "combined with explicit gpu_ids: it would place the speculative "
-                                "drafter outside the pinned GPUs the training guard budgeted. "
-                                "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
-                            ),
-                        )
-            # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
-            # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
-            # A confirmed diffusion GGUF always takes the CUDA path: its runner uses CUDA ids,
-            # not the Vulkan llama-server (#7188).
-            if get_device() == DeviceType.CUDA and (
-                not _gguf_vulkan_build or _gguf_confirmed_diffusion
-            ):
-                # A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES; the CUDA resolver
-                # can't see that, so reject a pin it would silently run on CPU (mirrors /load
-                # and the non-CUDA resolvable check). Diffusion GGUF models bypass
-                # llama-server, so the llama.cpp GPU-lib check is irrelevant (#7188).
-                if not _gguf_confirmed_diffusion and await asyncio.to_thread(
-                    _loaded_llama._backend_lacks_gpu_lib
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            f"Requested gpu_ids {list(effective_gpu_ids)} but the llama.cpp "
-                            "build has no GPU backend (CPU-only build); it would ignore the "
-                            "pin and run on CPU. Omit gpu_ids to run on CPU."
-                        ),
+                loaded_llama = get_llama_cpp_backend()
+                if loaded_llama.is_loaded and loaded_llama.extra_args:
+                    source = loaded_llama.extra_args_source
+                    resolved_variant = (config.gguf_variant or "").lower()
+                    request_variant = (request.gguf_variant or "").lower()
+                    stored_variant = (source[1] or "").lower() if source else ""
+                    same_model = bool(
+                        source and source[0] and source[0].lower() == model_identifier.lower()
                     )
-                try:
-                    resolve_requested_gpu_ids(effective_gpu_ids)
-                except ValueError as exc:
-                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
-            else:
-                # Non-CUDA GGUF host or a Vulkan build: gate on the llama.cpp probe so an
-                # unsupported selection is rejected before the unload (#7188).
-                if not await asyncio.to_thread(_loaded_llama.has_gpu_backend):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            "gpu_ids selection is not supported: no GPU backend "
-                            "detected on this host."
-                        ),
+                    variant_mismatch = (
+                        request_variant != stored_variant
+                        if request.gguf_variant
+                        else bool(stored_variant and resolved_variant != stored_variant)
                     )
-                try:
-                    await asyncio.to_thread(
-                        _loaded_llama.assert_requested_gpu_ids_resolvable,
-                        effective_gpu_ids,
-                    )
-                except ValueError as exc:
-                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
+                    if same_model and not variant_mismatch:
+                        draft_device = _extra_args_draft_device_pin(loaded_llama.extra_args)
+                        if draft_device is not None:
+                            raise HTTPException(
+                                status_code = 400,
+                                detail = (
+                                    f"A draft-model device override ('{draft_device}') cannot "
+                                    "be combined with explicit gpu_ids: it would place the "
+                                    "speculative drafter outside the pinned GPUs the training "
+                                    "guard budgeted. Remove the draft-device flag to follow "
+                                    "gpu_ids, or set it to cpu."
+                                ),
+                            )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -6324,6 +6254,7 @@ async def generate_audio(
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
+        _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -6342,6 +6273,7 @@ async def generate_audio(
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
         model_name = public_model_id(backend.active_model_name)
+        _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
             temperature = payload.temperature,
@@ -6352,6 +6284,13 @@ async def generate_audio(
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
         )
+
+    # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
+    # generating, so `unsloth run --temperature` (and the other pins) and per-model
+    # recommendations reach audio (TTS) generation too, not just chat. The gen lambdas read
+    # payload.* lazily at call time, so filling here takes effect; this covers both the direct
+    # /audio/generate route and the chat-completions audio branches that delegate here.
+    _fill_recommended_sampling_openai(payload, _audio_model_id)
 
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
@@ -7644,6 +7583,51 @@ async def delete_openai_container(
         await client.close()
 
 
+def _fill_recommended_sampling_openai(payload, model_id) -> None:
+    """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
+    ChatCompletionRequest in place.
+
+    Only the sampling fields the client did NOT explicitly send (tracked via
+    ``model_fields_set``) are overwritten, so a client that sets a field stays byte-identical
+    unless an operator pins it. Fields with neither a recommendation nor a pin keep their
+    existing (schema-default) value.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {
+        f: (getattr(payload, f) if f in payload.model_fields_set else None)
+        for f in SAMPLING_FIELD_NAMES
+    }
+    effective = resolve_effective_sampling(model_id, explicit)
+    for field, value in effective.items():
+        setattr(payload, field, value)
+
+
+# /v1/completions is proxied to llama-server verbatim; its repetition knob is "repeat_penalty",
+# and every other sampling field keeps its name (mirrors _build_passthrough_payload).
+_COMPLETIONS_SAMPLING_BODY_KEY = {"repetition_penalty": "repeat_penalty"}
+
+
+def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
+    """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a raw
+    ``/v1/completions`` body in place, so the legacy (non-chat) endpoint honors the same pins as
+    ``/v1/chat/completions``.
+
+    Unlike :func:`_fill_recommended_sampling_openai`, which fills a ChatCompletionRequest whose
+    schema already carries per-field defaults, this body is proxied to llama-server as-is. A field
+    with no operator pin, client value, or per-model recommendation is therefore left untouched
+    (``fill_defaults = False``) so llama-server keeps its own default rather than being forced onto
+    this schema's value. llama-server names the repetition knob ``repeat_penalty``, so read and
+    write that alias for the client-sent value and any pin.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
+    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
+    for field, value in effective.items():
+        body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -7973,6 +7957,13 @@ async def openai_chat_completions(
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
 
+            # Apply recommended sampling + operator pins to the omitted fields before generating,
+            # so audio-input (non-whisper) generation honors `unsloth run --temperature` and
+            # per-model recommendations like chat does. Whisper (ASR) ignores these fields.
+            _fill_recommended_sampling_openai(
+                payload, getattr(backend, "active_model_name", None) or model_name
+            )
+
             def audio_input_generate():
                 if model_info.get("audio_type") == "whisper":
                     return backend.generate_whisper_response(
@@ -8115,6 +8106,18 @@ async def openai_chat_completions(
                 param = "n",
             ),
         )
+
+    # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
+    # fields the client omitted, so agents and API clients get the model's tuned defaults
+    # unless they set the field explicitly. Placed after external-provider routing (which
+    # returned above) so only local llama-server / transformers requests are touched, and it
+    # covers both the passthrough and non-passthrough branches below since both read payload.*.
+    _reco_model_id = (
+        getattr(llama_backend, "model_identifier", None)
+        if using_gguf
+        else getattr(backend, "active_model_name", None)
+    ) or model_name
+    _fill_recommended_sampling_openai(payload, _reco_model_id)
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -10893,6 +10896,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if _resolved_max_tokens is not None
         else (llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR)
     )
+    # Apply per-model recommended sampling and any operator UNSLOTH_SAMPLING_* pin to the raw
+    # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
+    # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
+    _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -11851,6 +11858,9 @@ async def _responses_stream(
             detail = "Image provided but current GGUF model does not support vision.",
         )
 
+    # Streaming /v1/responses builds the passthrough body directly (bypassing
+    # openai_chat_completions), so apply recommended sampling here too.
+    _fill_recommended_sampling_openai(chat_req, getattr(llama_backend, "model_identifier", None))
     body = _build_openai_passthrough_body(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
@@ -13282,14 +13292,28 @@ async def anthropic_messages(
     # endpoint matches /v1/chat/completions.
     _has_image = _normalize_anthropic_openai_images(openai_messages, llama_backend.is_vision)
 
-    temperature = payload.temperature if payload.temperature is not None else 0.6
-    top_p = payload.top_p if payload.top_p is not None else 0.95
-    top_k = payload.top_k if payload.top_k is not None else 20
-    min_p = payload.min_p if payload.min_p is not None else 0.01
-    repetition_penalty = (
-        payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
+    # Fill omitted sampling fields with the per-model recommendation (or an operator
+    # UNSLOTH_SAMPLING_* pin); an explicit client value wins unless the operator pinned it.
+    # Anthropic sampling fields are Optional, so None already marks "client omitted".
+    from utils.inference.inference_config import resolve_effective_sampling
+
+    _anthropic_sampling = resolve_effective_sampling(
+        getattr(llama_backend, "model_identifier", None) or model_name,
+        {
+            "temperature": payload.temperature,
+            "top_p": payload.top_p,
+            "top_k": payload.top_k,
+            "min_p": payload.min_p,
+            "repetition_penalty": payload.repetition_penalty,
+            "presence_penalty": payload.presence_penalty,
+        },
     )
-    presence_penalty = payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    temperature = _anthropic_sampling["temperature"]
+    top_p = _anthropic_sampling["top_p"]
+    top_k = _anthropic_sampling["top_k"]
+    min_p = _anthropic_sampling["min_p"]
+    repetition_penalty = _anthropic_sampling["repetition_penalty"]
+    presence_penalty = _anthropic_sampling["presence_penalty"]
     stop = payload.stop_sequences or None
 
     # Translate Anthropic tool_choice to OpenAI format for llama-server. Falls

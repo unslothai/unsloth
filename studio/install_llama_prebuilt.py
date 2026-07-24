@@ -186,8 +186,24 @@ VALIDATION_MODEL_CACHE_FILENAME = "stories260K.gguf"
 # in validate_prebuilt_choice. Disabled for now: the llama-server GPU forward pass
 # JIT-compiles CUDA kernels on first load and stalls every install and update by
 # minutes on Blackwell (sm_100). The check and the source-build fallback it triggers
-# are kept intact -- set this to True to re-enable them.
+# are kept intact -- set this to True, or set UNSLOTH_LLAMA_STAGED_VALIDATION=1, to
+# re-enable them (#5854 gap 2).
 _RUN_STAGED_PREBUILT_VALIDATION = False
+
+
+def staged_validation_enabled() -> bool:
+    """True when the expensive llama-server GPU smoke test should run.
+
+    Default off (Blackwell CUDA JIT stalls installs). Opt in via the module
+    constant or ``UNSLOTH_LLAMA_STAGED_VALIDATION`` (1/true/yes/on). Used by both
+    the prebuilt path and setup.sh's source-build post-check (#5854).
+    """
+    if _RUN_STAGED_PREBUILT_VALIDATION:
+        return True
+    raw = os.environ.get("UNSLOTH_LLAMA_STAGED_VALIDATION", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
 INSTALL_STAGING_ROOT_NAME = ".staging"
 GITHUB_AUTH_HOSTS = {"api.github.com", "github.com"}
@@ -5868,9 +5884,10 @@ def validate_prebuilt_choice(
     # so they are always validated. For an approved bundle the sha256 manifest
     # already proves integrity, so its runtime smoke test -- a cold CUDA-JIT pass
     # costing minutes on Blackwell sm_100 -- is gated behind
-    # _RUN_STAGED_PREBUILT_VALIDATION, disabled for now. The check and the
-    # source-build fallback it triggers are kept intact; flip the flag to restore it.
-    if choice.expected_sha256 is None or _RUN_STAGED_PREBUILT_VALIDATION:
+    # staged_validation_enabled() (constant or UNSLOTH_LLAMA_STAGED_VALIDATION),
+    # disabled for now. The check and the source-build fallback it triggers are
+    # kept intact; flip the flag / env to restore it (#5854).
+    if choice.expected_sha256 is None or staged_validation_enabled():
         validate_quantize(
             quantize_path,
             probe_path,
@@ -5889,6 +5906,49 @@ def validate_prebuilt_choice(
         )
         log(f"staged prebuilt validation succeeded for {choice.name}")
     return server_path, quantize_path
+
+
+def validate_existing_install(
+    install_dir: Path,
+    *,
+    install_kind: str | None = None,
+    host: HostInfo | None = None,
+) -> None:
+    """Run the staged smoke test against an already-built llama.cpp tree (#5854).
+
+    Used by setup.sh after a GPU source build when ``UNSLOTH_LLAMA_STAGED_VALIDATION``
+    is set. Raises ``PrebuiltFallback`` on failure so the caller can retry CPU.
+    """
+    host = host or detect_host()
+    bin_dir = install_dir / "build" / "bin"
+    server_name = "llama-server.exe" if host.is_windows else "llama-server"
+    quantize_name = "llama-quantize.exe" if host.is_windows else "llama-quantize"
+    server_path = bin_dir / server_name
+    quantize_path = bin_dir / quantize_name
+    if not server_path.is_file():
+        raise PrebuiltFallback(f"llama-server not found at {server_path}")
+
+    with tempfile.TemporaryDirectory(prefix = "unsloth-llama-source-validate-") as tmp:
+        work_dir = Path(tmp)
+        probe_path = work_dir / "stories260K.gguf"
+        quantized_path = work_dir / "stories260K-q4.gguf"
+        download_validation_model(probe_path, validation_model_cache_path(install_dir))
+        if quantize_path.is_file():
+            validate_quantize(
+                quantize_path,
+                probe_path,
+                quantized_path,
+                install_dir,
+                host,
+            )
+        validate_server(
+            server_path,
+            probe_path,
+            host,
+            install_dir,
+            install_kind = install_kind,
+        )
+    log(f"staged source-build validation succeeded for {install_dir}")
 
 
 def validate_prebuilt_attempts(
@@ -6374,6 +6434,24 @@ def parse_args() -> argparse.Namespace:
             "fork). Use --output-format json."
         ),
     )
+    resolve_group.add_argument(
+        "--validate-install",
+        metavar = "DIR",
+        help = (
+            "Run the staged llama-server smoke test against an existing build "
+            "tree (setup.sh source-build post-check, #5854). Exit 2 on failure. "
+            "Normally gated by UNSLOTH_LLAMA_STAGED_VALIDATION; this flag always "
+            "runs the check."
+        ),
+    )
+    parser.add_argument(
+        "--install-kind",
+        default = None,
+        help = (
+            "Install kind for --validate-install GPU offload (e.g. linux-cuda, "
+            "linux-rocm, macos-arm64). When omitted, host detection decides."
+        ),
+    )
     parser.add_argument(
         "--output-format",
         choices = ("plain", "json"),
@@ -6410,6 +6488,17 @@ def emit_resolver_output(payload: dict[str, Any], *, output_format: str) -> None
 
 def main() -> int:
     args = parse_args()
+    if args.validate_install is not None:
+        try:
+            validate_existing_install(
+                Path(args.validate_install),
+                install_kind = args.install_kind,
+            )
+        except PrebuiltFallback as exc:
+            print(str(exc), file = sys.stderr)
+            raise SystemExit(EXIT_FALLBACK) from exc
+        return EXIT_SUCCESS
+
     if args.resolve_llama_tag is not None:
         resolved = resolve_requested_llama_tag(
             args.resolve_llama_tag,
