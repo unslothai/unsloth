@@ -164,10 +164,11 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     assert types.count("requested_gpu_ids?: number[] | null") >= 2
 
     store = _read("features/chat/stores/chat-runtime-store.ts")
-    assert "resp.requested_gpu_ids ?? resp.gpu_ids ?? null" in store
+    assert 'hasOwnProperty.call(resp, "requested_gpu_ids")' in store
+    assert "const gpuIds = requestedGpuIdsFromResponse(resp)" in store
 
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    assert "status.requested_gpu_ids ?? status.gpu_ids ?? null" in status
+    assert "requestedGpuIdsFromResponse(status)" in status
 
 
 def test_compare_load_uses_each_models_gpu_config():
@@ -176,7 +177,7 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "ownConfig.selectedGpuIndexKind ?? null" in src
+    assert "ownConfig.selectedGpuIndexKind," in src
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -452,12 +453,19 @@ def test_default_gpu_mode_clears_manual_knobs():
 
 def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
     store = _read("features/chat/stores/chat-runtime-store.ts")
-    assert "resp.requested_gpu_ids ?? resp.gpu_ids ?? null" in store
-    assert "currentIndexKind !== savedIndexKind" in store
+    assert "requestedGpuIdsFromResponse(resp)" in store
+    assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in store
+    assert "currentIndexKind !== expectedIndexKind" in store
     gpu_info = _read("hooks/use-gpu-info.ts")
     assert "cachedPinnableGpuIndexKind" in gpu_info
     config = _read("features/model-picker/model-config/per-model-config.ts")
     assert '"selectedGpuIndexKind"' in config
+
+
+def test_model_switch_clears_host_memory_mode_before_validation():
+    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "const validateMemoryMode = resetsPerModelSettings" in src
+    assert "gguf_memory_mode: validateMemoryMode" in src
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():

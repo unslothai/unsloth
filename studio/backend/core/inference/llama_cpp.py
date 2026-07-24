@@ -2558,6 +2558,46 @@ class LlamaCppBackend:
         """Raw requested GPU pin before automatic fit narrows it."""
         return self._requested_gpu_ids
 
+    def matches_gpu_ids(self, gpu_ids: Optional[List[int]]) -> bool:
+        """Whether a requested pin is already satisfied by the active runner.
+
+        A regular GGUF load may narrow the requested placement pool to the
+        smallest fitting subset. Accept both the original request and the
+        effective status-echoed subset so either can round-trip without a
+        needless reload. Diffusion drives one device and keeps its existing
+        lowest-device normalization.
+        """
+        if self._is_diffusion:
+            requested = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            return requested == (self._gpu_ids or None)
+
+        requested = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        raw = self._requested_gpu_ids or None
+        effective = self._gpu_ids or None
+        return requested == raw or requested == effective
+
+    def _record_matching_gpu_request(self, gpu_ids: Optional[List[int]]) -> None:
+        """Adopt the caller's explicit pool after a full already-loaded match.
+
+        Matching an effective subset avoids a reload, but the incoming request
+        is still the user's latest placement intent. Record it so status and a
+        later reload do not restore GPUs the user just removed.
+        """
+        if self._is_diffusion:
+            self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+        else:
+            self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        if self._last_load_kwargs is not None:
+            self._last_load_kwargs["gpu_ids"] = (
+                list(self._requested_gpu_ids) if self._requested_gpu_ids else None
+            )
+
+    def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
+        """Adopt the caller's raw host-memory intent after a full match."""
+        self._requested_memory_mode = (memory_mode or "").strip().lower() or None
+        if self._last_load_kwargs is not None and "memory_mode" in self._last_load_kwargs:
+            self._last_load_kwargs["memory_mode"] = self._requested_memory_mode
+
     @property
     def memory_mode(self) -> Optional[str]:
         """Canonical active GGUF memory mode; auto is None."""
@@ -9322,6 +9362,7 @@ class LlamaCppBackend:
             if candidate != current:
                 return False
         self._record_matching_gpu_request(gpu_ids)
+        self._record_matching_memory_request(memory_mode)
         return True
 
     def _classify_gpu_offload(

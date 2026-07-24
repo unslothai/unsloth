@@ -4008,8 +4008,23 @@ async def _resolve_gguf_gpu_ids_for_request(
     from utils.hardware import DeviceType, get_device
     from utils.hardware.hardware import resolve_requested_gpu_ids
 
-    is_vulkan = LlamaCppBackend._is_vulkan_backend()
-    if get_device() == DeviceType.XPU and not is_vulkan:
+    llama_backend = get_llama_cpp_backend()
+    is_vulkan_build = await asyncio.to_thread(llama_backend.is_vulkan_build)
+    confirmed_diffusion = _classify_diffusion_gguf(config) is True
+    ids_are_vulkan_ordinals = is_vulkan_build and not confirmed_diffusion
+    device = get_device()
+    lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
+
+    if confirmed_diffusion and device != DeviceType.CUDA:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "GPU selection (gpu_ids) for DiffusionGemma requires CUDA. "
+                "Omit gpu_ids on this host."
+            ),
+        )
+
+    if device == DeviceType.XPU and not ids_are_vulkan_ordinals:
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -4456,6 +4471,7 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 llama_backend._record_matching_gpu_request(request.gpu_ids)
+                llama_backend._record_matching_memory_request(request.gguf_memory_mode)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"

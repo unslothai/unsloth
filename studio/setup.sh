@@ -1418,7 +1418,7 @@ else
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
                 _explicit_vulkan_backend=true
-                step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_INFO"
+                step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
         ""|auto) ;;

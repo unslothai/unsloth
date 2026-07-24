@@ -596,9 +596,11 @@ export function reconcilePersistedGpuIds(
   if (ids == null) return ids;
   if (arguments.length >= 2) {
     const currentIndexKind = cachedPinnableGpuIndexKind();
+    const expectedIndexKind =
+      savedIndexKind === undefined ? "physical" : savedIndexKind;
     if (
       currentIndexKind !== undefined &&
-      currentIndexKind !== savedIndexKind
+      currentIndexKind !== expectedIndexKind
     ) {
       return null;
     }
@@ -607,6 +609,15 @@ export function reconcilePersistedGpuIds(
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));
   return kept.length > 0 ? kept : null;
+}
+
+export function requestedGpuIdsFromResponse(resp: {
+  gpu_ids?: number[] | null;
+  requested_gpu_ids?: number[] | null;
+}): number[] | null {
+  return Object.prototype.hasOwnProperty.call(resp, "requested_gpu_ids")
+    ? (resp.requested_gpu_ids ?? null)
+    : (resp.gpu_ids ?? null);
 }
 
 // Store fields derived from a load/status response's GPU-memory settings.
@@ -651,7 +662,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
-  const gpuIds = resp.requested_gpu_ids ?? resp.gpu_ids ?? null;
+  // Keep the user's placement pool editable across status/load hydration.
+  // gpu_ids remains the effective fitted subset for diagnostics.
+  const gpuIds = requestedGpuIdsFromResponse(resp);
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
