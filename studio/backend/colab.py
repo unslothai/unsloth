@@ -68,31 +68,165 @@ def _is_colab_proxy_url(url: str, port: int) -> bool:
 
 
 def _is_colab_runtime() -> bool:
-    """True on a real Colab notebook kernel (not colabtools-only ``google.colab`` imports).
+    """True on a hosted Colab notebook kernel.
 
-    ``COLAB_RELEASE_TAG`` is set in notebook kernels but not by colabtools alone, so it
-    marks real Colab where the kernel-port helper works even if eval_js fell back to localhost.
+    Reuses the backend's main Colab detector (``/content`` + Colab env / ``google.colab``)
+    instead of a single env var, which is not always present on hosted runtimes.
     """
-    import os
-
-    if "COLAB_RELEASE_TAG" not in os.environ:
-        return False
     try:
-        import google.colab  # noqa: F401
-    except ImportError:
+        from main import _IS_COLAB
+        return bool(_IS_COLAB)
+    except Exception:
         return False
-    return True
 
 
-def _ready_card_html(url: str, port: int) -> str:
+def _colab_login_credentials_path() -> Path:
+    from auth.storage import DB_PATH
+
+    return DB_PATH.parent / ".colab_notebook_login"
+
+
+def _store_colab_login_credentials(username: str, password: str) -> None:
+    """Persist Colab admin credentials for notebook re-runs after interrupt."""
+    path = _colab_login_credentials_path()
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(f"{username}\n{password}\n")
+        try:
+            import os
+
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError as e:
+        logger.info(f"Could not persist Colab login credentials ({e}).")
+
+
+def _load_colab_login_credentials() -> "tuple[str, str] | None":
+    """Return stored Colab admin credentials from a previous ``start()`` run, if any."""
+    path = _colab_login_credentials_path()
+    try:
+        if not path.is_file():
+            return None
+        lines = path.read_text().splitlines()
+        if len(lines) >= 2 and lines[0] and lines[1]:
+            return lines[0], lines[1]
+    except OSError as e:
+        logger.info(f"Could not load Colab login credentials ({e}).")
+    return None
+
+
+def _colab_wants_cloudflare(cloudflare: "bool | None") -> bool:
+    """Resolve whether to open a Cloudflare tunnel.
+
+    ``None`` auto-enables on real Colab (the in-cell proxy embed is often blank);
+    pass ``False`` to opt out.
+    """
+    if cloudflare is not None:
+        return cloudflare
+    return _is_colab_runtime()
+
+
+def _finalize_colab_admin_password() -> "tuple[str, str] | None":
+    """Clear the bootstrap-password gate on Colab so Cloudflare tunnels can start.
+
+    Returns ``(username, password)`` for display in the notebook. On first run the
+    random admin password is finalized; on later runs (e.g. after interrupt) the
+    stored credentials are re-displayed so the Cloudflare link stays usable.
+    Anyone who can read this cell already controls the runtime.
+    """
+    if not _is_colab_runtime():
+        return None
+    try:
+        from auth.storage import (
+            DEFAULT_ADMIN_USERNAME,
+            ensure_default_admin,
+            generate_bootstrap_password,
+            get_bootstrap_password,
+            requires_password_change,
+            update_password,
+        )
+    except Exception as e:
+        logger.warning(f"Could not load auth for Colab setup ({e}); Cloudflare link may be blocked.")
+        return None
+
+    try:
+        ensure_default_admin()
+        username = DEFAULT_ADMIN_USERNAME
+        if not requires_password_change(username):
+            return _load_colab_login_credentials()
+        password = get_bootstrap_password() or generate_bootstrap_password()
+        if not update_password(username, password):
+            logger.warning("Could not finalize Colab admin password; Cloudflare link may be blocked.")
+            return None
+        _store_colab_login_credentials(username, password)
+        return username, password
+    except Exception as e:
+        logger.warning(f"Could not finalize Colab admin password ({e}); Cloudflare link may be blocked.")
+        return None
+
+
+def _colab_login_html(username: str, password: str) -> str:
+    """Notebook card with Colab admin credentials (shown once after auto-finalize)."""
+    return f"""
+    <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
+                border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
+        <h2 style="color: #000000; margin: 0 0 12px 0; font-size: 22px; font-weight: 800;">
+            Unsloth Studio Login (Colab)
+        </h2>
+        <p style="color: #333333; margin: 0 0 12px 0; font-size: 14px; font-weight: bold;">
+            Log in to Studio with the Cloudflare link above using these credentials. This cell
+            is visible only in your notebook session.
+        </p>
+        <p style="color: #333333; margin: 0; font-size: 14px; font-family: monospace; font-weight: bold;">
+            Username: <code>{username}</code><br>
+            Password: <code>{password}</code>
+        </p>
+    </div>
+    """
+
+
+def _show_colab_login_credentials(username: str, password: str) -> None:
+    """Display Colab admin credentials in the notebook output."""
+    from IPython.display import HTML, display
+
+    logger.info(f"🔐 Unsloth Studio login — user: {username}")
+    display(HTML(_colab_login_html(username, password)))
+
+
+def _ready_card_html(
+    url: str,
+    port: int,
+    *,
+    has_cloudflare_link: bool = False,
+    cloudflare_requested: bool = False,
+) -> str:
     """Branded ready card for the in-notebook Studio view.
 
     Colab ``*.prod.colab.dev`` proxy URLs are session-scoped and 404 when opened as a
-    top-level tab or on another device, so never ``window.open`` them: embed in-cell and
-    point users at ``start(cloudflare=True)`` for a shareable link.
+    top-level tab or on another device, so never ``window.open`` them. On real Colab the
+    Cloudflare link is the supported entry point because in-cell proxy embeds often stay blank.
     """
     short_url = _short_colab_url(url, port)
     if _is_colab_runtime() or _is_colab_proxy_url(url, port):
+        if has_cloudflare_link:
+            embed_note = (
+                "Open Studio with the Cloudflare link above. In-cell proxy previews on "
+                "current Colab often stay blank, so the tunnel link is the supported path."
+            )
+        elif cloudflare_requested:
+            embed_note = (
+                "Could not open a Cloudflare tunnel, so Studio may be unreachable on Colab. "
+                "Check the logs above and re-run this cell. Pass "
+                "<code style=\"background:#f3f3f3;padding:2px 6px;border-radius:4px;\">"
+                "cloudflare=True</code> after fixing any tunnel errors."
+            )
+        else:
+            embed_note = (
+                "Colab proxy links cannot be opened in a new tab (they 404 outside this "
+                "notebook). Re-run with <code style=\"background:#f3f3f3;padding:2px 6px;"
+                "border-radius:4px;\">start(cloudflare=True)</code> for a working link."
+            )
         return f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -103,12 +237,7 @@ def _ready_card_html(url: str, port: int) -> str:
             Unsloth Studio is Ready!
         </h2>
         <p style="color: #333333; margin: 0 0 8px 0; font-size: 15px; font-weight: bold;">
-            Scroll down to use Studio in this Colab cell. Colab proxy links cannot be opened
-            in a new tab or on another device (they 404 outside this notebook session).
-        </p>
-        <p style="color: #333333; margin: 0; font-size: 14px; font-weight: bold;">
-            Need a real shareable / new-window URL? Re-run with
-            <code style="background:#f3f3f3;padding:2px 6px;border-radius:4px;">start(cloudflare=True)</code>.
+            {embed_note}
         </p>
         <p style="color: #666666; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
             {short_url}
@@ -142,7 +271,13 @@ def _ready_card_html(url: str, port: int) -> str:
     """
 
 
-def show_link(port: int = 8888, *, _url: "str | None" = None):
+def show_link(
+    port: int = 8888,
+    *,
+    _url: "str | None" = None,
+    has_cloudflare_link: bool = False,
+    cloudflare_requested: bool = False,
+):
     """Display a styled ready card for the UI.
 
     Colab proxy URLs are informational only (no new-tab open; they 404 outside the cell);
@@ -153,7 +288,26 @@ def show_link(port: int = 8888, *, _url: "str | None" = None):
 
     url = _url if _url is not None else get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
-    display(HTML(_ready_card_html(url, port)))
+    display(
+        HTML(
+            _ready_card_html(
+                url,
+                port,
+                has_cloudflare_link = has_cloudflare_link,
+                cloudflare_requested = cloudflare_requested,
+            )
+        )
+    )
+
+
+def _warn_colab_cloudflare_missing(*, use_cloudflare: bool, cloudflare_url: "str | None") -> None:
+    """Log a prominent warning when Colab expected a tunnel but none was opened."""
+    if not use_cloudflare or cloudflare_url or not _is_colab_runtime():
+        return
+    logger.warning(
+        "Colab Cloudflare tunnel unavailable — Studio is unlikely to be reachable in this "
+        "notebook. Check the logs above for tunnel or auth errors, then re-run start()."
+    )
 
 
 def _bootstrap_password_pending() -> bool:
@@ -279,9 +433,12 @@ _COLAB_IFRAME_HEIGHT = 900
 def _embed_kernel_port_iframe(port: int) -> bool:
     """Embed Studio via Colab's native kernel-port iframe helper.
 
-    Colab's output sanitizer often strips custom ``<iframe>`` tags without raising,
-    leaving a blank cell; the kernel-port helper is the supported embedding path.
+    Only trusted on a real Colab runtime: colabtools can import ``google.colab`` and
+    queue browser-side JS without appending an iframe, so callers outside Colab must use
+    the HTML iframe path instead.
     """
+    if not _is_colab_runtime():
+        return False
     try:
         from google.colab import output as colab_output
     except ImportError:
@@ -333,21 +490,27 @@ def _embed_html_iframe(url: str, port: int) -> bool:
         return False
 
 
-def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
+def _show_and_embed(
+    port: int,
+    *,
+    cloudflare_url: "str | None" = None,
+    colab_login: "tuple[str, str] | None" = None,
+    cloudflare_requested: bool = False,
+):
     """Render the Unsloth ready card + iframe for *port*.
 
-    Prefer Colab's ``serve_kernel_port_as_iframe``; raw HTML iframe is the fallback.
-    Cloudflare cards stay clickable.
+    Prefer Colab's ``serve_kernel_port_as_iframe`` on real Colab; raw HTML iframe is the
+    fallback. Cloudflare cards stay clickable.
     """
     url = get_colab_url(port)
     logger.info(f"🌐 Unsloth Studio URL: {url}")
     if cloudflare_url:
         logger.info(f"🔗 Shareable Cloudflare link: {cloudflare_url}")
 
-    try:
-        show_link(port, _url = url)
-    except Exception as e:
-        logger.info(f"Could not render Unsloth link card ({e}).")
+    _warn_colab_cloudflare_missing(
+        use_cloudflare = cloudflare_requested,
+        cloudflare_url = cloudflare_url,
+    )
 
     if cloudflare_url:
         try:
@@ -356,41 +519,66 @@ def _show_and_embed(port: int, *, cloudflare_url: "str | None" = None):
         except Exception as e:
             logger.info(f"Could not render Cloudflare link card ({e}).")
 
+    if colab_login:
+        try:
+            _show_colab_login_credentials(*colab_login)
+        except Exception as e:
+            logger.info(f"Could not render Colab login card ({e}).")
+
+    try:
+        show_link(
+            port,
+            _url = url,
+            has_cloudflare_link = bool(cloudflare_url),
+            cloudflare_requested = cloudflare_requested,
+        )
+    except Exception as e:
+        logger.info(f"Could not render Unsloth link card ({e}).")
+
+    # On Colab with a working tunnel, skip the in-cell proxy embed (often blank).
+    if _is_colab_runtime() and cloudflare_url:
+        return
+
     # Real Colab: kernel helper needs only the port (works when eval_js failed).
-    # colabtools can import google.colab without COLAB_RELEASE_TAG, so use HTML embed.
     if _is_colab_runtime():
         if _embed_kernel_port_iframe(port):
             return
-    elif _is_colab_proxy_url(url, port) and _embed_kernel_port_iframe(port):
-        return
     _embed_html_iframe(url, port)
 
 
-def start(port: int = 8888, *, cloudflare: bool = False):
+def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     """Start Unsloth Studio in Colab and display the URL.
 
     Args:
         port: Port to bind/serve on.
-        cloudflare: Opt in to a shareable Cloudflare HTTPS link reachable from any
-            device (default OFF). It exposes Unsloth's login page beyond Colab, so it
-            stays an explicit opt-in; the default shows only the in-tab proxy iframe.
+        cloudflare: Shareable Cloudflare HTTPS link. ``None`` (default) auto-enables on
+            real Colab because the in-cell proxy embed is often blank; pass ``False`` to
+            skip the tunnel or ``True`` to force it on other runtimes.
 
     Usage:
-        start()                    # Colab-proxy iframe only (default)
-        start(cloudflare=True)     # also open a shareable Cloudflare link
+        start()                    # Cloudflare link on Colab (auto); proxy iframe elsewhere
+        start(cloudflare=False)    # Colab proxy iframe only (often blank on current Colab)
+        start(cloudflare=True)     # force Cloudflare link on any runtime
     """
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
+    use_cloudflare = _colab_wants_cloudflare(cloudflare)
 
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            cf_url = start_cloudflare_tunnel(port) if cloudflare else None
+            colab_login = _finalize_colab_admin_password()
+            cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
             _publish_cloudflare_url(cf_url)
-            _show_and_embed(port, cloudflare_url = cf_url)
+            _show_and_embed(
+                port,
+                cloudflare_url = cf_url,
+                colab_login = colab_login,
+                cloudflare_requested = use_cloudflare,
+            )
             for _ in range(10000):
                 time.sleep(300)
                 print("=", end = "", flush = True)
@@ -451,11 +639,17 @@ def start(port: int = 8888, *, cloudflare: bool = False):
         )
         return
 
-    # Server healthy: open the tunnel, publish its URL for /api/health, tear down on interrupt.
+    # Server healthy: finalize Colab auth, open the tunnel, publish URL, tear down on interrupt.
     try:
-        cf_url = start_cloudflare_tunnel(actual_port) if cloudflare else None
+        colab_login = _finalize_colab_admin_password()
+        cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
         _publish_cloudflare_url(cf_url)
-        _show_and_embed(actual_port, cloudflare_url = cf_url)
+        _show_and_embed(
+            actual_port,
+            cloudflare_url = cf_url,
+            colab_login = colab_login,
+            cloudflare_requested = use_cloudflare,
+        )
 
         # Keep kernel alive so the daemon server thread runs.
         for _ in range(10000):
