@@ -645,10 +645,7 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
     assert "if (!isGguf) return null;" in resolve_fn
     # Quants must be resolved from the folder the row will load from, not
     # from a same-id HF cache repo whose quants may be absent locally.
-    assert (
-        "const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;"
-        in resolve_fn
-    )
+    assert "const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;" in resolve_fn
     assert "listGgufVariants(variantScanTarget" in resolve_fn
     assert "localPath: row.path" in resolve_fn
     assert "entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry)" in resolve_fn
@@ -666,7 +663,7 @@ def test_remembered_local_failure_does_not_block_folder_fallback():
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     remembered_block = auto_load.split("isManagedCacheSource(lastLoaded.source)", 1)[1]
     remembered_block = remembered_block.split('} else if (lastLoaded.kind === "gguf")', 1)[0]
-    assert "markSeen(" not in remembered_block, (
-        "remembered-local retry must not pre-mark the row as deduped"
-    )
+    assert (
+        "markSeen(" not in remembered_block
+    ), "remembered-local retry must not pre-mark the row as deduped"
     assert "rememberedCandidate?.ggufVariant ?? lastLoaded.ggufVariant" in remembered_block
