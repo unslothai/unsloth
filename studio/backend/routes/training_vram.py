@@ -135,8 +135,8 @@ def can_keep_chat_during_training(
             resolve_requested_gpu_ids,
         )
 
-        if get_device() != DeviceType.CUDA:
-            return False, {"mode": "non_cuda", "reason": "non_cuda"}
+        if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+            return False, {"mode": "non_accelerator", "reason": "non_accelerator"}
 
         # Full finetuning runs in 16-bit, so ignore the 4-bit request or we under-count.
         effective_4bit = False if training_type == "Full Finetuning" else load_in_4bit
@@ -241,8 +241,8 @@ def can_load_chat_during_training(
     N visible GPUs instead.
     ``single_device_gpu`` is the exact physical device token selected by a
     single-device runner. `load_in_4bit` must be effective (LoRA can flip 4-bit
-    -> 16-bit). Non-CUDA allows the load; default-deny on any CUDA case it can't
-    size, so a load never OOMs training."""
+    -> 16-bit). CPU/MLX allows the load; default-deny on any CUDA/XPU case it
+    can't size, so a load never OOMs training."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -253,8 +253,8 @@ def can_load_chat_during_training(
             resolve_requested_gpu_ids,
         )
 
-        if get_device() != DeviceType.CUDA:
-            return True, {"mode": "non_cuda", "reason": "non_cuda"}
+        if get_device() not in (DeviceType.CUDA, DeviceType.XPU):
+            return True, {"mode": "non_accelerator", "reason": "non_accelerator"}
 
         est_kwargs = dict(
             hf_token = hf_token or None,
