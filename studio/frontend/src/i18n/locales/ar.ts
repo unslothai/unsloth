@@ -752,6 +752,7 @@ export const ar = {
       trainWithLora: "التدريب باستخدام LoRA",
       stableRank: "Rank مستقر",
       memoryEfficient: "موفّر للذاكرة",
+      weightDecomposed: "أوزان مُفكَّكة",
       optimization: "التحسين",
       schedule: "الجدولة",
       memory: "الذاكرة",

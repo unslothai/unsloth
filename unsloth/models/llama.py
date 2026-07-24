@@ -3140,6 +3140,15 @@ class FastLlamaModel:
             for param in check_parameters:
                 check_all = check_all and (peft_config[param] == eval(param))
 
+            # use_dora arrives via **kwargs, not a named parameter of this
+            # function, so it can't go in check_parameters (which uses
+            # eval(param) and needs each entry to be a bound local name).
+            # Compare it explicitly so a DoRA request against an existing
+            # plain-LoRA adapter doesn't silently pass through unchanged.
+            check_all = check_all and (
+                bool(peft_config.get("use_dora", False)) == bool(kwargs.get("use_dora", False))
+            )
+
             # Check save_modules
             old_target_modules = list(peft_config["target_modules"])
             modules_to_save = peft_config["modules_to_save"]

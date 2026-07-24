@@ -750,6 +750,7 @@ export const ru = {
       trainWithLora: "Обучать с LoRA",
       stableRank: "Стабильный ранг",
       memoryEfficient: "Экономия памяти",
+      weightDecomposed: "Декомпозиция весов",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",

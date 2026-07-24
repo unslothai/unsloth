@@ -750,6 +750,7 @@ export const hi = {
       trainWithLora: "LoRA के साथ ट्रेन करें",
       stableRank: "स्थिर Rank",
       memoryEfficient: "मेमोरी कुशल",
+      weightDecomposed: "भार-विघटित",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",

@@ -189,6 +189,10 @@ def run(args):
 
     is_mlx = _is_mlx_backend(unsloth)
 
+    # MLX routes get_peft_model to FastMLXModel, which ignores use_dora (plain LoRA).
+    if args.use_dora and is_mlx:
+        raise NotImplementedError("DoRA is not supported for MLX training yet.")
+
     # Load model and tokenizer
     device_map, distributed = _prepare_device_map(is_mlx)
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -219,6 +223,7 @@ def run(args):
         random_state = args.random_state,
         use_rslora = args.use_rslora,
         loftq_config = args.loftq_config,
+        use_dora = args.use_dora,
     )
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -373,6 +378,11 @@ if __name__ == "__main__":
         type = str,
         default = None,
         help = "Configuration for LoftQ",
+    )
+    lora_group.add_argument(
+        "--use_dora",
+        action = "store_true",
+        help = "Use DoRA (Weight-Decomposed LoRA)",
     )
 
     training_group = parser.add_argument_group("🎓 Training Options")

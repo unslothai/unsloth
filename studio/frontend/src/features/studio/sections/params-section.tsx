@@ -217,10 +217,16 @@ export function ParamsSection(): ReactElement {
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
 
-  // LoftQ is unsupported on MLX; clear a stale selection to lora on Apple Silicon.
+  // LoftQ and DoRA are not supported on MLX (the backend rejects both), so
+  // clear a stale selection to lora on Apple Silicon -- whether persisted,
+  // applied from a model default, or imported -- so the backend never
+  // receives it.
   const setLoraVariant = store.setLoraVariant;
   useEffect(() => {
-    if (isMac && store.loraVariant === "loftq") {
+    if (
+      isMac &&
+      (store.loraVariant === "loftq" || store.loraVariant === "dora")
+    ) {
       setLoraVariant("lora");
     }
   }, [isMac, store.loraVariant, setLoraVariant]);
@@ -712,7 +718,7 @@ export function ParamsSection(): ReactElement {
                   )}
 
                   {/* LoRA variant */}
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {(
                       [
                         {
@@ -730,12 +736,20 @@ export function ParamsSection(): ReactElement {
                           label: "LoftQ",
                           desc: t("studio.params.memoryEfficient"),
                         },
+                        {
+                          value: "dora",
+                          label: "DoRA",
+                          desc: t("studio.params.weightDecomposed"),
+                        },
                       ] as const
                     ).map((opt) => (
                       <button
                         key={opt.value}
                         type="button"
-                        disabled={isMac && opt.value === "loftq"}
+                        disabled={
+                          isMac &&
+                          (opt.value === "loftq" || opt.value === "dora")
+                        }
                         onClick={() => store.setLoraVariant(opt.value)}
                         className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
                           store.loraVariant === opt.value
@@ -745,7 +759,7 @@ export function ParamsSection(): ReactElement {
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
                         <p className="text-ui-10 text-muted-foreground">
-                          {isMac && opt.value === "loftq"
+                          {isMac && (opt.value === "loftq" || opt.value === "dora")
                             ? "Not supported on Apple Silicon"
                             : opt.desc}
                         </p>

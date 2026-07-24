@@ -332,6 +332,7 @@ async def start_training(
             else "unsloth",
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
+            "use_dora": request.use_dora,
             "train_on_completions": request.train_on_completions,
             "finetune_vision_layers": request.finetune_vision_layers,
             "finetune_language_layers": request.finetune_language_layers,

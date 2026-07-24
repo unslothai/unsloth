@@ -851,6 +851,7 @@ export const ptBR = {
       trainWithLora: "Treinar com LoRA",
       stableRank: "Stable Rank",
       memoryEfficient: "Eficiente em Memória",
+      weightDecomposed: "Pesos Decompostos",
       optimization: "Otimização",
       schedule: "Cronograma",
       memory: "Memória",

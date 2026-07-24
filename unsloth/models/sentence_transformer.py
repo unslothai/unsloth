@@ -1968,6 +1968,7 @@ class FastSentenceTransformer(FastModel):
         random_state = 3407,
         max_seq_length = 2048,
         use_rslora = False,
+        use_dora = False,
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
@@ -2061,6 +2062,7 @@ class FastSentenceTransformer(FastModel):
                     target_modules = target_modules,
                     lora_dropout = lora_dropout,
                     bias = bias,
+                    use_dora = use_dora,
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
@@ -2129,6 +2131,7 @@ class FastSentenceTransformer(FastModel):
                 random_state = random_state,
                 max_seq_length = max_seq_length,
                 use_rslora = use_rslora,
+                use_dora = use_dora,
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
@@ -2160,6 +2163,7 @@ class FastSentenceTransformer(FastModel):
                 random_state = random_state,
                 max_seq_length = max_seq_length,
                 use_rslora = use_rslora,
+                use_dora = use_dora,
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
