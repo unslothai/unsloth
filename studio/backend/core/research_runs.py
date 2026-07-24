@@ -311,15 +311,15 @@ def _normalize_synthesis_audit(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
 
-    def short_list(name: str, limit: int, item_limit: int = 500) -> list[str]:
+    def short_list(
+        name: str,
+        limit: int,
+        item_limit: int = 500,
+    ) -> list[str]:
         raw = value.get(name)
         if not isinstance(raw, list):
             return []
-        return [
-            str(item).strip()[:item_limit]
-            for item in raw[:limit]
-            if str(item).strip()
-        ]
+        return [str(item).strip()[:item_limit] for item in raw[:limit] if str(item).strip()]
 
     supported_claims = []
     raw_claims = value.get("supportedClaims")
@@ -330,18 +330,12 @@ def _normalize_synthesis_audit(value: Any) -> dict[str, Any]:
             claim = str(item.get("claim") or "").strip()[:500]
             raw_urls = item.get("sourceUrls")
             urls = (
-                [
-                    str(url).strip()[:1000]
-                    for url in raw_urls[:8]
-                    if str(url).strip()
-                ]
+                [str(url).strip()[:1000] for url in raw_urls[:8] if str(url).strip()]
                 if isinstance(raw_urls, list)
                 else []
             )
             if claim:
-                supported_claims.append(
-                    {"claim": claim, **({"sourceUrls": urls} if urls else {})}
-                )
+                supported_claims.append({"claim": claim, **({"sourceUrls": urls} if urls else {})})
 
     audit = {
         "thesis": str(value.get("thesis") or "").strip()[:2000],
@@ -2097,9 +2091,7 @@ class ResearchSupervisor:
             if not candidate.strip():
                 continue
             try:
-                synthesis_audit = _normalize_synthesis_audit(
-                    _parse_json_object(candidate)
-                )
+                synthesis_audit = _normalize_synthesis_audit(_parse_json_object(candidate))
                 if synthesis_audit:
                     break
             except (ValueError, json.JSONDecodeError):
@@ -2157,14 +2149,16 @@ class ResearchSupervisor:
                 },
                 synthesis_messages[1],
             ]
-            recovered_report, recovery_reasoning, recovery_finish_reason = (
-                await self._stream_completion(
-                    run,
-                    recovery_messages,
-                    phase = "synthesis_recovery",
-                    max_tokens = 16384,
-                    enable_thinking = False,
-                )
+            (
+                recovered_report,
+                recovery_reasoning,
+                recovery_finish_reason,
+            ) = await self._stream_completion(
+                run,
+                recovery_messages,
+                phase = "synthesis_recovery",
+                max_tokens = 16384,
+                enable_thinking = False,
             )
             synthesis_reasoning += recovery_reasoning
             report = recovered_report
