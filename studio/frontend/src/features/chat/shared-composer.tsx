@@ -998,7 +998,10 @@ export function SharedComposer({
         // Reconcile the pick against the GPUs present now, like the model-switch
         // path: an early remember-restore can hold a stale cross-host pick that
         // /load would reject (the device cache is populated by send time).
-        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
+        selectedGpuIds: reconcilePersistedGpuIds(
+          store.selectedGpuIds,
+          store.selectedGpuIndexKind,
+        ),
         customContextLength: store.customContextLength,
       };
       // Set when an accepted transformers install unloaded the active model

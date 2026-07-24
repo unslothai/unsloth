@@ -212,6 +212,7 @@ export function applyPresetLoadConfig(
     gpuLayers: config.gpuLayers,
     nCpuMoe: config.nCpuMoe,
     selectedGpuIds: store.selectedGpuIds,
+    selectedGpuIndexKind: store.selectedGpuIndexKind,
   });
 }
 

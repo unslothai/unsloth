@@ -668,6 +668,7 @@ export function useChatModelRuntime() {
           }
           let loadSelectedGpuIds = reconcilePersistedGpuIds(
             stateBeforeUnload.selectedGpuIds,
+            stateBeforeUnload.selectedGpuIndexKind,
           );
           let loadMemoryMode = stateBeforeUnload.ggufMemoryMode;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
@@ -808,6 +809,7 @@ export function useChatModelRuntime() {
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
+                selectedGpuIndexKind: null,
                 ggufMemoryMode: null,
                 gpuLayers: GPU_LAYERS_AUTO,
                 nCpuMoe: 0,

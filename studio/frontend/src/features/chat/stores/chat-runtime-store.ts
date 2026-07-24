@@ -650,6 +650,7 @@ export function loadedGpuMemoryFields(resp: {
     // baseline clears to null so Reset preserves the preference, not a stale mode.
     return {
       selectedGpuIds: null,
+      selectedGpuIndexKind: null,
       loadedGpuIds: null,
       loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_AUTO,
@@ -668,6 +669,8 @@ export function loadedGpuMemoryFields(resp: {
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
   const gpuIds = requestedGpuIdsFromResponse(resp);
+  const gpuIndexKind =
+    gpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null);
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -708,6 +711,7 @@ export function loadedGpuMemoryFields(resp: {
     // Keep the editable picker on the user's requested set. Auto fit can narrow
     // effective placement, but that must not silently rewrite future requests.
     selectedGpuIds: gpuIds,
+    selectedGpuIndexKind: gpuIndexKind,
     loadedGpuIds: gpuIds,
     // Reset both editable and loaded state to the applied backend mode.
     ggufMemoryMode: resp.gguf_memory_mode ?? null,
@@ -1003,6 +1007,8 @@ type ChatRuntimeStore = {
   moeLayerCount: number | null;
   /** Picked IDs in the backend-declared GPU namespace (null = automatic). */
   selectedGpuIds: number[] | null;
+  /** Namespace used by selectedGpuIds; kept with deferred persisted picks. */
+  selectedGpuIndexKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
   /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
   ggufMemoryMode: GgufMemoryMode | null;
@@ -1143,7 +1149,10 @@ type ChatRuntimeStore = {
   setGpuLayers: (value: number) => void;
   setNCpuMoe: (value: number) => void;
   setSplitRatio: (value: number[] | null) => void;
-  setSelectedGpuIds: (ids: number[] | null) => void;
+  setSelectedGpuIds: (
+    ids: number[] | null,
+    indexKind?: GpuIndexKind | null,
+  ) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
@@ -1460,6 +1469,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ggufLayerCount: null,
   moeLayerCount: null,
   selectedGpuIds: null,
+  selectedGpuIndexKind: null,
   loadedGpuIds: null,
   ggufMemoryMode: null,
   activeMemoryMode: null,
@@ -1717,6 +1727,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufLayerCount: null,
       moeLayerCount: null,
       selectedGpuIds: null,
+      selectedGpuIndexKind: null,
       loadedGpuIds: null,
       ggufMemoryMode: null,
       activeMemoryMode: null,
@@ -2022,7 +2033,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSplitRatio: (splitRatio) => set({ splitRatio }),
-  setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
+  setSelectedGpuIds: (selectedGpuIds, selectedGpuIndexKind = null) =>
+    set({
+      selectedGpuIds,
+      selectedGpuIndexKind:
+        selectedGpuIds == null ? null : selectedGpuIndexKind,
+    }),
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

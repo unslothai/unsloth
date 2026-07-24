@@ -157,6 +157,23 @@ def test_active_model_config_round_trips_gpu_fields():
     assert "export function gpuFieldsSignature" in shared
 
 
+def test_deferred_gpu_pick_keeps_its_index_namespace():
+    """A remembered pick restored before GPU discovery must keep its namespace
+    until load-time reconciliation, or Vulkan IDs can be reused as physical IDs."""
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "selectedGpuIndexKind: GpuIndexKind | null;" in store
+
+    apply = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert "selectedGpuIndexKind: s.selectedGpuIndexKind" in apply
+    assert 'config.selectedGpuIndexKind ?? "physical"' in apply
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "stateBeforeUnload.selectedGpuIndexKind," in runtime
+
+    compare = _read("features/chat/shared-composer.tsx")
+    assert "store.selectedGpuIndexKind," in compare
+
+
 def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
     """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep
     [0, 1] as the editable pool so a later reload can grow back onto GPU 1."""

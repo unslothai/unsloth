@@ -15,7 +15,6 @@ import {
   type PerModelConfig,
   normalizeMaxSeqLength,
 } from "./per-model-config";
-import { cachedPinnableGpuIndexKind } from "@/hooks/use-gpu-info";
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
@@ -33,6 +32,13 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
   if (maxSeqLength !== store.params.maxSeqLength) {
     store.setParams({ ...store.params, maxSeqLength });
   }
+  const selectedGpuIds =
+    config.selectedGpuIds !== undefined
+      ? reconcilePersistedGpuIds(
+          config.selectedGpuIds,
+          config.selectedGpuIndexKind,
+        )
+      : null;
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -51,13 +57,11 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
     splitRatio: null,
-    selectedGpuIds:
-      config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(
-            config.selectedGpuIds,
-            config.selectedGpuIndexKind,
-          )
-        : null,
+    selectedGpuIds,
+    selectedGpuIndexKind:
+      selectedGpuIds == null
+        ? null
+        : (config.selectedGpuIndexKind ?? "physical"),
     ggufMemoryMode: config.ggufMemoryMode ?? null,
   });
 }
@@ -91,8 +95,7 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
-    selectedGpuIndexKind:
-      s.selectedGpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null),
+    selectedGpuIndexKind: s.selectedGpuIndexKind,
     ggufMemoryMode: s.ggufMemoryMode ?? undefined,
   };
 }

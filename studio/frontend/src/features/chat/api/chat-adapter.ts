@@ -1935,6 +1935,13 @@ async function autoLoadSmallestModel(): Promise<{
         "UD-Q4_K_XL",
       );
       const defaultMemoryMode = defaultConfig.ggufMemoryMode ?? null;
+      if (rt.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      const defaultGpuIds = reconcilePersistedGpuIds(
+        rt.selectedGpuIds,
+        rt.selectedGpuIndexKind,
+      );
       if (
         !(await canAutoLoad({
           model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
@@ -1943,7 +1950,7 @@ async function autoLoadSmallestModel(): Promise<{
           gguf_variant: "UD-Q4_K_XL",
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
-          gpu_ids: rt.selectedGpuIds ?? undefined,
+          gpu_ids: defaultGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
           gguf_memory_mode: defaultMemoryMode,
         }))
@@ -1975,7 +1982,7 @@ async function autoLoadSmallestModel(): Promise<{
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,
-        gpu_ids: rt.selectedGpuIds ?? undefined,
+        gpu_ids: defaultGpuIds ?? undefined,
         gguf_memory_mode: defaultMemoryMode,
       });
       saveSpeculativeType(specSettings.speculativeType);

@@ -268,7 +268,10 @@ export function applyActiveModelStatusToStore(
         customContextLength: prevState.customContextLength,
       }),
     ...(preserveSameModelEdits &&
-      gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
+      gpuIdsEditPending && {
+        selectedGpuIds: prevState.selectedGpuIds,
+        selectedGpuIndexKind: prevState.selectedGpuIndexKind,
+      }),
     ...(preserveSameModelEdits &&
       memoryModeEditPending && { ggufMemoryMode: prevState.ggufMemoryMode }),
   };
