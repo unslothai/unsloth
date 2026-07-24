@@ -626,15 +626,26 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             total_bytes = props.total_memory
             used_bytes: Optional[int]
             # Prefer mem_get_info (system-wide) so auto-select sees other consumers.
-            # Inside the outer try/except: some XPU devices (Arc B580, Lunar Lake)
-            # raise RuntimeError "doesn't support querying free memory" here,
-            # dropping just that device rather than crashing.
             if hasattr(mod, "mem_get_info"):
-                free_bytes, total_bytes = mod.mem_get_info(ordinal)
-                used_bytes = total_bytes - free_bytes
-                # free==total is the broken-API sentinel, not an idle GPU.
-                if _win_rocm and free_bytes == total_bytes:
+                try:
+                    free_bytes, total_bytes = mod.mem_get_info(ordinal)
+                    used_bytes = total_bytes - free_bytes
+                except Exception as e:
+                    if device != DeviceType.XPU:
+                        raise
+                    # Arc B580 and Lunar Lake can report properties while
+                    # rejecting free-memory queries. Preserve the usable
+                    # device and its total memory with unknown utilization.
+                    logger.debug(
+                        "XPU free-memory query failed for ordinal %d: %s",
+                        ordinal,
+                        e,
+                    )
                     used_bytes = None
+                else:
+                    # free==total is the broken-API sentinel, not an idle GPU.
+                    if _win_rocm and free_bytes == total_bytes:
+                        used_bytes = None
             elif device == DeviceType.XPU:
                 # XPU without mem_get_info: memory_allocated() is process-local
                 # and misleading for placement, so return None for the
@@ -1745,15 +1756,15 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
                 "supports_explicit_gpu_ids": False,
             }
 
-        # FLAT numeric entries are tile handles, not physical GPU IDs: expose
-        # in numeric_ids for telemetry but reject as explicit gpu_ids so
-        # callers don't pin to a tile thinking it's a GPU.
+        # FLAT numeric entries are tile handles, not physical GPU IDs. Keep
+        # numeric_ids unresolved so every telemetry and picker consumer uses
+        # relative torch ordinals and cannot advertise them as pinnable roots.
         if not composite:
             tokens = [token.strip() for token in xpu_mask.split(",") if token.strip()]
             if tokens and all(token.isdecimal() for token in tokens):
                 return {
                     "raw": xpu_mask,
-                    "numeric_ids": [int(token) for token in tokens],
+                    "numeric_ids": None,
                     "supports_explicit_gpu_ids": False,
                 }
             return {
