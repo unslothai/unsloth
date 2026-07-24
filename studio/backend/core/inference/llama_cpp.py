@@ -2530,13 +2530,9 @@ class LlamaCppBackend:
         later reload do not restore GPUs the user just removed.
         """
         if self._is_diffusion:
-            self._requested_gpu_ids = (
-                [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
-            )
+            self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
         else:
-            self._requested_gpu_ids = (
-                sorted(int(x) for x in gpu_ids) if gpu_ids else None
-            )
+            self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
 
     @property
     def n_layers(self) -> Optional[int]:
