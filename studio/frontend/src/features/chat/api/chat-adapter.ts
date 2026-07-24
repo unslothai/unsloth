@@ -77,6 +77,13 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
+  findLocalModel,
+  isAutoLoadLocalModel,
+  isDirectGgufPath,
+  localModelIsGguf,
+  sortLocalModelsForAutoLoad,
+} from "../utils/auto-load-local-models";
+import {
   readLastLocalModelLoad,
   recordLastLocalModelLoad,
   type LastLocalModelKind,
@@ -92,10 +99,12 @@ import {
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
+  listLocalModels,
   loadModel,
   streamChatCompletions,
   StreamInterruptedError,
   validateModel,
+  type LocalModelInfo,
 } from "./chat-api";
 import {
   createOpenAIContainer,
@@ -1392,9 +1401,10 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Auto-load the smallest downloaded model when the user chats without
- * selecting one. Prefers GGUF (smallest cached variant), then smallest
- * cached safetensors model.
+ * Auto-load a downloaded model when the user chats without selecting one.
+ * Prefers the last-used model, then HF-cache GGUF (smallest variant),
+ * custom-folder / LM Studio / models-dir locals, then cached safetensors.
+ * Never downloads from Hugging Face without an explicit user action.
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
@@ -1741,11 +1751,173 @@ async function autoLoadSmallestModel(): Promise<{
     toast.success(candidate.successLabel, { id: toastId });
     return true;
   }
+
+  async function tryAutoLoadLocalGgufModel(
+    model: LocalModelInfo,
+    preferredVariant?: string | null,
+  ): Promise<boolean> {
+    const label = model.model_id ?? model.display_name;
+    if (isDirectGgufPath(model.path)) {
+      if (
+        skippedAutoLoadCandidates.has(
+          autoLoadCandidateKey("gguf", model.id, null),
+        )
+      ) {
+        return false;
+      }
+      return loadAutoLoadCandidate({
+        id: model.id,
+        kind: "gguf",
+        ggufVariant: null,
+        maxSeqLength: 0,
+        successLabel: `Loaded ${label}`,
+      });
+    }
+
+    try {
+      const variants = await listGgufVariants(model.id);
+      const downloaded = variants.variants
+        .filter((variant) => variant.downloaded && isAutoLoadableGgufVariant(variant))
+        .sort((a, b) => a.size_bytes - b.size_bytes);
+      if (downloaded.length === 0) {
+        return false;
+      }
+      const preferred = preferredVariant
+        ? downloaded.find(
+            (variant) =>
+              variant.quant?.toLowerCase() === preferredVariant.toLowerCase(),
+          )
+        : undefined;
+      const variantQueue = preferred
+        ? [
+            preferred,
+            ...downloaded.filter(
+              (variant) =>
+                variant.quant?.toLowerCase() !== preferred.quant?.toLowerCase(),
+            ),
+          ]
+        : downloaded;
+      for (const variant of variantQueue) {
+        if (!variant.quant) {
+          continue;
+        }
+        if (
+          skippedAutoLoadCandidates.has(
+            autoLoadCandidateKey("gguf", model.id, variant.quant),
+          )
+        ) {
+          continue;
+        }
+        if (
+          await loadAutoLoadCandidate({
+            id: model.id,
+            kind: "gguf",
+            ggufVariant: variant.quant,
+            maxSeqLength: 0,
+            successLabel: `Loaded ${label} (${variant.quant})`,
+          })
+        ) {
+          return true;
+        }
+      }
+    } catch {
+      hadNonTrustFailure = true;
+      skippedAutoLoadCandidates.add(
+        autoLoadCandidateKey("gguf", model.id, preferredVariant),
+      );
+    }
+    return false;
+  }
+
+  async function tryAutoLoadLocalModels(
+    models: LocalModelInfo[],
+    preferred?: { id: string; kind: LastLocalModelKind; ggufVariant?: string | null },
+  ): Promise<boolean> {
+    const localModels = sortLocalModelsForAutoLoad(
+      models.filter(isAutoLoadLocalModel),
+    );
+    if (localModels.length === 0) {
+      return false;
+    }
+
+    if (preferred) {
+      const remembered = findLocalModel(localModels, preferred.id);
+      if (remembered) {
+        if (preferred.kind === "gguf" && localModelIsGguf(remembered)) {
+          toast("Loading last used model…", {
+            id: toastId,
+            description: remembered.model_id ?? remembered.display_name,
+            duration: 5000,
+          });
+          if (
+            await tryAutoLoadLocalGgufModel(
+              remembered,
+              preferred.ggufVariant,
+            )
+          ) {
+            return true;
+          }
+        } else if (
+          preferred.kind === "model" &&
+          !localModelIsGguf(remembered)
+        ) {
+          toast("Loading last used model…", {
+            id: toastId,
+            description: remembered.model_id ?? remembered.display_name,
+            duration: 5000,
+          });
+          if (
+            await loadAutoLoadCandidate({
+              id: remembered.id,
+              kind: "model",
+              ggufVariant: null,
+              maxSeqLength: store.params.maxSeqLength,
+              successLabel: `Loaded ${remembered.display_name}`,
+            })
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+
+    for (const model of localModels) {
+      if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+        break;
+      }
+      if (localModelIsGguf(model)) {
+        if (await tryAutoLoadLocalGgufModel(model)) {
+          return true;
+        }
+        continue;
+      }
+      if (
+        skippedAutoLoadCandidates.has(autoLoadCandidateKey("model", model.id))
+      ) {
+        continue;
+      }
+      if (
+        await loadAutoLoadCandidate({
+          id: model.id,
+          kind: "model",
+          ggufVariant: null,
+          maxSeqLength: 4096,
+          successLabel: `Loaded ${model.display_name}`,
+        })
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   try {
-    const [ggufRepos, modelRepos] = await Promise.all([
+    const [ggufRepos, modelRepos, localInventory] = await Promise.all([
       listCachedGguf().catch(() => []),
       listCachedModels().catch(() => []),
+      listLocalModels().catch(() => ({ models: [] as LocalModelInfo[] })),
     ]);
+    const localModels = localInventory.models;
 
     if (lastLoaded) {
       if (lastLoaded.kind === "gguf") {
@@ -1901,8 +2073,6 @@ async function autoLoadSmallestModel(): Promise<{
       }
     }
 
-    // Cap also gates the default download, so total /api/inference/load
-    // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
     if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       toast.dismiss(toastId);
       return {
@@ -1912,119 +2082,26 @@ async function autoLoadSmallestModel(): Promise<{
       };
     }
 
-    // No cached models — try downloading a small default GGUF.
-    toast("Downloading a small model…", {
-      id: toastId,
-      description:
-        "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
-      duration: 30000,
-    });
-    try {
-      const rt = useChatRuntimeStore.getState();
-      if (
-        !(await canAutoLoad({
-          model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
-          max_seq_length: 0,
-          is_lora: false,
-          gguf_variant: "UD-Q4_K_XL",
-          // The same live-store GPU pick the load below sends (a fresh default
-          // model has no remembered settings to prefer).
-          gpu_ids: rt.selectedGpuIds ?? undefined,
-          gpu_memory_mode: rt.gpuMemoryMode,
-        }))
-      ) {
-        toast.dismiss(toastId);
-        return { loaded: false, blockedByTrustRemoteCode };
-      }
-      loadAttempts += 1;
-      const loadResp = await loadModel({
-        model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        hf_token: hfToken,
-        // Model default under both modes: Auto layers + no pin means
-        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
-        // preflight above sends the same).
-        max_seq_length: 0,
-        load_in_4bit: true,
-        is_lora: false,
-        gguf_variant: "UD-Q4_K_XL",
-        trust_remote_code: trustRemoteCode,
-        speculative_type: specSettings.speculativeType,
-        spec_draft_n_max: specSettings.specDraftNMax,
-        // GPU Memory mode is a standing preference, so honor it on auto-load.
-        // The layer/MoE/split knobs and the context pin are per-model: the live
-        // store may hold edits drafted for a staged pick, and a fresh default
-        // model has no remembered settings, so those stay at their defaults like
-        // the cached-candidate path. The GPU pick deliberately differs (it's the
-        // picker's current on-screen selection, which the canAutoLoad preflight
-        // above already committed to).
-        gpu_memory_mode: rt.gpuMemoryMode,
-        gpu_layers: GPU_LAYERS_AUTO,
-        n_cpu_moe: 0,
-        gpu_ids: rt.selectedGpuIds ?? undefined,
-      });
-      saveSpeculativeType(specSettings.speculativeType);
-      persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
-      useChatRuntimeStore
-        .getState()
-        .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");
-      const store = useChatRuntimeStore.getState();
-      store.setModelRequiresTrustRemoteCode(
-        loadResp.requires_trust_remote_code ?? false,
-      );
-      store.setParams({
-        ...store.params,
-        maxTokens: loadResp.context_length ?? 131072,
-      });
-      const defaultModel: ChatModelSummary = {
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        name: loadResp.display_name ?? "Qwen3.5-4B-MTP-GGUF",
-        isVision: loadResp.is_vision ?? false,
-        isLora: false,
-        isGguf: true,
-      };
-      if (!store.models.some((m) => m.id === "unsloth/Qwen3.5-4B-MTP-GGUF")) {
-        store.setModels([...store.models, defaultModel]);
-      }
-      useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
-          loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFields(loadResp),
-        // Drives the GPU Memory controls' diffusion gate; set alongside the
-        // GPU fields on every load path so the gate can't read stale.
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: null,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
-        ...resolveLoadedSpeculativeSettings(loadResp),
-      });
-      recordLastLocalModelLoad({
-        id: "unsloth/Qwen3.5-4B-MTP-GGUF",
-        kind: "gguf",
-        ggufVariant: "UD-Q4_K_XL",
-      });
-      toast.success("Loaded Qwen3.5-4B-MTP (UD-Q4_K_XL)", { id: toastId });
+    if (
+      await tryAutoLoadLocalModels(
+        localModels,
+        lastLoaded
+          ? {
+              id: lastLoaded.id,
+              kind: lastLoaded.kind,
+              ggufVariant: lastLoaded.ggufVariant,
+            }
+          : undefined,
+      )
+    ) {
       return { loaded: true, blockedByTrustRemoteCode: false };
-    } catch {
-      toast.dismiss(toastId);
-      hadNonTrustFailure = true;
-      return {
-        loaded: false,
-        blockedByTrustRemoteCode:
-          blockedByTrustRemoteCode && !hadNonTrustFailure,
-      };
     }
+
+    toast.dismiss(toastId);
+    return {
+      loaded: false,
+      blockedByTrustRemoteCode: blockedByTrustRemoteCode && !hadNonTrustFailure,
+    };
   } catch {
     toast.dismiss(toastId);
     hadNonTrustFailure = true;
