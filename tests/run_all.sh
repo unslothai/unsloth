@@ -7,18 +7,21 @@ set -e
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Bash tests ==="
-sh "$TESTS_DIR/sh/test_get_torch_index_url.sh"
-sh "$TESTS_DIR/sh/test_mac_intel_compat.sh"
-sh "$TESTS_DIR/sh/test_torch_constraint.sh"
-sh "$TESTS_DIR/sh/test_nvcc_meets_llama_minimum.sh"
-sh "$TESTS_DIR/sh/test_resolve_cuda_archs.sh"
-sh "$TESTS_DIR/sh/test_staged_validation_enabled.sh"
-sh "$TESTS_DIR/sh/test_strixhalo_wsl_reroute.sh"
-sh "$TESTS_DIR/sh/test_uninstall_shared_icon.sh"
-sh "$TESTS_DIR/sh/test_torch_flavor.sh"
-sh "$TESTS_DIR/sh/test_redact_install_output.sh"
-sh "$TESTS_DIR/sh/test_install_uv_override_space.sh"
-sh "$TESTS_DIR/sh/test_install_rollback_lifecycle.sh"
+# Discovered, not listed: a hand-maintained list drifts (this one had fallen
+# eight files behind sh/, and the Backend CI copy of it had fallen seven).
+# Backend CI discovers the same directory and skips the same file, plus
+# test_install_rollback_lifecycle.sh which cross-platform-parity-ci.yml already
+# runs on both platforms. tests/studio/test_ci_shell_suite_coverage.py fails if
+# either side stops discovering, or skips something undocumented.
+#   test_install_host_defaults.sh: asserts an install.ps1 layout that has
+#     drifted (separate followup).
+SH_SKIP="test_install_host_defaults.sh"
+for _t in "$TESTS_DIR"/sh/test_*.sh; do
+    case " $SH_SKIP " in
+        *" $(basename "$_t") "*) echo "skipping $(basename "$_t")"; continue ;;
+    esac
+    sh "$_t"
+done
 
 echo ""
 echo "=== Python tests ==="
