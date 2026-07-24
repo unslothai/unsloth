@@ -351,9 +351,7 @@ def test_blur_cache_cleared_on_every_settled_render():
     render instead."""
     src = _read("features/model-picker/components/numeric-value-input.tsx")
     # The clearing effect must run on every commit, not be gated on [value] alone.
-    assert not re.search(
-        r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src
-    )
+    assert not re.search(r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src)
     assert re.search(
         r"useEffect\(\(\) => \{\s*lastBlurCommittedRef\.current = null;\s*\}\);",
         src,
