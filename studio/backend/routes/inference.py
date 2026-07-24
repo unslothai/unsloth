@@ -5042,7 +5042,6 @@ async def validate_model(
 
         if config.is_gguf and request.llama_extra_args is not None:
             from core.inference.llama_server_args import validate_extra_args
-
             try:
                 validate_extra_args(request.llama_extra_args)
             except ValueError as exc:
