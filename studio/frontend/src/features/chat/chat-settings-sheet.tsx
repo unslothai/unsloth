@@ -372,6 +372,8 @@ export function ChatSettingsPanel({
   const isMobile = useIsMobile();
   const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const currentCheckpoint = params.checkpoint;
+  const isDirectLocalGguf =
+    currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   // Direct-file / custom-folder GGUFs load without a variant label but still
   // report a GGUF context, so detect them via the context and the checkpoint
@@ -747,7 +749,9 @@ export function ChatSettingsPanel({
                       : specFallbackReason === "runtime_error"
                         ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                         : specFallbackReason === "drafter_not_found"
-                          ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                          ? isDirectLocalGguf
+                            ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
+                            : "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
                           : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
                               llamaUpdateStatus?.update_available
                                 ? " Update llama.cpp to enable it."
