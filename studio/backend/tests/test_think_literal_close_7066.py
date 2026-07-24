@@ -389,9 +389,7 @@ def test_passthrough_tools_are_neutralized():
                     "description": "handles </think> and <|im_start|> in text",
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "q": {"type": "string", "description": "a </think> value"}
-                        },
+                        "properties": {"q": {"type": "string", "description": "a </think> value"}},
                     },
                 },
             }
