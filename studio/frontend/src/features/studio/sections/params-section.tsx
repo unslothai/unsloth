@@ -205,26 +205,19 @@ export function ParamsSection(): ReactElement {
     setCtxInput(String(store.contextLength));
   }, [store.contextLength]);
 
-  // On Apple Silicon the MLX trainer supports a different optimizer set than
-  // the CUDA/bitsandbytes list, so offer the MLX names there.
+  // Apple Silicon (MLX) supports a different optimizer set than the CUDA list.
   const isMac = platformDeviceType === "mac";
   const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
 
-  // On Mac, the MLX backend normalizes every CUDA/bitsandbytes optimizer in
-  // OPTIMIZER_OPTIONS (including the shared default) to plain AdamW, so show
-  // AdamW for those to keep the control truthful and non-blank. Any other
-  // value -- an MLX optimizer the user picked, or an unrecognized/non-canonical
-  // imported one -- is shown as-is rather than mislabeled as AdamW, since the
-  // backend would run or reject it on its own terms. Non-Mac display unchanged.
+  // On Mac the MLX backend remaps CUDA optimizers to AdamW, so label those as
+  // AdamW; other values (MLX or imported) show as-is. Non-Mac unchanged.
   const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
     (o) => o.value === store.optimizerType,
   );
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
 
-  // LoftQ is not supported on MLX (the backend rejects it), so clear a stale
-  // selection to lora on Apple Silicon -- whether persisted, applied from a
-  // model default, or imported -- so the backend never receives it.
+  // LoftQ is unsupported on MLX; clear a stale selection to lora on Apple Silicon.
   const setLoraVariant = store.setLoraVariant;
   useEffect(() => {
     if (isMac && store.loraVariant === "loftq") {
@@ -232,8 +225,7 @@ export function ParamsSection(): ReactElement {
     }
   }, [isMac, store.loraVariant, setLoraVariant]);
 
-  // Packing is not supported on MLX (the backend forces it off), so clear it on
-  // Apple Silicon -- the checkbox is disabled and the flag is never sent.
+  // Packing is unsupported on MLX; clear it on Apple Silicon (checkbox disabled).
   const setPacking = store.setPacking;
   useEffect(() => {
     if (isMac && store.packing) {
