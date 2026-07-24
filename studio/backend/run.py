@@ -112,13 +112,40 @@ from startup_banner import print_studio_access_banner, print_studio_stop_hint
 logger = get_logger(__name__)
 
 
+PUBLIC_IP_PROBE_ENV_VAR = "UNSLOTH_STUDIO_PUBLIC_IP_PROBE"
+PUBLIC_IP_PROBE_URL = "https://ifconfig.me"
+
+
+def public_ip_probe_enabled(env = None) -> bool:
+    """True when the user has opted in to the third-party public-IP lookup.
+
+    Off by default: the lookup tells an outside operator that this machine is
+    running Unsloth, which the user never asked for. Only "1"/"true"/"yes"/"on"
+    (case-insensitive) enable it, so a typo leaves the private default in place
+    rather than silently opting the user in.
+    """
+    import os
+
+    env = os.environ if env is None else env
+    raw = env.get(PUBLIC_IP_PROBE_ENV_VAR)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
-    1. GCE metadata server (instant on Google Cloud VMs)
-    2. ifconfig.me (anywhere with internet)
+    1. GCE metadata server (link-local, never leaves the host)
+    2. ifconfig.me, OPT-IN ONLY via UNSLOTH_STUDIO_PUBLIC_IP_PROBE
     3. LAN IP via UDP socket trick (fallback)
+
+    Step 2 is the only one that discloses anything to a third party, so it is
+    off unless the user opts in (#7307 Problem 8). Steps 1 and 3 stay
+    unconditional: the metadata server is link-local (169.254.169.254), and the
+    UDP "connect" only asks the kernel which local address would route to
+    8.8.8.8, it never puts a packet on the wire.
     """
     import urllib.request
     import socket
@@ -136,14 +163,29 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Public IP service.
-    try:
-        with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
-            ip = resp.read().decode().strip()
-            if ip:
-                return ip
-    except Exception:
-        pass
+    # 2. Public IP service. Opt-in: this is an outbound request to a third party
+    # that reveals this machine's public IP to whoever runs it.
+    if public_ip_probe_enabled():
+        logger.info(
+            "Asking %s for this machine's public IP (enabled via %s=1). "
+            "Unset that variable to keep the lookup off.",
+            PUBLIC_IP_PROBE_URL,
+            PUBLIC_IP_PROBE_ENV_VAR,
+        )
+        try:
+            with urllib.request.urlopen(PUBLIC_IP_PROBE_URL, timeout = 3) as resp:
+                ip = resp.read().decode().strip()
+                if ip:
+                    return ip
+        except Exception:
+            pass
+    else:
+        logger.debug(
+            "Skipping the %s public-IP lookup; using the LAN address instead. "
+            "Set %s=1 to enable it.",
+            PUBLIC_IP_PROBE_URL,
+            PUBLIC_IP_PROBE_ENV_VAR,
+        )
 
     # 3. Fallback: LAN IP via UDP socket trick
     try:
