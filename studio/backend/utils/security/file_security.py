@@ -332,7 +332,9 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
     import os
 
     try:
-        parsed = json.loads(index_path.read_text())
+        # JSON is UTF-8 by spec; pin it so a non-ASCII index is not misdecoded (and needlessly
+        # blocked) under Windows' cp1252 default.
+        parsed = json.loads(index_path.read_text(encoding = "utf-8"))
     except (OSError, ValueError) as exc:
         raise OSError(f"unreadable weight index: {index_path}") from exc
     weight_map = parsed.get("weight_map") if isinstance(parsed, dict) else None
