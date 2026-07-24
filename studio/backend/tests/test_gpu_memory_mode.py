@@ -705,8 +705,7 @@ def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
 def test_local_vulkan_diffusion_preflight_runs_before_teardown():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
     local_preflight = src.index(
-        "self._reject_vulkan_diffusion_gpu_ids_before_teardown(\n"
-        "                    gguf_path,"
+        "self._reject_vulkan_diffusion_gpu_ids_before_teardown(\n                    gguf_path,"
     )
     teardown = src.index("# ── Phase 1: kill old process")
     assert local_preflight < teardown

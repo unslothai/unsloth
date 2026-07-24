@@ -4684,9 +4684,7 @@ class LlamaCppBackend:
         return probe._is_diffusion
 
     def _reject_vulkan_diffusion_gpu_ids_before_teardown(
-        self,
-        gguf_path: str,
-        model_identifier: str,
+        self, gguf_path: str, model_identifier: str
     ) -> None:
         """Reject Vulkan + gpu_ids for diffusion GGUFs before Phase 1 teardown."""
         if self._gguf_path_is_diffusion(gguf_path, model_identifier):
@@ -6434,7 +6432,6 @@ class LlamaCppBackend:
                 if hf_variant:
                     try:
                         from hub.utils.gguf import resolve_local_gguf_path
-
                         _cached_gguf = resolve_local_gguf_path(hf_repo, hf_variant)
                     except Exception:
                         _cached_gguf = None
