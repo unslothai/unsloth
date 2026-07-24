@@ -70,6 +70,8 @@ from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _hub_download_blocks_gguf_load,
+    _supplied_mmproj_for_loaded_model,
     cached_gguf_for_load,
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
@@ -396,6 +398,21 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / shard1)
 
+    def test_three_digit_split_reused_only_when_colocated(self, hf_cache):
+        backend = LlamaCppBackend()
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-002-of-002.gguf"
+        snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
+            patch("huggingface_hub.get_paths_info", _fail_get_paths_info),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(snap / shard1)
+
     def test_partial_split_set_downloads(self, hf_cache):
         """A partial split set is not reused."""
         backend = LlamaCppBackend()
@@ -540,6 +557,17 @@ class TestCachedGgufForLoadProbe:
         shard1 = f"gemma-test-{VARIANT}-00001-of-00002.gguf"
         _build_cache(hf_cache, REPO, {shard1: 4})
         assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_partial_three_digit_split_is_none(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        _build_cache(hf_cache, REPO, {shard1: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_complete_three_digit_split_is_found(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-001-of-002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-002-of-002.gguf"
+        snap = _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) == str(snap / shard1)
 
     def test_partial_new_snapshot_does_not_hide_complete_split(self, hf_cache):
         import os
@@ -716,7 +744,6 @@ class TestLoadHubDownloadExclusion:
         assert registry.has_active_variant(REPO, VARIANT) is False
 
     def test_other_variant_job_still_allows_complete_cached_load(self):
-        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
         from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
 
         registry = DownloadRegistry()
@@ -742,6 +769,72 @@ class TestLoadHubDownloadExclusion:
             require_mmproj = False,
             verify_sizes = True,
             hf_token = None,
+        )
+
+    def test_other_variant_job_allows_compatible_cross_snapshot_projector(self, tmp_path):
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        main = tmp_path / "gemma-main.gguf"
+        mmproj = tmp_path / "gemma-mmproj.gguf"
+        main.touch()
+        mmproj.touch()
+        registry = DownloadRegistry()
+        registry.claim(
+            f"{REPO}::Q8_0",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = "Q8_0",
+        )
+
+        def cached_probe(
+            *_args,
+            require_mmproj = False,
+            **_kwargs,
+        ):
+            return None if require_mmproj else str(main)
+
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                side_effect = cached_probe,
+            ),
+            patch(
+                "utils.models.model_config.mmproj_matches_model_family",
+                return_value = True,
+            ),
+        ):
+            assert (
+                _hub_download_blocks_gguf_load(
+                    REPO,
+                    VARIANT,
+                    require_mmproj = True,
+                    mmproj_path = str(mmproj),
+                )
+                is False
+            )
+
+    def test_supplied_projector_is_kept_only_for_the_reused_cached_main(self, tmp_path):
+        cached_main = tmp_path / "old" / MAIN
+        downloaded_main = tmp_path / "new" / MAIN
+        mmproj = tmp_path / "projector" / "gemma-mmproj.gguf"
+        for path in (cached_main, downloaded_main, mmproj):
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.touch()
+
+        assert _supplied_mmproj_for_loaded_model(
+            cached_model_path = str(cached_main),
+            loaded_model_path = str(cached_main),
+            mmproj_path = str(mmproj),
+        ) == str(mmproj)
+        assert (
+            _supplied_mmproj_for_loaded_model(
+                cached_model_path = str(cached_main),
+                loaded_model_path = str(downloaded_main),
+                mmproj_path = str(mmproj),
+            )
+            is None
         )
 
     def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):
@@ -782,6 +875,32 @@ class TestLoadHubDownloadExclusion:
                 assert not hf_gguf_load_in_flight(REPO)
 
         asyncio.run(scenario())
+
+    def test_audio_input_requires_projector_in_decorator_conflict_probe(self):
+        from core.inference.llama_cpp import _with_gguf_load_marker
+
+        class FakeBackend:
+            @_with_gguf_load_marker
+            def load_model(
+                self,
+                *,
+                hf_repo,
+                hf_variant,
+                has_audio_input = False,
+            ):
+                return True
+
+        with patch(
+            "core.inference.llama_cpp._hub_download_blocks_gguf_load",
+            return_value = False,
+        ) as blocked:
+            assert FakeBackend().load_model(
+                hf_repo = REPO,
+                hf_variant = VARIANT,
+                has_audio_input = True,
+            )
+
+        assert blocked.call_args.kwargs["require_mmproj"] is True
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()

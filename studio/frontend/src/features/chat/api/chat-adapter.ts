@@ -1466,6 +1466,7 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
+  blockedByCapability?: boolean;
 }> {
   if (await tryAdoptServerActiveModel()) {
     return { loaded: true, blockedByTrustRemoteCode: false };
@@ -1484,6 +1485,7 @@ async function autoLoadSmallestModel(): Promise<{
     closeButton: true,
   });
   let blockedByTrustRemoteCode = false;
+  let blockedByCapability = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
@@ -1519,6 +1521,12 @@ async function autoLoadSmallestModel(): Promise<{
     // Never install packages from a background load; explicit loads raise the upgrade dialog.
     if (validation.requires_transformers_upgrade) {
       hadNonTrustFailure = true;
+      return false;
+    }
+    // Additive for backwards compatibility: older backends omit the field.
+    // Reject only an explicit false and keep trying later candidates/fallback.
+    if (validation.is_chat_capable === false) {
+      blockedByCapability = true;
       return false;
     }
     return true;
@@ -1909,6 +1917,7 @@ async function autoLoadSmallestModel(): Promise<{
         loaded: false,
         blockedByTrustRemoteCode:
           blockedByTrustRemoteCode && !hadNonTrustFailure,
+        blockedByCapability: blockedByCapability && !hadNonTrustFailure,
       };
     }
 
@@ -1934,7 +1943,11 @@ async function autoLoadSmallestModel(): Promise<{
         }))
       ) {
         toast.dismiss(toastId);
-        return { loaded: false, blockedByTrustRemoteCode };
+        return {
+          loaded: false,
+          blockedByTrustRemoteCode,
+          blockedByCapability: blockedByCapability && !hadNonTrustFailure,
+        };
       }
       loadAttempts += 1;
       const loadResp = await loadModel({
@@ -2023,6 +2036,7 @@ async function autoLoadSmallestModel(): Promise<{
         loaded: false,
         blockedByTrustRemoteCode:
           blockedByTrustRemoteCode && !hadNonTrustFailure,
+        blockedByCapability: blockedByCapability && !hadNonTrustFailure,
       };
     }
   } catch {
@@ -2031,6 +2045,7 @@ async function autoLoadSmallestModel(): Promise<{
     return {
       loaded: false,
       blockedByTrustRemoteCode: blockedByTrustRemoteCode && !hadNonTrustFailure,
+      blockedByCapability: blockedByCapability && !hadNonTrustFailure,
     };
   }
 }
@@ -2101,8 +2116,9 @@ export function createOpenAIStreamAdapter(
         // Prefer a model already loaded by the CLI/API before auto-loading.
         let loaded: boolean;
         let blockedByTrustRemoteCode: boolean;
+        let blockedByCapability = false;
         try {
-          ({ loaded, blockedByTrustRemoteCode } =
+          ({ loaded, blockedByTrustRemoteCode, blockedByCapability = false } =
             await autoLoadSmallestModel());
         } catch (error) {
           clearSelectedImageEditReference();
@@ -2112,11 +2128,15 @@ export function createOpenAIStreamAdapter(
           toast.error(
             blockedByTrustRemoteCode
               ? "This model needs custom code approval"
-              : "No model loaded",
+              : blockedByCapability
+                ? "No chat-capable downloaded model"
+                : "No model loaded",
             {
               description: blockedByTrustRemoteCode
                 ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                : "Pick a model in the top bar, then retry.",
+                : blockedByCapability
+                  ? "Download or select a text-generation-capable model, then retry."
+                  : "Pick a model in the top bar, then retry.",
             },
           );
           clearSelectedImageEditReference();

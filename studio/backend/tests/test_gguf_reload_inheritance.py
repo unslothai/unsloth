@@ -174,6 +174,29 @@ def test_already_in_target_state_hf_same_variant_matches():
     )
 
 
+def test_audio_input_retries_a_text_only_hf_session():
+    backend = _loaded_backend(
+        _hf_variant = "Q4_K_M",
+        _gguf_path = None,
+        _has_audio_input = False,
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            has_audio_input = True,
+        )
+        is False
+    )
+
+
 # ── extra_args: None inherits, [] forces reload, list enforces ───────
 
 

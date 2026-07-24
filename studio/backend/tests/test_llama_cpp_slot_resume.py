@@ -241,6 +241,18 @@ def test_gguf_file_identity_covers_split_shards(tmp_path):
     assert backend._gguf_file_identity(str(first)) is None  # missing shard
 
 
+def test_gguf_file_identity_preserves_three_digit_shard_width(tmp_path):
+    backend = _resume_backend(tmp_path)
+    first = tmp_path / "m-001-of-002.gguf"
+    second = tmp_path / "m-002-of-002.gguf"
+    first.write_bytes(b"a")
+    second.write_bytes(b"bb")
+
+    identity = backend._gguf_file_identity(str(first))
+    st1, st2 = os.stat(first), os.stat(second)
+    assert identity == ((st1.st_size, st1.st_mtime_ns), (st2.st_size, st2.st_mtime_ns))
+
+
 def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path)
     backend._extra_args = ["--no-cache-prompt"]
