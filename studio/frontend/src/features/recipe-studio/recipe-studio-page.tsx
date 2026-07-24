@@ -28,6 +28,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
+import { useSidebar } from "@/components/ui/sidebar";
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
@@ -237,6 +238,9 @@ export function RecipeStudioPage({
   }, [setActiveView]);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
+  const [maximized, setMaximized] = useState(false);
+  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
+  const sidebarOpenBeforeMaximizeRef = useRef(true);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
   const [recentCompletedExecution, setRecentCompletedExecution] =
     useState<RecipeExecutionRecord | null>(null);
@@ -569,6 +573,22 @@ export function RecipeStudioPage({
     [reactFlowInstance],
   );
 
+  const toggleMaximize = useCallback(() => {
+    setMaximized((prev) => {
+      const next = !prev;
+      if (next) {
+        // Remember the sidebar state so exiting restores the user's choice.
+        sidebarOpenBeforeMaximizeRef.current = sidebarOpen;
+        setSidebarOpen(false);
+      } else {
+        setSidebarOpen(sidebarOpenBeforeMaximizeRef.current);
+      }
+      return next;
+    });
+    // Container size changes; refit once the layout settles.
+    scheduleFitView({ delayMs: TAB_SWITCH_FIT_DELAY_MS });
+  }, [sidebarOpen, setSidebarOpen, scheduleFitView]);
+
   useEffect(() => {
     if (
       previousActiveViewRef.current !== activeView &&
@@ -629,7 +649,7 @@ export function RecipeStudioPage({
         edgeTypes={EDGE_TYPES}
         defaultEdgeOptions={{
           type: "canvas",
-          data: { path: "smoothstep" },
+          data: { path: "orthogonal" },
         }}
         onNodesChange={handleNodesChange}
         onEdgesChange={handleEdgesChange}
@@ -732,6 +752,8 @@ export function RecipeStudioPage({
           interactive={canvasInteractive}
           lockDisabled={executionLocked}
           onToggleInteractive={toggleInteractive}
+          maximized={maximized}
+          onToggleMaximize={toggleMaximize}
         />
         {islandExecution &&
           (isExecutionInProgress(islandExecution.status) ||
@@ -773,10 +795,16 @@ export function RecipeStudioPage({
   }
 
   return (
-    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="w-full px-6 py-8">
+    <div
+      className={
+        maximized
+          ? "fixed inset-0 z-50 flex flex-col bg-background"
+          : "flex h-full min-h-0 flex-1 flex-col bg-background"
+      }
+    >
+      <main className="flex min-h-0 w-full flex-1 flex-col">
         <div
-          className="relative w-full overflow-hidden rounded-2xl corner-squircle border"
+          className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden border"
           ref={setSheetContainer}
         >
           <RecipeStudioHeader
@@ -794,7 +822,7 @@ export function RecipeStudioPage({
             }}
           />
           <div
-            className="h-[75vh] w-full rounded-t-none"
+            className="flex min-h-0 w-full flex-1 rounded-t-none"
             ref={flowContainerRef}
           >
             {activeView === "easy" ? (

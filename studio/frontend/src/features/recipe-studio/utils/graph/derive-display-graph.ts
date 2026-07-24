@@ -62,7 +62,7 @@ function normalizeEdge(
     return {
       ...edge,
       type: "canvas",
-      data: { ...(edge.data ?? {}), path: "smoothstep", active: isActiveEdge },
+      data: { ...(edge.data ?? {}), path: "orthogonal", active: isActiveEdge },
       animated: isActiveEdge,
     };
   }
@@ -132,7 +132,7 @@ function normalizeEdge(
     type: semantic ? "semantic" : "canvas",
     data: semantic
       ? { ...(displayEdge.data ?? {}), active: isActiveEdge }
-      : { ...(displayEdge.data ?? {}), path: "smoothstep", active: isActiveEdge },
+      : { ...(displayEdge.data ?? {}), path: "orthogonal", active: isActiveEdge },
     sourceHandle,
     targetHandle,
     animated: isActiveEdge,
