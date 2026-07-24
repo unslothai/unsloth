@@ -1141,6 +1141,7 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = False),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
@@ -1160,8 +1161,9 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
-    def test_cpu_only_llama_build_skips_reject_for_diffusion_gguf(self):
-        # Diffusion uses its own runner, independent of llama.cpp GPU libraries.
+    def test_cpu_only_llama_build_defers_reject_for_unknown_diffusion_gguf(self):
+        # A remote GGUF may prove to use the independent diffusion runner only
+        # after download, so the route must not reject it as llama.cpp yet.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1195,7 +1197,11 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
-            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(
+                inference_route,
+                "_classify_diffusion_gguf",
+                return_value = None,
+            ),
             patch.object(
                 _hw_module,
                 "resolve_requested_gpu_ids",

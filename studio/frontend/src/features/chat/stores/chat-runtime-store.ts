@@ -589,6 +589,8 @@ export function rebalanceSplit(
 // set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
 // way to clear it. A null pick (= automatic) passes through unchanged, and an
 // unpopulated device cache leaves the pick alone (the backend still guards).
+// An explicit null namespace means discovery had not completed when the live
+// state was captured, while an absent namespace is a legacy physical-ID pick.
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
@@ -600,6 +602,7 @@ export function reconcilePersistedGpuIds(
       savedIndexKind === undefined ? "physical" : savedIndexKind;
     if (
       currentIndexKind !== undefined &&
+      savedIndexKind !== null &&
       currentIndexKind !== expectedIndexKind
     ) {
       return null;

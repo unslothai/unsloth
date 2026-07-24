@@ -455,11 +455,17 @@ def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
     store = _read("features/chat/stores/chat-runtime-store.ts")
     assert "requestedGpuIdsFromResponse(resp)" in store
     assert 'savedIndexKind === undefined ? "physical" : savedIndexKind' in store
+    assert "savedIndexKind !== null" in store
     assert "currentIndexKind !== expectedIndexKind" in store
     gpu_info = _read("hooks/use-gpu-info.ts")
     assert "cachedPinnableGpuIndexKind" in gpu_info
     config = _read("features/model-picker/model-config/per-model-config.ts")
     assert '"selectedGpuIndexKind"' in config
+
+
+def test_cpu_only_llama_build_hides_gpu_picker():
+    src = (WORKDIR / "studio" / "backend" / "main.py").read_text()
+    assert "and not LlamaCppBackend._backend_lacks_gpu_lib()" in src
 
 
 def test_model_switch_clears_host_memory_mode_before_validation():

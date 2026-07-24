@@ -6568,7 +6568,12 @@ class LlamaCppBackend:
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
             # Reject stale Vulkan ordinals before replacing the live model.
-            if is_vulkan_backend and gpu_ids and binary:
+            if (
+                is_vulkan_backend
+                and gpu_ids
+                and binary
+                and gpu_ids_are_vulkan_ordinals is not False
+            ):
                 _pf_wanted = {int(x) for x in gpu_ids}
                 _pf_probed = {g[0] for g in self._get_gpu_memory(binary)}
                 if not _pf_wanted.issubset(_pf_probed):

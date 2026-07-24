@@ -4010,7 +4010,9 @@ async def _resolve_gguf_gpu_ids_for_request(
 
     llama_backend = get_llama_cpp_backend()
     is_vulkan_build = await asyncio.to_thread(llama_backend.is_vulkan_build)
-    confirmed_diffusion = _classify_diffusion_gguf(config) is True
+    diffusion_kind = _classify_diffusion_gguf(config)
+    confirmed_diffusion = diffusion_kind is True
+    definitively_non_diffusion = diffusion_kind is False
     ids_are_vulkan_ordinals = is_vulkan_build and not confirmed_diffusion
     device = get_device()
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
@@ -4033,7 +4035,13 @@ async def _resolve_gguf_gpu_ids_for_request(
             ),
         )
 
-    if is_vulkan and _classify_diffusion_gguf(config) is True:
+    if (
+        device == DeviceType.CUDA
+        and not ids_are_vulkan_ordinals
+        and definitively_non_diffusion
+        and callable(lacks_gpu_lib)
+        and await asyncio.to_thread(lacks_gpu_lib)
+    ):
         raise HTTPException(
             status_code = 400,
             detail = (

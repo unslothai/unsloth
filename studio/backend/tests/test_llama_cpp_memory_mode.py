@@ -943,6 +943,7 @@ def test_confirmed_diffusion_allows_physical_gpu_id_on_vulkan_build(tmp_path):
     backend = LlamaCppBackend()
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: True
+    backend._get_gpu_memory = lambda _binary: [(0, 8 * 1024**3, 8 * 1024**3)]
     backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
     captured = {}
     backend._start_diffusion_server = lambda **kwargs: captured.update(kwargs) or True
