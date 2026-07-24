@@ -230,13 +230,14 @@ def test_span_parity_counters_match_string_oracle():
     for every close position in the live buffer.
     """
     rng = random.Random(7066)
-    alphabet = ['`', '"', "'", "a", " ", "\n", "```", '"`', "``", "'`'"]
+    alphabet = ["`", '"', "'", "a", " ", "\n", "```", '"`', "``", "'`'"]
     close = "</think>"
     for _ in range(4000):
         # Build a consumed prefix as a list of chunks with heavy quote/fence use.
         n_chunks = rng.randint(0, 6)
-        chunks = ["".join(rng.choice(alphabet) for _ in range(rng.randint(0, 5)))
-                  for _ in range(n_chunks)]
+        chunks = [
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 5))) for _ in range(n_chunks)
+        ]
         prefix = "".join(chunks)
         # Live buffer holds a close tag plus surrounding quote/fence content.
         pre = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 6)))
