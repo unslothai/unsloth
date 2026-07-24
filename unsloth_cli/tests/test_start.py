@@ -1984,6 +1984,118 @@ def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
 
+def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
+    # Sampling pins ride to the child server through UNSLOTH_SAMPLING_*; unset ones stay absent
+    # so the backend keeps the per-model recommendation.
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    for _v in ("TEMPERATURE", "TOP_P", "TOP_K", "MIN_P", "REPETITION_PENALTY", "PRESENCE_PENALTY"):
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+
+    # No sampling flags -> nothing forwarded.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    env = captured["kwargs"]["env"]
+    assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in env)
+
+    # Pins are forwarded; unset ones stay absent.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(temperature = 0.3, top_k = 40, min_p = 0.05),
+    )
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_SAMPLING_TEMPERATURE"] == "0.3"
+    assert env["UNSLOTH_SAMPLING_TOP_K"] == "40"
+    assert env["UNSLOTH_SAMPLING_MIN_P"] == "0.05"
+    assert "UNSLOTH_SAMPLING_TOP_P" not in env
+
+
+def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, capsys):
+    # Attaching to an already-running server can't apply UNSLOTH_SAMPLING_* pins (only
+    # _start_studio_server forwards them), so a sampling flag on the attach path must warn
+    # instead of being silently dropped while the command "succeeds".
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        launch = True,
+        server_options = start.ServerOptions(temperature = 0.3, top_k = 40),
+    )
+    assert base == BASE
+    assert server is None  # attach path: we did not start the server
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert "--temperature" in err and "--top-k" in err
+    # Only the pinned fields are named; an unset one is not.
+    assert "--top-p" not in err
+
+
+def test_require_studio_no_sampling_warning_without_pins(monkeypatch, capsys):
+    # Reusing a server with no sampling pins stays silent (tool flags are out of scope here).
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(enable_tools = True),
+    )
+    assert base == BASE and server is None
+    assert "sampling" not in capsys.readouterr().err.lower()
+
+
+def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
+    # `unsloth start claude ... --temperature 0.3 --top-k 40` routes the pins into ServerOptions.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        captured["server_options"] = server_options
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--model",
+            "unsloth/gemma-4-E2B-it-GGUF",
+            "--temperature",
+            "0.3",
+            "--top-k",
+            "40",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    so = captured["server_options"]
+    assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
+
+
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     # A bare `--model <loaded repo>` (no load knobs) attaches to the already-loaded model
     # without touching /api/inference/load, so it can never evict another session.

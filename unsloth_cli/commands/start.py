@@ -145,6 +145,7 @@ _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 # instead of one long unaligned list.
 _PANEL_MODEL = "Model"
 _PANEL_SERVER = "Server"
+_PANEL_SAMPLING = "Sampling"
 _PANEL_SESSION = "Agent session"
 
 _MODEL_OPTION = typer.Option(
@@ -211,6 +212,56 @@ _TOOL_CALL_NUDGING_OPTION = typer.Option(
     rich_help_panel = _PANEL_SERVER,
     help = "Retry once with a nudge when a non-streaming passthrough tool call can't be healed. "
     "On by default; when the flag is omitted an inherited UNSLOTH_TOOL_CALL_NUDGE is kept.",
+)
+# Sampling overrides pin a value on the auto-started server (winning over the client and the
+# per-model recommendation). Default unset -> the model's recommended sampling is used.
+_TEMPERATURE_OPTION = typer.Option(
+    None,
+    "--temperature",
+    min = 0.0,
+    max = 2.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin the sampling temperature. Default: unset (per-model recommendation).",
+)
+_TOP_P_OPTION = typer.Option(
+    None,
+    "--top-p",
+    min = 0.0,
+    max = 1.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
+)
+_TOP_K_OPTION = typer.Option(
+    None,
+    "--top-k",
+    min = -1,
+    max = 100,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin top-k sampling. Default: unset (per-model recommendation).",
+)
+_MIN_P_OPTION = typer.Option(
+    None,
+    "--min-p",
+    min = 0.0,
+    max = 1.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin min-p sampling threshold. Default: unset (per-model recommendation).",
+)
+_REPETITION_PENALTY_OPTION = typer.Option(
+    None,
+    "--repetition-penalty",
+    min = 1.0,
+    max = 2.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin the repetition penalty. Default: unset (per-model recommendation).",
+)
+_PRESENCE_PENALTY_OPTION = typer.Option(
+    None,
+    "--presence-penalty",
+    min = 0.0,
+    max = 2.0,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = "Pin the presence penalty. Default: unset (per-model recommendation).",
 )
 
 # Agent-session knobs.
@@ -415,6 +466,12 @@ class ServerOptions(NamedTuple):
     enable_tools: bool = False
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    min_p: Optional[float] = None
+    repetition_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
 
 
 def _split_repo_variant(model: str) -> tuple:
@@ -958,6 +1015,18 @@ def _start_studio_server(
         child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if server.tool_call_nudging else "0"
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in child_env:
         child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
+    # Forward any sampling pin via the env; `unsloth run` reads UNSLOTH_SAMPLING_* and the
+    # backend resolver applies it as a hard override. Only set fields the operator specified.
+    for _sampling_env, _sampling_value in (
+        ("UNSLOTH_SAMPLING_TEMPERATURE", server.temperature),
+        ("UNSLOTH_SAMPLING_TOP_P", server.top_p),
+        ("UNSLOTH_SAMPLING_TOP_K", server.top_k),
+        ("UNSLOTH_SAMPLING_MIN_P", server.min_p),
+        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", server.repetition_penalty),
+        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", server.presence_penalty),
+    ):
+        if _sampling_value is not None:
+            child_env[_sampling_env] = str(_sampling_value)
     kwargs: dict = {
         "stdout": log,
         "stderr": subprocess.STDOUT,
@@ -1045,6 +1114,30 @@ def _require_studio(
     """Return (base, server). server is a Popen only when WE auto-started it."""
     base = find_studio_server()
     if base is not None:
+        # Attaching to a server someone else started: UNSLOTH_SAMPLING_* pins only reach the
+        # server process when WE launch it (via _start_studio_server), so a sampling flag on the
+        # attach path can't take effect. Warn instead of silently dropping it, so the operator is
+        # not misled into thinking generation now uses the pinned value.
+        _pinned = [
+            _flag
+            for _flag, _value in (
+                ("--temperature", server_options.temperature),
+                ("--top-p", server_options.top_p),
+                ("--top-k", server_options.top_k),
+                ("--min-p", server_options.min_p),
+                ("--repetition-penalty", server_options.repetition_penalty),
+                ("--presence-penalty", server_options.presence_penalty),
+            )
+            if _value is not None
+        ]
+        if _pinned:
+            typer.echo(
+                f"Warning: an Unsloth server is already running at {base}; sampling pins "
+                f"({', '.join(_pinned)}) apply only when this command starts the server, so the "
+                "running server keeps its current sampling. Stop it with `unsloth studio stop` "
+                "and re-run to apply them.",
+                err = True,
+            )
         return base, None
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     # Auto-start a local server only for an interactive launch with a model to serve, and
@@ -2807,6 +2900,12 @@ def claude(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2821,7 +2920,17 @@ def claude(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     model_id = entry["id"]
     install_hint = (
@@ -2908,6 +3017,12 @@ def codex(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -2922,7 +3037,17 @@ def codex(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     # This preflight runs after _connect may have auto-started a server but before _run
     # takes over its lifecycle, so tear the server down here if it rejects the model
@@ -2990,6 +3115,12 @@ def openclaw(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -3004,7 +3135,17 @@ def openclaw(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     openclaw_args = list(ctx.args)
     # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller
@@ -3054,6 +3195,12 @@ def opencode(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -3068,7 +3215,17 @@ def opencode(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -3198,6 +3355,12 @@ def hermes(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -3214,7 +3377,17 @@ def hermes(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     install_hint = _hermes_install_hint()
     with _session_config("hermes", launch, persist = persist) as home:
@@ -3238,6 +3411,12 @@ def pi(
     enable_tools: bool = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -3252,7 +3431,17 @@ def pi(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(enable_tools, tool_call_healing, tool_call_nudging),
+        server_options = ServerOptions(
+            enable_tools = enable_tools,
+            tool_call_healing = tool_call_healing,
+            tool_call_nudging = tool_call_nudging,
+            temperature = temperature,
+            top_p = top_p,
+            top_k = top_k,
+            min_p = min_p,
+            repetition_penalty = repetition_penalty,
+            presence_penalty = presence_penalty,
+        ),
     )
     install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
     if as_subagent:

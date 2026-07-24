@@ -6061,6 +6061,7 @@ async def generate_audio(
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
+        _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -6079,6 +6080,7 @@ async def generate_audio(
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
         model_name = public_model_id(backend.active_model_name)
+        _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
             temperature = payload.temperature,
@@ -6089,6 +6091,13 @@ async def generate_audio(
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
         )
+
+    # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
+    # generating, so `unsloth run --temperature` (and the other pins) and per-model
+    # recommendations reach audio (TTS) generation too, not just chat. The gen lambdas read
+    # payload.* lazily at call time, so filling here takes effect; this covers both the direct
+    # /audio/generate route and the chat-completions audio branches that delegate here.
+    _fill_recommended_sampling_openai(payload, _audio_model_id)
 
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
@@ -7381,6 +7390,51 @@ async def delete_openai_container(
         await client.close()
 
 
+def _fill_recommended_sampling_openai(payload, model_id) -> None:
+    """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
+    ChatCompletionRequest in place.
+
+    Only the sampling fields the client did NOT explicitly send (tracked via
+    ``model_fields_set``) are overwritten, so a client that sets a field stays byte-identical
+    unless an operator pins it. Fields with neither a recommendation nor a pin keep their
+    existing (schema-default) value.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {
+        f: (getattr(payload, f) if f in payload.model_fields_set else None)
+        for f in SAMPLING_FIELD_NAMES
+    }
+    effective = resolve_effective_sampling(model_id, explicit)
+    for field, value in effective.items():
+        setattr(payload, field, value)
+
+
+# /v1/completions is proxied to llama-server verbatim; its repetition knob is "repeat_penalty",
+# and every other sampling field keeps its name (mirrors _build_passthrough_payload).
+_COMPLETIONS_SAMPLING_BODY_KEY = {"repetition_penalty": "repeat_penalty"}
+
+
+def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
+    """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a raw
+    ``/v1/completions`` body in place, so the legacy (non-chat) endpoint honors the same pins as
+    ``/v1/chat/completions``.
+
+    Unlike :func:`_fill_recommended_sampling_openai`, which fills a ChatCompletionRequest whose
+    schema already carries per-field defaults, this body is proxied to llama-server as-is. A field
+    with no operator pin, client value, or per-model recommendation is therefore left untouched
+    (``fill_defaults = False``) so llama-server keeps its own default rather than being forced onto
+    this schema's value. llama-server names the repetition knob ``repeat_penalty``, so read and
+    write that alias for the client-sent value and any pin.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
+    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
+    for field, value in effective.items():
+        body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -7710,6 +7764,13 @@ async def openai_chat_completions(
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
 
+            # Apply recommended sampling + operator pins to the omitted fields before generating,
+            # so audio-input (non-whisper) generation honors `unsloth run --temperature` and
+            # per-model recommendations like chat does. Whisper (ASR) ignores these fields.
+            _fill_recommended_sampling_openai(
+                payload, getattr(backend, "active_model_name", None) or model_name
+            )
+
             def audio_input_generate():
                 if model_info.get("audio_type") == "whisper":
                     return backend.generate_whisper_response(
@@ -7852,6 +7913,18 @@ async def openai_chat_completions(
                 param = "n",
             ),
         )
+
+    # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
+    # fields the client omitted, so agents and API clients get the model's tuned defaults
+    # unless they set the field explicitly. Placed after external-provider routing (which
+    # returned above) so only local llama-server / transformers requests are touched, and it
+    # covers both the passthrough and non-passthrough branches below since both read payload.*.
+    _reco_model_id = (
+        getattr(llama_backend, "model_identifier", None)
+        if using_gguf
+        else getattr(backend, "active_model_name", None)
+    ) or model_name
+    _fill_recommended_sampling_openai(payload, _reco_model_id)
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -10630,6 +10703,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if _resolved_max_tokens is not None
         else (llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR)
     )
+    # Apply per-model recommended sampling and any operator UNSLOTH_SAMPLING_* pin to the raw
+    # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
+    # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
+    _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -11588,6 +11665,9 @@ async def _responses_stream(
             detail = "Image provided but current GGUF model does not support vision.",
         )
 
+    # Streaming /v1/responses builds the passthrough body directly (bypassing
+    # openai_chat_completions), so apply recommended sampling here too.
+    _fill_recommended_sampling_openai(chat_req, getattr(llama_backend, "model_identifier", None))
     body = _build_openai_passthrough_body(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
@@ -13019,14 +13099,28 @@ async def anthropic_messages(
     # endpoint matches /v1/chat/completions.
     _has_image = _normalize_anthropic_openai_images(openai_messages, llama_backend.is_vision)
 
-    temperature = payload.temperature if payload.temperature is not None else 0.6
-    top_p = payload.top_p if payload.top_p is not None else 0.95
-    top_k = payload.top_k if payload.top_k is not None else 20
-    min_p = payload.min_p if payload.min_p is not None else 0.01
-    repetition_penalty = (
-        payload.repetition_penalty if payload.repetition_penalty is not None else 1.0
+    # Fill omitted sampling fields with the per-model recommendation (or an operator
+    # UNSLOTH_SAMPLING_* pin); an explicit client value wins unless the operator pinned it.
+    # Anthropic sampling fields are Optional, so None already marks "client omitted".
+    from utils.inference.inference_config import resolve_effective_sampling
+
+    _anthropic_sampling = resolve_effective_sampling(
+        getattr(llama_backend, "model_identifier", None) or model_name,
+        {
+            "temperature": payload.temperature,
+            "top_p": payload.top_p,
+            "top_k": payload.top_k,
+            "min_p": payload.min_p,
+            "repetition_penalty": payload.repetition_penalty,
+            "presence_penalty": payload.presence_penalty,
+        },
     )
-    presence_penalty = payload.presence_penalty if payload.presence_penalty is not None else 0.0
+    temperature = _anthropic_sampling["temperature"]
+    top_p = _anthropic_sampling["top_p"]
+    top_k = _anthropic_sampling["top_k"]
+    min_p = _anthropic_sampling["min_p"]
+    repetition_penalty = _anthropic_sampling["repetition_penalty"]
+    presence_penalty = _anthropic_sampling["presence_penalty"]
     stop = payload.stop_sequences or None
 
     # Translate Anthropic tool_choice to OpenAI format for llama-server. Falls
