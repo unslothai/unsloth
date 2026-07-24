@@ -3,7 +3,7 @@
 
 """Drift guards for the AMD gfx tables that are duplicated across the installers.
 
-The same three tables are hand-copied into up to four files each:
+The same three tables are hand-copied into up to six places each:
 
   gfx -> AMD index family   install.sh (_amd_arch_index_family_for_gfx)
                             install.ps1 ($archFamilyMap)
@@ -11,9 +11,11 @@ The same three tables are hand-copied into up to four files each:
                             studio/install_python_stack.py (_GFX_TO_AMD_INDEX_ARCH)
 
   GPU name -> gfx           install.sh (_infer_amd_gfx_arch_from_gpu_name)
+                            install.sh (case "$_gpu_disp_mkt", detection banner + env tip)
                             studio/setup.sh (case "$_setup_mkt")
                             install.ps1 ($nameArchTable)
                             studio/setup.ps1 ($nameArchTable)
+                            studio/install_python_stack.py (_WIN_GPU_NAME_ARCH_TABLE)
 
   torch>=2.11 pin allowlist install.sh (case "$_torch_index_leaf")
                             install.ps1 ($_pinGfx211)
@@ -213,11 +215,12 @@ def _name_table_sh_function(source: str, name: str) -> list[tuple[list[str], str
     return rows
 
 
-def _name_table_setup_sh() -> list[tuple[list[str], str]]:
-    block = _sh_case_block(_SETUP_SH.read_text(encoding = "utf-8"), '"$_setup_mkt"')
+def _name_table_sh_case(source: str, subject: str, var: str) -> list[tuple[list[str], str]]:
+    """A bare `case ... in` table that assigns to a variable rather than echoing."""
+    block = _sh_case_block(source, subject)
     rows: list[tuple[list[str], str]] = []
     for line in block.splitlines():
-        m = re.match(r'\s*(\*.*?)\)\s*_setup_gfx="(gfx[0-9a-z]+)"\s*;;', _strip_sh_comment(line))
+        m = re.match(rf'\s*(\*.*?)\)\s*{re.escape(var)}="(gfx[0-9a-z]+)"\s*;;', _strip_sh_comment(line))
         if m:
             rows.append(([p.strip() for p in m.group(1).split("|")], m.group(2)))
     return rows
@@ -252,11 +255,10 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
 # ordering traps: "RX 9070 XT" must beat the bare "9070" arm, and "RX 7700S"
 # must beat the "RX 7700" arm.
 #
-# The expectation is the *AMD pip index leaf*, not the gfx id, deliberately.
-# The leaf is what the tables exist to produce -- it picks the wheel -- and it
-# is what a wrong answer actually costs the user. The gfx ids in the shipped
-# tables are only approximately right (see _ARCH_ID_DRIFT below); pinning them
-# here would freeze those errors in place and call them correct.
+# The expectation is the *AMD pip index leaf*, not the gfx id. The leaf is what
+# the tables exist to produce -- it picks the wheel -- and it is what a wrong
+# answer actually costs the user. Exact gfx ids are pinned separately in
+# _AMD_DOCUMENTED_ARCH, sourced from AMD rather than from these tables.
 _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 9070 XT", "gfx120X-all"),
     ("AMD Radeon RX 9070", "gfx120X-all"),
@@ -277,33 +279,66 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 6500 XT", "gfx103X-all"),
 ]
 
-# Names where every copy of the table agrees with itself but disagrees with AMD's
-# ROCm compatibility matrix. All three collapse to the correct index leaf, so no
-# user is currently misrouted and this file does not fail on them -- but they are
-# recorded so the next person to touch these tables knows they are not ground
-# truth, and so a fix shows up here as a deliberate edit.
-#   RX 9070 / 9070 GRE  -> table says gfx1200, AMD says gfx1201 (Navi 48).
-#                          "9070 XT" is correct; only the non-XT arm is wrong.
-#   RX 7800 XT / 7700 XT / PRO W7700 -> table says gfx1100, AMD says gfx1101 (Navi 32).
-#   PRO V710            -> table says gfx1102, AMD says gfx1101.
-_ARCH_ID_DRIFT = {
-    "AMD Radeon RX 9070": ("gfx1200", "gfx1201"),
-    "AMD Radeon RX 7800 XT": ("gfx1100", "gfx1101"),
+# Exact gfx ids, transcribed from AMD's ROCm compatibility matrix (the "Radeon
+# GPU" list at rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html),
+# NOT from the installer tables. This is the ground truth the tables are supposed
+# to reproduce, so it has to come from outside them.
+#
+# Three of these were wrong until the commit that added this table: RX 9070
+# (non-XT) said gfx1200, RX 7800 XT / 7700 XT / PRO W7700 said gfx1100, and PRO
+# V710 said gfx1102. Nobody was misrouted, because each wrong id happened to
+# share an index leaf with the right one, which is exactly why it went unnoticed
+# through five copies of the table. The leaf assertions above cannot catch that
+# class of error; only an external source can.
+_AMD_DOCUMENTED_ARCH = {
+    # RDNA 4 -- Navi 48 is gfx1201, Navi 44 is gfx1200.
+    "AMD Radeon RX 9070 XT": "gfx1201",
+    "AMD Radeon RX 9070 GRE": "gfx1201",
+    "AMD Radeon RX 9070": "gfx1201",
+    "AMD Radeon RX 9060 XT": "gfx1200",
+    "AMD Radeon RX 9060": "gfx1200",
+    # RDNA 3 -- Navi 31 / 32 / 33.
+    "AMD Radeon RX 7900 XTX": "gfx1100",
+    "AMD Radeon PRO W7900": "gfx1100",
+    "AMD Radeon PRO W7800": "gfx1100",
+    "AMD Radeon RX 7800 XT": "gfx1101",
+    "AMD Radeon RX 7700 XT": "gfx1101",
+    "AMD Radeon PRO W7700": "gfx1101",
+    "AMD Radeon PRO V710": "gfx1101",
+    "AMD Radeon RX 7600 XT": "gfx1102",
+    "AMD Radeon RX 7700S": "gfx1102",
+    "AMD Radeon PRO W7600": "gfx1102",
 }
 
 
 def _name_tables() -> dict[str, object]:
     install_sh = _INSTALL_SH.read_text(encoding = "utf-8")
     return {
-        "install.sh": _name_table_sh_function(install_sh, "_infer_amd_gfx_arch_from_gpu_name"),
-        "studio/setup.sh": _name_table_setup_sh(),
+        "install.sh:_infer_amd_gfx_arch_from_gpu_name": _name_table_sh_function(
+            install_sh, "_infer_amd_gfx_arch_from_gpu_name"
+        ),
+        # install.sh carries the table TWICE. The second copy drives the detection
+        # banner and, more importantly, the "Tip: set UNSLOTH_ROCM_GFX_ARCH=<arch>"
+        # line, so a wrong id there gets pasted into a user's environment where it
+        # becomes authoritative. Neither this copy nor the two below were in this
+        # parity check until the arch-id fix went looking for every place the
+        # table lives -- six, not four.
+        "install.sh:_gpu_disp_gfx": _name_table_sh_case(install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"),
+        "studio/setup.sh": _name_table_sh_case(
+            _SETUP_SH.read_text(encoding = "utf-8"), '"$_setup_mkt"', "_setup_gfx"
+        ),
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
+        "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
     }
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
-    return _match_sh(rows, gpu_name) if where.endswith(".sh") else _match_ps(rows, gpu_name)
+    """Shell copies are case globs; the PowerShell and Python copies are both
+    ordered first-match regex tables evaluated case-insensitively, so _match_ps
+    models either one. `where` may be "<file>:<symbol>" for the files that carry
+    the table more than once."""
+    return _match_sh(rows, gpu_name) if where.split(":")[0].endswith(".sh") else _match_ps(rows, gpu_name)
 
 
 class TestGpuNameArchParity:
@@ -335,19 +370,16 @@ class TestGpuNameArchParity:
                 f"{where}: {gpu_name!r} -> {arch} -> {families.get(arch)!r}, expected {expected_leaf!r}"
             )
 
-    @pytest.mark.parametrize("gpu_name,shipped,amd", sorted(
-        (name, shipped, amd) for name, (shipped, amd) in _ARCH_ID_DRIFT.items()
-    ))
-    def test_known_arch_id_drift_is_still_only_cosmetic(self, gpu_name, shipped, amd):
-        """These names carry the wrong gfx id (see _ARCH_ID_DRIFT). That is
-        tolerable only for as long as the wrong id and the right one share an
-        index leaf. If AMD ever splits them, this fails and the tables must be
-        corrected before a user gets the wrong wheel."""
-        families = stack_mod._GFX_TO_AMD_INDEX_ARCH
-        assert families.get(shipped) == families.get(amd) is not None, (
-            f"{gpu_name}: shipped {shipped} -> {families.get(shipped)!r} but AMD says {amd} -> "
-            f"{families.get(amd)!r}; the arch id is now load-bearing and must be fixed"
-        )
+    @pytest.mark.parametrize("gpu_name,expected_arch", sorted(_AMD_DOCUMENTED_ARCH.items()))
+    def test_every_copy_matches_amds_documented_arch(self, gpu_name, expected_arch):
+        """The gfx id itself, against AMD's matrix rather than against a sibling
+        copy of the same table. Agreement between five copies proves nothing if
+        all five were transcribed from the same mistake."""
+        for where, rows in _name_tables().items():
+            arch = _resolve(where, rows, gpu_name)
+            assert arch == expected_arch, (
+                f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
+            )
 
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,

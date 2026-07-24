@@ -2695,9 +2695,11 @@ class TestGfxArchNameFallback:
             ("AMD Radeon(TM) 890M", "gfx1150"),
             ("AMD Ryzen AI 9 HX 370 w/ Radeon 890M", "gfx1150"),
             ("AMD Radeon RX 9070 XT", "gfx1201"),
-            ("AMD Radeon RX 9070", "gfx1200"),
-            ("AMD Radeon RX 7700S", "gfx1102"),  # (?!S) lookahead must not hit gfx1100
-            ("AMD Radeon RX 7700 XT", "gfx1100"),
+            ("AMD Radeon RX 9070", "gfx1201"),  # Navi 48 like the XT, not Navi 44
+            ("AMD Radeon RX 9060 XT", "gfx1200"),  # Navi 44
+            ("AMD Radeon RX 7700S", "gfx1102"),  # (?!S) lookahead must not hit gfx1101
+            ("AMD Radeon RX 7700 XT", "gfx1101"),  # Navi 32
+            ("AMD Radeon RX 7900 XTX", "gfx1100"),  # Navi 31
             ("AMD Radeon(TM) 780M", "gfx1103"),
             ("NVIDIA GeForce RTX 4090", None),
             ("Microsoft Basic Display Adapter", None),
