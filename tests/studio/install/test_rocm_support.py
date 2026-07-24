@@ -1918,9 +1918,7 @@ class TestInstallShStructure:
             # /opt/rocm/.info/version directly (no tool to shim), which resolves
             # a tag on a real ROCm box and skips the no-version endpoint under
             # test. Same path-substitution technique as the KFD topology tests.
-            fn = fn.replace(
-                "/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix()
-            )
+            fn = fn.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
             with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
             # Silence every ROCm version source, not just amd-smi: a dev box with
