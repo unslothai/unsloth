@@ -55,7 +55,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
             config.selectedGpuIds,
-            config.selectedGpuIndexKind ?? null,
+            config.selectedGpuIndexKind,
           )
         : null,
   });

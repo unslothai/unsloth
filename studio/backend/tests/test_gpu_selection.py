@@ -1008,6 +1008,36 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("Vulkan GPU ordinal(s) [99]", exc_info.exception.detail)
         training_guard.assert_not_called()
 
+    def test_vulkan_ordinals_are_allowed_on_xpu_hosts(self):
+        import utils.hardware.hardware as hardware_mod
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_xpu_vulkan_test",
+            "routes/inference.py",
+        )
+        config = SimpleNamespace(is_gguf = True)
+
+        with (
+            patch("utils.hardware.get_device", return_value = DeviceType.XPU),
+            patch.object(
+                inference_route.LlamaCppBackend,
+                "_is_vulkan_backend",
+                return_value = True,
+            ),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = False),
+            patch.object(hardware_mod, "resolve_requested_gpu_ids", return_value = [0, 1]),
+            patch.object(
+                inference_route.LlamaCppBackend,
+                "_find_llama_server_binary",
+                return_value = None,
+            ),
+        ):
+            resolved = asyncio.run(
+                inference_route._resolve_gguf_gpu_ids_for_request(config, [1, 0])
+            )
+
+        self.assertEqual(resolved, [0, 1])
+
     def test_inference_route_validates_gpu_ids_for_gguf(self):
         # gpu_ids is now SUPPORTED for GGUF (the GPU picker), but still
         # validated: a rejected pick surfaces as a clean 400, not the old

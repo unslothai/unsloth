@@ -248,8 +248,22 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
             is_vulkan = True,
         )
         self.assertFalse(ok)
-        self.assertEqual(info["mode"], "gguf")
+        self.assertEqual(info["mode"], "gguf_vulkan")
         self.assertEqual(info["usable_gb"], 2.0)
+
+    def test_vulkan_multi_gpu_guard_counts_requested_devices(self):
+        # The ordinal mapping is unknown, so use the least-free two visible
+        # cards for a two-device request. Their aggregate capacity is still
+        # available instead of collapsing the request to one card.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 70), (1, 80, 70), (2, 80, 0)),
+            required_override = 10.0,
+            gpu_ids = [0, 1],
+            is_vulkan = True,
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["mode"], "gguf_vulkan")
+        self.assertEqual(info["usable_gb"], 18.5)
 
     def test_single_device_unresolved_token_sizes_against_worst_device(self):
         # A non-numeric device token (a CUDA UUID / MIG handle) can't map to a
@@ -492,115 +506,20 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             with patch.object(self.route, "LlamaCppBackend", _Probe):
                 self.assertFalse(self.route._classify_diffusion_gguf(config))
 
-    def test_manual_known_normal_gguf_bypasses_training_estimate(self):
+    def test_manual_gguf_always_bypasses_training_estimate(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
-        with patch.object(self.route, "_classify_diffusion_gguf", return_value = False):
+        with patch.object(self.route, "_classify_diffusion_gguf") as classify:
             self._guard(
                 config = config,
                 captured = captured,
                 training_active = True,
                 decision = (False, {"reason": "must not run"}),
                 gpu_memory_mode = "manual",
+                requested_gpu_ids = [1, 3],
             )
+        classify.assert_not_called()
         self.assertEqual(captured, [])
-
-    def test_manual_unknown_gguf_keeps_single_device_training_guard(self):
-        captured = []
-        config = SimpleNamespace(is_gguf = True)
-        with (
-            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
-            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-            patch.object(
-                self.route.LlamaCppBackend,
-                "_diffusion_gpu_arg",
-                return_value = "2",
-            ),
-        ):
-            self._guard(
-                config = config,
-                captured = captured,
-                training_active = True,
-                decision = (True, {"mode": "single_device"}),
-                gpu_memory_mode = "manual",
-            )
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(captured[0]["single_device_gpu"], "2")
-
-    def test_unknown_vulkan_pin_stays_out_of_cuda_diffusion_selector(self):
-        captured = []
-        config = SimpleNamespace(is_gguf = True)
-        with (
-            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
-            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-            patch.object(
-                self.route.LlamaCppBackend,
-                "_is_vulkan_backend",
-                return_value = True,
-            ),
-            patch.object(
-                self.route.LlamaCppBackend,
-                "_diffusion_gpu_arg",
-                return_value = "0",
-            ) as gpu_arg,
-        ):
-            self._guard(
-                config = config,
-                captured = captured,
-                training_active = True,
-                decision = (True, {"mode": "gguf"}),
-                gpu_memory_mode = "manual",
-                requested_gpu_ids = [0],
-            )
-        gpu_arg.assert_not_called()
-        self.assertEqual(captured[0]["single_device_gpu"], None)
-        self.assertTrue(captured[0]["is_vulkan"])
-
-    def test_manual_diffusion_uses_single_device_guard(self):
-        captured = []
-        config = SimpleNamespace(is_gguf = True)
-        with (
-            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
-            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-        ):
-            self._guard(
-                config = config,
-                captured = captured,
-                training_active = True,
-                decision = (True, {"mode": "gguf"}),
-                gpu_memory_mode = "manual",
-                requested_gpu_ids = [3, 1],
-            )
-        self.assertEqual(len(captured), 1)
-        self.assertEqual(captured[0]["single_device_gpu"], "1")
-        self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
-
-    def test_unpinned_diffusion_uses_runner_default_gpu(self):
-        captured = []
-        config = SimpleNamespace(is_gguf = True)
-        with (
-            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
-            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-            patch.object(
-                self.route.LlamaCppBackend,
-                "_effective_gpu_count",
-                return_value = 2,
-            ),
-            patch.object(
-                self.route.LlamaCppBackend,
-                "_diffusion_gpu_arg",
-                return_value = "3",
-            ) as gpu_arg,
-        ):
-            self._guard(
-                config = config,
-                captured = captured,
-                training_active = True,
-                decision = (True, {"mode": "single_device"}),
-                gpu_memory_mode = "manual",
-            )
-        gpu_arg.assert_called_once_with(None, cpu_only = False)
-        self.assertEqual(captured[0]["single_device_gpu"], "3")
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}

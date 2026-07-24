@@ -594,9 +594,13 @@ export function reconcilePersistedGpuIds(
   if (ids == null) return ids;
   if (arguments.length >= 2) {
     const currentIndexKind = cachedPinnableGpuIndexKind();
+    // Before Vulkan picks were exposed, every persisted GPU id came from the
+    // physical CUDA/HIP namespace. Treat an absent legacy tag as physical so
+    // upgrades preserve those picks without ever reusing them as Vulkan ordinals.
+    const persistedIndexKind = savedIndexKind ?? "physical";
     if (
       currentIndexKind !== undefined &&
-      currentIndexKind !== savedIndexKind
+      currentIndexKind !== persistedIndexKind
     ) {
       return null;
     }

@@ -237,7 +237,8 @@ def can_load_chat_during_training(
     required_override_gb over the visible pool. A Vulkan GGUF selection picks by ggml
     Vulkan ordinal (separate index space from CUDA ids), so its requested_gpu_ids is
     NOT resolved against the CUDA set (which would raise -> invalid_gpu_ids -> bypass
-    the OOM check); size against the busiest visible GPU instead.
+    the OOM check); conservatively size an N-device request against the least-free
+    N visible GPUs instead.
     ``single_device_gpu`` is the exact physical device token selected by a
     single-device runner. `load_in_4bit` must be effective (LoRA can flip 4-bit
     -> 16-bit). Non-CUDA allows the load; default-deny on any CUDA case it can't
@@ -293,7 +294,7 @@ def can_load_chat_during_training(
 
         # Explicit GPUs, or GGUF: size directly and check live free VRAM.
         if requested_gpu_ids and vulkan_gguf:
-            mode = "gguf"
+            mode = "gguf_vulkan"
         elif single_device_gpu is not None:
             mode = "single_device"
         elif is_gguf:
@@ -308,11 +309,15 @@ def can_load_chat_during_training(
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if requested_gpu_ids and vulkan_gguf:
-            # Explicit Vulkan ordinal: ggml ordinals cannot be mapped to the CUDA
-            # index in free_by_index. This branch must take precedence over a
-            # speculative diffusion fallback for an unknown remote GGUF, whose
-            # ordinal would otherwise be misread as a CUDA physical ID.
-            free_vals = [min(free_by_index.values())] if free_by_index else []
+            # Vulkan ordinals cannot be mapped to CUDA physical indices. Budget
+            # the least-free N visible cards for an N-device request. If that
+            # conservative subset fits, any physical mapping of the ordinals
+            # fits, without collapsing a multi-GPU request to one card.
+            visible_free = list(free_by_index.values())
+            if not visible_free:
+                return False, {"mode": "gguf_vulkan", "reason": "no_visible_gpus"}
+            n_pins = min(len(requested_gpu_ids), len(visible_free))
+            free_vals = sorted(visible_free)[:n_pins]
         elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:

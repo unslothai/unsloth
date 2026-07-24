@@ -1564,7 +1564,7 @@ async function autoLoadSmallestModel(): Promise<{
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
             config.selectedGpuIds,
-            config.selectedGpuIndexKind ?? null,
+            config.selectedGpuIndexKind,
           )
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context

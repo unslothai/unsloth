@@ -696,6 +696,56 @@ def test_vulkan_system_gpu_info_uses_probe_ordinals(monkeypatch):
     assert devices[0]["vram_free_gb"] == 4
 
 
+def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
+    def _mark_diffusion(probe, path):
+        assert path == "/cache/model.gguf"
+        probe._is_diffusion = True
+
+    monkeypatch.setattr(LlamaCppBackend, "_read_gguf_metadata", _mark_diffusion)
+    assert LlamaCppBackend._gguf_path_is_diffusion("/cache/model.gguf", "owner/model") is True
+
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    preflight = src.index("_preflight_model_path = self._download_gguf(")
+    teardown = src.index("# ── Phase 1: kill old process")
+    assert preflight < teardown
+    assert "model_path = _preflight_model_path or self._download_gguf(" in src
+
+
+def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
+    backend = LlamaCppBackend()
+    killed = []
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(
+        backend,
+        "_download_gguf",
+        lambda **_kwargs: "/cache/diffusion.gguf",
+    )
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_resolve_repo_id_casing",
+        lambda repo: repo,
+    )
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_hf_offline_if_dns_dead",
+        lambda: __import__("contextlib").nullcontext(),
+    )
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            hf_repo = "owner/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "owner/model",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
 def test_start_diffusion_server_resets_tensor_parallel():
     # A prior tensor-parallel chat load leaves self._tensor_parallel True (load_model
     # phase 1 only kills the process, it skips the unload reset). Diffusion is never

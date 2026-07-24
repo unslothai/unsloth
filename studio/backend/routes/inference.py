@@ -3892,9 +3892,8 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before it is loaded.
 
     ``None`` is important here: a remote GGUF whose header is not cached can
-    still be routed to the single-GPU diffusion runner after download. Treating
-    that case as normal would let Manual mode skip the training guard even
-    though the runner ignores Manual's llama-server placement controls.
+    still be routed to the single-GPU diffusion runner after download. Default
+    placement keeps that unknown case guarded until the header is available.
     """
     identity = " ".join(
         str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
@@ -3950,7 +3949,8 @@ async def _resolve_gguf_gpu_ids_for_request(
     from utils.hardware import DeviceType, get_device
     from utils.hardware.hardware import resolve_requested_gpu_ids
 
-    if get_device() == DeviceType.XPU:
+    is_vulkan = LlamaCppBackend._is_vulkan_backend()
+    if get_device() == DeviceType.XPU and not is_vulkan:
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -3959,7 +3959,6 @@ async def _resolve_gguf_gpu_ids_for_request(
             ),
         )
 
-    is_vulkan = LlamaCppBackend._is_vulkan_backend()
     if is_vulkan and _classify_diffusion_gguf(config) is True:
         raise HTTPException(
             status_code = 400,
@@ -4014,10 +4013,8 @@ def _guard_chat_load_against_training(
     effective quantization (see _effective_load_in_4bit). Manual chat-GGUF
     placement is an explicit override: Auto layers delegate fitting to
     llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
-    estimated here. Diffusion is still guarded because its mode-agnostic runner
-    ignores those controls and uses one GPU. An unclassified GGUF is guarded as
-    potentially diffusion until its local header proves otherwise. Other loads
-    raise HTTP 409 when they would not fit beside training.
+    estimated here. Other loads raise HTTP 409 when they would not fit beside
+    training.
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
@@ -4030,9 +4027,10 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
-    if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
+    if is_gguf and gpu_memory_mode == "manual":
         return
+
+    diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
 
     # Vulkan GGUF pins are ggml ordinals, not CUDA physical IDs. Detect this
     # before deriving a possible diffusion fallback device so an unknown remote

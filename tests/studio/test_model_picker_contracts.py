@@ -176,7 +176,7 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "ownConfig.selectedGpuIndexKind ?? null" in src
+    assert "ownConfig.selectedGpuIndexKind," in src
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -446,7 +446,8 @@ def test_vulkan_gpu_picker_uses_backend_declared_index_namespace():
     assert '"selectedGpuIndexKind"' in config
 
     reconcile = _read("features/chat/stores/chat-runtime-store.ts")
-    assert "currentIndexKind !== savedIndexKind" in reconcile
+    assert 'const persistedIndexKind = savedIndexKind ?? "physical";' in reconcile
+    assert "currentIndexKind !== persistedIndexKind" in reconcile
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():

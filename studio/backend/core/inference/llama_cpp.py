@@ -4640,6 +4640,14 @@ class LlamaCppBackend:
             LlamaCppBackend._gguf_skip_value(f, atype)
         return None
 
+    @classmethod
+    def _gguf_path_is_diffusion(cls, gguf_path: str, model_identifier: str) -> bool:
+        """Classify a downloaded GGUF without mutating the active backend."""
+        probe = object.__new__(cls)
+        probe._model_identifier = model_identifier
+        probe._read_gguf_metadata(gguf_path)
+        return probe._is_diffusion
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -6344,6 +6352,37 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
+            # A remote uncached GGUF may only reveal that it needs the
+            # single-device diffusion runner after download. On Vulkan, an
+            # explicit gpu_ids request cannot be mapped from ggml ordinals to
+            # that runner's CUDA physical index. Download and classify the main
+            # file before killing the healthy server so this late rejection is
+            # non-destructive. The Phase 2 call below reuses this cached path.
+            _preflight_model_path = None
+            if is_vulkan_backend and gpu_ids and hf_repo:
+                _resolved_repo = _resolve_repo_id_casing(hf_repo)
+                if _resolved_repo != hf_repo:
+                    logger.info(
+                        "Using cached repo_id casing '%s' for requested '%s'",
+                        _resolved_repo,
+                        hf_repo,
+                    )
+                    hf_repo = _resolved_repo
+                with _hf_offline_if_dns_dead():
+                    _preflight_model_path = self._download_gguf(
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = hf_token,
+                    )
+                if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
+                    raise ValueError(
+                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                        "its device by CUDA physical index, which has no defined mapping "
+                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                        "device."
+                    )
+
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:
                 self._kill_process()
@@ -6369,7 +6408,7 @@ class LlamaCppBackend:
                     )
                     hf_repo = _resolved_repo
                 with _hf_offline_if_dns_dead():
-                    model_path = self._download_gguf(
+                    model_path = _preflight_model_path or self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
@@ -6420,11 +6459,9 @@ class LlamaCppBackend:
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
                 # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback). The
-                # route's _classify_diffusion_gguf rejects this up front for every LOCAL
-                # and cached-header GGUF (no kill); this covers only the residual it
-                # cannot classify pre-load -- a REMOTE uncached GGUF whose arch is first
-                # known here, after the Phase 1 kill. Reject rather than mis-pin (#7239).
+                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
+                # Route and remote-download preflights reject before teardown; keep
+                # this as a final defense if classification ever disagrees.
                 if is_vulkan_backend and gpu_ids:
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
