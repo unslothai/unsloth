@@ -2289,7 +2289,7 @@ export function ChatPage({
           } else if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
-                "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
+                "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
             });
           } else if (outcome === "busy") {
             toast.info("Download already in progress", {
@@ -2410,7 +2410,7 @@ export function ChatPage({
         // surface's onComplete auto-loads, mirroring the "started" branch.
         toast.info("Resume this download from Models", {
           description:
-            "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
+            "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
         });
         return;
       }

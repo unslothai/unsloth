@@ -39,7 +39,7 @@ export const ru = {
       returnToChat: "Вернуться к чату",
       compare: "Сравнить",
       search: "Поиск",
-      hub: "Модели",
+      hub: "Хаб моделей",
       train: "Обучение",
       recipes: "Рецепты",
       export: "Экспорт",
