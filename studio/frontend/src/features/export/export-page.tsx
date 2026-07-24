@@ -66,6 +66,7 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ModelCheckpoints } from "./api/export-api";
+import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
 import { QuantPicker } from "./components/quant-picker";
@@ -231,12 +232,15 @@ export function ExportPage() {
   });
   // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
+  // Mac-only safetensors adapter format; MLX is the training-native format.
+  const [adapterFormat, setAdapterFormat] = useState<AdapterFormat>("mlx");
   const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("q8_0");
   // GGUF method: export the full model as GGUF quants, or (for an adapter checkpoint) a GGUF LoRA.
   const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
-  // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
+  // The GGUF method's LoRA-adapter target is not offered on Mac; GGUF LoRA
+  // adapters ship through the LoRA method's toggle. Controls below key off this.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
@@ -540,7 +544,8 @@ export function ExportPage() {
     if (!effectiveIsAdapter && effectiveIsQuantized && exportMethod !== null) {
       setExportMethod(null);
     }
-    // The GGUF LoRA target only applies to an adapter checkpoint on a non-Mac host.
+    // The GGUF LoRA target applies only to an adapter checkpoint, and the GGUF
+    // method stays full-model on Mac, where the LoRA method owns GGUF adapters.
     if ((!effectiveIsAdapter || isMacHost) && ggufTarget !== "model") {
       setGgufTarget("model");
     }
@@ -752,8 +757,7 @@ export function ExportPage() {
     const token = pushToHub && actionHfToken ? actionHfToken : undefined;
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
     const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
-    const emitLoraGguf =
-      ggufAsLora || (effectiveMethod === "lora" && loraAsGguf && !isMacHost);
+    const emitLoraGguf = ggufAsLora || (effectiveMethod === "lora" && loraAsGguf);
     const methodLabel = ggufAsLora
       ? "GGUF LoRA adapter"
       : (EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ??
@@ -799,6 +803,7 @@ export function ExportPage() {
       })),
       loraGguf: emitLoraGguf,
       loraGgufOuttype,
+      adapterFormat: isMacHost && !emitLoraGguf ? adapterFormat : undefined,
       saveDirectory,
       destination,
       repoId,
@@ -833,6 +838,7 @@ export function ExportPage() {
     loraAsGguf,
     isMacHost,
     loraGgufOuttype,
+    adapterFormat,
     exportUnsupported,
     destination,
     saveDirectory,
@@ -1555,7 +1561,7 @@ export function ExportPage() {
                           variant={loraAsGguf ? "outline" : "default"}
                           size="sm"
                           onClick={() => setLoraAsGguf(false)}
-                          title="Standard PEFT adapter (adapter_model.safetensors)."
+                          title="Adapter weights as safetensors."
                         >
                           Adapter (safetensors)
                         </Button>
@@ -1563,25 +1569,65 @@ export function ExportPage() {
                           type="button"
                           variant={loraAsGguf ? "default" : "outline"}
                           size="sm"
-                          disabled={isMacHost}
                           onClick={() => setLoraAsGguf(true)}
-                          title={
-                            isMacHost
-                              ? "GGUF LoRA export is not available on macOS/MLX. Use the safetensors adapter."
-                              : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
-                          }
+                          title="llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
                         >
                           GGUF adapter
                         </Button>
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {isMacHost
-                          ? "GGUF LoRA is not available on macOS/MLX; exporting the safetensors adapter."
-                          : loraAsGguf
-                            ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                        {loraAsGguf
+                          ? isMacHost
+                            ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`); the adapter files are written in PEFT format. Not available for adapters with per-module alpha values, rsLoRA with per-module ranks, DoRA, replaced embeddings or modules_to_save, or expert-parameter targets."
+                            : "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                          : isMacHost
+                            ? "Adapter weights only; pick the on-disk format below."
                             : "Standard PEFT adapter files. Pair with the base model at inference."}
                       </div>
                     </div>
+
+                    {!loraAsGguf && isMacHost && (
+                      <div
+                        className="space-y-2"
+                        data-testid="adapter-format-picker"
+                      >
+                        <div className="text-sm font-medium">
+                          Safetensors format
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant={
+                              adapterFormat === "mlx" ? "default" : "outline"
+                            }
+                            size="sm"
+                            onClick={() => setAdapterFormat("mlx")}
+                            title="Native mlx-lm adapter (adapters.safetensors)."
+                          >
+                            MLX
+                          </Button>
+                          <Button
+                            type="button"
+                            variant={
+                              adapterFormat === "peft" ? "default" : "outline"
+                            }
+                            size="sm"
+                            onClick={() => setAdapterFormat("peft")}
+                            title="Standard Hugging Face PEFT adapter (adapter_model.safetensors)."
+                          >
+                            PEFT
+                          </Button>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {adapterCompatibilityTip(
+                            adapterFormat,
+                            selectedModelData?.adapter_features,
+                          )}{" "}
+                          Training checkpoints always remain MLX; this choice
+                          only affects the exported copy.
+                        </div>
+                      </div>
+                    )}
 
                     {loraAsGguf && (
                       <div className="space-y-1.5">

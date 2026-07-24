@@ -343,3 +343,69 @@ export const GUIDE_STEPS = [
   "Click Export and choose your destination",
   "Test your model and compare outputs in Chat",
 ];
+
+
+/** Compact adapter capabilities from the backend checkpoint listing.
+ * A null value means unverified (e.g. full_state without a weight probe). */
+export interface AdapterFeatures {
+  dora?: boolean | null;
+  full_state?: boolean | null;
+  moe_target_parameters?: boolean | null;
+  non_uniform?: boolean | null;
+}
+
+export type AdapterFormat = "mlx" | "peft";
+
+/**
+ * Compatibility copy per adapter format, conditioned on the REAL adapter
+ * features: the vLLM claim renders only for VERIFIED uniform plain-LoRA
+ * adapters (vLLM rejects DoRA and modules_to_save and discards per-module
+ * rank/alpha patterns). Missing metadata gets neutral copy, never the claim.
+ */
+export function adapterCompatibilityTip(
+  format: AdapterFormat,
+  features: AdapterFeatures | null | undefined,
+): string {
+  if (format === "mlx") {
+    const base =
+      "MLX (default): the native format for mlx-lm and Apple-silicon " +
+      "workflows — the format training checkpoints are saved in.";
+    return features?.non_uniform
+      ? base +
+          " Adapters with per-module ranks/alphas exported as MLX require " +
+          "Unsloth to load them; stock mlx-lm supports uniform adapters " +
+          "only — choose PEFT for maximum compatibility."
+      : base;
+  }
+  const base = "PEFT: the standard Hugging Face adapter format — ";
+  if (features == null) {
+    return base + "loads in transformers and PEFT.";
+  }
+  if (features.dora || features.full_state) {
+    return base + "loads in transformers/PEFT; not supported by vLLM.";
+  }
+  if (features.moe_target_parameters) {
+    return base + "vLLM support varies and is not guaranteed.";
+  }
+  if (features.non_uniform) {
+    return (
+      base +
+      "loads in transformers and PEFT. vLLM applies a single global " +
+      "rank/alpha — per-module patterned adapters are not supported by vLLM."
+    );
+  }
+  const verifiedPlain =
+    features.dora === false &&
+    features.full_state === false &&
+    features.moe_target_parameters === false &&
+    features.non_uniform === false;
+  if (!verifiedPlain) {
+    // An unverified field (null/undefined) never earns the vLLM claim.
+    return base + "loads in transformers and PEFT.";
+  }
+  return (
+    base +
+    "loads in transformers, vLLM, and Unsloth Studio on GPU machines, and " +
+    "is required for GGUF adapter export."
+  );
+}

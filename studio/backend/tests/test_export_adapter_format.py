@@ -151,13 +151,36 @@ def test_parse_adapter_features(tmp_path):
         return str(d)
 
     assert parse_adapter_features(str(tmp_path)) is None  # no config
+    # A PEFT config without markers and no readable weights is UNVERIFIED,
+    # never a false "verified plain".
     base = parse_adapter_features(_dir({"r": 8}))
     assert base == {
         "dora": False,
-        "full_state": False,
+        "full_state": None,
         "moe_target_parameters": False,
         "non_uniform": False,
     }
+    # MLX artifacts verify through their weight header too: pure LoRA is a
+    # verified negative, extra trainable state is positive, and no readable
+    # file stays unverified (trainer checkpoints may carry unmarked state).
+    assert parse_adapter_features(_dir({"fine_tune_type": "lora"}))["full_state"] is None
+    import numpy as np
+    from safetensors.numpy import save_file
+
+    d_mlx = _dir({"fine_tune_type": "lora"})
+    save_file(
+        {"model.layers.0.self_attn.q_proj.lora_a": np.zeros((2, 2), dtype = "float32")},
+        os.path.join(d_mlx, "adapters.safetensors"),
+    )
+    assert parse_adapter_features(d_mlx)["full_state"] is False
+    save_file(
+        {
+            "model.layers.0.self_attn.q_proj.lora_a": np.zeros((2, 2), dtype = "float32"),
+            "lm_head.bias": np.zeros((2,), dtype = "float32"),
+        },
+        os.path.join(d_mlx, "adapters.safetensors"),
+    )
+    assert parse_adapter_features(d_mlx)["full_state"] is True
     assert parse_adapter_features(_dir({"use_dora": True}))["dora"] is True
     assert parse_adapter_features(_dir({"fine_tune_type": "dora"}))["dora"] is True
     assert parse_adapter_features(_dir({"modules_to_save": ["lm_head"]}))["full_state"] is True

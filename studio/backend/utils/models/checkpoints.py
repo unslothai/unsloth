@@ -140,14 +140,24 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     return None
 
 
-def parse_adapter_features(adapter_path: str) -> Optional[Dict[str, bool]]:
+def parse_adapter_features(
+    adapter_path: str, probe_weights: bool = True
+) -> Optional[Dict[str, Optional[bool]]]:
     """Parse a compact feature summary from an adapter directory's config.
 
     Reads adapter_config.json (either the PEFT or the MLX layout) and reports
-    booleans the export UI keys compatibility copy off: dora, full_state
+    flags the export UI keys compatibility copy off: dora, full_state
     (modules_to_save / replaced embeddings), moe_target_parameters, and
     non_uniform (per-module rank/alpha). Returns None when no adapter config
     exists (merged or GGUF artifacts).
+
+    ``full_state`` is TRI-STATE in BOTH formats: a config marker is a
+    verified positive, but its absence proves nothing (PEFT auto-saves
+    embedding/base state only as weight keys, and native MLX trainer
+    checkpoints may carry unmarked non-LoRA trainable tensors), so a
+    negative is verified only by reading the weight header — when that
+    probe is skipped (``probe_weights=False``, bulk listings) or fails,
+    the value is None ("unverified"), never a false "verified plain".
     """
     cfg_path = os.path.join(adapter_path, "adapter_config.json")
     try:
@@ -164,17 +174,35 @@ def parse_adapter_features(adapter_path: str) -> Optional[Dict[str, bool]]:
     def _filled(value):
         return isinstance(value, (dict, list)) and len(value) > 0
 
-    full_state = _filled(cfg.get("full_state_modules")) or _filled(cfg.get("modules_to_save"))
+    full_state: Optional[bool] = _filled(cfg.get("full_state_modules")) or _filled(
+        cfg.get("modules_to_save")
+    )
     if not full_state:
-        # PEFT artifacts carry auto-saved embedding/base state only as
-        # non-LoRA weight keys; a header-only read is cheap.
-        weights = os.path.join(adapter_path, "adapter_model.safetensors")
-        try:
+        # No config marker proves absence in EITHER format: PEFT auto-saves
+        # embedding/base state only as weight keys, and MLX trainer checkpoints
+        # may carry unmarked non-LoRA tensors. Only a weight-header read
+        # verifies a negative; a skipped or failed probe stays None.
+        full_state = None
+        if probe_weights:
             from safetensors import safe_open
-            with safe_open(weights, framework = "numpy") as f:
-                full_state = any(".lora_" not in key for key in f.keys())
-        except Exception:
-            pass
+            for weights, is_adapter_key in (
+                (
+                    os.path.join(adapter_path, "adapter_model.safetensors"),
+                    lambda key: ".lora_" in key,
+                ),
+                (
+                    os.path.join(adapter_path, "adapters.safetensors"),
+                    lambda key: key.endswith((".lora_a", ".lora_b", ".m")),
+                ),
+            ):
+                if not os.path.exists(weights):
+                    continue
+                try:
+                    with safe_open(weights, framework = "numpy") as f:
+                        full_state = any(not is_adapter_key(key) for key in f.keys())
+                except Exception:
+                    full_state = None
+                break
     return {
         "dora": _flag(cfg.get("use_dora")) or str(cfg.get("fine_tune_type", "")).lower() == "dora",
         "full_state": full_state,
@@ -219,6 +247,9 @@ def scan_checkpoints(
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
+            # Header probing is skipped in bulk listings; config markers
+            # still classify training-run adapters correctly.
+            metadata["adapter_features"] = parse_adapter_features(str(item), probe_weights = False)
             try:
                 if adapter_config.exists():
                     cfg = json.loads(adapter_config.read_text(encoding = "utf-8"))
