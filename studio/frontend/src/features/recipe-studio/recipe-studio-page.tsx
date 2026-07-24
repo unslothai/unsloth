@@ -607,6 +607,16 @@ export function RecipeStudioPage({
     }
   }, [activeView, reactFlowInstance]);
 
+  // The "Exit full view" control lives inside the editor canvas, which unmounts
+  // on other tabs. Drop full-view mode (and restore the sidebar) when leaving
+  // the editor so Easy/Runs aren't left under the fixed overlay.
+  useEffect(() => {
+    if (activeView !== "editor" && maximized) {
+      setMaximized(false);
+      setSidebarOpen(sidebarOpenBeforeMaximizeRef.current);
+    }
+  }, [activeView, maximized, setSidebarOpen]);
+
   useEffect(() => {
     if (
       !reactFlowInstance ||
