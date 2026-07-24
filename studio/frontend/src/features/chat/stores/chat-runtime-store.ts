@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndexKind,
+  cachedPinnableGpuIndices,
+  type GpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -19,6 +23,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import type { GgufMemoryMode } from "../types/api";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -586,12 +591,33 @@ export function rebalanceSplit(
 // unpopulated device cache leaves the pick alone (the backend still guards).
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
 ): number[] | null {
   if (ids == null) return ids;
+  if (arguments.length >= 2) {
+    const currentIndexKind = cachedPinnableGpuIndexKind();
+    const expectedIndexKind =
+      savedIndexKind === undefined ? "physical" : savedIndexKind;
+    if (
+      currentIndexKind !== undefined &&
+      currentIndexKind !== expectedIndexKind
+    ) {
+      return null;
+    }
+  }
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));
   return kept.length > 0 ? kept : null;
+}
+
+export function requestedGpuIdsFromResponse(resp: {
+  gpu_ids?: number[] | null;
+  requested_gpu_ids?: number[] | null;
+}): number[] | null {
+  return Object.prototype.hasOwnProperty.call(resp, "requested_gpu_ids")
+    ? (resp.requested_gpu_ids ?? null)
+    : (resp.gpu_ids ?? null);
 }
 
 // Store fields derived from a load/status response's GPU-memory settings.
@@ -607,6 +633,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  gguf_memory_mode?: GgufMemoryMode | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -630,12 +657,14 @@ export function loadedGpuMemoryFields(resp: {
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
+      ggufMemoryMode: null,
+      activeMemoryMode: resp.gguf_memory_mode ?? null,
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
-  const gpuIds = resp.requested_gpu_ids ?? resp.gpu_ids ?? null;
+  const gpuIds = requestedGpuIdsFromResponse(resp);
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -676,6 +705,9 @@ export function loadedGpuMemoryFields(resp: {
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
+    // Reset both editable and loaded state to the applied backend mode.
+    ggufMemoryMode: resp.gguf_memory_mode ?? null,
+    activeMemoryMode: resp.gguf_memory_mode ?? null,
     ...manualKnobs,
   };
 }
@@ -898,9 +930,13 @@ type ChatRuntimeStore = {
   ggufLayerCount: number | null;
   /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
   moeLayerCount: number | null;
-  /** Picked physical GPU indices (null = use all / automatic). */
+  /** Picked IDs in the backend-declared GPU namespace (null = automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
+  /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
+  ggufMemoryMode: GgufMemoryMode | null;
+  /** Loaded GGUF host-memory mode used for hydration and rollback. */
+  activeMemoryMode: GgufMemoryMode | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -1354,6 +1390,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   moeLayerCount: null,
   selectedGpuIds: null,
   loadedGpuIds: null,
+  ggufMemoryMode: null,
+  activeMemoryMode: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -1608,6 +1646,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       moeLayerCount: null,
       selectedGpuIds: null,
       loadedGpuIds: null,
+      ggufMemoryMode: null,
+      activeMemoryMode: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,

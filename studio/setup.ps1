@@ -33,9 +33,9 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 #
-# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default) or "cpu". When "cpu", forces
-# the CPU-only prebuilt bundle on GPU hosts. Fixes Intel iGPU Vulkan
-# crashes (#7213).
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", or "vulkan". "cpu"
+# forces the CPU-only prebuilt. "vulkan" selects Vulkan even when CUDA or
+# ROCm is detected.
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -3699,14 +3699,26 @@ if ($LocalLlamaCppLinked) {
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
         }
-        # UNSLOTH_LLAMA_CPP_BACKEND=cpu (case-insensitive, whitespace-trimmed) forces the
-        # CPU-only prebuilt via --force-cpu (persisted so updates keep it). Fixes Intel
-        # iGPU Vulkan crash (#7213).
+        # The backend override is case-insensitive and whitespace-trimmed. cpu
+        # maps to the persisted --force-cpu choice. vulkan is consumed directly
+        # by install_llama_prebuilt.py and does not change the torch backend.
         $llamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
+        $legacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
+        $explicitVulkanBackend = $false
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
-        } elseif ($llamaBackend -and $llamaBackend -ne "auto") {
-            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto' or 'cpu')" -ForegroundColor Yellow
+        } elseif ($llamaBackend -eq "vulkan") {
+            if ($IsMacOS) {
+                Write-Host "[WARN] Vulkan has no effect on macOS; the universal build uses Metal" -ForegroundColor Yellow
+            } else {
+                $explicitVulkanBackend = $true
+                Write-Host "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
+            }
+        } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "vulkan")) {
+            Write-Host "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$($env:UNSLOTH_LLAMA_CPP_BACKEND)' (expected 'auto', 'cpu', or 'vulkan')" -ForegroundColor Yellow
+        }
+        if (-not $IsMacOS -and $llamaBackend -ne "cpu" -and $legacyForceVulkan -in @("1", "true", "yes", "on")) {
+            $explicitVulkanBackend = $true
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -3758,13 +3770,19 @@ if ($LocalLlamaCppLinked) {
             substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
             exit 3
         } else {
-            step "llama.cpp" "prebuilt install failed (continuing)" "Yellow"
+            step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
-            $NeedLlamaSourceBuild = $true
+            if ($explicitVulkanBackend) {
+                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
+                substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
+                exit 1
+            } else {
+                substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
+                $NeedLlamaSourceBuild = $true
+            }
         }
 }
 

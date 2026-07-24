@@ -875,10 +875,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("only supported on CUDA and Intel XPU", str(exc_info.exception))
 
     def test_inference_route_resolves_gguf_gpu_ids(self):
-        # GGUF gpu_ids are now supported: /load routes them through the same
-        # resolution as non-GGUF loads (rejecting only genuinely invalid ids with
-        # the resolver's actionable message) rather than a blanket "not supported"
-        # reject, so /validate can stay consistent with /load (#7239).
+        # GGUF IDs use the normal resolver instead of a blanket rejection.
         import utils.hardware.hardware as hardware_mod
 
         inference_route = _load_route_module(
@@ -910,8 +907,6 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
-            # Patch both the package re-export and the defining module so the stub
-            # fires no matter which import path the route uses.
             patch("utils.hardware.resolve_requested_gpu_ids", _fake_resolve),
             patch.object(hardware_mod, "resolve_requested_gpu_ids", _fake_resolve),
             patch.object(
@@ -935,7 +930,6 @@ class TestRouteErrors(unittest.TestCase):
                     )
                 )
 
-        # The selection was routed through resolution (not the old blanket reject).
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("SENTINEL", exc_info.exception.detail)
         self.assertNotIn("not supported for GGUF", exc_info.exception.detail)
@@ -1033,18 +1027,16 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
         ):
-            resolved = asyncio.run(
+            resolved, uses_vulkan_ordinals = asyncio.run(
                 inference_route._resolve_gguf_gpu_ids_for_request(config, [1, 0])
             )
 
         self.assertEqual(resolved, [0, 1])
+        self.assertTrue(uses_vulkan_ordinals)
 
     def test_inference_route_validates_gpu_ids_for_gguf(self):
-        # gpu_ids is now SUPPORTED for GGUF (the GPU picker), but still
-        # validated: a rejected pick surfaces as a clean 400, not the old
-        # "not supported for GGUF" rejection. Patch the validator so the test
-        # is deterministic regardless of the host's (or a prior test's) GPU env.
         import utils.hardware.hardware as hardware_mod
+        import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
             "inference_route_module_for_gguf_gpu_ids_test2",
@@ -1072,8 +1064,6 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
-            # Patch both the package re-export and the defining module so the stub
-            # fires no matter which import path the route uses.
             patch(
                 "utils.hardware.resolve_requested_gpu_ids",
                 side_effect = ValueError("Invalid gpu_ids [0, 1]: rejected by test"),
@@ -1104,11 +1094,244 @@ class TestRouteErrors(unittest.TestCase):
                     )
                 )
 
-        # The validator's ValueError becomes a clean 400 (not the removed
-        # "not supported for GGUF" rejection).
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
-        self.assertNotIn("not supported", exc_info.exception.detail.lower())
+
+    def test_inference_route_rejects_gpu_ids_on_cpu_only_llama_build(self):
+        # A CPU-only llama.cpp build cannot honor a CUDA visibility pin.
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_cpu_only_gpu_ids_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/test.gguf",
+            display_name = "unsloth/test.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        fake_backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            is_vulkan_build = lambda: False,
+            _backend_lacks_gpu_lib = lambda *a, **k: True,
+        )
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("cpu-only build", exc_info.exception.detail.lower())
+
+    def test_cpu_only_llama_build_skips_reject_for_diffusion_gguf(self):
+        # Diffusion uses its own runner, independent of llama.cpp GPU libraries.
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_gpu_ids_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/diffusion.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/diffusion.gguf",
+            display_name = "unsloth/diffusion.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        fake_backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            is_vulkan_build = lambda: False,
+            _backend_lacks_gpu_lib = lambda *a, **k: True,
+        )
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(
+                _hw_module,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("SENTINEL_AFTER_GATE"),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertNotIn("cpu-only build", exc_info.exception.detail.lower())
+        self.assertIn("SENTINEL_AFTER_GATE", exc_info.exception.detail)
+
+    def test_diffusion_gguf_on_vulkan_build_uses_cuda_path(self):
+        # The diffusion runner uses CUDA physical IDs even beside Vulkan llama.cpp.
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_cuda_path_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/diffusion.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/diffusion.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/diffusion.gguf",
+            display_name = "unsloth/diffusion.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        fake_backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            is_vulkan_build = lambda: True,
+            _backend_lacks_gpu_lib = lambda *a, **k: False,
+        )
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(
+                _hw_module,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("CUDA_PATH_SENTINEL"),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertIn("CUDA_PATH_SENTINEL", exc_info.exception.detail)
+
+    def test_diffusion_gguf_gpu_ids_require_cuda(self):
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_non_cuda_test",
+            "routes/inference.py",
+        )
+        config = SimpleNamespace(is_gguf = True)
+        fake_backend = SimpleNamespace(is_vulkan_build = lambda: True)
+        with (
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CPU),
+            patch.object(
+                _hw_module,
+                "resolve_requested_gpu_ids",
+                side_effect = AssertionError("non-CUDA diffusion must reject before resolving"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(inference_route._resolve_gguf_gpu_ids_for_request(config, [0]))
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("requires CUDA", exc_info.exception.detail)
+
+    def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
+        # Omission preserves memory flags while explicit context still owns -c.
+        inference_route = _load_route_module(
+            "inference_route_module_for_inherit_memflags_keep_test",
+            "routes/inference.py",
+        )
+        model_id = "unsloth/test.gguf"
+        fake_backend = SimpleNamespace(
+            extra_args = ["--mlock", "--no-mmap", "-c", "4096"],
+            extra_args_source = (model_id, None),
+        )
+        config = SimpleNamespace(is_gguf = True, gguf_variant = None)
+        request = LoadRequest(model_path = model_id, max_seq_length = 8192)
+        with patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend):
+            out = inference_route._resolve_inherited_extra_args(request, config, model_id, None)
+        self.assertIn("--mlock", out)
+        self.assertIn("--no-mmap", out)
+        self.assertNotIn("-c", out)  # first-class max_seq_length still strips the inherited -c
+
+    def test_inherited_extras_strip_memory_flags_when_mode_requested(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_inherit_memflags_strip_test",
+            "routes/inference.py",
+        )
+        model_id = "unsloth/test.gguf"
+        fake_backend = SimpleNamespace(
+            extra_args = ["--mlock", "--no-mmap", "--top-k", "20"],
+            extra_args_source = (model_id, None),
+        )
+        config = SimpleNamespace(is_gguf = True, gguf_variant = None)
+        request = LoadRequest(model_path = model_id, gguf_memory_mode = "resident")
+        with patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend):
+            out = inference_route._resolve_inherited_extra_args(request, config, model_id, None)
+        self.assertNotIn("--mlock", out)
+        self.assertNotIn("--no-mmap", out)
+        self.assertIn("--top-k", out)
 
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(

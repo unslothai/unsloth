@@ -1706,17 +1706,13 @@ def _extra_args_draft_offloaded_to_cpu(
     device flag has no env). An embedded MTP head follows the main -ngl, so these
     draft-only flags don't move it. Last-wins, so only each flag's final value counts."""
     ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
-    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
     args = [str(a) for a in extra_args] if extra_args else []
     last_ngl: Optional[str] = None
-    last_dev: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if flag in ngl_flags:
             last_ngl = value
-        elif flag in dev_flags:
-            last_dev = value
     if last_ngl is None:
         last_ngl = (os.environ if env is None else env).get("LLAMA_ARG_N_GPU_LAYERS_DRAFT")
     if last_ngl is not None:
@@ -1725,11 +1721,35 @@ def _extra_args_draft_offloaded_to_cpu(
                 return True
         except (TypeError, ValueError):
             pass
+    last_dev = _extra_args_draft_device(extra_args)
     if last_dev is not None:
         devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
         if devs and all(d in ("cpu", "none") for d in devs):
             return True
     return False
+
+
+def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last explicit draft-device value, if any."""
+    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
+    args = [str(a) for a in extra_args] if extra_args else []
+    last_dev: Optional[str] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag in dev_flags:
+            last_dev = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+    return last_dev
+
+
+def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return a GPU draft-device override; cpu/none do not conflict with a pin."""
+    last_dev = _extra_args_draft_device(extra_args)
+    if last_dev is None:
+        return None
+    devs = [d.strip() for d in last_dev.split(",") if d.strip()]
+    if not devs or all(d.lower() in ("cpu", "none") for d in devs):
+        return None
+    return last_dev
 
 
 def _extra_args_n_ubatch(
@@ -1918,6 +1938,19 @@ def _llama_lib_dir(binary: str) -> Path:
     return resolved.parent
 
 
+def _lib_dir_has_ggml_backend(lib_dir: Path, backend: str) -> bool:
+    """Match an exact or versioned ggml backend library soname."""
+    stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
+    try:
+        return any(
+            f.name == stem or f.name.startswith(stem + ".")
+            for f in lib_dir.iterdir()
+            if f.is_file()
+        )
+    except OSError:
+        return False
+
+
 def _is_external_link(path: Path) -> bool:
     """True when ``path`` is a --with-llama-cpp-dir local link: a POSIX symlink
     or a Windows directory junction / reparse point. Such a link resolves into
@@ -2027,6 +2060,10 @@ class LlamaCppBackend:
         # EFFECTIVE (fit-narrowed) pin for /status; dedupe compares this raw value so a
         # [0, 1] narrowed to [0] and re-sent as [0, 1] still matches (#7239).
         self._requested_gpu_ids: Optional[List[int]] = None
+        # Raw mode preserves explicit "auto"; the property provides its canonical form.
+        self._requested_memory_mode: Optional[str] = None
+        # An explicit mode must reload a child that inherited placement env vars.
+        self._launched_with_inherited_mem_env: bool = False
         # Layer load kept multi-GPU only to honor a downgraded tensor request, so a
         # later explicit tensor-off reloads instead of deduping to it (#6659).
         self._layer_preserves_tensor_intent: bool = False
@@ -2538,6 +2575,27 @@ class LlamaCppBackend:
                 list(self._requested_gpu_ids) if self._requested_gpu_ids else None
             )
 
+    def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
+        """Adopt the caller's raw host-memory intent after a full match."""
+        self._requested_memory_mode = (memory_mode or "").strip().lower() or None
+        if self._last_load_kwargs is not None and "memory_mode" in self._last_load_kwargs:
+            self._last_load_kwargs["memory_mode"] = self._requested_memory_mode
+
+    @property
+    def memory_mode(self) -> Optional[str]:
+        """Canonical active GGUF memory mode; auto is None."""
+        return self._canonical_memory_mode(self._requested_memory_mode)
+
+    @property
+    def requested_memory_mode(self) -> Optional[str]:
+        """Raw mode for status responses, preserving explicit auto."""
+        return self._requested_memory_mode
+
+    @property
+    def launched_with_inherited_mem_env(self) -> bool:
+        """Whether the child inherited llama.cpp memory-placement env vars."""
+        return self._launched_with_inherited_mem_env
+
     @property
     def n_layers(self) -> Optional[int]:
         """Model layer count (GGUF block_count), or None if unknown."""
@@ -2788,6 +2846,7 @@ class LlamaCppBackend:
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
+                "supports_load_mode": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "supports_no_cache_prompt": False,
@@ -2809,6 +2868,7 @@ class LlamaCppBackend:
         supports_kv_unified = False
         supports_fit_ctx = False
         supports_fit_target = False
+        supports_load_mode = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
@@ -2914,6 +2974,7 @@ class LlamaCppBackend:
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
+            supports_load_mode = _is_real("--load-mode")
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
@@ -2950,6 +3011,7 @@ class LlamaCppBackend:
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
+            "supports_load_mode": supports_load_mode,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "supports_no_cache_prompt": supports_no_cache_prompt,
@@ -3010,13 +3072,10 @@ class LlamaCppBackend:
         if not binary:
             return False
         lib_dir = _llama_lib_dir(binary)
-        if not (lib_dir / _vulkan_lib_filename()).is_file():
+        if not _lib_dir_has_ggml_backend(lib_dir, "vulkan"):
             return False
         for _backend in ("cuda", "hip"):
-            sibling = (
-                f"ggml-{_backend}.dll" if sys.platform == "win32" else f"libggml-{_backend}.so"
-            )
-            if (lib_dir / sibling).is_file():
+            if _lib_dir_has_ggml_backend(lib_dir, _backend):
                 return False
         return True
 
@@ -3323,6 +3382,43 @@ class LlamaCppBackend:
         return ["--device", ",".join(f"Vulkan{i}" for i in gpu_indices)]
 
     @staticmethod
+    def _backend_lacks_gpu_lib(binary: Optional[str] = None) -> bool:
+        """Detect a split-library build proven to be CPU-only.
+
+        Unknown and static layouts return False to avoid rejecting custom GPU builds.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        lib_dir = _llama_lib_dir(binary)
+        if not lib_dir or not lib_dir.is_dir():
+            return False
+        if any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("vulkan", "cuda", "hip")):
+            return False
+        return any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("cpu", "base"))
+
+    def is_vulkan_build(self) -> bool:
+        """Whether the resolved llama-server uses Vulkan ordinals."""
+        try:
+            return self._is_vulkan_backend(self._find_llama_server_binary())
+        except Exception:
+            return False
+
+    @staticmethod
+    def _strip_device_extra_args(extra_args):
+        """Drop --device/-dev so gpu_ids remains authoritative."""
+        return strip_shadowing_flags(
+            extra_args,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_memory_mode = False,
+            strip_device = True,
+        )
+
+    @staticmethod
     def _get_gpu_free_memory(binary: Optional[str] = None) -> list[tuple[int, int]]:
         """Query free memory per GPU. Returns ``(gpu_index, free_mib)`` sorted by
         index; empty if no supported GPU is reachable. Thin wrapper over
@@ -3463,34 +3559,19 @@ class LlamaCppBackend:
             return []
 
     @staticmethod
-    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
-        """Query free (and total) VRAM per device via the bundled ggml Vulkan backend.
-
-        Loads ``libggml-vulkan`` in a short-lived subprocess (no Vulkan instance
-        in this process) and returns (device_index, free_mib, total_mib) sorted
-        by index. The index is ggml's compact Vulkan ordinal -- the one the
-        registry names ``Vulkan<index>`` and load_model pins with ``--device``,
-        NOT the raw ``GGML_VK_VISIBLE_DEVICES`` space. A user-set
-        ``GGML_VK_VISIBLE_DEVICES`` is honored by ggml (passed through), so the
-        list already reflects it. iGPUs leave a host-RAM margin (see
-        ``_apply_igpu_host_reserve_mib``) and report total 0; discrete cards pass
-        their real total through. [] when no Vulkan build or device is reachable.
-        """
+    def _probe_vulkan_devices(
+        binary: Optional[str] = None,
+    ) -> list[tuple[int, int, bool, int, str]]:
+        """Return ``(ordinal, free, is_igpu, total, name)`` from a ggml probe."""
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return []
         binary_dir = _llama_lib_dir(binary)
-        if not (binary_dir / _vulkan_lib_filename()).is_file():
+        if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
             return []
 
         env = child_env_without_native_path_secret()
-        # Pass any inherited GGML_VK_VISIBLE_DEVICES through to ggml unchanged so
-        # the probe enumerates the same device list the launch will, named
-        # Vulkan0..N in the compact order reported here and pinned by that name
-        # via --device -- probe, mask, and pin stay in one index space. Do NOT
-        # filter the mask in Python: ggml parses the env var in raw
-        # vkEnumeratePhysicalDevices space while this probe reports the compact
-        # post-filter ordinal, so a Python filter would compare mismatched spaces.
+        # Let ggml apply GGML_VK_VISIBLE_DEVICES; Python sees compact ordinals.
         if sys.platform != "win32":
             # Let the loader resolve sibling ggml libs next to the binary.
             existing_ld = env.get("LD_LIBRARY_PATH", "")
@@ -3516,21 +3597,73 @@ class LlamaCppBackend:
             logger.debug(f"vulkan GPU probe failed: {e}")
             return []
 
-        gpus: list[tuple[int, int, int]] = []
+        devices: list[tuple[int, int, bool, int, str]] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
-            if len(parts) != 4:
+            if len(parts) < 4:
                 continue
             try:
                 idx = int(parts[0])
-                free_mib = int(parts[1]) // (1024 * 1024)
+                free_bytes = int(parts[1])
                 is_igpu = parts[2] == "1"
-                # iGPU "total" is shared RAM, not a VRAM budget -> keep 0 so the
-                # fit stays on free*frac (the host reserve below is its
-                # headroom); a discrete card passes its real total through.
-                total_mib = 0 if is_igpu else int(parts[3]) // (1024 * 1024)
+                total_bytes = int(parts[3])
             except ValueError:
                 continue
+            name = parts[4].strip() if len(parts) >= 5 else ""
+            devices.append((idx, free_bytes, is_igpu, total_bytes, name or f"Vulkan{idx}"))
+        devices.sort(key = lambda row: row[0])
+        return devices
+
+    @staticmethod
+    def _get_vulkan_gpu_info(binary: Optional[str] = None) -> list[dict]:
+        """Vulkan-ordinal device records suitable for ``/api/system``.
+
+        Unlike CUDA/HIP physical IDs, these indices are explicitly tagged
+        ``vulkan`` so the frontend can offer them only to the GGUF picker.
+        """
+        devices = []
+        for idx, free_bytes, is_igpu, total_bytes, name in LlamaCppBackend._probe_vulkan_devices(
+            binary
+        ):
+            free_mib = free_bytes // (1024 * 1024)
+            capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
+            total_gb = round(total_bytes / (1024**3), 2) if total_bytes > 0 else 0
+            free_gb = round(capped / 1024, 2)
+            used_gb = (
+                round(max(0, total_bytes - free_bytes) / (1024**3), 2) if total_bytes > 0 else None
+            )
+            devices.append(
+                {
+                    "index": idx,
+                    "visible_ordinal": idx,
+                    "index_kind": "vulkan",
+                    "name": name,
+                    "memory_total_gb": total_gb,
+                    "vram_total_gb": total_gb,
+                    "vram_free_gb": free_gb,
+                    "vram_used_gb": used_gb,
+                    "vram_utilization_pct": (
+                        round((used_gb / total_gb) * 100, 1)
+                        if used_gb is not None and total_gb > 0
+                        else None
+                    ),
+                }
+            )
+        return devices
+
+    @staticmethod
+    def _get_gpu_free_memory_vulkan(binary: Optional[str] = None) -> list[tuple[int, int, int]]:
+        """Query free (and total) VRAM via ggml's Vulkan ordinal space.
+
+        iGPUs leave host-RAM headroom and report total 0 to the fit planner,
+        because their reported heap is shared system memory. Discrete cards
+        retain their real total so the planner can reserve absolute headroom.
+        """
+        gpus: list[tuple[int, int, int]] = []
+        for idx, free_bytes, is_igpu, total_bytes, _name in LlamaCppBackend._probe_vulkan_devices(
+            binary
+        ):
+            free_mib = free_bytes // (1024 * 1024)
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
             if capped < free_mib:
                 logger.info(
@@ -3538,8 +3671,9 @@ class LlamaCppBackend:
                     f"RAM; reserving {free_mib - capped}MiB host headroom "
                     f"({free_mib}->{capped}MiB usable)"
                 )
+            # An iGPU's total is shared RAM, not an independent VRAM budget.
+            total_mib = 0 if is_igpu else total_bytes // (1024 * 1024)
             gpus.append((idx, capped, total_mib))
-        gpus.sort(key = lambda g: g[0])
         if gpus:
             logger.info(
                 "Vulkan GPU memory detected: "
@@ -6247,6 +6381,31 @@ class LlamaCppBackend:
         )
         self._stdout_thread.start()
 
+    @staticmethod
+    def _canonical_memory_mode(memory_mode: Optional[str]) -> Optional[str]:
+        """Normalize auto, blank, and None to the default mode."""
+        mode = (memory_mode or "").strip().lower()
+        if mode in ("", "auto"):
+            return None
+        return mode
+
+    @staticmethod
+    def _memory_mode_flags(
+        memory_mode: Optional[str], *, supports_load_mode: bool = False
+    ) -> List[str]:
+        """Translate a memory mode to unified or legacy llama.cpp flags."""
+        mode = LlamaCppBackend._canonical_memory_mode(memory_mode)
+        if mode == "pinned":
+            if supports_load_mode:
+                return ["--load-mode", "mlock"]
+            return ["--mlock"]
+        if mode == "resident":
+            if supports_load_mode:
+                # Unified load modes cannot combine a RAM copy with mlock.
+                return ["--load-mode", "none"]
+            return ["--no-mmap", "--mlock"]
+        return []
+
     @_with_gguf_load_marker
     def load_model(
         self,
@@ -6277,6 +6436,8 @@ class LlamaCppBackend:
         # Explicit GPU placement pool (issue #7164). None/[] = auto-select;
         # the fitter may pin the smallest subset of this pool that fits.
         gpu_ids: Optional[List[int]] = None,
+        gpu_ids_are_vulkan_ordinals: Optional[bool] = None,
+        memory_mode: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
@@ -6292,6 +6453,17 @@ class LlamaCppBackend:
 
         Returns True if the server started and the health check passed.
         """
+        # An explicit mode owns all memory-placement flags, including auto.
+        if memory_mode is not None and extra_args:
+            extra_args = strip_shadowing_flags(
+                extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_memory_mode = True,
+            )
         # Raw load inputs so the runtime MTP-crash reload can replay this model
         # without MTP. Committed to _last_load_kwargs only on a healthy load.
         _pending_load_kwargs = {
@@ -6317,6 +6489,8 @@ class LlamaCppBackend:
             "n_cpu_moe": n_cpu_moe,
             "tensor_split": list(tensor_split) if tensor_split is not None else None,
             "gpu_ids": list(gpu_ids) if gpu_ids is not None else None,
+            "gpu_ids_are_vulkan_ordinals": gpu_ids_are_vulkan_ordinals,
+            "memory_mode": memory_mode,
             "n_threads": n_threads,
             "n_gpu_layers": n_gpu_layers,
             "n_parallel": n_parallel,
@@ -6348,6 +6522,7 @@ class LlamaCppBackend:
                 n_cpu_moe = n_cpu_moe,
                 tensor_split = tensor_split,
                 gpu_ids = gpu_ids,
+                memory_mode = memory_mode,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -6378,14 +6553,7 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
-            # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
-            # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
-            # Validate it ABOVE the kill so an invalid selection leaves the live model
-            # untouched: CUDA ids are range-checked at the route, but Vulkan ordinals are
-            # not, so a stale gpu_ids=[99] used to kill the server then 400, leaving
-            # nothing running (#7239). _get_gpu_memory needs only the binary (safe pre-
-            # download) and reuses the later fit's issubset logic. Guarded on a found
-            # Vulkan build + a pin so a deferred not-found stays deferred for diffusion.
+            # Reject stale Vulkan ordinals before replacing the live model.
             if is_vulkan_backend and gpu_ids and binary:
                 _pf_wanted = {int(x) for x in gpu_ids}
                 _pf_probed = {g[0] for g in self._get_gpu_memory(binary)}
@@ -6395,12 +6563,7 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
-            # A remote uncached GGUF may only reveal that it needs the
-            # single-device diffusion runner after download. On Vulkan, an
-            # explicit gpu_ids request cannot be mapped from ggml ordinals to
-            # that runner's CUDA physical index. Download and classify the main
-            # file before killing the healthy server so this late rejection is
-            # non-destructive. The Phase 2 call below reuses this cached path.
+            # Classify remote Vulkan loads before teardown because diffusion uses CUDA IDs.
             _preflight_model_path = None
             if is_vulkan_backend and gpu_ids and hf_repo:
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
@@ -6501,11 +6664,13 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
-                # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
-                # Route and remote-download preflights reject before teardown; keep
-                # this as a final defense if classification ever disagrees.
-                if is_vulkan_backend and gpu_ids:
+                if self._canonical_memory_mode(memory_mode) is not None:
+                    raise ValueError(
+                        "GGUF host-memory modes are not supported for "
+                        "DiffusionGemma models. Use Auto."
+                    )
+                # The diffusion runner cannot translate Vulkan ordinals to CUDA IDs.
+                if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is not False:
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
                         "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
@@ -6516,6 +6681,9 @@ class LlamaCppBackend:
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
+                # The diffusion runner has no host-memory placement modes.
+                self._requested_memory_mode = None
+                self._launched_with_inherited_mem_env = False
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")
@@ -6617,7 +6785,8 @@ class LlamaCppBackend:
                     self._gpu_layers = -1
                     self._n_cpu_moe = 0
                     self._tensor_split = None
-                self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
+                self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
+                self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
                 # tensor at launch; drop it when fewer than 2 GPUs are in use --
                 # tensor split is a no-op there and aborts on some architectures.
@@ -6729,6 +6898,7 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
@@ -7615,6 +7785,27 @@ class LlamaCppBackend:
                 # model can't spill onto an unpicked GPU.
                 if gpu_ids and gpu_indices is None:
                     gpu_indices = sorted(gpu_ids)
+                # Auto Vulkan fit prefers discrete GPUs and keeps that pool pinned.
+                elif (
+                    is_vulkan_backend
+                    and gpu_memory_mode != "manual"
+                    and use_fit
+                    and gpu_indices is None
+                    and _detected_gpus
+                ):
+                    discrete_ids = [
+                        idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 0) > 0
+                    ]
+                    gpu_indices = sorted(discrete_ids or [idx for idx, _free in _detected_gpus])
+
+                # Status reports the explicit subset the launch actually uses,
+                # while reload dedupe compares requested_gpu_ids so repeating a
+                # wider request that fit narrowed does not restart the server.
+                if gpu_ids:
+                    effective_pin = gpu_indices if gpu_indices is not None else gpu_ids
+                    self._gpu_ids = sorted(int(idx) for idx in effective_pin)
+                else:
+                    self._gpu_ids = None
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
@@ -7670,6 +7861,16 @@ class LlamaCppBackend:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
+
+                server_caps = self.probe_server_capabilities(binary)
+
+                # Emit host-memory policy directly so manual env cleanup cannot remove it.
+                cmd.extend(
+                    self._memory_mode_flags(
+                        memory_mode,
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    )
+                )
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -7746,7 +7947,6 @@ class LlamaCppBackend:
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
 
-                server_caps = self.probe_server_capabilities(binary)
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
                 if server_caps.get("supports_metrics"):
@@ -8017,8 +8217,19 @@ class LlamaCppBackend:
                 # lets the user override Unsloth's auto-set flags. Already
                 # validated by the route via validate_extra_args().
                 if extra_args:
-                    cmd.extend(str(a) for a in extra_args)
-                    logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
+                    _emit_extra_args = list(extra_args)
+                    if gpu_ids is not None:
+                        # gpu_ids owns placement, so remove a competing --device.
+                        _emit_extra_args = self._strip_device_extra_args(extra_args)
+                        if _emit_extra_args != list(extra_args):
+                            logger.info(
+                                "Dropped a user --device/-dev from extra args: explicit "
+                                "gpu_ids owns device placement."
+                            )
+                    cmd.extend(str(a) for a in _emit_extra_args)
+                    logger.info(
+                        f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
+                    )
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
@@ -8031,6 +8242,21 @@ class LlamaCppBackend:
                 # arg handler and silently force hardware_concurrency(). #5692
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
+
+                # Explicit modes scrub inherited placement env; omission preserves it.
+                _mm_vars = (
+                    "LLAMA_ARG_LOAD_MODE",
+                    "LLAMA_ARG_MLOCK",
+                    "LLAMA_ARG_NO_MMAP",
+                    "LLAMA_ARG_MMAP",
+                    "LLAMA_ARG_DIO",
+                )
+                if memory_mode is not None:
+                    for _mm_var in _mm_vars:
+                        env.pop(_mm_var, None)
+                    _child_inherited_mem_env = False
+                else:
+                    _child_inherited_mem_env = any(_v in env for _v in _mm_vars)
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
@@ -8056,6 +8282,10 @@ class LlamaCppBackend:
                         _ct_raw = (env.get(_ct_var) or "").strip().lower()
                         if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
                             env.pop(_ct_var, None)
+
+                # A gpu_ids pin also owns the inherited --device equivalent.
+                if gpu_ids is not None:
+                    env.pop("LLAMA_ARG_DEVICE", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
@@ -8533,9 +8763,20 @@ class LlamaCppBackend:
                 # clears, list sets. Source records hf_variant for the route's
                 # same_source check.
                 if extra_args is not None:
-                    self._extra_args = list(extra_args)
+                    # Persist the same device-stripped extras the command used when gpu_ids
+                    # owns placement, so a later inheriting reload (after gpu_ids clears)
+                    # can't resurrect the dropped --device (#7188).
+                    self._extra_args = (
+                        self._strip_device_extra_args(extra_args)
+                        if gpu_ids is not None
+                        else list(extra_args)
+                    )
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
+                # Raw requested mode for the response echo, so an explicit "auto"
+                # round-trips instead of collapsing to null (#7188).
+                self._requested_memory_mode = (memory_mode or "").strip().lower() or None
+                self._launched_with_inherited_mem_env = _child_inherited_mem_env
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_kwargs = _pending_load_kwargs
@@ -8947,6 +9188,7 @@ class LlamaCppBackend:
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
+        memory_mode: Optional[str] = None,
         mtp_draft_path: Optional[str] = None,
         preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
@@ -9029,6 +9271,14 @@ class LlamaCppBackend:
         if not self.matches_gpu_ids(gpu_ids):
             return False
 
+        # GGUF host-memory placement mode is first-class; a change must reload (#7164).
+        if self.memory_mode != LlamaCppBackend._canonical_memory_mode(memory_mode):
+            return False
+        # An explicit memory_mode, including "auto", over a child carrying inherited
+        # LLAMA_ARG_* flags must reload so the scrub runs.
+        if memory_mode is not None and self._launched_with_inherited_mem_env:
+            return False
+
         # Compare on the canonical requested mode. With --spec-type in
         # extra_args the backend stores None; mirror that here.
         if _extra_args_set_spec_type(extra_args):
@@ -9082,9 +9332,14 @@ class LlamaCppBackend:
         # layer); only an explicit list forces equality.
         if extra_args is not None:
             current = list(self._extra_args) if self._extra_args is not None else []
-            if list(extra_args) != current:
+            candidate = list(extra_args)
+            # Compare the same device-stripped extras that load_model persisted.
+            if gpu_ids is not None:
+                candidate = self._strip_device_extra_args(candidate)
+            if candidate != current:
                 return False
         self._record_matching_gpu_request(gpu_ids)
+        self._record_matching_memory_request(memory_mode)
         return True
 
     def _classify_gpu_offload(
@@ -9225,6 +9480,8 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
+            self._requested_memory_mode = None
+            self._launched_with_inherited_mem_env = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
             self._requested_spec_mode = None
@@ -10147,10 +10404,11 @@ class LlamaCppBackend:
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
         at an explicitly requested ctx so it offloads or fails instead of
-        silently shrinking the window. The 8192 auto-floor and the tighter
-        ``--fit-target`` margin apply only under Manual + Auto (``auto_fit``),
-        which omits ``-c``: on the legacy auto path ``-c 0`` already pins the
-        native window and ``--fit-ctx 8192`` would override it down to 8192.
+        silently shrinking the window. The 8192 auto-floor applies only under
+        Manual + Auto (``auto_fit``), which omits ``-c``: on the legacy auto
+        path ``-c 0`` already pins the native window and ``--fit-ctx 8192``
+        would override it down to 8192. Keep llama.cpp's default fit target
+        instead of reducing its safety margin.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -10163,11 +10421,6 @@ class LlamaCppBackend:
                 # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
                 # shrink the window below a usable size.
                 flags.extend(["--fit-ctx", "8192"])
-        if use_fit and auto_fit and caps.get("supports_fit_target"):
-            # llama.cpp's --fit leaves 1 GiB free per device by default;
-            # tighten that to 512 MiB so it packs more of the model onto
-            # the GPU before spilling to system RAM.
-            flags.extend(["--fit-target", "512"])
         return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:

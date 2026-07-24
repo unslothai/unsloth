@@ -3,6 +3,8 @@
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
+export type GgufMemoryMode = "auto" | "pinned" | "resident";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -75,8 +77,10 @@ export interface LoadModelRequest {
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
   tensor_split?: number[] | null;
-  /** Picked physical GPU indices (omit/empty = automatic). */
+  /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** GGUF host-only loading policy. It does not control GPU VRAM residency. */
+  gguf_memory_mode?: GgufMemoryMode | null;
 }
 
 export interface ValidateModelResponse {
@@ -192,6 +196,8 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** GGUF host-memory placement mode the load was invoked with. */
+  gguf_memory_mode?: GgufMemoryMode | null;
 }
 
 export interface UnloadModelRequest {
@@ -247,6 +253,8 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Active GGUF host-memory placement mode (from /status). */
+  gguf_memory_mode?: GgufMemoryMode | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

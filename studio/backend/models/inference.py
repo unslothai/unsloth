@@ -20,6 +20,8 @@ from pydantic import (
 
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
+GgufMemoryMode = Literal["auto", "pinned", "resident"]
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -79,9 +81,10 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
-            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
-            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
-            "physical IDs are unsupported when the parent visibility mask uses "
+            "automatic selection. CUDA/ROCm values are physical GPU indices; "
+            "Vulkan values are ggml device ordinals. Explicit selection is not "
+            "supported on XPU, and physical IDs are unsupported when the parent "
+            "visibility mask uses "
             "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
             "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
             "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
@@ -182,6 +185,30 @@ class LoadRequest(BaseModel):
             raise ValueError("tensor_split must have a positive total")
         return value
 
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+        None,
+        description = (
+            "GGUF host-memory placement mode (llama.cpp --mlock/--no-mmap). These "
+            "control system RAM residency and file mapping on the host, NOT GPU VRAM "
+            "placement, so they do not by themselves keep offloaded weights pinned in "
+            "VRAM. Omit the field to preserve inherited llama.cpp settings. 'auto' "
+            "explicitly restores normal memory-mapped loading. 'pinned' locks mapped "
+            "host pages so the OS cannot page them out. 'resident' loads a RAM copy "
+            "instead of mapping the file; on newer llama.cpp builds that copy cannot "
+            "also be locked and may still be swapped. Ignored for non-GGUF models."
+        ),
+    )
+
+    @field_validator("gguf_memory_mode", mode = "before")
+    @classmethod
+    def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
+        # Map a form's blank default to explicit "auto" (not None) so it counts as a
+        # choice: the scrub of inherited LLAMA_ARG_MLOCK/NO_MMAP/MMAP only runs when the
+        # value is not None, so blank -> None would let those env vars survive (#7164).
+        if isinstance(value, str) and value.strip() == "":
+            return "auto"
+        return value
+
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -249,6 +276,20 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+        None,
+        description = "Intended GGUF memory placement mode; mirrors /load so validate's sizing agrees with the follow-up load.",
+    )
+
+    @field_validator("gguf_memory_mode", mode = "before")
+    @classmethod
+    def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
+        # Mirror LoadRequest: blank maps to explicit "auto" so validate and load agree
+        # and the inherited-env scrub isn't skipped (and it avoids a 422) (#7164).
+        if isinstance(value, str) and value.strip() == "":
+            return "auto"
+        return value
+
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -509,6 +550,10 @@ class LoadResponse(BaseModel):
             "or None for automatic selection."
         ),
     )
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+        None,
+        description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -683,6 +728,10 @@ class InferenceStatusResponse(BaseModel):
             "GPU placement pool requested by the user before fit-time narrowing, "
             "or None for automatic selection."
         ),
+    )
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+        None,
+        description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
