@@ -1802,8 +1802,7 @@ studio_router = APIRouter()
 # (it only renders postMessage'd HTML in a no-same-origin sandbox), so also allowing
 # any localhost/127.0.0.1 dev origin to frame it is safe and unblocks the dev shell.
 _ARTIFACT_PREVIEW_FRAME_ANCESTORS = (
-    "'self' tauri://localhost http://tauri.localhost "
-    "http://localhost:* http://127.0.0.1:*"
+    "'self' tauri://localhost http://tauri.localhost http://localhost:* http://127.0.0.1:*"
 )
 _ARTIFACT_PREVIEW_FRAME_STRICT_CSP = (
     "default-src 'none'; "
