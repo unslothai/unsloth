@@ -12,8 +12,11 @@ import pytest
 import torch
 
 cuda_available = torch.cuda.is_available()
+xpu_available = torch.xpu.is_available()
+gpu_available = cuda_available or xpu_available
+device = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
-pytestmark = pytest.mark.skipif(not cuda_available, reason = "requires a CUDA GPU")
+pytestmark = pytest.mark.skipif(not gpu_available, reason = "requires a CUDA or XPU GPU")
 
 MODEL_NAME = "unsloth/Qwen2.5-0.5B-Instruct"
 MAX_NEW_TOKENS = 32
@@ -53,7 +56,7 @@ def _chat(tokenizer, prompt):
 
 def _generate(model, tokenizer, texts):
     inputs = tokenizer(texts, return_tensors = "pt", padding = True, add_special_tokens = False).to(
-        "cuda"
+        device
     )
     with torch.inference_mode():
         out = model.generate(

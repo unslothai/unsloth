@@ -130,8 +130,14 @@ def _test_fake_quantizers_are_called(
                     # Weight fake quantizers must always be called.
                     assert child.weight_fake_quantizer.count == 1
 
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        pytest.skip("No GPU available")
     for k, v in example_inputs.items():
-        example_inputs[k] = v.cuda()
+        example_inputs[k] = v.to(device)
     model.apply(_swap_fake_quantizers)
     model(**example_inputs)
     model.apply(_assert_fake_quantizers_are_called)
