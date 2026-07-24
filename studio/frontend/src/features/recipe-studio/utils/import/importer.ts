@@ -12,8 +12,10 @@ import type {
   SamplerConfig,
   SeedSourceType,
   ToolProfileConfig,
+  TrainingCardConfig,
   ValidatorConfig,
 } from "../../types";
+import { makeTrainConfig } from "../config-factories";
 import { buildEdges } from "./edges";
 import { isRecord, parseJson, readString } from "./helpers";
 import { parseColumn, parseModelConfig, parseModelProvider } from "./parsers";
@@ -256,6 +258,125 @@ function parseUiMarkdownNoteNodes(input: unknown): UiMarkdownNoteNode[] {
   return noteNodes;
 }
 
+type UiTrainNode = {
+  name: string;
+  raw: Record<string, unknown>;
+};
+
+function parseUiTrainNodes(input: unknown): UiTrainNode[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const trainNodes: UiTrainNode[] = [];
+  for (const node of input) {
+    if (!isRecord(node)) {
+      continue;
+    }
+    const nodeType = readString(node.node_type) ?? readString(node.type);
+    if (nodeType !== "train") {
+      continue;
+    }
+    const name = readString(node.name) ?? readString(node.id);
+    if (!name?.trim()) {
+      continue;
+    }
+    trainNodes.push({
+      name: name.trim(),
+      raw: isRecord(node.train) ? node.train : {},
+    });
+  }
+  return trainNodes;
+}
+
+function buildTrainConfig(
+  node: UiTrainNode,
+  id: string,
+  existing: NodeConfig[],
+): TrainingCardConfig {
+  const base = makeTrainConfig(id, existing);
+  const raw = node.raw;
+  const num = (key: keyof TrainingCardConfig, fallback: number): number => {
+    const value = Number(raw[key]);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const str = (key: keyof TrainingCardConfig, fallback: string): string =>
+    typeof raw[key] === "string" ? (raw[key] as string) : fallback;
+  const bool = (key: keyof TrainingCardConfig, fallback: boolean): boolean =>
+    typeof raw[key] === "boolean" ? (raw[key] as boolean) : fallback;
+  const oneOf = <T extends string>(
+    key: keyof TrainingCardConfig,
+    allowed: readonly T[],
+    fallback: T,
+  ): T => {
+    const value = raw[key];
+    return typeof value === "string" && allowed.includes(value as T)
+      ? (value as T)
+      : fallback;
+  };
+  const targetModules = Array.isArray(raw.targetModules)
+    ? raw.targetModules.map((value) => String(value)).filter(Boolean)
+    : base.targetModules;
+
+  return {
+    ...base,
+    name: node.name,
+    advancedOpen: bool("advancedOpen", base.advancedOpen ?? false),
+    baseModel: str("baseModel", base.baseModel),
+    trainingMethod: oneOf(
+      "trainingMethod",
+      ["qlora", "lora", "full", "cpt"] as const,
+      base.trainingMethod,
+    ),
+    datasetSource: oneOf(
+      "datasetSource",
+      ["recipe", "huggingface", "upload"] as const,
+      base.datasetSource,
+    ),
+    hfDataset: str("hfDataset", base.hfDataset),
+    hfSubset: str("hfSubset", base.hfSubset),
+    hfSplit: str("hfSplit", base.hfSplit),
+    datasetFormat: oneOf(
+      "datasetFormat",
+      ["auto", "alpaca", "chatml", "sharegpt", "raw"] as const,
+      base.datasetFormat,
+    ),
+    uploadedFile: str("uploadedFile", base.uploadedFile),
+    epochs: num("epochs", base.epochs),
+    loraRank: num("loraRank", base.loraRank),
+    loraAlpha: num("loraAlpha", base.loraAlpha),
+    loraDropout: num("loraDropout", base.loraDropout),
+    loraVariant: oneOf(
+      "loraVariant",
+      ["lora", "rslora", "loftq"] as const,
+      base.loraVariant,
+    ),
+    batchSize: num("batchSize", base.batchSize),
+    learningRate: num("learningRate", base.learningRate),
+    contextLength: num("contextLength", base.contextLength),
+    outputName: str("outputName", node.name),
+    gradientAccumulation: num("gradientAccumulation", base.gradientAccumulation),
+    warmupSteps: num("warmupSteps", base.warmupSteps),
+    maxSteps: num("maxSteps", base.maxSteps),
+    weightDecay: num("weightDecay", base.weightDecay),
+    optimizerType: str("optimizerType", base.optimizerType),
+    lrSchedulerType: str("lrSchedulerType", base.lrSchedulerType),
+    packing: bool("packing", base.packing),
+    trainOnCompletions: bool("trainOnCompletions", base.trainOnCompletions),
+    gradientCheckpointing: oneOf(
+      "gradientCheckpointing",
+      ["none", "true", "unsloth", "mlx"] as const,
+      base.gradientCheckpointing,
+    ),
+    randomSeed: num("randomSeed", base.randomSeed),
+    targetModules,
+    enableWandb: bool("enableWandb", base.enableWandb),
+    wandbProject: str("wandbProject", base.wandbProject),
+    enableTensorboard: bool("enableTensorboard", base.enableTensorboard),
+    tensorboardDir: str("tensorboardDir", base.tensorboardDir),
+    hfToken: str("hfToken", base.hfToken),
+  };
+}
+
 function parseUiToolProfileNodes(
   input: unknown,
 ): Map<string, Record<string, string[]>> {
@@ -452,6 +573,7 @@ export function importRecipePayload(
     ui?.advanced_open_by_node,
   );
   const uiMarkdownNotes = parseUiMarkdownNoteNodes(ui?.nodes);
+  const uiTrainNodes = parseUiTrainNodes(ui?.nodes);
   const uiToolProfilesByName = parseUiToolProfileNodes(ui?.nodes);
 
   for (const note of uiMarkdownNotes) {
@@ -465,6 +587,18 @@ export function importRecipePayload(
       note_color: note.note_color ?? "#FDE68A",
       note_opacity: note.note_opacity ?? "35",
     };
+    if (nameToId.has(config.name)) {
+      errors.push(`Duplicate column name: ${config.name}.`);
+      continue;
+    }
+    nameToId.set(config.name, config.id);
+    configs.push(config);
+  }
+
+  for (const trainNode of uiTrainNodes) {
+    const id = `n${nextId}`;
+    nextId += 1;
+    const config = buildTrainConfig(trainNode, id, configs);
     if (nameToId.has(config.name)) {
       errors.push(`Duplicate column name: ${config.name}.`);
       continue;
