@@ -14,6 +14,13 @@ FAIL=0
 # controllable path so we can test the "no GPU" scenario on GPU machines.
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
+# The ROCm probe helpers read the real /opt/rocm prefix by ABSOLUTE path
+# (_ensure_rocm_probe_env appends /opt/rocm/bin to PATH and runs the host
+# rocminfo; version detection reads /opt/rocm/.info/version). On a real ROCm
+# host that leaks the host GPU into the minimal-PATH harness and makes the
+# no-GPU / CPU assertions host-dependent. Redirect the whole prefix to an empty
+# temp dir so the probes stay hermetic (same idea as the nvidia-smi rewrite).
+_FAKE_ROCM_DIR=$(mktemp -d)
 {
     sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -43,7 +50,8 @@ _FAKE_SMI_DIR=$(mktemp -d)
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
-} | sed "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+} | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
+      -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
 
 # Save system PATH so we always have basic tools (uname, grep, head, etc.)
@@ -455,6 +463,7 @@ assert_eq "url override preserves fragment slash" "https://mirror.example.com/wh
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"
+rm -rf "$_FAKE_ROCM_DIR"
 rm -rf "$_TOOLS_DIR"
 
 echo ""
