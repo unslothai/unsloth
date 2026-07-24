@@ -76,6 +76,12 @@ import {
   toPresetParams,
 } from "./presets/preset-policy";
 import {
+  applyPresetLoadConfig,
+  capturePresetLoadConfig,
+  formatPresetLoadConfigSummary,
+  isSamePresetLoadConfig,
+} from "./presets/preset-load-config";
+import {
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
@@ -385,6 +391,12 @@ export function ChatSettingsPanel({
     (s) => s.ggufMaxContextLength,
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
+  const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
+  const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
+  const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
+  const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
   const mtpUpdatable =
@@ -469,11 +481,50 @@ export function ChatSettingsPanel({
       if (activePresetDefinition == null) {
         return false;
       }
-      if (activePresetDefinition.name === "Default") {
-        return activePresetSource === "modified";
-      }
-      return !isSamePresetConfig(activePresetDefinition.params, params);
-  }, [activePresetDefinition, activePresetSource, params]);
+      const samplingChanged =
+        activePresetDefinition.name === "Default"
+          ? activePresetSource === "modified"
+          : !isSamePresetConfig(activePresetDefinition.params, params);
+      const currentLoadConfig = capturePresetLoadConfig();
+      const loadChanged = !isSamePresetLoadConfig(
+        activePresetDefinition.loadConfig,
+        currentLoadConfig,
+      );
+      return samplingChanged || loadChanged;
+  }, [
+    activePresetDefinition,
+    activePresetSource,
+    params,
+    customContextLength,
+    ggufContextLength,
+    kvCacheDtype,
+    gpuMemoryMode,
+    gpuLayers,
+    nCpuMoe,
+    tensorParallel,
+    speculativeType,
+    specDraftNMax,
+    params.maxSeqLength,
+  ]);
+  const activePresetLoadSummary = useMemo(
+    () => formatPresetLoadConfigSummary(activePresetDefinition?.loadConfig),
+    [activePresetDefinition],
+  );
+  const currentLoadSummary = useMemo(
+    () => formatPresetLoadConfigSummary(capturePresetLoadConfig()),
+    [
+      customContextLength,
+      ggufContextLength,
+      kvCacheDtype,
+      gpuMemoryMode,
+      gpuLayers,
+      nCpuMoe,
+      tensorParallel,
+      speculativeType,
+      specDraftNMax,
+      params.maxSeqLength,
+    ],
+  );
   const presetSaveState = useMemo(
     () =>
       getPresetSaveState({
@@ -549,8 +600,14 @@ export function ChatSettingsPanel({
       onParamsChange({
         ...applyPresetParams(params, p.params),
       });
+      if (p.loadConfig) {
+        applyPresetLoadConfig(p.loadConfig);
+      }
       setActivePreset(name);
       setActivePresetSource(getPresetSource(name));
+      if (p.loadConfig && params.checkpoint) {
+        toast.info("Reload the model to apply load settings from this preset.");
+      }
     }
   }
 
@@ -571,9 +628,14 @@ export function ChatSettingsPanel({
       ? getBuiltinVariantName(trimmed, usedNames)
       : trimmed;
     const next = customPresets.filter((p) => p.name !== saveName);
+    const loadConfig = capturePresetLoadConfig();
     const merged = [
       ...next,
-      { name: saveName, params: toPresetParams(params) },
+      {
+        name: saveName,
+        params: toPresetParams(params),
+        ...(loadConfig ? { loadConfig } : {}),
+      },
     ];
     setCustomPresets(merged);
     setActivePreset(saveName);
@@ -598,8 +660,11 @@ export function ChatSettingsPanel({
     if (activePreset === name) {
       if (fallbackPreset) {
         onParamsChange({
-          ...applyPresetParams(params, fallbackPreset.params),
+          ...        applyPresetParams(params, fallbackPreset.params),
         });
+        if (fallbackPreset.loadConfig) {
+          applyPresetLoadConfig(fallbackPreset.loadConfig);
+        }
         setActivePreset(fallbackPreset.name);
         setActivePresetSource("builtin-default");
       }
@@ -901,6 +966,23 @@ export function ChatSettingsPanel({
                 Delete
               </Button>
             </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Saving a preset also stores current load settings (context length,
+              KV cache dtype, speculative decoding, GPU layers).
+              {currentLoadSummary ? (
+                <>
+                  {" "}
+                  Active now: {currentLoadSummary}.
+                </>
+              ) : null}
+              {activePresetLoadSummary &&
+              activePresetLoadSummary !== currentLoadSummary ? (
+                <>
+                  {" "}
+                  Saved in preset: {activePresetLoadSummary}.
+                </>
+              ) : null}
+            </p>
           </div>
         </CollapsibleSection>
 

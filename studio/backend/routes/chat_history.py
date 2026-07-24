@@ -160,11 +160,26 @@ class ChatInferenceSettings(BaseModel):
     fastMode: Optional[bool] = None
 
 
+class ChatPresetLoadConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    customContextLength: Optional[int] = Field(default = None, gt = 0)
+    maxSeqLength: Optional[float] = None
+    kvCacheDtype: Optional[str] = None
+    speculativeType: Optional[str] = None
+    specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
+    tensorParallel: Optional[bool] = None
+    gpuMemoryMode: Optional[Literal["manual"]] = None
+    gpuLayers: Optional[int] = None
+    nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+
 class ChatPreset(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     name: str
     params: ChatInferenceSettings
+    loadConfig: Optional[ChatPresetLoadConfig] = None
 
 
 class ChatSettingsPayload(BaseModel):
