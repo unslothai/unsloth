@@ -1174,6 +1174,7 @@ def test_stream_external_local_tool_loop_unique_fallback_ids_across_rounds(monke
             ),
             "data: [DONE]",
         ]
+
     final_stream = [
         _sse_chunk(content = "done", finish_reason = "stop"),
         "data: [DONE]",
