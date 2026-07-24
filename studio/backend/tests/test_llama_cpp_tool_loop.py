@@ -84,7 +84,11 @@ def _make_backend(
     return backend
 
 
-def _patch_successful_respawn(monkeypatch, backend, port: int | None = None) -> list[bool]:
+def _patch_successful_respawn(
+    monkeypatch,
+    backend,
+    port: int | None = None,
+) -> list[bool]:
     calls: list[bool] = []
 
     def fake_respawn():
@@ -2256,7 +2260,6 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
     """Recover either post-tool generation path without rerunning the tool."""
     import httpx
-
     for max_tool_iterations, final_text in (
         (2, "The result is 1."),
         (1, "Final answer."),
