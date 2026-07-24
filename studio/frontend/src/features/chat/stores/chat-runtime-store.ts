@@ -606,6 +606,7 @@ export function loadedGpuMemoryFields(resp: {
   n_layers?: number | null;
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
+  requested_gpu_ids?: number[] | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -632,7 +633,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
-  const gpuIds = resp.gpu_ids ?? null;
+  // Keep the user's placement pool editable across status/load hydration.
+  // gpu_ids remains the effective fitted subset for diagnostics.
+  const gpuIds = resp.requested_gpu_ids ?? resp.gpu_ids ?? null;
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -670,7 +673,7 @@ export function loadedGpuMemoryFields(resp: {
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
-    // The picker reflects what loaded (the request sent the user's pick).
+    // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
     ...manualKnobs,

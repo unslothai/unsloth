@@ -101,13 +101,23 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     prepared = []
     monkeypatch.setattr(
         "hub.utils.download_registry.prepare_cache_for_transport",
-        lambda repo_type, repo_id, mode, *a, **k: prepared.append((repo_type, repo_id, mode)),
+        lambda repo_type, repo_id, mode, *a, **k: prepared.append(
+            (repo_type, repo_id, mode, k.get("root"))
+        ),
     )
 
-    out = xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None)
+    selected_cache = "/captured/hub"
+    out = xf.hf_hub_download_with_xet_fallback(
+        DL_REPO,
+        FILE,
+        None,
+        cache_dir = selected_cache,
+    )
     assert out == "/cache/model.gguf"
     assert seen_disable_xet == [False, True]  # Xet first, then HTTP
-    assert prepared == [("model", DL_REPO, "http")], "shim must run Unsloth's marker-aware prep"
+    assert prepared == [
+        ("model", DL_REPO, "http", Path(selected_cache))
+    ], "shim must prepare the cache captured by the download"
 
 
 def test_shim_snapshot_injects_studio_prepare(monkeypatch):
@@ -120,10 +130,22 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
         return "/tmp/snap-dir"
 
     monkeypatch.setattr(xf, "_shared_snapshot_download_with_xet_fallback", fake_snapshot)
-    out = xf.snapshot_download_with_xet_fallback("org/model")
+    selected_cache = "/captured/hub"
+    out = xf.snapshot_download_with_xet_fallback(
+        "org/model",
+        cache_dir = selected_cache,
+    )
     assert out == "/tmp/snap-dir"
     assert captured["repo_id"] == "org/model"
-    assert captured["prepare_for_http_fn"] is xf._studio_prepare_for_http
+    prepared = []
+    monkeypatch.setattr(
+        "hub.utils.download_registry.prepare_cache_for_transport",
+        lambda repo_type, repo_id, mode, *a, **k: prepared.append(
+            (repo_type, repo_id, mode, k.get("root"))
+        ),
+    )
+    captured["prepare_for_http_fn"]("model", "org/model")
+    assert prepared == [("model", "org/model", "http", Path(selected_cache))]
 
 
 def test_degrades_gracefully_without_shared_helper(monkeypatch):

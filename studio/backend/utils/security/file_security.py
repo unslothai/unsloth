@@ -46,17 +46,6 @@ _PICKLE_WEIGHT_RE = re.compile(
     r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
     re.IGNORECASE,
 )
-# Base-model safetensors set: HF names the base pickle pytorch_model.bin but the safetensors
-# model.safetensors (stems differ), so a base pickle is replaced only by these, not an adapter's.
-_BASE_SAFETENSORS_RE = re.compile(
-    r"^(model(-\d+-of-\d+)?\.safetensors|model\.safetensors\.index\.json)$",
-    re.IGNORECASE,
-)
-# Adapter (PEFT) safetensors set: adapter_model.safetensors, its shards, or index.
-_ADAPTER_SAFETENSORS_RE = re.compile(
-    r"^(adapter_model(-\d+-of-\d+)?\.safetensors|adapter_model\.safetensors\.index\.json)$",
-    re.IGNORECASE,
-)
 
 # Non-blocking levels: clean or not-yet-finished. Anything else (unsafe/suspicious/
 # malicious or a future label) blocks, so Hub schema drift fails CLOSED.
@@ -93,6 +82,13 @@ _INERT_SUFFIXES = frozenset(
 # gate's vector (else a flagged helper/train script would false-block).
 _SOURCE_SUFFIXES = frozenset({".py", ".pyc", ".pyx", ".pyi"})
 
+
+# Torch-family weight indexes: from_pretrained feeds each shard they name to load_state_dict, which
+# torch.load()s (pickle) any shard whose name does not end in .safetensors, whatever its stem. A
+# pytorch index is superseded when a base safetensors is present (the loader prefers it); a
+# safetensors index IS the chosen archive, so a non-safetensors target it names still loads. tf/flax
+# indexes load via non-pickle loaders, so they are not a torch.load vector here.
+_TORCH_INDEX_FILES = ("pytorch_model.bin.index.json", "model.safetensors.index.json")
 
 # Root weight-index files. from_pretrained reads these to find sharded weights, so a
 # flagged subdir pickle is a load vector iff a root index references it.
@@ -158,6 +154,7 @@ def _indexed_shard_paths(
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
+        from utils.hf_cache_settings import active_hf_hub_cache
     except Exception:
         return None
 
@@ -166,7 +163,12 @@ def _indexed_shard_paths(
     for prefix in _index_prefixes(load_subdirs):
         for filename in _TRANSFORMERS_INDEX_FILES:
             try:
-                index_path = hf_hub_download(model_name, prefix + filename, token = hf_token or None)
+                index_path = hf_hub_download(
+                    model_name,
+                    prefix + filename,
+                    token = hf_token or None,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue  # definitively absent, not an error
             except Exception:
@@ -307,13 +309,72 @@ def _st_load_roots(snapshot: Path) -> list:
     return roots
 
 
+def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list:
+    """Shards a torch weight index points a ``from_pretrained`` load at that load_state_dict would
+    torch.load (pickle): every ``weight_map`` target NOT ending in ``.safetensors``, whatever its
+    stem (an arbitrary name like ``shards/payload`` still deserializes). Resolved relative to the
+    index dir (``root``) like the loader, so a shard in a nested dir is followed (iterdir misses it).
+    Lexical only, never ``Path.resolve()`` (HF snapshot files symlink into ``blobs/``, so resolving
+    escapes the snapshot and false-blocks every shard). Raises OSError -> caller fails CLOSED on an
+    unreadable/invalid index or a target escaping the snapshot."""
+    import json
+    import os
+
+    try:
+        # JSON is UTF-8 by spec; pin it so a non-ASCII index is not misdecoded (and needlessly
+        # blocked) under Windows' cp1252 default.
+        parsed = json.loads(index_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError) as exc:
+        raise OSError(f"unreadable weight index: {index_path}") from exc
+    weight_map = parsed.get("weight_map") if isinstance(parsed, dict) else None
+    if not isinstance(weight_map, dict):
+        return []  # no dict weight_map -> the loader resolves no shards from this index
+    snapshot_norm = os.path.normpath(str(snapshot))
+    shards = []
+    for shard in weight_map.values():
+        raw = str(shard)
+        if not raw:
+            continue
+        # Join the RAW weight_map value like from_pretrained's os.path.join: on POSIX a backslash is a
+        # literal filename char (not a separator), so normalizing it would probe a different path than
+        # the loader opens. normpath + containment stay platform-aware (os.sep) to block "..".
+        joined = os.path.normpath(os.path.join(str(root), raw))
+        if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
+            raise OSError(f"weight index escapes the snapshot: {index_path}")
+        shard_path = Path(joined)
+        # Case-SENSITIVE, mirroring load_state_dict's own endswith(".safetensors"): a shard named
+        # payload.SAFETENSORS is not treated as safetensors by the loader and falls to torch.load.
+        if not shard_path.name.endswith(".safetensors") and shard_path.is_file():
+            shards.append(shard_path)
+    return shards
+
+
+def _loader_resolves(root: Path, name: str) -> bool:
+    """True iff from_pretrained would open ``name`` under ``root``. ``is_file()`` honors the platform
+    (case-sensitive on Linux, case-insensitive on Windows/macOS), so it mirrors the loader's own
+    lookup: an oddly-cased decoy counts as an alternative only where the loader would truly open it.
+    A name-fold instead would let an uppercase MODEL.SAFETENSORS suppress the scan on Linux while the
+    loader, asking for the canonical lowercase name, silently falls through to a pickle index."""
+    return (root / name).is_file()
+
+
 def _cached_pickle_weight_files(snapshot: Path) -> list:
-    """Pickle weight files in snapshot's ST load roots, EXCLUDING those whose weight family also
-    ships an inert safetensors in the same dir (the loader prefers it): a base pickle is suppressed
-    only by a base model.safetensors, an adapter pickle only by adapter_model.safetensors -- an
-    unrelated safetensors is no substitute. Load roots only. Raises OSError if the snapshot root is
-    unreadable (caller blocks)."""
+    """Pickle weight files a SentenceTransformer/Transformers load deserializes from snapshot's ST
+    load roots, EXCLUDING those whose weight family also ships an inert safetensors in the same dir
+    (the loader prefers it): a base pickle is suppressed only by a base model.safetensors, an adapter
+    pickle only by adapter_model.safetensors -- an unrelated safetensors is no substitute. Covers
+    both direct-child pickles AND pickle shards referenced by a local weight index (which the loader
+    follows into nested dirs, matching the online gate). Raises OSError -- caller fails CLOSED -- if
+    the snapshot root or a weight index is unreadable, or an index reference escapes the snapshot."""
     blocked = []
+    seen = set()
+
+    def _add(path: Path):
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            blocked.append(path)
+
     for root in _st_load_roots(snapshot):
         try:
             entries = [p for p in root.iterdir() if p.is_file()]
@@ -321,15 +382,35 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             if root == snapshot:
                 raise  # top-level unreadable -> fail closed
             continue  # unreadable module subdir: nothing loadable to attest here
-        has_base_safetensors = any(_BASE_SAFETENSORS_RE.match(p.name) for p in entries)
-        has_adapter_safetensors = any(_ADAPTER_SAFETENSORS_RE.match(p.name) for p in entries)
+        # Safetensors alternatives the loader would actually resolve (never a bare name-fold, which
+        # fails OPEN: see _loader_resolves). A base pickle is replaced only by a base safetensors, an
+        # adapter pickle only by an adapter one. A single model.safetensors also outranks BOTH indexes.
+        has_direct_base_safetensors = _loader_resolves(root, "model.safetensors")
+        has_base_safetensors = has_direct_base_safetensors or _loader_resolves(
+            root, "model.safetensors.index.json"
+        )
+        has_adapter_safetensors = _loader_resolves(root, "adapter_model.safetensors")
         for path in entries:
             if not _PICKLE_WEIGHT_RE.match(path.name):
                 continue
             is_adapter = path.name.lower().startswith("adapter_model")
             has_alternative = has_adapter_safetensors if is_adapter else has_base_safetensors
             if not has_alternative:
-                blocked.append(path)
+                _add(path)
+        # A torch weight index makes from_pretrained load nested shards iterdir never sees; the loader
+        # torch.loads any not ending in .safetensors. Probe the canonical index name with the loader's
+        # own lookup (_loader_resolves), so an oddly-cased artifact it would never open does not block.
+        # A direct model.safetensors wins over BOTH indexes; failing that a base safetensors still
+        # outranks the pytorch index, while a safetensors index is itself the chosen archive.
+        for index_name in _TORCH_INDEX_FILES:
+            if not _loader_resolves(root, index_name):
+                continue
+            if has_direct_base_safetensors:
+                continue
+            if index_name == "pytorch_model.bin.index.json" and has_base_safetensors:
+                continue
+            for shard_path in _indexed_pickle_shards(root / index_name, root, snapshot):
+                _add(shard_path)
     return blocked
 
 

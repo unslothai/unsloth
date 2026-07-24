@@ -147,7 +147,7 @@ export function ParamSlider({
     <div className="space-y-3.5">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
           </span>
           {info && <InfoHint>{info}</InfoHint>}
@@ -255,7 +255,7 @@ function CollapsibleSection({
   };
 
   const headerClasses = cn(
-    "flex w-full items-center justify-between text-[12px] font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
+    "flex w-full items-center justify-between text-ui-12 font-medium normal-case tracking-[0.04em] text-nav-fg-muted transition-colors focus-visible:outline-none focus-visible:ring-0",
     first ? "pt-4 pb-5" : "py-5",
   );
 
@@ -760,12 +760,12 @@ export function ChatSettingsPanel({
       {/* Header is outside the scroll area so the scrollbar never shifts the close button. */}
       <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
         {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+          <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
             Run settings
           </span>
         ) : (
           <>
-            <span className="flex h-[34px] flex-1 items-center text-[16px] font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+            <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
             <Tooltip>
@@ -805,7 +805,7 @@ export function ChatSettingsPanel({
             <div className="flex flex-col gap-3 pt-1">
               {modelConfig}
               {showSpecFallback && (
-                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
+                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
                   <p>
                     {specFallbackReason === "mla_mtp_disabled"
                       ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
@@ -822,7 +822,7 @@ export function ChatSettingsPanel({
                   {mtpUpdatable && llamaUpdateStatus?.update_available && (
                     <Button
                       size="sm"
-                      className="corner-squircle mt-2 h-7 text-[12px]"
+                      className="corner-squircle mt-2 h-7 text-ui-12"
                       onClick={handleMtpUpdate}
                       disabled={llamaUpdating}
                       data-test-id="mtp-update-button"
@@ -833,7 +833,7 @@ export function ChatSettingsPanel({
                 </div>
               )}
               {showContextVramWarning && (
-                <p className="text-[11px] text-amber-500">
+                <p className="text-ui-11 text-amber-500">
                   Context length exceeds the estimated VRAM capacity (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
@@ -877,7 +877,7 @@ export function ChatSettingsPanel({
                       maxLength={80}
                       autoComplete="off"
                       className={cn(
-                        "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-[13px] font-medium leading-9 text-nav-fg md:text-[13px]",
+                        "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
                         presetSaveState.isSaveReady &&
                           "placeholder:text-primary/50",
                       )}
@@ -917,7 +917,7 @@ export function ChatSettingsPanel({
                         }
                         applyPreset(p.name);
                       }}
-                      className="flex min-h-9 items-center px-3 py-0 text-[13px] font-medium leading-[1.4] tracking-nav"
+                      className="flex min-h-9 items-center px-3 py-0 text-ui-13 font-medium leading-[1.4] tracking-nav"
                     >
                       {p.name}
                     </DropdownMenuItem>
@@ -939,7 +939,7 @@ export function ChatSettingsPanel({
                     }
                 size="sm"
                 className={cn(
-                  "h-9 w-full rounded-full text-[13px] font-medium tracking-nav",
+                  "h-9 w-full rounded-full text-ui-13 font-medium tracking-nav",
                   presetSaveState.isSaveReady &&
                     "bg-primary text-primary-foreground hover:bg-primary/90",
                 )}
@@ -954,7 +954,7 @@ export function ChatSettingsPanel({
                 disabled={!(settingsHydrated && activeCustomPreset)}
                 variant="outline"
                 size="sm"
-                className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
+                className="h-9 w-full rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
                 title={
                   activeCustomPreset
                     ? activeBuiltinPreset
@@ -990,7 +990,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Provider" defaultOpen={true}>
             <div className="flex items-center justify-between gap-3 pt-1">
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                   Prompt caching
                 </span>
                 <InfoHint>
@@ -1013,7 +1013,7 @@ export function ChatSettingsPanel({
             {showPromptCacheTtlControl && promptCachingEnabled ? (
               <div className="flex items-center justify-between gap-3 pt-3">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Cache TTL
                   </span>
                   <InfoHint>
@@ -1050,7 +1050,7 @@ export function ChatSettingsPanel({
             {showFastModeControl ? (
               <div className="flex items-center justify-between gap-3 pt-3">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
                     Fast mode
                   </span>
                   <InfoHint>
@@ -1138,7 +1138,7 @@ export function ChatSettingsPanel({
               placeholder="Example: You are a helpful assistant..."
               aria-label="System prompt"
               className={cn(
-                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
+                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-ui-13 font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
                 systemPromptOverflows && "cursor-pointer",
               )}
             />
@@ -1284,13 +1284,13 @@ export function ChatSettingsPanel({
           <div className="space-y-3">
             <div className="space-y-0.5 px-0.5">
               <div className="flex items-center justify-between gap-3">
-                <div className="text-[11px] font-medium">Prompt editor</div>
+                <div className="text-ui-11 font-medium">Prompt editor</div>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   onClick={() => setSystemVariablesOpen((open) => !open)}
-                  className="h-7 gap-1.5 rounded-full px-2.5 text-[11px] text-muted-foreground"
+                  className="h-7 gap-1.5 rounded-full px-2.5 text-ui-11 text-muted-foreground"
                   aria-expanded={systemVariablesOpen}
                 >
                   <Braces className="size-3.5" />
@@ -1303,7 +1303,7 @@ export function ChatSettingsPanel({
                   />
                 </Button>
               </div>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-ui-11 text-muted-foreground">
                 Use this for longer edits. Save writes back to the active
                 configuration only. Insert variables with {"{{ env }}"}.
               </p>
@@ -1312,16 +1312,16 @@ export function ChatSettingsPanel({
               <div className="space-y-2 px-0.5">
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="space-y-0.5">
-                    <div className="text-[11px] font-medium">
+                    <div className="text-ui-11 font-medium">
                       Prompt variables
                     </div>
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-ui-11 text-muted-foreground">
                       Define values as JSON below, then use each key in your
                       prompt, like {"{{ env }}"}.
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    <span className="text-[10px] text-muted-foreground">
+                    <span className="text-ui-10 text-muted-foreground">
                       Built-in, fill in automatically
                     </span>
                     <div className="flex flex-wrap justify-end gap-1">
@@ -1329,7 +1329,7 @@ export function ChatSettingsPanel({
                         <span
                           key={token}
                           title={`${token} is replaced automatically when you send`}
-                          className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                          className="rounded-full bg-muted px-2 py-0.5 font-mono text-ui-10 text-muted-foreground"
                         >
                           {token}
                         </span>
@@ -1354,11 +1354,11 @@ export function ChatSettingsPanel({
                   aria-invalid={Boolean(systemVariablesError)}
                 />
                 {systemVariablesError ? (
-                  <p className="px-1 text-[11px] text-destructive">
+                  <p className="px-1 text-ui-11 text-destructive">
                     {systemVariablesError}
                   </p>
                 ) : (
-                  <p className="px-1 text-[11px] text-muted-foreground">
+                  <p className="px-1 text-ui-11 text-muted-foreground">
                     Names you don&apos;t define are left unchanged, so a stray
                     {" {{ typo }} "}stays visible in the prompt.
                   </p>
@@ -1508,7 +1508,7 @@ function AutoHealToolCallsToggle() {
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Auto-Healing Tool Calls
         </span>
         <InfoHint>
@@ -1532,7 +1532,7 @@ function NudgeToolCallsToggle() {
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Nudge Tool Calls
         </span>
         <InfoHint>
@@ -1557,7 +1557,7 @@ function ConfirmToolCallsToggle() {
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Confirm tool calls
           </span>
           <InfoHint>
@@ -1569,7 +1569,7 @@ function ConfirmToolCallsToggle() {
           </InfoHint>
         </div>
         {permissionMode === "full" ? (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-ui-11 text-muted-foreground">
             Overridden by Full access
           </span>
         ) : null}
@@ -1590,7 +1590,7 @@ function BypassPermissionsToggle() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="whitespace-nowrap text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="whitespace-nowrap text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Tool permissions
         </span>
         <InfoHint>
@@ -1599,9 +1599,9 @@ function BypassPermissionsToggle() {
         </InfoHint>
       </div>
       {/* Full width, styled like the panel selects/preset input. */}
-      <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-[13px] font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
+      <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
-        <span className="text-[11px] text-bypass">
+        <span className="text-ui-11 text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}

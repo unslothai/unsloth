@@ -178,6 +178,14 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    active_cache: Optional[bool] = Field(
+        None,
+        description = "Whether an HF model belongs to the current download cache.",
+    )
+    partial: bool = Field(
+        False,
+        description = "Whether the cached model has an incomplete download.",
+    )
     model_format: Optional[str] = Field(
         None,
         description = "Detected weights format ('gguf' when known). Lets the UI "

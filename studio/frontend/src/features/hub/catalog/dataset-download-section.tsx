@@ -50,7 +50,7 @@ export function DatasetDownloadSection({
   const hfToken = useHfTokenStore((s) => s.token);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const { deleting, runDelete } = useCardDelete({
-    action: () => deleteCachedDataset(repoId),
+    action: () => deleteCachedDataset(repoId, cachePath ?? undefined),
     resourceName: "dataset",
     successMessage: () => `Deleted ${repoId}`,
     onSuccess: () => {
@@ -126,7 +126,7 @@ export function DatasetDownloadSection({
       }
     >
       <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-        <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+        <span className="flex items-center gap-1.5 text-ui-12 text-muted-foreground">
           {isDownloaded && <DotTag tone="success" label="On device" />}
           {!isDownloaded && isPartial && !downloading && (
             <Tooltip>

@@ -53,19 +53,41 @@ def _expand_path(raw: str) -> Path:
 
 
 def _hf_cache_roots() -> list:
-    """The one cache root the loader resolves to, by its own precedence (it picks ONE
-    cache_folder, no fall-through): SENTENCE_TRANSFORMERS_HOME, else HF_HUB_CACHE, else
-    HF_HOME/hub, else ~/.cache/huggingface/hub. Expanded, read from env, one-element list."""
-    st_home = os.environ.get("SENTENCE_TRANSFORMERS_HOME")
-    if st_home:
-        return [_expand_path(st_home)]
-    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
-    if hub:
-        return [_expand_path(hub)]
-    hf_home = os.environ.get("HF_HOME")
-    if hf_home:
-        return [_expand_path(hf_home) / "hub"]
-    return [Path.home() / ".cache" / "huggingface" / "hub"]
+    """Cache roots to search for a model's local snapshot, most-authoritative first.
+
+    The app's selected hub cache (set via /settings) is searched first: after a
+    no-restart cache switch the process env is stale, yet the loader reads the
+    selected cache via ``cache_folder=active_hf_hub_cache()``, so the snapshot
+    and offline security lookups must match where it actually loads. The env
+    precedence (SENTENCE_TRANSFORMERS_HOME, HF_HUB_CACHE, HF_HOME/hub,
+    ~/.cache/huggingface/hub) follows so a copy still in a previous cache resolves."""
+    roots: list = []
+    seen: set = set()
+
+    def _add(path) -> None:
+        if path is None:
+            return
+        expanded = _expand_path(str(path))
+        key = str(expanded)
+        if key not in seen:
+            seen.add(key)
+            roots.append(expanded)
+
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        _add(get_hf_cache_paths().hub_cache)
+    except Exception:
+        pass
+
+    if st_home := os.environ.get("SENTENCE_TRANSFORMERS_HOME"):
+        _add(st_home)
+    if hub := (os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")):
+        _add(hub)
+    if hf_home := os.environ.get("HF_HOME"):
+        _add(_expand_path(hf_home) / "hub")
+    if not roots:
+        _add(Path.home() / ".cache" / "huggingface" / "hub")
+    return roots
 
 
 def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
@@ -272,17 +294,31 @@ def format_error_message(error: Exception, model_name: str) -> str:
         return "Invalid HF token. Please check your token and try again."
 
     if (
-        "memory" in error_str
-        or "cuda" in error_str
-        or "mlx" in error_str
-        or "out of memory" in error_str
+        "out of memory" in error_str
+        or "out of device memory" in error_str
+        or "out_of_device_memory" in error_str  # ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY
+        or "out_of_host_memory" in error_str  # ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY
+        or "not enough memory" in error_str
+        or "cannot allocate memory" in error_str
+        or "memory allocation failed" in error_str
+        or "cublas_status_alloc_failed" in error_str  # cuBLAS workspace OOM
+        or ("cuda error" in error_str and "alloc" in error_str)
+        or ("xpu" in error_str and ("alloc" in error_str or "memory" in error_str))
+        or isinstance(error, MemoryError)
+        or ("mlx" in error_str and ("memory" in error_str or "allocate" in error_str))
     ):
+        # Resolve get_device() at call time (not import time) so tests that
+        # monkey-patch utils.hardware.get_device after this module is loaded
+        # still see the patched backend.
         from utils.hardware import get_device
 
         device = get_device()
-        device_label = {"cuda": "GPU", "mlx": "Apple Silicon GPU", "cpu": "system"}.get(
-            device.value, "GPU"
-        )
+        device_label = {
+            "cuda": "GPU",
+            "xpu": "Intel GPU",
+            "mlx": "Apple Silicon GPU",
+            "cpu": "system",
+        }.get(device.value, "GPU")
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
     return str(error)
