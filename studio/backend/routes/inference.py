@@ -3241,20 +3241,11 @@ def _request_matches_loaded_settings(
             )
         ):
             return False
-    # A changed GPU pick must reload. The diffusion runner collapses a multi-GPU
-    # request to its single lowest device (it drives one device only), so the
-    # backend records just that device; compare the request the same way, or a
-    # multi-GPU pick that resolves to the same device needlessly reloads.
-    if llama_backend.is_diffusion:
-        _req_gpu_ids = [sorted(request.gpu_ids)[0]] if request.gpu_ids else None
-        if _req_gpu_ids != llama_backend.gpu_ids:
-            return False
-    else:
-        # Compare the raw requested pin (not the fit-narrowed gpu_ids) so a
-        # narrowed-then-re-sent pick still dedupes; consistent with above (#7239).
-        _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
-        if _req_gpu_ids != (getattr(llama_backend, "requested_gpu_ids", None) or None):
-            return False
+    # A regular GGUF may narrow the requested placement pool. Accept either the
+    # original request or the effective status-echoed subset; diffusion keeps
+    # its single-device normalization.
+    if not llama_backend.matches_gpu_ids(request.gpu_ids):
+        return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above
     # matches): if the user now explicitly drops tensor intent, reload so placement
     # re-selects instead of keeping the all-GPU mask (#6659). The effective check
@@ -3944,6 +3935,67 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
+async def _resolve_gguf_gpu_ids_for_request(
+    config: ModelConfig, gpu_ids: Optional[List[int]]
+) -> Optional[List[int]]:
+    """Resolve and fully validate an explicit GGUF GPU placement pool.
+
+    CUDA and ROCm use physical IDs. Vulkan uses ggml ordinals, so its device
+    existence check comes from the same ggml probe used by the loader. Both
+    /load and /validate call this before their training guard or any teardown.
+    """
+    if not gpu_ids:
+        return None
+
+    from utils.hardware import DeviceType, get_device
+    from utils.hardware.hardware import resolve_requested_gpu_ids
+
+    if get_device() == DeviceType.XPU:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "GPU selection (gpu_ids) is not supported on Intel XPU. "
+                "Omit gpu_ids to use all devices."
+            ),
+        )
+
+    is_vulkan = LlamaCppBackend._is_vulkan_backend()
+    if is_vulkan and _classify_diffusion_gguf(config) is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                "its device by CUDA physical index, which has no defined mapping "
+                "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                "device."
+            ),
+        )
+
+    try:
+        resolved = resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+    if is_vulkan and resolved:
+        binary = LlamaCppBackend._find_llama_server_binary()
+        if binary:
+            probed = {
+                gpu[0] for gpu in await asyncio.to_thread(LlamaCppBackend._get_gpu_memory, binary)
+            }
+            wanted = {int(gpu_id) for gpu_id in resolved}
+            if not wanted.issubset(probed):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"Requested Vulkan GPU ordinal(s) {sorted(wanted)} not "
+                        f"present. Available Vulkan devices: {sorted(probed)}."
+                    ),
+                )
+
+    return resolved
+
+
 def _guard_chat_load_against_training(
     config: ModelConfig,
     *,
@@ -3982,8 +4034,18 @@ def _guard_chat_load_against_training(
     if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
+    # Vulkan GGUF pins are ggml ordinals, not CUDA physical IDs. Detect this
+    # before deriving a possible diffusion fallback device so an unknown remote
+    # GGUF never sends its ordinal through the CUDA single-device path.
+    is_vulkan = False
+    if is_gguf:
+        try:
+            is_vulkan = LlamaCppBackend._is_vulkan_backend()
+        except Exception as e:
+            logger.warning("Could not detect Vulkan backend for chat-load guard: %s", e)
+
     diffusion_gpu = None
-    if is_gguf and diffusion_kind is not False:
+    if is_gguf and diffusion_kind is not False and not (is_vulkan and requested_gpu_ids):
         # Use the same token selection as the runner: an explicit pick wins,
         # followed by DG_GPU, the first parent-visible token, then GPU 0.
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
@@ -4002,16 +4064,6 @@ def _guard_chat_load_against_training(
         if is_gguf
         else None
     )
-
-    # A Vulkan GGUF selection uses ggml Vulkan ordinals (separate index space from
-    # CUDA ids); flag it so the guard sizes against the visible pool instead of
-    # resolving ordinals against the CUDA set (#7239). Never raise here.
-    is_vulkan = False
-    if is_gguf:
-        try:
-            is_vulkan = LlamaCppBackend._is_vulkan_backend()
-        except Exception as e:
-            logger.warning("Could not detect Vulkan backend for chat-load guard: %s", e)
 
     ok, info = can_load_chat_during_training(
         model_name = model_identifier,
@@ -4439,56 +4491,12 @@ async def _load_model_impl(
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
-        # GGUF per-GPU selection (issue #7164 / #7239): validate the requested ids up
-        # front (before the training guard) so a bad pick is a clean 400, not masked by
-        # a VRAM 409. Rejects negative / out-of-range / duplicate ids and UUID/MIG
-        # parents, and resolves them so load_model can pin exactly these GPUs. None = auto.
+        # Validate the full GGUF placement pool before the training guard so an
+        # invalid physical ID or Vulkan ordinal is a clean 400, not a masked VRAM
+        # 409. The same helper is used by /validate.
         gguf_gpu_ids: Optional[List[int]] = None
-        if config.is_gguf and effective_gpu_ids is not None:
-            from utils.hardware import DeviceType, get_device
-            from utils.hardware.hardware import resolve_requested_gpu_ids
-
-            # XPU hosts are rejected outright: the picker's indices are torch-xpu
-            # ordinals neither applicator speaks (CUDA/HIP masks don't apply, and
-            # the Vulkan --device pin uses ggml's own Vulkan ordinals), so a pick
-            # could land on the wrong device.
-            if get_device() == DeviceType.XPU:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
-
-            # A Vulkan build selects by ggml Vulkan ordinal (--device VulkanN), a
-            # separate index space from CUDA ids that may be empty under CPU-only torch;
-            # validate as ordinals so a valid selection isn't rejected against the CUDA
-            # parent-visible set (#7239).
-            _gguf_is_vulkan = LlamaCppBackend._is_vulkan_backend()
-
-            # The diffusion runner pins its child by CUDA physical index, which has no
-            # mapping to Vulkan ordinals, so reject an explicit pin for a diffusion GGUF
-            # on a Vulkan build up front (before any load / kill); the normal
-            # --device VulkanN path is still accepted. _classify_diffusion_gguf returns
-            # None for an uncached header, caught later on load_model's diffusion branch.
-            if _gguf_is_vulkan and _classify_diffusion_gguf(config) is True:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    ),
-                )
-            try:
-                gguf_gpu_ids = resolve_requested_gpu_ids(
-                    effective_gpu_ids, is_vulkan = _gguf_is_vulkan
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        if config.is_gguf:
+            gguf_gpu_ids = await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
                 status_code = 400,
@@ -5081,68 +5089,8 @@ async def validate_model(
         # Apply the same training coexistence policy as /load before the frontend
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        # Mirror /load: validate GGUF + gpu_ids the same way (parent-visible set, or
-        # Vulkan ordinals for a Vulkan build) so a preflight agrees with the follow-up
-        # load instead of rejecting a selection /load accepts (#7239). XPU-host picks are
-        # rejected like /load (torch-xpu ordinals have no launcher device mapping).
-        if config.is_gguf and effective_gpu_ids is not None:
-            from utils.hardware import DeviceType, get_device
-            from utils.hardware.hardware import resolve_requested_gpu_ids
-
-            if get_device() == DeviceType.XPU:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
-            _gguf_is_vulkan = LlamaCppBackend._is_vulkan_backend()
-
-            # Mirror /load's diffusion+Vulkan rejection so this preflight agrees with
-            # the follow-up load instead of passing here and letting the frontend unload
-            # the working model before /load returns the same 400. The diffusion runner
-            # pins by CUDA physical index, unmapped to Vulkan ordinals (#7239). None
-            # (remote-uncached header) isn't rejected here, matching /load.
-            if _gguf_is_vulkan and _classify_diffusion_gguf(config) is True:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    ),
-                )
-            try:
-                resolved_gpu_ids = resolve_requested_gpu_ids(
-                    effective_gpu_ids, is_vulkan = _gguf_is_vulkan
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code = 400, detail = str(exc)) from exc
-
-            # Mirror /load's Vulkan-ordinal existence check (subset of the ggml-probed
-            # set BEFORE the Phase 1 kill). Without it, a stale pin like [99] passes
-            # /validate, the frontend unloads the model, and only then does /load reject
-            # the absent ordinal -- the asymmetric-fix bug this PR removes. CUDA ids are
-            # range-checked above; Vulkan ordinals are not, so probe them here (#7239).
-            if _gguf_is_vulkan and resolved_gpu_ids:
-                _binary = LlamaCppBackend._find_llama_server_binary()
-                if _binary:
-                    _probed = {
-                        g[0]
-                        for g in await asyncio.to_thread(LlamaCppBackend._get_gpu_memory, _binary)
-                    }
-                    _wanted = {int(x) for x in resolved_gpu_ids}
-                    if not _wanted.issubset(_probed):
-                        raise HTTPException(
-                            status_code = 400,
-                            detail = (
-                                f"Requested Vulkan GPU ordinal(s) {sorted(_wanted)} not "
-                                f"present. Available Vulkan devices: {sorted(_probed)}."
-                            ),
-                        )
+        if config.is_gguf:
+            await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

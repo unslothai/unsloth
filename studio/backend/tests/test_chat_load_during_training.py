@@ -170,6 +170,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         estimate = None,
         single_device_gpu = None,
         gpu_ids = None,
+        is_vulkan = False,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -185,6 +186,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 max_seq_length = 0,
                 requested_gpu_ids = gpu_ids,
                 is_gguf = True,
+                is_vulkan = is_vulkan,
                 required_override_gb = required_override,
                 single_device_gpu = single_device_gpu,
             )
@@ -233,6 +235,21 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         )
         self.assertFalse(blocked)
         self.assertEqual(blocked_info["usable_gb"], 10.0)
+
+    def test_vulkan_pin_takes_precedence_over_unknown_diffusion_fallback(self):
+        # An uncached GGUF can carry a speculative single-device fallback while
+        # its explicit pin is actually a ggml Vulkan ordinal. Never interpret
+        # that ordinal as the same-numbered CUDA physical device.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 0), (1, 80, 78)),
+            required_override = 20.0,
+            single_device_gpu = "0",
+            gpu_ids = [0],
+            is_vulkan = True,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["mode"], "gguf")
+        self.assertEqual(info["usable_gb"], 2.0)
 
     def test_single_device_unresolved_token_sizes_against_worst_device(self):
         # A non-numeric device token (a CUDA UUID / MIG handle) can't map to a
@@ -509,6 +526,35 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["single_device_gpu"], "2")
+
+    def test_unknown_vulkan_pin_stays_out_of_cuda_diffusion_selector(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_is_vulkan_backend",
+                return_value = True,
+            ),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_gpu_arg",
+                return_value = "0",
+            ) as gpu_arg,
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf"}),
+                gpu_memory_mode = "manual",
+                requested_gpu_ids = [0],
+            )
+        gpu_arg.assert_not_called()
+        self.assertEqual(captured[0]["single_device_gpu"], None)
+        self.assertTrue(captured[0]["is_vulkan"])
 
     def test_manual_diffusion_uses_single_device_guard(self):
         captured = []

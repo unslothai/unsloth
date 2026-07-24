@@ -939,6 +939,75 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("SENTINEL", exc_info.exception.detail)
         self.assertNotIn("not supported for GGUF", exc_info.exception.detail)
 
+    def test_load_rejects_unavailable_vulkan_ordinal_before_training_guard(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_vulkan_preflight_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [99])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/test.gguf",
+            display_name = "unsloth/test.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(
+                inference_route.LlamaCppBackend,
+                "_is_vulkan_backend",
+                return_value = True,
+            ),
+            patch.object(
+                inference_route.LlamaCppBackend,
+                "_find_llama_server_binary",
+                return_value = "/tmp/llama-server",
+            ),
+            patch.object(
+                inference_route.LlamaCppBackend,
+                "_get_gpu_memory",
+                return_value = [(0, 8 * 1024**3, 16 * 1024**3)],
+            ),
+            patch.object(
+                inference_route,
+                "_guard_chat_load_against_training",
+                return_value = None,
+            ) as training_guard,
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("Vulkan GPU ordinal(s) [99]", exc_info.exception.detail)
+        training_guard.assert_not_called()
+
     def test_inference_route_validates_gpu_ids_for_gguf(self):
         # gpu_ids is now SUPPORTED for GGUF (the GPU picker), but still
         # validated: a rejected pick surfaces as a clean 400, not the old

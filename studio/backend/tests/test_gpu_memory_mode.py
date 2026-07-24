@@ -637,6 +637,20 @@ def test_gpu_ids_reload_detection_is_order_insensitive():
     assert _target_state_gpu_ids(backend, None) is False
 
 
+def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
+    backend = _loaded_backend("auto")
+    backend._requested_gpu_ids = [0, 1]
+    backend._gpu_ids = [0]
+
+    # The original request still matches after the fitter narrows it.
+    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    # The status response echoes the effective pin, which must also round-trip.
+    assert _target_state_gpu_ids(backend, [0]) is True
+    # A genuinely different placement pool still reloads.
+    assert _target_state_gpu_ids(backend, [1]) is False
+    assert _target_state_gpu_ids(backend, None) is False
+
+
 def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
     # The diffusion runner drives only its single lowest device, so the backend
     # records [lowest]. A later multi-GPU request that still resolves to that
@@ -662,16 +676,12 @@ def test_start_diffusion_server_resets_tensor_parallel():
     assert "self._tensor_parallel = False" in src
 
 
-def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
-    # The route-level reload dedupe mirrors the backend: for a loaded diffusion
-    # model it compares the request against the single recorded device, not the
-    # full requested list, or a same-device multi-GPU pick reloads needlessly.
+def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
+    # Route-level and backend race dedupe must share one normalization path so
+    # raw, effective, and diffusion pins cannot drift apart.
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
-    guard = match_impl.index("if llama_backend.is_diffusion:")
-    collapse = match_impl.index("[sorted(request.gpu_ids)[0]] if request.gpu_ids else None")
-    compare = match_impl.index("if _req_gpu_ids != llama_backend.gpu_ids:")
-    assert guard < collapse < compare
+    assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────

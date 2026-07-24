@@ -74,7 +74,7 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models this pins llama-server to exactly these GPUs (CUDA_VISIBLE_DEVICES, plus HIP_VISIBLE_DEVICES on AMD ROCm, or --device Vulkan<i> on a Vulkan build).",
+        description = "GPU placement pool, for example [0, 1]. Omit or pass [] to use automatic selection. CUDA/ROCm values are physical GPU indices and are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries; Vulkan values are ggml device ordinals. For GGUF models the fitter may pin the smallest subset of this pool that fits.",
     )
     speculative_type: Optional[str] = Field(
         None,
