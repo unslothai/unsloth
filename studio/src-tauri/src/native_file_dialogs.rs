@@ -46,10 +46,13 @@ fn save_filter(file_name: &str) -> (&'static str, Vec<&'static str>) {
         Some("jsonl") | Some("ndjson") => ("JSON Lines", vec!["jsonl", "ndjson"]),
         Some("csv") => ("CSV", vec!["csv"]),
         Some("md") | Some("markdown") => ("Markdown", vec!["md", "markdown"]),
+        Some("html") | Some("htm") => ("HTML", vec!["html", "htm"]),
         Some("zip") => ("ZIP archive", vec!["zip"]),
         _ => (
             "Export files",
-            vec!["json", "jsonl", "ndjson", "csv", "md", "markdown", "zip"],
+            vec![
+                "json", "jsonl", "ndjson", "csv", "md", "markdown", "html", "htm", "zip",
+            ],
         ),
     }
 }
@@ -250,6 +253,12 @@ mod tests {
             save_filter("message.md"),
             ("Markdown", vec!["md", "markdown"])
         );
+    }
+
+    #[test]
+    fn html_canvas_exports_use_an_html_save_filter() {
+        assert_eq!(save_filter("canvas.html"), ("HTML", vec!["html", "htm"]));
+        assert_eq!(save_filter("canvas.HTM"), ("HTML", vec!["html", "htm"]));
     }
 
     #[test]

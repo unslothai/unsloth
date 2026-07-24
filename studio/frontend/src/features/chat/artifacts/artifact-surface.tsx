@@ -12,6 +12,8 @@ import {
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
@@ -89,18 +91,6 @@ function ArtifactGeneratingPanel() {
       </div>
     </div>
   );
-}
-
-function downloadTextFile(filename: string, text: string): void {
-  const blob = new Blob([text], { type: "text/html;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function ArtifactSurface({
@@ -205,7 +195,7 @@ export function ArtifactSurface({
       className={cn(
         "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
-          ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
+          ? "artifact-panel-shell mx-2 mt-[80px] mb-8 h-[calc(100%_-_112px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
           : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
       aria-label={`${artifact.title} canvas`}
@@ -265,7 +255,19 @@ export function ArtifactSurface({
             size="icon"
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
-            onClick={() => downloadTextFile(filename, artifact.code)}
+            onClick={() => {
+              // Route through the native save dialog on desktop; the plain
+              // blob-anchor download is silently dropped by the Tauri WebView2.
+              void downloadFile(
+                artifact.code,
+                filename,
+                "text/html;charset=utf-8",
+              ).catch((err) => {
+                if (!isDownloadCancelled(err)) {
+                  toast.error("Failed to save canvas HTML");
+                }
+              });
+            }}
             aria-label="Download canvas HTML"
           >
             <HugeiconsIcon icon={Download01Icon} className="size-4" />

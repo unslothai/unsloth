@@ -524,8 +524,10 @@ export function AppProvider({ children }: AppProviderProps) {
           visibleToasts={2}
           expand={true}
           closeButton={true}
-          // Clear the chat header buttons on the right.
-          offset={{ top: 12, right: 64 }}
+          // Clear the chat header buttons on the right. On desktop, also drop
+          // below the ~34px custom window titlebar so toasts don't cover the
+          // minimize / maximize / close controls.
+          offset={{ top: isTauri ? 46 : 12, right: 64 }}
         />
       </TooltipProvider>
     </MotionConfig>
