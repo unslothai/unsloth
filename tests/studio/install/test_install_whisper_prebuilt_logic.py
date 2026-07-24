@@ -441,8 +441,9 @@ def test_main_forwards_requested_whisper_tags(tmp_path, monkeypatch):
     monkeypatch.setattr(
         M,
         "resolve_prebuilt",
-        lambda host, **kwargs: seen.update(kwargs)
-        or {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"},
+        lambda host, **kwargs: (
+            seen.update(kwargs) or {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
+        ),
     )
     assert M.main(["--resolve-prebuilt", "v1.8.0", "--output-format", "json"]) == 0
     assert seen["whisper_tag"] == "v1.8.0"
@@ -805,6 +806,50 @@ def test_slim_release_tag_skew_has_distinct_compatibility_error(tmp_path, monkey
     manifest = M.parse_manifest(_manifest([_slim_artifact()]))
     with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
         M.select_artifact_with_fallback(manifest, _cuda_host(), "cuda")
+
+
+# A newer llama build that keeps the same ggml commit as SLIM_LLAMA_TAG.
+NEWER_LLAMA_TAG = "b10079-mix-fb3d4ca"
+
+
+@pytest.mark.parametrize(
+    "installed,required,pairs",
+    [
+        (SLIM_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # exact tag
+        (NEWER_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # newer build, same ggml commit
+        ("b10069-mix-0000000", SLIM_LLAMA_TAG, False),  # same build, different ggml
+        (SLIM_LLAMA_TAG, None, False),  # no requirement recorded
+        ("b10069", "b10069", True),  # tag without -mix-, exact only
+        ("b10070", "b10069", False),  # tag without -mix-, no shared key
+    ],
+)
+def test_llama_runtime_pairs_keys_on_ggml_commit(installed, required, pairs):
+    assert M.llama_runtime_pairs(installed, required) is pairs
+
+
+def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch):
+    # The live failure: the llama installer advances to a newer build that keeps
+    # the same ggml commit, so the slim bundle's paired runtime is ABI-identical
+    # and must still select rather than degrade to CPU or report unavailable.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cuda" and used_fallback is False
+
+
+def test_slim_build_bump_same_ggml_is_not_a_compatibility_error(tmp_path, monkeypatch):
+    # A same-ggml build bump must not surface as a release incompatibility (the
+    # update path reports that as unavailable); only a real ggml skew does.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
+    )
+    assert M._slim_release_incompatibility(_slim_manifest(), _cuda_host()) is None
 
 
 def test_link_ggml_runtime_hardlinks_every_ggml_library(tmp_path):
