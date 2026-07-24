@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio chat composer IME + multilingual regression smoke.
+"""Unsloth chat composer IME + multilingual regression smoke.
 
 Covers: stuck IME composition (#5318 / PR #5327), multilingual paste round-trip,
 stuck compositionend (#5546), and Mac input-method switch recovery (keydown/blur).

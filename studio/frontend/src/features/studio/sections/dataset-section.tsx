@@ -54,7 +54,7 @@ import {
 // Imported directly from the store module rather than the "@/features/training"
 // barrel to avoid an import cycle (the barrel re-exports this section's siblings).
 import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
-import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useDebouncedValue } from "@/hooks";
 import { translate, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -70,11 +70,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { motion, useReducedMotion } from "motion/react";
 import {
   type ChangeEvent,
   type DragEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -153,6 +155,9 @@ function normalizeSliceInput(value: string): string | null {
 export function DatasetSection() {
   const t = useT();
   const navigate = useNavigate();
+  const reducedMotion = useReducedMotion();
+  // Scopes the pill layoutId so multiple instances never share one.
+  const sourcePillLayoutId = useId();
   const {
     dataset,
     datasetSource,
@@ -397,9 +402,6 @@ export function DatasetSection() {
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
   });
-
-  const { error: tokenValidationError, isChecking: isCheckingToken } =
-    useHfTokenValidation(hfToken);
 
   const hfResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
@@ -683,16 +685,15 @@ export function DatasetSection() {
         title={t("studio.dataset.title")}
         description={t("studio.dataset.description")}
         accent="indigo"
-        className={`dark:shadow-border ${
-          advancedOpen || (datasetSource === "upload" && uploadedFile)
-            ? "min-h-studio-config-column"
-            : "h-studio-config-column"
-        }`}
+        className="dark:shadow-border min-h-studio-config-column"
       >
         <div className="flex min-w-0 flex-col gap-4">
           {(() => {
             // Hub-style sliding-pill segmented control, matching the Hub tabs
             // via the shared .hub-tab-toggle / .hub-tab-toggle-pill classes.
+            // flex-auto buttons share leftover space equally so padding stays
+            // equal for all labels; the pill sits inside the active button so
+            // it always matches its bounds.
             const sourceTabs: {
               value: "huggingface" | "upload" | "s3";
               label: string;
@@ -703,24 +704,12 @@ export function DatasetSection() {
                 ? []
                 : [{ value: "s3" as const, label: "Amazon S3" }]),
             ];
-            const activeIndex = Math.max(
-              0,
-              sourceTabs.findIndex((item) => item.value === datasetSource),
-            );
             return (
               <div
                 role="radiogroup"
                 aria-label="Dataset source"
-                className="hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+                className="hub-tab-toggle relative flex h-9 w-full items-center rounded-full"
               >
-                <span
-                  aria-hidden="true"
-                  className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-                  style={{
-                    width: `${100 / sourceTabs.length}%`,
-                    transform: `translateX(${activeIndex * 100}%)`,
-                  }}
-                />
                 {sourceTabs.map((item) => (
                   <button
                     key={item.value}
@@ -739,13 +728,30 @@ export function DatasetSection() {
                       }
                     }}
                     className={cn(
-                      "relative z-10 inline-flex h-9 flex-1 cursor-pointer items-center justify-center rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                      "relative inline-flex h-9 flex-auto cursor-pointer items-center justify-center rounded-full px-3 text-ui-12p5 font-medium transition-colors",
                       datasetSource === item.value
                         ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
-                    {item.label}
+                    {datasetSource === item.value && (
+                      <motion.span
+                        aria-hidden="true"
+                        layoutId={sourcePillLayoutId}
+                        className="hub-tab-toggle-pill absolute inset-0 rounded-full"
+                        transition={
+                          reducedMotion
+                            ? { duration: 0 }
+                            : {
+                                type: "spring",
+                                stiffness: 500,
+                                damping: 35,
+                                mass: 0.5,
+                              }
+                        }
+                      />
+                    )}
+                    <span className="relative z-10">{item.label}</span>
                   </button>
                 ))}
               </div>
@@ -758,7 +764,7 @@ export function DatasetSection() {
             <div className="flex min-w-0 flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 {t("studio.dataset.chooseDataset")}
-                <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
+                <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-ui-10 font-medium text-foreground/80">
                   {datasetSource === "upload"
                     ? t("studio.dataset.localTab")
                     : "Hugging Face"}
@@ -1009,9 +1015,9 @@ export function DatasetSection() {
                   </ComboboxContent>
                 </Combobox>
               </div>
-              {(tokenValidationError ?? hfSearchError) && (
+              {hfSearchError && (
                 <p className="text-xs text-destructive">
-                  {tokenValidationError ?? hfSearchError}
+                  {hfSearchError}
                   {" — "}
                   <a
                     href="https://huggingface.co/settings/tokens"
@@ -1023,13 +1029,8 @@ export function DatasetSection() {
                   </a>
                 </p>
               )}
-              {isCheckingToken && (
-                <p className="text-xs text-muted-foreground">
-                  {t("studio.dataset.checkingToken")}
-                </p>
-              )}
               {pickerTab !== activeSourceTab && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-ui-11 text-muted-foreground">
                   {t("studio.dataset.browsingSource", {
                     browsing:
                       pickerTab === "local"
@@ -1067,7 +1068,7 @@ export function DatasetSection() {
                       <p className="text-xs font-medium text-muted-foreground">
                         {t("studio.dataset.localDatasetMetadata")}
                       </p>
-                      <p className="text-[10px] text-muted-foreground/80">
+                      <p className="text-ui-10 text-muted-foreground/80">
                         {t("studio.dataset.dataRecipeOutput")}
                       </p>
                     </div>
@@ -1171,7 +1172,7 @@ export function DatasetSection() {
                       ? t("studio.dataset.uploading")
                       : t("studio.dataset.uploadEvalFile")}
                   </Button>
-                  <p className="text-[10px] text-muted-foreground/80">
+                  <p className="text-ui-10 text-muted-foreground/80">
                     {t("studio.dataset.evalDatasetDescription")}
                   </p>
                 </div>
@@ -1378,7 +1379,7 @@ export function DatasetSection() {
                           deriveLocalDatasetName(selectedDatasetName))
                         : selectedDatasetName}
                     </p>
-                    <p className="text-[10px] text-muted-foreground">
+                    <p className="text-ui-10 text-muted-foreground">
                       {datasetSource === "upload" ? (
                         uploadedFile ? (
                           <>
@@ -1432,7 +1433,7 @@ export function DatasetSection() {
                     <span className="block text-xs font-medium text-foreground">
                       {t("studio.dataset.dropFileOrClick")}
                     </span>
-                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                    <span className="mt-0.5 block truncate text-ui-10 text-muted-foreground">
                       {TRAINING_DATASET_UPLOAD_LABEL} · up to {uploadLimitLabel}
                       ; {DOCUMENT_REDIRECT_LABEL}
                     </span>

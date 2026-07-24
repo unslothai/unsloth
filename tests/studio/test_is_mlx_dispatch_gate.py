@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Regression tests for the CUDA-vs-MLX dispatch gates Studio relies on.
+"""Regression tests for the CUDA-vs-MLX dispatch gates Unsloth relies on.
 
 Two gates: (1) ``unsloth._IS_MLX`` (import-time, delegates to the zoo MLX
 runtime gate behind a local precheck barrier); (2)
@@ -147,7 +147,7 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
 
 
 def _import_studio_hardware():
-    """Lazy import of the Studio hardware module (studio/backend on sys.path)."""
+    """Lazy import of the Unsloth hardware module (studio/backend on sys.path)."""
     studio_backend = REPO_ROOT / "studio" / "backend"
     if str(studio_backend) not in sys.path:
         sys.path.insert(0, str(studio_backend))

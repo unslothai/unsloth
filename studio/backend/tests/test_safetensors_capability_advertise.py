@@ -417,6 +417,59 @@ def test_detect_safetensors_features_gemma_native_tool_call_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
+def test_detect_safetensors_features_gemma_native_reasoning_is_parseable_not_prefilled():
+    """Native Gemma channels are normalized to <think>, then split by the route."""
+    from routes.inference import _detect_safetensors_features, _sf_reasoning_prefill_mode
+
+    tpl_with_gemma_native = "{% if add_generation_prompt %}<|channel>thought\n<channel|>{% endif %}"
+    backend = SimpleNamespace(
+        active_model_name = "unsloth/gemma-4-E2B-it",
+        models = {
+            "unsloth/gemma-4-E2B-it": {
+                "native_chat_template": tpl_with_gemma_native,
+                "chat_template_info": {"template": "override has no native markers"},
+            }
+        },
+    )
+    flags = _detect_safetensors_features(backend, "override has no native markers")
+    missing_arg_flags = _detect_safetensors_features(backend, None)
+
+    assert flags["supports_reasoning"] is True
+    assert flags["reasoning_always_on"] is True
+    assert missing_arg_flags["supports_reasoning"] is True
+    assert _sf_reasoning_prefill_mode(flags, None, tpl_with_gemma_native) is False
+
+
+def test_detect_safetensors_features_selects_native_reasoning_from_tool_template():
+    """Request tools select a marker-bearing named template without affecting default chat."""
+    from routes.inference import _detect_safetensors_features
+
+    named_template = {
+        "default": "plain default template",
+        "tool_use": "{% if tools %}<|channel>thought\n<channel|>{% endif %}",
+    }
+    backend = SimpleNamespace(
+        active_model_name = "custom/named-native-reasoning",
+        models = {
+            "custom/named-native-reasoning": {
+                "native_chat_template": named_template,
+                "chat_template_info": {"template": "{% if tools %}<tool_call>{% endif %}"},
+            }
+        },
+    )
+
+    default_flags = _detect_safetensors_features(backend, "plain override")
+    tool_flags = _detect_safetensors_features(
+        backend,
+        "plain override",
+        tools = [{"type": "function"}],
+    )
+
+    assert default_flags["supports_reasoning"] is False
+    assert tool_flags["supports_reasoning"] is True
+    assert tool_flags["reasoning_always_on"] is True
+
+
 # Qwen3.5 family pin: the live GGUF + safetensors templates both wrap tool
 # calls as ``<tool_call>\n<function=name>...``. Faithful slice so the
 # classifier never silently regresses for this family.

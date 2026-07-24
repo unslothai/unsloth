@@ -276,8 +276,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
-            "Local Ollama server. OpenAI-compatible /v1/chat/completions; "
-            "no API key. Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
+            "Ollama server (local or cloud). OpenAI-compatible "
+            "/v1/chat/completions; API key optional (required by Ollama "
+            "cloud). Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
         ),
         "hidden": True,
     },

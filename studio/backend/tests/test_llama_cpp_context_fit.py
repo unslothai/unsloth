@@ -567,7 +567,7 @@ class TestClassifyGpuOffload:
         assert inst._classify_gpu_offload(False, []) is None
 
     def test_user_did_not_intend_gpu_returns_none(self):
-        # Studio called start_llama_server without expecting GPU; don't warn.
+        # Unsloth called start_llama_server without expecting GPU; don't warn.
         inst = self._backend(
             [
                 "load_tensors:   CPU_Mapped model buffer size = 21000.0 MiB",

@@ -17,6 +17,9 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import shutil
+import tempfile
+import weakref
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
@@ -370,12 +373,18 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Check if tokenizer.model exists
-    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
-        return new_tokenizer
+    # Fresh per-call subdir so concurrent/repeated calls can't clobber each other's
+    # tokenizer.model or leak stale files, without deleting anything the caller owns.
+    temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
+
+    # Only sentencepiece tokenizers write tokenizer.model, so check after the save.
+    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
+        # new_tokenizer was built in memory and never references this dir, so drop it.
+        shutil.rmtree(temporary_location, ignore_errors = True)
+        return new_tokenizer
 
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
@@ -414,6 +423,9 @@ def fix_sentencepiece_tokenizer(
         eos_token = new_tokenizer.eos_token,
         pad_token = new_tokenizer.pad_token,
     )
+    # vocab_file points here, so the dir must outlive the tokenizer (a later
+    # save_pretrained copies the patched tokenizer.model from it); reclaim it on GC.
+    weakref.finalize(tokenizer, shutil.rmtree, temporary_location, ignore_errors = True)
     return tokenizer
 
 
@@ -1464,7 +1476,7 @@ def get_tokenizer_info(tokenizer) -> dict:
     """Return a concise diagnostic summary of a tokenizer instance.
 
     Collects key properties into a JSON-safe dict for logging, debugging, or the
-    Studio UI. Missing attributes fall back to ``None`` rather than raising.
+    Unsloth UI. Missing attributes fall back to ``None`` rather than raising.
 
     Example output::
 

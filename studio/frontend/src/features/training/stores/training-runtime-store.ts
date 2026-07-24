@@ -223,7 +223,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof detailLr === "number" ? detailLr : state.currentLearningRate,
         currentEpoch:
           typeof detailEpoch === "number" ? detailEpoch : state.currentEpoch,
-        outputDir: payload.details?.output_dir ?? state.outputDir,
+        outputDir:
+          payload.details?.output_dir !== undefined
+            ? payload.details.output_dir
+            : state.outputDir,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
         gradNormHistory: metricHistory.gradNormHistory ?? state.gradNormHistory,

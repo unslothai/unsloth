@@ -15,6 +15,19 @@ export interface GpuInfo {
   systemRamTotalGb: number
 }
 
+export interface SystemGpuDevice {
+  index: number;
+  name: string;
+  memoryTotalGb: number;
+  /** Free VRAM at fetch time. Degrades to the total when the utilization
+   * probe had no usage data; 0 only when the total is unknown too. */
+  memoryFreeGb: number;
+  /** "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
+   *  "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
+   *  backend can't map back, so the picker must not offer it. */
+  physicalIndex: boolean;
+}
+
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
@@ -25,70 +38,135 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamTotalGb: 0
 };
 
-// Module-level cache so multiple components share one fetch.
-let cachedGpu: GpuInfo | null = null;
-let fetchPromise: Promise<GpuInfo> | null = null;
+// One module-level cache so every GPU hook shares a single /api/system fetch.
+let cachedSystem: SystemInfoResponse | null = null;
+let systemPromise: Promise<SystemInfoResponse | null> | null = null;
 
-async function fetchGpuOnce(): Promise<GpuInfo> {
-  if (cachedGpu) return cachedGpu;
-  if (fetchPromise) return fetchPromise;
-
-  fetchPromise = (async () => {
+async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
+  if (cachedSystem) return cachedSystem;
+  if (systemPromise) return systemPromise;
+  systemPromise = (async () => {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json() as SystemInfoResponse;
-      const gpuData = data?.gpu;
-
-      // CPU/RAM exist even on hosts without a GPU, so populate them on every path.
-      // No discrete GPU (e.g. Mac): still surface system RAM so memory math
-      // (unified memory) has a budget to work with.
-      const base = {
-        cpuCore: data?.cpu?.physical_count ?? 0,
-        cpuThread: data?.cpu?.logical_count ?? 0,
-        systemRamAvailableGb: data?.memory?.available_gb ?? 0,
-        systemRamTotalGb: data?.memory?.total_gb ?? 0,
-      };
-
-      const devices = gpuData?.devices ?? [];
-      const info: GpuInfo =
-        gpuData?.available && devices.length
-          ? {
-              ...base,
-              available: true,
-              name: devices[0]?.name ?? "Unknown",
-              memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
-            }
-          : { ...DEFAULT_GPU, ...base };
-      cachedGpu = info;
-      return info;
+      cachedSystem = (await res.json()) as SystemInfoResponse;
+      return cachedSystem;
     } catch {
-      // Reset promise so subsequent calls retry (e.g. backend wasn't ready)
-      fetchPromise = null;
-      return DEFAULT_GPU;
+      systemPromise = null; // reset so a later call retries (backend not ready)
+      return null;
     }
   })();
+  return systemPromise;
+}
 
-  return fetchPromise;
+function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
+  // CPU/RAM exist even on GPU-less hosts (e.g. Mac), so populate them on every
+  // path: unified-memory math still needs a RAM budget to work with.
+  const base = {
+    cpuCore: data?.cpu?.physical_count ?? 0,
+    cpuThread: data?.cpu?.logical_count ?? 0,
+    systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+    systemRamTotalGb: data?.memory?.total_gb ?? 0,
+  };
+  const gpuData = data?.gpu;
+  const devices = gpuData?.devices ?? [];
+  if (!gpuData?.available || !devices.length) {
+    return { ...DEFAULT_GPU, ...base };
+  }
+  return {
+    ...base,
+    available: true,
+    name: devices[0]?.name ?? "Unknown",
+    memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
+  };
+}
+
+function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
+  // Unpinnable configurations must hide every pick surface: XPU indices are
+  // torch-xpu ordinals no applicator speaks, and Vulkan-only builds pin ggml's
+  // own ordinals -- /load and /validate 400 picks on both, so the backend
+  // reports gpu.gguf_gpu_ids_supported and every gate keyed on physicalIndex
+  // (picker, persisted-pick reconcile) follows it. The device flavor lives on
+  // the TOP-LEVEL device_backend field; absent support info defaults to
+  // pinnable (older backend).
+  const pinnableBackend =
+    data?.device_backend !== "xpu" &&
+    data?.gpu?.gguf_gpu_ids_supported !== false;
+  return (data?.gpu?.devices ?? [])
+    .filter((d) => typeof d.index === "number")
+    .map((d) => ({
+      index: d.index as number,
+      name: d.name ?? `GPU ${d.index}`,
+      memoryTotalGb: d.memory_total_gb ?? 0,
+      memoryFreeGb: d.vram_free_gb ?? 0,
+      physicalIndex: pinnableBackend && d.index_kind === "physical",
+    }));
+}
+
+/** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
+export function useGpuInfo(): GpuInfo {
+  const [gpu, setGpu] = useState<GpuInfo>(
+    cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,
+  );
+  useEffect(() => {
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at the default.
+    let cancelled = false;
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setGpu(toGpuInfo(d));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return gpu;
+}
+
+/** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
+export function useGpuDevices(): SystemGpuDevice[] {
+  const [devices, setDevices] = useState<SystemGpuDevice[]>(
+    cachedSystem ? toGpuDevices(cachedSystem) : [],
+  );
+  useEffect(() => {
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at the default.
+    let cancelled = false;
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setDevices(toGpuDevices(d));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return devices;
 }
 
 /**
- * Fetch GPU info from /api/system. Cached at module level, so only one request
- * is made no matter how many components call this hook.
+ * Await the shared /api/system fetch so cachedPinnableGpuIndices (and the
+ * store's reconcilePersistedGpuIds) can validate a persisted pick before a
+ * load path sends it -- on a cold cache the reconcile passes ids through
+ * unvalidated, and a stale cross-host pick then fails /load with the picker
+ * hidden. Resolves immediately once the module cache is warm; a failed fetch
+ * keeps the cache cold, preserving the "can't validate, backend guards"
+ * degradation.
  */
-export function useGpuInfo(): GpuInfo {
-  const [gpu, setGpu] = useState<GpuInfo>(cachedGpu ?? DEFAULT_GPU);
+export async function ensureGpuDeviceCache(): Promise<void> {
+  await fetchSystemOnce();
+}
 
-  useEffect(() => {
-    if (cachedGpu) return;
-
-    let cancelled = false;
-    fetchGpuOnce().then((info) => {
-      if (!cancelled) setGpu(info);
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  return gpu;
+/**
+ * Pinnable physical GPU indices from the already-fetched /api/system cache, for
+ * non-React code (the store) that needs to validate a persisted `gpu_ids` pick
+ * without triggering a fetch. Returns:
+ *  - `null` when the cache isn't populated yet (caller can't validate, so keep
+ *    the pick and let the backend guard reject a truly bad one);
+ *  - `[]` when the host has no pinnable multi-GPU set (single GPU, or relative/
+ *    UUID-masked indices) -- the picker is hidden, so any saved pick is stale;
+ *  - the physical indices otherwise.
+ */
+export function cachedPinnableGpuIndices(): number[] | null {
+  if (!cachedSystem) return null;
+  const physical = toGpuDevices(cachedSystem).filter((d) => d.physicalIndex);
+  // Mirrors the sheet's showGpuPicker gate: only a 2+ physical-GPU host can pin.
+  return physical.length > 1 ? physical.map((d) => d.index) : [];
 }

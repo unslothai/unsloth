@@ -1,4 +1,4 @@
-"""install.sh/install.ps1 must refuse to rm -rf an existing Studio venv in env-mode without a sentinel."""
+"""install.sh/install.ps1 must refuse to rm -rf an existing Unsloth venv in env-mode without a sentinel."""
 
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ def test_install_ps1_has_matching_env_mode_guard():
     ), "install.ps1 must gate Remove-Item $VenvDir on env-mode"
     assert "share\\studio.conf" in block, "install.ps1 guard must check share\\studio.conf sentinel"
     assert "bin\\unsloth.exe" in block, "install.ps1 guard must check bin\\unsloth.exe sentinel"
-    assert "Refusing to delete non-Studio venv" in block
+    assert "Refusing to delete non-Unsloth venv" in block
 
 
 def test_setup_ps1_has_writability_probe():
@@ -160,7 +160,7 @@ def test_env_mode_blocks_when_bin_unsloth_is_a_directory(tmp_path):
         capture_output = True,
     )
     assert res.returncode != 0, (
-        "directory at bin/unsloth must NOT satisfy the Studio sentinel; "
+        "directory at bin/unsloth must NOT satisfy the Unsloth sentinel; "
         f"stdout={res.stdout!r} stderr={res.stderr!r}"
     )
     assert (venv / "important.txt").is_file(), "unrelated workspace data must survive"
@@ -205,7 +205,7 @@ def test_install_ps1_sentinel_uses_pathtype_leaf():
 
 
 def test_setup_ps1_stale_venv_has_env_mode_guard():
-    """setup.ps1 stale-venv branch must gate Remove-Item $VenvDir on a custom-root Studio sentinel."""
+    """setup.ps1 stale-venv branch must gate Remove-Item $VenvDir on a custom-root Unsloth sentinel."""
     src = SETUP_PS1.read_text()
     idx = src.index("Stale venv detected")
     block = src[idx : idx + 1500]
@@ -252,6 +252,14 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
     assert (
         guard_idx < helper_idx
     ), "Assert-StudioOwnedOrAbsent must precede the install_llama_prebuilt.py call"
+
+
+def test_setup_ps1_adopts_existing_whisper_prebuilt_marker():
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    helper_start = text.index("function Test-StudioOwnedAdoptable")
+    helper_end = text.index("function Assert-StudioOwnedOrAbsent", helper_start)
+    helper = text[helper_start:helper_end]
+    assert "UNSLOTH_WHISPER_PREBUILT_INFO.json" in helper
 
 
 def test_env_mode_passes_when_venv_marker_present(tmp_path):

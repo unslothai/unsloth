@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import { LayoutTwoColumnIcon as Layout2ColumnIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ArtifactViewMode } from "./html-frame";
 import {
@@ -83,15 +83,18 @@ export function ArtifactCard({
     ],
   );
   const surface = artifactThreadId ? "panel" : "overlay";
+  // Once per mount, so a view-change cleanup can't re-trigger a stale open.
+  const autoOpenAttemptedRef = useRef(false);
 
   useLayoutEffect(() => {
     if (selectedArtifactId === artifact.id) {
       updateArtifact(artifact);
     }
 
-    if (!autoOpen) {
+    if (!autoOpen || autoOpenAttemptedRef.current) {
       return;
     }
+    autoOpenAttemptedRef.current = true;
     if (hasAutoOpenedArtifact(artifact.id)) {
       return;
     }
@@ -142,12 +145,12 @@ export function ArtifactCard({
             <span className="truncate text-sm font-medium leading-tight text-foreground">
               {isCode ? "HTML Code" : artifact.title}
             </span>
-            <span className="truncate text-[11px] leading-none text-muted-foreground">
+            <span className="truncate text-ui-11 leading-none text-muted-foreground">
               HTML canvas
             </span>
           </span>
           {isStreaming && !isCode ? (
-            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary motion-reduce:animate-none">
+            <span className="shimmer shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-ui-10 font-medium text-primary motion-reduce:animate-none">
               Generating
             </span>
           ) : null}

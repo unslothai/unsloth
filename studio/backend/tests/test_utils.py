@@ -38,7 +38,7 @@ from utils.hardware import (
     DeviceType,
 )
 import utils.hardware.hardware as _hw_module
-from utils.utils import format_error_message
+from utils.utils import format_error_message, is_hf_authentication_error
 
 
 # ========== Helpers ==========
@@ -438,6 +438,20 @@ class TestFormatErrorMessage:
         err = Exception("Invalid user token")
         msg = format_error_message(err, "any/model")
         assert "invalid" in msg.lower()
+
+    def test_hf_authentication_error_follows_wrapped_401(self):
+        response = type("Response", (), {"status_code": 401})()
+        auth_error = Exception("request failed")
+        auth_error.response = response
+        wrapper = RuntimeError("model validation failed")
+        wrapper.__cause__ = auth_error
+        assert is_hf_authentication_error(wrapper) is True
+
+    def test_hf_authentication_error_does_not_treat_429_as_invalid(self):
+        response = type("Response", (), {"status_code": 429})()
+        rate_error = Exception("too many requests")
+        rate_error.response = response
+        assert is_hf_authentication_error(rate_error) is False
 
     # --- OOM on CUDA ---
 

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  getAuthSubjectKey,
-  subscribeAuthSubject,
-} from "@/features/auth";
+import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
 import {
   createServerRecipe,
@@ -23,17 +20,15 @@ import {
   SAFE_SECRET_LOOKING_KEYS,
 } from "@/features/user-assets/persistence-policy";
 import { normalizeNonEmptyName } from "@/utils";
-import {
-  useCallback,
-  useEffect,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
 const recipeRecordSubjects = new WeakMap<RecipeRecord, string>();
 const repositoryListeners = new Set<() => void>();
+const cachedRecipeLists = new Map<string, RecipeRecord[]>();
+const readyRecipeLists = new Set<string>();
+const recipeListRequests = new Map<string, Promise<RecipeRecord[]>>();
 
 function recipeCacheKey(subject: string, id: string): string {
   return `${subject}\u0000${id}`;
@@ -43,6 +38,39 @@ function assertSubjectUnchanged(subject: string): void {
   if (getAuthSubjectKey() !== subject) {
     throw new Error("Recipe persistence account changed.");
   }
+}
+
+function cacheRecipeList(
+  subject: string,
+  recipes: RecipeRecord[],
+): RecipeRecord[] {
+  for (const recipe of recipes) {
+    primeRecipeCacheForSubject(subject, recipe);
+  }
+  cachedRecipeLists.set(subject, recipes);
+  readyRecipeLists.add(subject);
+  return recipes;
+}
+
+export function preloadRecipes(): Promise<RecipeRecord[]> {
+  const subject = getAuthSubjectKey();
+  if (readyRecipeLists.has(subject)) {
+    return Promise.resolve(cachedRecipeLists.get(subject) ?? []);
+  }
+  const pending = recipeListRequests.get(subject);
+  if (pending) {
+    return pending;
+  }
+
+  const request = listRecipes()
+    .then((recipes) => cacheRecipeList(subject, recipes))
+    .finally(() => {
+      if (recipeListRequests.get(subject) === request) {
+        recipeListRequests.delete(subject);
+      }
+    });
+  recipeListRequests.set(subject, request);
+  return request;
 }
 
 function primeRecipeCacheForSubject(
@@ -129,9 +157,7 @@ function isSecretField(path: string[], key: string, value: unknown): boolean {
         MCP_ENV_DENIED_KEY_SUFFIXES.some((suffix) =>
           normalizedKey.endsWith(suffix),
         ) ||
-        MCP_ENV_DENIED_KEY_PARTS.some((part) =>
-          normalizedKey.includes(part),
-        )),
+        MCP_ENV_DENIED_KEY_PARTS.some((part) => normalizedKey.includes(part))),
   );
 }
 
@@ -243,6 +269,17 @@ export async function saveRecipe(
   assertSubjectUnchanged(subject);
   const authoritativeRecord = { ...record, removedCredentialPaths };
   primeRecipeCacheForSubject(subject, authoritativeRecord);
+  if (readyRecipeLists.has(subject)) {
+    cachedRecipeLists.set(
+      subject,
+      [
+        authoritativeRecord,
+        ...(cachedRecipeLists.get(subject) ?? []).filter(
+          (recipe) => recipe.id !== authoritativeRecord.id,
+        ),
+      ].sort((a, b) => b.updatedAt - a.updatedAt),
+    );
+  }
   notifyRepositoryChanged();
   return authoritativeRecord;
 }
@@ -255,6 +292,14 @@ export async function deleteRecipe(
   await deleteServerRecipe(id, revision);
   assertSubjectUnchanged(subject);
   recentRecipeCache.delete(recipeCacheKey(subject, id));
+  if (readyRecipeLists.has(subject)) {
+    cachedRecipeLists.set(
+      subject,
+      (cachedRecipeLists.get(subject) ?? []).filter(
+        (recipe) => recipe.id !== id,
+      ),
+    );
+  }
   notifyRepositoryChanged();
 }
 
@@ -291,7 +336,12 @@ export function useRecipes(): {
     recipes: RecipeRecord[];
     ready: boolean;
     error: Error | null;
-  }>(() => ({ subject, recipes: [], ready: false, error: null }));
+  }>(() => ({
+    subject,
+    recipes: cachedRecipeLists.get(subject) ?? [],
+    ready: readyRecipeLists.has(subject),
+    error: null,
+  }));
   const [refreshVersion, setRefreshVersion] = useState(0);
   const refresh = useCallback(() => {
     const currentSubject = getAuthSubjectKey();
@@ -320,9 +370,7 @@ export function useRecipes(): {
         if (!active || getAuthSubjectKey() !== subject) {
           return;
         }
-        for (const recipe of records) {
-          primeRecipeCacheForSubject(subject, recipe);
-        }
+        cacheRecipeList(subject, records);
         setLoadState({ subject, recipes: records, error: null, ready: true });
       })
       .catch((caught: unknown) => {
@@ -345,7 +393,12 @@ export function useRecipes(): {
   }, [refreshVersion, subject]);
 
   if (loadState.subject !== subject) {
-    return { recipes: [], ready: false, error: null, refresh };
+    return {
+      recipes: cachedRecipeLists.get(subject) ?? [],
+      ready: readyRecipeLists.has(subject),
+      error: null,
+      refresh,
+    };
   }
   return { ...loadState, refresh };
 }

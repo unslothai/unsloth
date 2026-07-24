@@ -56,7 +56,6 @@ def test_customization_defaults():
     assert c.contrast == 50
     assert c.reduceMotion == "system"
     assert c.fontSmoothing is True
-    assert c.edgeFades is True
     assert c.pointerCursors is False
     assert c.colors.light.accent is None
     assert c.headingFont is None
@@ -370,7 +369,6 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "pointerCursors": True,
                 "reduceMotion": "off",
                 "fontSmoothing": True,
-                "edgeFades": False,
                 "sidebarMenu": [
                     {"id": "darkMode", "visible": True},
                     {"id": "api", "visible": False},

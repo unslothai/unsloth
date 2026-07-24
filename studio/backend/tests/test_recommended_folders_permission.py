@@ -112,7 +112,7 @@ def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
 )
 def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
     """Documents *why* _safe_is_dir exists: the old bare pattern raises on
-    the interpreters Studio ships on (3.12+)."""
+    the interpreters Unsloth ships on (3.12+)."""
     parent = tmp_path / "ollama"
     parent.mkdir()
     os.chmod(parent, 0o000)

@@ -906,7 +906,7 @@ def _call_stdio_tool(
     def _remaining() -> Optional[float]:
         return None if deadline is None else max(0.0, deadline - time.monotonic())
 
-    # Callers without a Studio session id must retain the former one-shot
+    # Callers without an Unsloth session id must retain the former one-shot
     # behavior: no browser/cookie/tool state can leak into another request.
     # Use an ephemeral key (and close it below) rather than the shared empty
     # scope that the persistent-session cache used previously.

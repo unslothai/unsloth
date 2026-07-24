@@ -338,11 +338,11 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
 # so FastAPI runs it in the threadpool rather than blocking the event loop.
 @router.get("/identity")
 def identity(nonce: str, request: Request) -> dict:
-    """Challenge-response proof this is the real local Studio: caller sends a nonce,
+    """Challenge-response proof this is the real local Unsloth: caller sends a nonce,
     gets HMAC(install identity secret, nonce, connection address + port).
     Unauthenticated and side-effect free; a process that can't read the same-user
     secret can't forge a proof, and binding to the address/port the connection
-    landed on stops a squatter relaying a proof from the real Studio elsewhere."""
+    landed on stops a squatter relaying a proof from the real Unsloth elsewhere."""
     try:
         raw = base64.urlsafe_b64decode(nonce)
     except Exception:
@@ -494,14 +494,20 @@ async def change_password(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Current password is incorrect",
         )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
     if payload.current_password == payload.new_password:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = "New password must be different from the current password",
         )
 
-    storage.update_password(current_subject, payload.new_password)
-    storage.revoke_user_refresh_tokens(current_subject)
+    # Single transaction: a separate refresh-token purge could fail after the
+    # password commit, leaving pre-change tokens able to mint access tokens.
+    storage.update_password(current_subject, payload.new_password, revoke_refresh_tokens = True)
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:

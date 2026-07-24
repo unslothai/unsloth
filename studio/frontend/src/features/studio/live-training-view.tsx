@@ -1,17 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { cn } from "@/lib/utils";
 import {
+  getTrainingRun,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
+import { cn } from "@/lib/utils";
 import type { ReactElement } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
+import {
+  type RunConfigOverride,
+  mapRunConfigToOverride,
+} from "./sections/run-config-override";
 import { TrainingStartOverlay } from "./training-start-overlay";
+
+/** Retry budget for the run-config lookup. The row is inserted at
+ * start_training(), but a lookup issued in the same instant can still miss it;
+ * a few short retries cover that without polling a genuinely absent row. */
+const RUN_CONFIG_FETCH_RETRIES = 5;
+const RUN_CONFIG_FETCH_RETRY_MS = 1000;
+
+/** The fetched run config only applies while it belongs to the active job;
+ * a stale record from a previous run falls back to the form store. */
+function activeRunOverride(
+  fetched: { jobId: string; override: RunConfigOverride | undefined } | null,
+  jobId: string | null,
+): RunConfigOverride | undefined {
+  if (fetched === null || fetched.jobId !== jobId) {
+    return undefined;
+  }
+  return fetched.override;
+}
 
 export function LiveTrainingView(): ReactElement {
   const runtime = useTrainingRuntimeStore(
@@ -52,6 +76,59 @@ export function LiveTrainingView(): ReactElement {
     })),
   );
 
+  // Show the ACTIVE run's saved config, not the editable form store the user may
+  // have changed since starting (#6853). start_training() commits the run row
+  // before the pump, so the job id alone gates the fetch; the bounded retry below
+  // covers the narrow uncommitted window, and until it loads ProgressSection falls
+  // back to the form store. The result is keyed by job id and filtered at render.
+  const [fetchedRunConfig, setFetchedRunConfig] = useState<{
+    jobId: string;
+    override: RunConfigOverride | undefined;
+  } | null>(null);
+  // Retry budget for the transient 404 below, keyed by job so a new run always
+  // starts with a fresh budget.
+  const [fetchAttempt, setFetchAttempt] = useState<{
+    jobId: string;
+    count: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!runtime.jobId) {
+      return;
+    }
+    const jobId = runtime.jobId;
+    if (fetchedRunConfig !== null && fetchedRunConfig.jobId === jobId) {
+      return; // already resolved for this job
+    }
+    const attempts = fetchAttempt?.jobId === jobId ? fetchAttempt.count : 0;
+    const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    getTrainingRun(jobId, controller.signal)
+      .then((detail) => {
+        setFetchedRunConfig({
+          jobId,
+          override: mapRunConfigToOverride(detail.config),
+        });
+      })
+      .catch(() => {
+        // A lookup racing the row commit can miss transiently; nothing else in
+        // the deps changes on failure, so retry explicitly. Bounded so a genuinely
+        // absent row falls back to the form store instead of polling forever.
+        if (controller.signal.aborted || attempts >= RUN_CONFIG_FETCH_RETRIES) {
+          return;
+        }
+        retryTimer = setTimeout(() => {
+          setFetchAttempt({ jobId, count: attempts + 1 });
+        }, RUN_CONFIG_FETCH_RETRY_MS);
+      });
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+      }
+    };
+  }, [runtime.jobId, fetchedRunConfig, fetchAttempt]);
+  const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
+
   const activeProjectName =
     runtime.startProjectName !== null
       ? runtime.startProjectName.trim() || null
@@ -76,7 +153,11 @@ export function LiveTrainingView(): ReactElement {
     isTrainingRunning: runtime.isTrainingRunning,
     modelName: runtime.startModelName ?? config.selectedModel ?? "",
     projectName: activeProjectName,
-    trainingMethod: config.trainingMethod ?? "",
+    // Prefer the saved run's method: the form may have been edited (e.g. LoRA
+    // -> Full) after the run started, which would relabel the run and hide its
+    // saved LoRA rows in the popover.
+    trainingMethod:
+      runConfigOverride?.trainingMethod ?? config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
     gradNormHistory: runtime.gradNormHistory,
@@ -105,7 +186,11 @@ export function LiveTrainingView(): ReactElement {
         )}
       >
         <div data-tour="studio-training-progress">
-          <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
+          <ProgressSection
+            key={runtime.jobId ?? "no-job"}
+            data={viewData}
+            configOverride={runConfigOverride}
+          />
         </div>
         <ChartsSection
           currentStep={viewData.currentStep}

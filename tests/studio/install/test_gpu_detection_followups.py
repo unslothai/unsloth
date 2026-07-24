@@ -284,7 +284,9 @@ class TestBackendExportLeafClassification:
     def test_export_block_uses_leaf(self, install_src):
         anchor = install_src.find("_torch_index_leaf=")
         assert anchor >= 0, "backend export must classify on the final path segment"
-        window = install_src[anchor : anchor + 500]
+        # Window spans the leaf-normalization prelude (query/frag drop + all-slash trim loop)
+        # through the export case arms.
+        window = install_src[anchor : anchor + 900]
         assert 'export UNSLOTH_TORCH_BACKEND="rocm"' in window
         assert 'export UNSLOTH_TORCH_BACKEND="cpu"' in window
         assert 'export UNSLOTH_TORCH_BACKEND="cuda"' in window
@@ -459,3 +461,130 @@ class TestHiddenCvdNotUsable:
             cvd,
         )
         assert out == expected
+
+
+class TestRedactInstallOutput:
+    """_redact_install_output scrubs index-URL credentials from a captured install log
+    before it is printed on failure (uv/pip embeds the failing --index-url verbatim)."""
+
+    def test_userinfo_redacted(self):
+        out = stack_mod._redact_install_output(
+            "ERROR: failed https://alice:s3cr3t@download.pytorch.org/whl/cu128"
+        )
+        assert out == "ERROR: failed https://<redacted>@download.pytorch.org/whl/cu128"
+
+    def test_bytes_input_decoded_and_redacted(self):
+        out = stack_mod._redact_install_output(b"fetch https://ghp_deadbeef@host/whl/cu128 failed")
+        assert out == "fetch https://<redacted>@host/whl/cu128 failed"
+
+    def test_query_values_redacted(self):
+        out = stack_mod._redact_install_output(
+            "url https://host/whl/cu128?token=abcd1234&channel=beta unreachable"
+        )
+        assert out == "url https://host/whl/cu128?token=<redacted>&channel=<redacted> unreachable"
+
+    def test_fragment_redacted(self):
+        out = stack_mod._redact_install_output(
+            "ERROR: could not fetch https://mirror.local/whl/cu128#token=SECRET123 (403)"
+        )
+        assert out == "ERROR: could not fetch https://mirror.local/whl/cu128#<redacted> (403)"
+
+    def test_query_and_fragment_both_redacted(self):
+        out = stack_mod._redact_install_output("https://host/whl/cu128?token=abc#sig=xyz done")
+        assert out == "https://host/whl/cu128?token=<redacted>#<redacted> done"
+
+    def test_bare_hash_comment_untouched(self):
+        # The fragment redaction is URL-anchored: a shell comment in tool output survives.
+        assert (
+            stack_mod._redact_install_output("# retrying with --no-cache-dir")
+            == "# retrying with --no-cache-dir"
+        )
+
+    def test_plain_line_untouched(self):
+        assert (
+            stack_mod._redact_install_output("Resolved 42 packages in 1.2s")
+            == "Resolved 42 packages in 1.2s"
+        )
+
+    def test_no_secret_substring_survives(self):
+        out = stack_mod._redact_install_output(
+            "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET"
+        )
+        assert "s3cr3t" not in out and "SUPERSECRET" not in out and "ALSOSECRET" not in out
+
+
+class TestTrimIndexPathSlashes:
+    """_trim_index_path_slashes strips trailing PATH slashes only; a ?query/#fragment token
+    ending in "/" must survive (a whole-URL rstrip would corrupt a base64 token)."""
+
+    def test_double_path_slash_collapsed(self):
+        assert stack_mod._trim_index_path_slashes("https://h/whl/cu128//") == "https://h/whl/cu128"
+
+    def test_query_token_slash_preserved(self):
+        assert (
+            stack_mod._trim_index_path_slashes("https://h/whl/cu128?token=ab12cd/")
+            == "https://h/whl/cu128?token=ab12cd/"
+        )
+
+    def test_path_slash_trimmed_query_kept(self):
+        assert (
+            stack_mod._trim_index_path_slashes("https://h/whl/cu128//?token=ab12cd/")
+            == "https://h/whl/cu128?token=ab12cd/"
+        )
+
+    def test_fragment_slash_preserved(self):
+        assert (
+            stack_mod._trim_index_path_slashes("https://h/whl/cu128#anchor/")
+            == "https://h/whl/cu128#anchor/"
+        )
+
+
+class TestRocmFamilyLeafParity:
+    """_is_pip_rocm_family_leaf must match re.fullmatch(rocm\\d+(?:\\.\\d+)?): a trailing dot
+    (rocm7.) is a CUSTOM pin, not a family (the historical bash/py validator asymmetry)."""
+
+    @pytest.mark.parametrize(
+        "leaf, expected",
+        [
+            ("rocm7", True),
+            ("rocm7.2", True),
+            ("gfx1151", True),
+            ("rocm7.", False),
+            ("rocm.7", False),
+            ("rocm7..2", False),
+            ("rocm7.2.1", False),
+            ("rocm7.2-private", False),
+            ("cpu", False),
+            ("cu128", False),
+        ],
+    )
+    def test_family_classification(self, leaf, expected):
+        assert stack_mod._is_pip_rocm_family_leaf(leaf) is expected
+
+
+class TestTorchIndexLeafAllSlashes:
+    """_torch_index_leaf drops query/fragment then strips ALL trailing slashes, so a
+    double-slash index still yields the real leaf (not an empty string)."""
+
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            ("https://m/whl/cu128//", "cu128"),
+            ("https://m/whl/rocm7.2///", "rocm7.2"),
+            ("https://m/whl/cu128//?token=x", "cu128"),
+            ("https://m/whl/cu128/", "cu128"),
+        ],
+    )
+    def test_leaf_never_empty_on_double_slash(self, url, expected):
+        assert stack_mod._torch_index_leaf(url) == expected
+
+
+class TestUvIndexEnvVarsScrub:
+    """The pinned-install env scrub must drop PIP_NO_INDEX (which makes the pip fallback
+    ignore ALL indexes, defeating the pin) and PIP_INDEX_URL (replaces the pinned index)."""
+
+    def test_pip_no_index_scrubbed(self):
+        assert "PIP_NO_INDEX" in stack_mod._UV_INDEX_ENV_VARS
+
+    def test_pip_index_url_scrubbed(self):
+        assert "PIP_INDEX_URL" in stack_mod._UV_INDEX_ENV_VARS
