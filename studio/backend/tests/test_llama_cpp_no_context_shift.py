@@ -5,7 +5,7 @@
 
 With llama-server's default context-shift behavior, the UI cannot tell the user
 the KV cache was rotated -- earlier turns silently vanish from the conversation.
-The Studio backend always passes ``--no-context-shift`` so the server returns a
+The Unsloth backend always passes ``--no-context-shift`` so the server returns a
 clean error instead, and the chat adapter can point the user at the
 ``Context Length`` input in the settings panel.
 
@@ -118,9 +118,17 @@ def test_flag_sits_inside_the_base_cmd_list():
         "conditional branch -- otherwise some code paths would still "
         "run with silent context shift enabled."
     )
-    # Pin that it sits next to -c / --ctx so the grouping makes sense.
-    assert '"-c"' in block
     assert '"--flash-attn"' in block
+    # -c is emitted in the conditional right after the base list, not inside
+    # it: auto-fit (--fit on with no pinned context) must omit -c entirely,
+    # because "-c 0" pins the full native context and disables --fit's
+    # VRAM-based sizing. Pin that it still sits next to the base block so the
+    # context grouping stays intact.
+    after = rest[end_rel : end_rel + 1000]
+    assert '"-c"' in after, (
+        "-c must still be emitted in the conditional immediately after the "
+        "base cmd list (omitted only in auto-fit, where --fit sizes context)."
+    )
 
 
 def _iter_lines_with_offset(text: str):

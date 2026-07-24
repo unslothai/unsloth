@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Fast source and runtime contracts for Studio's frontend authentication flows.
+"""Fast source and runtime contracts for Unsloth's frontend authentication flows.
 
 PR #5490 added a third "Current password" input, regressing first-boot UX to
 three inputs; PR #5545 restores two by rendering it only when BOOTSTRAP is absent.

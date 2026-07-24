@@ -280,8 +280,8 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts; packaged Studio can run with
-        # cwd=/, so keep default callers on Studio's writable recipe artifact root.
+        # DataDesigner defaults to cwd/artifacts; packaged Unsloth can run with
+        # cwd=/, so keep default callers on Unsloth's writable recipe artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)

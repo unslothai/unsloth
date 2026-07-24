@@ -3,7 +3,7 @@
 
 """Tests for the runtime managed-Node resolver (studio/backend/utils/node_runtime.py).
 
-The Studio frontend installer may provision an isolated Node under
+The Unsloth frontend installer may provision an isolated Node under
 ``<UNSLOTH_HOME>/node`` that is never added to the user's PATH. The backend OXC
 validator must still find a usable Node at runtime: a version-adequate system
 Node, else the managed isolated one. These tests pin that resolution and the

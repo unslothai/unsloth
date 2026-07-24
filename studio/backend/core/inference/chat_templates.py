@@ -4,13 +4,13 @@
 """Bundled chat-template selection for GGUF inference.
 
 Some shipped GGUF quants embed an older chat template. Rather than re-cutting and
-asking users to re-download every quant, Studio can override the embedded template
+asking users to re-download every quant, Unsloth can override the embedded template
 at llama-server launch time with a bundled, up-to-date Jinja template for known
 model families. The override is wired through the existing ``chat_template_override``
 -> ``--chat-template-file`` path in ``LlamaCppBackend.load_model``.
 
 Currently this covers ``unsloth/gemma-4-*-GGUF``, which gains the upstream PR #118
-``preserve_thinking`` flag (defaulted OFF here) so the Studio "Preserve thinking"
+``preserve_thinking`` flag (defaulted OFF here) so the Unsloth "Preserve thinking"
 toggle appears while staying disabled by default.
 """
 

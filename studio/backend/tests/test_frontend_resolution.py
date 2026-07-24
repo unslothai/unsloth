@@ -218,7 +218,7 @@ def test_systemexit_message_contains_actionable_fixes(tmp_path, monkeypatch):
         installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
     tried_lines = "\n".join(f"  - {p}" for p in attempted)
     message = (
-        "[ERROR] Studio frontend build not found.\n"
+        "[ERROR] Unsloth frontend build not found.\n"
         f"Tried:\n{tried_lines}\n"
         "\n"
         "Likely cause: another 'unsloth' on PATH is shadowing the "

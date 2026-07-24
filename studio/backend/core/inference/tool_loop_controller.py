@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared controller state for Studio local agentic tool loops.
+"""Shared controller state for Unsloth local agentic tool loops.
 
 This module is intentionally dependency-light: it owns only per-response
 ledger state and value objects used by the GGUF and safetensors loops.

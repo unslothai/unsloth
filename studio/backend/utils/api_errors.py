@@ -20,7 +20,7 @@ client-error responses on the ``/v1/*`` surface:
 CRITICAL: the exception handlers installed by :func:`install_api_error_handlers`
 are global, but they ONLY transform responses for paths that start with ``/v1/``.
 For every other path (``/api/...``, frontend routes) they reproduce FastAPI's
-default behavior byte-for-byte, because the Studio frontend depends on the
+default behavior byte-for-byte, because the Unsloth frontend depends on the
 ``{"detail": ...}`` shape for ``/api/*``.
 
 Public contract (other modules depend on these):
@@ -107,7 +107,7 @@ def anthropic_error_body(
 
     Returns ``{"type": "error", "request_id": None, "error": {"type", "message"}}``.
     ``request_id`` is a required (nullable) field on the spec's ErrorResponse;
-    Studio has no request-id system, so it is null. ``err_type`` defaults to
+    Unsloth has no request-id system, so it is null. ``err_type`` defaults to
     :data:`ANTHROPIC_TYPE_BY_STATUS` for ``status`` (``"api_error"`` fallback).
     """
     return {
@@ -192,7 +192,7 @@ def install_api_error_handlers(app) -> None:
     Both handlers are global but only transform responses for OpenAI/Anthropic-
     compatible surfaces (see :func:`wants_api_error_envelope`: the ``/v1/*`` mount
     and the preview ``/p/.../v1/*`` mount). Every other path reproduces FastAPI's
-    default ``{"detail": ...}`` behavior exactly so the Studio frontend keeps working.
+    default ``{"detail": ...}`` behavior exactly so the Unsloth frontend keeps working.
     """
 
     @app.exception_handler(RequestValidationError)

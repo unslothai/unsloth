@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Cloudflare tunnel start gate, incl. --secure on loopback. Imports run.py
-directly, so run under the Studio venv."""
+directly, so run under the Unsloth venv."""
 
 from __future__ import annotations
 

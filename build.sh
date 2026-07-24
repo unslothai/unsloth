@@ -4,9 +4,9 @@
 
 set -euo pipefail
 
-# PyPI/Studio release publishing must use `./build.sh publish` (or an
-# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Studio
-# artifacts include the display-only Studio release version.
+# PyPI/Unsloth release publishing must use `./build.sh publish` (or an
+# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Unsloth
+# artifacts include the display-only Unsloth release version.
 
 # 1. Build frontend (Vite outputs to dist/)
 cd studio/frontend
@@ -87,7 +87,7 @@ cd ../..
 # 2. Clean old artifacts
 rm -rf build dist *.egg-info
 
-# 3. Stamp display-only Studio release metadata for packaged builds.
+# 3. Stamp display-only Unsloth release metadata for packaged builds.
 _STUDIO_BUILD_INFO="studio/backend/utils/_studio_release_build.py"
 _STUDIO_BUILD_INFO_BACKUP="$(mktemp)"
 cp "$_STUDIO_BUILD_INFO" "$_STUDIO_BUILD_INFO_BACKUP"

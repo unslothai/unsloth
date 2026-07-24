@@ -126,10 +126,21 @@ _ALLOWED_TP_DROP_GUARDS = {
     # Capability: --split-mode tensor aborted for this (binary, model) (#6415).
     # Self-healing -- tried by default, skipped only after a real abort (vs #6416).
     "tensor_parallel and self._tensor_split_aborts(binary, model_identifier)",
-    # Capacity: tensor needs >= 2 GPUs clearing the compute-buffer reserve.
-    "tensor_parallel and len(tp_gpus) < 2",
+    # Capacity: tensor needs >= 2 GPUs clearing the compute-buffer reserve. Gated
+    # on plan_tp (not raw tensor_parallel) so manual mode skips this planner (#6414).
+    "plan_tp and len(tp_gpus) < 2",
     # Capacity: pooled usable VRAM can't hold weights + MTP reserve -> layer split.
     "_tp_weight_budget_mib <= _tp_required_mib",
+    # Manual mode, Auto layers: --fit owns memory and is incompatible with a
+    # tensor split, so TP is dropped (surfaced via logger.info) before the
+    # cache-drop, so a quantized KV survives into the --fit load (#6414).
+    "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers < 0)",
+    # Manual mode, explicit layers: a tensor split still needs >= 2 GPUs in use.
+    "tensor_parallel and gpu_memory_mode == 'manual' and (gpu_layers >= 0) and (self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2)",
+    # Manual mode, zero layers: nothing to split on the GPU, and a tensor-mode
+    # launch under the CPU-only GPU mask (no visible devices) aborts the server
+    # instead of the intended CPU-only load (#6414).
+    "gpu_memory_mode == 'manual' and gpu_layers == 0",
 }
 
 
@@ -364,7 +375,7 @@ def test_compute_buffer_downgrade_preserves_multi_gpu_intent():
     full GPU set too, so it is symmetric with the budget/geometry downgrades and
     doesn't collapse a multi-GPU layer load to one card (reviewer.py P1 on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    gate = src.find("tensor_parallel and len(tp_gpus) < 2")
+    gate = src.find("plan_tp and len(tp_gpus) < 2")
     assert gate != -1
     # Bound to exactly this block: from its gate to the next (budget) downgrade.
     nxt = src.find("_tp_weight_budget_mib <= _tp_required_mib", gate)
@@ -625,7 +636,7 @@ def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBac
 
 
 def test_tensor_off_echo_preserves_multi_gpu_fallback():
-    """The Studio UI always sends tensor_parallel and echoes the /load response's
+    """The Unsloth UI always sends tensor_parallel and echoes the /load response's
     resolved value, so after a fallback a ctx/settings reload carries tensor_parallel=
     false even though the user never changed it. That echo must NOT collapse the
     preserved multi-GPU placement -- it dedupes (Codex #6659)."""

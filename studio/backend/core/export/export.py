@@ -1048,6 +1048,21 @@ class ExportBackend:
                     "Use the safetensors adapter instead.",
                     None,
                 )
+            # llama.cpp's convert_lora_to_gguf.py has no concept of DoRA's
+            # lora_magnitude_vector tensors: it only reads the standard
+            # lora_A/lora_B delta, so exporting a DoRA adapter would silently
+            # drop the magnitude rescaling and produce a GGUF LoRA file that
+            # loads fine but no longer matches the trained model.
+            _peft_config = getattr(self.current_model, "peft_config", {}).get("default")
+            if getattr(_peft_config, "use_dora", False):
+                return (
+                    False,
+                    "GGUF LoRA export is not supported for DoRA adapters: the GGUF LoRA "
+                    "format has no way to represent DoRA's magnitude vectors, so the "
+                    "exported file would silently lose the DoRA behavior. Use the "
+                    "safetensors adapter instead, or merge to a full GGUF model.",
+                    None,
+                )
             outtype = str(gguf_outtype).lower()
             if outtype not in _GGUF_LORA_OUTTYPES:
                 return (

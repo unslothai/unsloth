@@ -6,7 +6,7 @@
 
 Downloads an official Node.js archive from nodejs.org into an isolated
 ``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
-LTS clears the Studio frontend build floor (Vite 8: Node ^20.19 || >=22.12,
+LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
 npm >= 11) with the npm it bundles.
 
 Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``

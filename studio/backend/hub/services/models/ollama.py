@@ -85,7 +85,7 @@ def _contained_link_path(link_dir: Path, link_name: str) -> Optional[Path]:
 
 
 def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
-    """Writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` next to the blobs; falls back to Studio's cache (read-only system installs), then the temp dir (sandboxed installs)."""
+    """Writable directory for Ollama ``.gguf`` symlinks. Prefers ``<ollama_dir>/.studio_links/`` next to the blobs; falls back to Unsloth's cache (read-only system installs), then the temp dir (sandboxed installs)."""
 
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
         try:
