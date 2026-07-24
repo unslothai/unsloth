@@ -11,7 +11,10 @@ dequant reference.
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+gpu_available = torch.cuda.is_available() or torch.xpu.is_available()
+dev = "cuda" if torch.cuda.is_available() else "xpu" if torch.xpu.is_available() else "cpu"
+
+pytestmark = pytest.mark.skipif(not gpu_available, reason = "needs CUDA or XPU")
 
 
 def _reference(X, weight, scale, block):
@@ -27,7 +30,6 @@ def test_tiny_non_tileable_forward_backward_matches_reference():
     from unsloth.kernels.fp8 import FP8BlockQuantLinear
 
     torch.manual_seed(0)
-    dev = "cuda"
     block = [128, 128]
     m, n = 8, 8  # non-tileable, in-dim % 128 != 0
     weight = torch.randn(m, n, device = dev, dtype = torch.bfloat16)  # (out=m, in=n)
@@ -50,7 +52,6 @@ def test_e8m0_scale_is_upcast_and_runs():
     if not hasattr(torch, "float8_e8m0fnu"):
         pytest.skip("torch build lacks float8_e8m0fnu")
 
-    dev = "cuda"
     m, n = 8, 8
     weight = torch.randn(m, n, device = dev, dtype = torch.bfloat16)
     scale = (torch.rand(1, 1, device = dev) + 1.0).to(torch.float8_e8m0fnu)
@@ -70,7 +71,6 @@ def test_rectangular_block_dequant_matches_reference():
     from unsloth.kernels.fp8 import _blockwise_weight_dequant_any_shape
 
     torch.manual_seed(0)
-    dev = "cuda"
     block = [64, 128]
     m, n = 64, 256  # evenly tiled: 64 % 64 == 0, 256 % 128 == 0
     weight = torch.randn(m, n, device = dev, dtype = torch.bfloat16)
@@ -94,7 +94,6 @@ def test_e8m0_scale_preserves_non_default_block_size_attr():
         pytest.skip("torch build lacks float8_e8m0fnu")
 
     torch.manual_seed(0)
-    dev = "cuda"
     block = [64, 64]
     # in-dim 96 is not divisible by block[1]=64 -> forward takes the torch dequant
     # fallback (no fp8 matmul kernel). Scale shape (2, 2) validates for [64, 64] but
