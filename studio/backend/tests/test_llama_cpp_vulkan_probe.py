@@ -97,8 +97,11 @@ def _row(
     free_bytes: int,
     is_igpu: int,
     total_bytes: int = 0,
+    name: str | None = None,
 ) -> str:
-    return f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
+    """A probe line; ``name=None`` emits the legacy 4-column format."""
+    base = f"{idx}\t{free_bytes}\t{is_igpu}\t{total_bytes}"
+    return base if name is None else f"{base}\t{name}"
 
 
 def test_integrated_gpu_leaves_host_margin(tmp_path):
@@ -169,6 +172,70 @@ def test_multi_backend_build_is_not_vulkan_only(tmp_path):
     cuda = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so"
     (_llama_lib_dir(binary) / cuda).write_bytes(b"stub")
     assert LlamaCppBackend._is_vulkan_backend(binary) is False
+
+
+def test_five_column_probe_rows_parse_and_free_memory_ignores_name(tmp_path):
+    # The probe gained a 5th name column; the fit reader keeps its 3-tuple shape.
+    binary = _make_vulkan_install(tmp_path)
+    rows = [
+        _row(0, 15 * GIB, is_igpu = 0, total_bytes = 16 * GIB, name = "AMD Radeon RX 9070 XT"),
+        _row(1, 7 * GIB, is_igpu = 0, total_bytes = 8 * GIB, name = "Radeon (TM) RX 480 Graphics"),
+    ]
+    with _mock_probe(rows):
+        gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+    assert gpus == [(0, 15 * 1024, 16 * 1024), (1, 7 * 1024, 8 * 1024)], gpus
+
+
+def test_device_inventory_reports_names_totals_and_igpu_flag(tmp_path):
+    # The UI-facing inventory keeps names and real totals (an iGPU keeps its
+    # shared-RAM total here, unlike the fit view) so /api/system can list the
+    # devices llama-server will actually use -- including cards torch can't see.
+    binary = _make_vulkan_install(tmp_path)
+    rows = [
+        _row(0, 15 * GIB, is_igpu = 0, total_bytes = 16 * GIB, name = "AMD Radeon RX 9070 XT"),
+        _row(1, 7 * GIB, is_igpu = 1, total_bytes = 8 * GIB),  # legacy 4-col line
+    ]
+    with _mock_probe(rows):
+        inventory = LlamaCppBackend.vulkan_device_inventory(binary)
+    assert inventory == [
+        {
+            "index": 0,
+            "free_mib": 15 * 1024,
+            "is_igpu": False,
+            "total_mib": 16 * 1024,
+            "name": "AMD Radeon RX 9070 XT",
+        },
+        {
+            "index": 1,
+            "free_mib": 7 * 1024,
+            "is_igpu": True,
+            "total_mib": 8 * 1024,
+            # No name column -> ggml ordinal fallback so the picker has a label.
+            "name": "Vulkan1",
+        },
+    ], inventory
+
+
+def test_validate_vulkan_gpu_ids(tmp_path, monkeypatch):
+    # Picks are validated in the same compact ordinal space the probe reports
+    # and --device Vulkan<i> pins: in-range picks pass, out-of-range / dup /
+    # unverifiable (empty probe) picks raise.
+    binary = _make_vulkan_install(tmp_path)
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
+    rows = [
+        _row(0, 15 * GIB, is_igpu = 0, total_bytes = 16 * GIB, name = "RX 9070 XT"),
+        _row(1, 7 * GIB, is_igpu = 0, total_bytes = 8 * GIB, name = "RX 480"),
+    ]
+    with _mock_probe(rows):
+        LlamaCppBackend.validate_vulkan_gpu_ids([0])
+        LlamaCppBackend.validate_vulkan_gpu_ids([1, 0])
+        with pytest.raises(ValueError, match = "unknown Vulkan device ordinals"):
+            LlamaCppBackend.validate_vulkan_gpu_ids([2])
+        with pytest.raises(ValueError, match = "duplicate"):
+            LlamaCppBackend.validate_vulkan_gpu_ids([0, 0])
+    with _mock_probe([]):
+        with pytest.raises(ValueError, match = "found no devices"):
+            LlamaCppBackend.validate_vulkan_gpu_ids([0])
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")

@@ -1904,13 +1904,13 @@ export function HubModelPicker({
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
         const hasDeviceBudget =
-          gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
+          gpu.ggufMemoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
         const exceeds =
           hasDeviceBudget &&
           sizeBytes != null &&
           !fitsDevice({
             sizeBytes,
-            gpuGb: gpu.memoryTotalGb,
+            gpuGb: gpu.ggufMemoryTotalGb,
             systemRamGb: gpu.systemRamAvailableGb,
           });
         map.set(r.id, {
@@ -2905,7 +2905,11 @@ export function HubModelPicker({
             parentOptionKey={optionKey}
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
-            gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+            gpuGb={
+              gpu.ggufMemoryTotalGb > 0
+                ? gpu.ggufMemoryTotalGb
+                : undefined
+            }
             systemRamGb={gpu.systemRamAvailableGb || undefined}
             variantActions={{
               onUpdate: (quant, expectedBytes) =>
@@ -3686,8 +3690,8 @@ export function HubModelPicker({
                                     hubModelList.moveFocus(optionKey, "next")
                                   }
                                   gpuGb={
-                                    gpu.available
-                                      ? gpu.memoryTotalGb
+                                    gpu.ggufMemoryTotalGb > 0
+                                      ? gpu.ggufMemoryTotalGb
                                       : undefined
                                   }
                                   systemRamGb={
@@ -3811,7 +3815,9 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  gpu.ggufMemoryTotalGb > 0
+                                    ? gpu.ggufMemoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
                                   gpu.systemRamAvailableGb || undefined
@@ -3924,7 +3930,9 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  gpu.ggufMemoryTotalGb > 0
+                                    ? gpu.ggufMemoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
                                   gpu.systemRamAvailableGb || undefined
@@ -4014,7 +4022,9 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  gpu.ggufMemoryTotalGb > 0
+                                    ? gpu.ggufMemoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
                                   gpu.systemRamAvailableGb || undefined
@@ -4123,7 +4133,9 @@ export function HubModelPicker({
                                 hubModelList.moveFocus(optionKey, "next")
                               }
                               gpuGb={
-                                gpu.available ? gpu.memoryTotalGb : undefined
+                                gpu.ggufMemoryTotalGb > 0
+                                  ? gpu.ggufMemoryTotalGb
+                                  : undefined
                               }
                               systemRamGb={
                                 gpu.systemRamAvailableGb || undefined
@@ -4228,7 +4240,9 @@ export function HubModelPicker({
                                   hubModelList.moveFocus(optionKey, "next")
                                 }
                                 gpuGb={
-                                  gpu.available ? gpu.memoryTotalGb : undefined
+                                  gpu.ggufMemoryTotalGb > 0
+                                    ? gpu.ggufMemoryTotalGb
+                                    : undefined
                                 }
                                 systemRamGb={
                                   gpu.systemRamAvailableGb || undefined
@@ -4316,6 +4330,7 @@ function FineTunedRows({
   gpu: {
     available: boolean;
     memoryTotalGb: number;
+    ggufMemoryTotalGb: number;
     systemRamAvailableGb: number;
   };
 }) {
@@ -4449,7 +4464,11 @@ function FineTunedRows({
                 onNavigatePastEnd={() =>
                   loraModelList.moveFocus(optionKey, "next")
                 }
-                gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                gpuGb={
+                  gpu.ggufMemoryTotalGb > 0
+                    ? gpu.ggufMemoryTotalGb
+                    : undefined
+                }
                 systemRamGb={gpu.systemRamAvailableGb || undefined}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
                 variantActions={{

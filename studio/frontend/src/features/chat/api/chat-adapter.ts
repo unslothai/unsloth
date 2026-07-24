@@ -1562,7 +1562,14 @@ async function autoLoadSmallestModel(): Promise<{
     }
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        ? reconcilePersistedGpuIds(
+            config.selectedGpuIds,
+            // Drop a saved pick whose stamped index space no longer matches the
+            // current backend; a pre-stamp stored pick defaults to physical.
+            config.selectedGpuIds == null
+              ? null
+              : (config.selectedGpuIdsIndexKind ?? "physical"),
+          )
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.

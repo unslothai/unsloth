@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  type GpuIndexKind,
+  cachedPinnableGpuIndices,
+  currentGpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -583,10 +587,23 @@ export function rebalanceSplit(
 // set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
 // way to clear it. A null pick (= automatic) passes through unchanged, and an
 // unpopulated device cache leaves the pick alone (the backend still guards).
+//
+// ``savedKind`` is the GPU index space the pick was made under. Bare ids mean
+// different cards across a llama.cpp backend swap (physical CUDA/ROCm ids vs
+// ggml Vulkan ordinals), so when the pick's stamped kind no longer matches the
+// kind the backend currently reports, the pick is dropped. A pick made in the
+// current space (a live picker selection, or a config just stamped on edit)
+// carries the current kind and is kept. ``savedKind`` omitted/undefined means
+// "unknown, don't apply the index-space check" (callers pass "physical" for a
+// pre-stamp stored pick). On a cold cache the current kind is unknown, so the
+// check is skipped and a later warm reconcile at the load boundary decides.
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedKind?: GpuIndexKind | null,
 ): number[] | null {
   if (ids == null) return ids;
+  const current = currentGpuIndexKind();
+  if (savedKind != null && current != null && savedKind !== current) return null;
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));
@@ -619,6 +636,7 @@ export function loadedGpuMemoryFields(resp: {
     // baseline clears to null so Reset preserves the preference, not a stale mode.
     return {
       selectedGpuIds: null,
+      selectedGpuIdsKind: null,
       loadedGpuIds: null,
       loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_AUTO,
@@ -674,6 +692,9 @@ export function loadedGpuMemoryFields(resp: {
     moeLayerCount: resp.n_moe_layers ?? null,
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
+    // What the running server loaded is by definition in the current backend's
+    // index space.
+    selectedGpuIdsKind: gpuIds == null ? null : currentGpuIndexKind(),
     loadedGpuIds: gpuIds,
     ...manualKnobs,
   };
@@ -899,6 +920,10 @@ type ChatRuntimeStore = {
   moeLayerCount: number | null;
   /** Picked physical GPU indices (null = use all / automatic). */
   selectedGpuIds: number[] | null;
+  /** The GPU index space selectedGpuIds is expressed in ("physical" ids vs ggml
+   *  "vulkan" ordinals), stamped when the pick is set so a later reconcile can
+   *  drop it after a llama.cpp backend swap. null when there is no pick. */
+  selectedGpuIdsKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
@@ -1348,6 +1373,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ggufLayerCount: null,
   moeLayerCount: null,
   selectedGpuIds: null,
+  selectedGpuIdsKind: null,
   loadedGpuIds: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
@@ -1602,6 +1628,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufLayerCount: null,
       moeLayerCount: null,
       selectedGpuIds: null,
+      selectedGpuIdsKind: null,
       loadedGpuIds: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
@@ -1905,7 +1932,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSplitRatio: (splitRatio) => set({ splitRatio }),
-  setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
+  setSelectedGpuIds: (selectedGpuIds) =>
+    set({
+      selectedGpuIds,
+      // A live picker selection is by definition in the current backend's index
+      // space; stamp it so a later reconcile keeps it (and drops it only after
+      // an actual backend swap). null pick carries no space.
+      selectedGpuIdsKind: selectedGpuIds == null ? null : currentGpuIndexKind(),
+    }),
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

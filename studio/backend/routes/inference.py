@@ -4035,7 +4035,9 @@ def _guard_chat_load_against_training(
 
     # Vulkan GGUF pins are ggml ordinals, not CUDA physical IDs. Detect this
     # before deriving a possible diffusion fallback device so an unknown remote
-    # GGUF never sends its ordinal through the CUDA single-device path.
+    # GGUF never sends its ordinal through the CUDA single-device path; the
+    # can_load guard then sizes a Vulkan pick against the N most-constrained
+    # visible cards (via requested_gpu_ids count) instead of a physical index.
     is_vulkan = False
     if is_gguf:
         try:
@@ -4494,7 +4496,9 @@ async def _load_model_impl(
 
         # Validate the full GGUF placement pool before the training guard so an
         # invalid physical ID or Vulkan ordinal is a clean 400, not a masked VRAM
-        # 409. The same helper is used by /validate.
+        # 409. The shared helper rejects XPU picks (unless Vulkan), rejects a
+        # diffusion GGUF pick on Vulkan, and runs the Vulkan device probe off the
+        # event loop. The same helper is used by /validate.
         gguf_gpu_ids: Optional[List[int]] = None
         if config.is_gguf:
             gguf_gpu_ids = await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
@@ -5091,6 +5095,10 @@ async def validate_model(
         # Apply the same training coexistence policy as /load before the frontend
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+        # Mirror /load: the shared helper validates the GGUF pick (a bad one is a
+        # clean 400) before the guard sizes against training VRAM -- rejecting
+        # XPU picks unless Vulkan, rejecting a diffusion GGUF pick on Vulkan, and
+        # running the Vulkan device probe off the event loop.
         if config.is_gguf:
             await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)

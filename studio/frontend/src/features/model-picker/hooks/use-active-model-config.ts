@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
+import { useCurrentGpuIndexKind } from "@/hooks/use-gpu-info";
 import { useMemo } from "react";
 import type { PerModelConfig } from "../model-config/per-model-config";
 
@@ -28,6 +29,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
+  const selectedGpuIdsKind = useChatRuntimeStore((s) => s.selectedGpuIdsKind);
+  // The active model is running under the current backend, so its pick is in
+  // the current index space. Prefer the store's stamp, but fall back to the
+  // current kind (reactive, so it fills in once the cache warms) -- else a
+  // /status hydration before the cache warmed leaves no stamp, and a later
+  // Reload/Remember would treat the live Vulkan pick as a legacy physical one.
+  const currentKind = useCurrentGpuIndexKind();
 
   const isGguf =
     activeGgufVariant != null ||
@@ -56,6 +64,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       gpuLayers,
       nCpuMoe,
       selectedGpuIds,
+      selectedGpuIdsIndexKind:
+        selectedGpuIds == null
+          ? undefined
+          : ((selectedGpuIdsKind ?? currentKind) ?? undefined),
     };
   }, [
     checkpoint,
@@ -71,6 +83,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     gpuLayers,
     nCpuMoe,
     selectedGpuIds,
+    selectedGpuIdsKind,
+    currentKind,
   ]);
 
   return { checkpoint, isGguf, config };

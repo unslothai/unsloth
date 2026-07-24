@@ -13,6 +13,8 @@ export interface GpuDevice {
   vram_used_gb?: number;
   vram_free_gb?: number;
   vram_utilization_pct?: number | null;
+  /** Vulkan iGPU sharing system RAM (gguf_devices entries only). */
+  is_igpu?: boolean;
 }
 
 export interface SystemInfoResponse {
@@ -40,13 +42,22 @@ export interface SystemInfoResponse {
   gpu: {
     available: boolean;
     backend?: string;
-    /** Whether GGUF loads accept an explicit gpu_ids pick (false on XPU hosts
-     * and Vulkan-only builds, where /load and /validate 400 picks). */
+    /** Whether GGUF loads accept an explicit gpu_ids pick (false on XPU hosts,
+     * and on Vulkan-only builds only when the device probe found nothing --
+     * with gguf_devices present, picks are Vulkan ordinals and supported). */
     gguf_gpu_ids_supported?: boolean;
+    /** True when the llama.cpp build is Vulkan. Lets the frontend tell an empty
+     * gguf_devices on a Vulkan build (probe failed/masked -- GGUF budget
+     * unknown) apart from a non-Vulkan build (llama-server runs on the torch
+     * devices, so the torch total is the right GGUF budget). */
+    gguf_backend_is_vulkan?: boolean;
     backend_cuda_visible_devices?: string | null;
     parent_visible_gpu_ids?: number[];
     index_kind?: string;
     devices: GpuDevice[];
+    /** Devices as llama-server sees them (Vulkan builds): can include cards
+     * the torch backend can't reach. Indices are ggml Vulkan ordinals. */
+    gguf_devices?: GpuDevice[];
   };
   ml_packages: {
     torch?: string;

@@ -997,8 +997,13 @@ export function SharedComposer({
         splitRatio: store.splitRatio,
         // Reconcile the pick against the GPUs present now, like the model-switch
         // path: an early remember-restore can hold a stale cross-host pick that
-        // /load would reject (the device cache is populated by send time).
-        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
+        // /load would reject (the device cache is populated by send time). The
+        // store carries the index space the pick is in, so a cross-space pick
+        // (after a llama.cpp backend swap) is dropped here too.
+        selectedGpuIds: reconcilePersistedGpuIds(
+          store.selectedGpuIds,
+          store.selectedGpuIdsKind,
+        ),
         customContextLength: store.customContextLength,
       };
       // Set when an accepted transformers install unloaded the active model
@@ -1057,7 +1062,18 @@ export function SharedComposer({
           ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
-            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
+            ? reconcilePersistedGpuIds(
+                ownConfig.selectedGpuIds,
+                // The pick's index space is intrinsic to the config: a fresh
+                // sel.config pane pick carries the current kind (stamped on
+                // edit), a storage restore carries its saved kind, and a
+                // pre-stamp stored pick defaults to physical. So an explicit
+                // pane pick stays live while a cross-space restore is dropped --
+                // no need to distinguish sel.config from a remembered config.
+                ownConfig.selectedGpuIds == null
+                  ? null
+                  : (ownConfig.selectedGpuIdsIndexKind ?? "physical"),
+              )
             : compareLoadKnobs.selectedGpuIds;
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --

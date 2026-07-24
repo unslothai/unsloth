@@ -41,6 +41,13 @@ if sys.platform == "win32":
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
 _system_gpu_cache: Optional[tuple[float, dict[str, Any]]] = None
+# The Vulkan device inventory spawns a probe subprocess (loads the ggml Vulkan
+# DLLs), so it must not ride the 10s GPU cache that /api/system pollers (the
+# floating monitor, the Resources tab) keep expiring. Device topology is static
+# per llama.cpp install; only free VRAM drifts, and mild staleness is fine for
+# the picker. Model loads use their own fresh probe.
+_GGUF_DEVICES_CACHE_TTL_SECONDS = 60.0
+_gguf_devices_cache: Optional[tuple[float, list[dict[str, Any]]]] = None
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
@@ -1190,23 +1197,80 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
             enriched_devices.append(enriched_dev)
 
+        # GGUF loads run through llama-server, which can see devices the torch
+        # backend can't (a Vulkan build reaches cards with no ROCm/CUDA support,
+        # e.g. an RX 480 next to a ROCm-only RX 9070 XT). Surface that
+        # inventory separately as gguf_devices so GGUF fit labels budget against
+        # what llama-server actually uses, while `devices` stays the torch view
+        # that training budgets rely on. Indices are ggml's compact Vulkan
+        # ordinals -- the same space /load pins with `--device Vulkan<i>`, which
+        # is what makes an explicit pick supportable here.
+        global _gguf_devices_cache
+        gguf_devices: list[dict[str, Any]] = []
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+            if LlamaCppBackend._is_vulkan_backend():
+                if (
+                    _gguf_devices_cache is not None
+                    and now - _gguf_devices_cache[0] < _GGUF_DEVICES_CACHE_TTL_SECONDS
+                ):
+                    gguf_devices = _gguf_devices_cache[1]
+                else:
+                    for row in LlamaCppBackend.vulkan_device_inventory():
+                        gguf_devices.append(
+                            {
+                                "index": row["index"],
+                                "index_kind": "vulkan",
+                                "name": row["name"],
+                                "memory_total_gb": round(row["total_mib"] / 1024, 2),
+                                "vram_used_gb": None,
+                                "vram_free_gb": round(row["free_mib"] / 1024, 2),
+                                "is_igpu": row["is_igpu"],
+                            }
+                        )
+                    _gguf_devices_cache = (time.monotonic(), gguf_devices)
+        except Exception as e:
+            logger.debug(f"Could not enumerate llama.cpp Vulkan devices: {e}")
+
         # Whether GGUF loads accept an explicit gpu_ids pick: /load and
         # /validate 400 picks on XPU hosts (no visibility mask speaks torch-xpu
-        # ordinals) and on Vulkan-only builds (--device pins ggml's own
-        # ordinals), so the picker must not offer them.
+        # ordinals). A Vulkan build supports picks only when the probe
+        # enumerated devices (gguf_devices above): the pick then lives in the
+        # same ggml ordinal space `--device Vulkan<i>` pins. Without that
+        # inventory the frontend has no valid ordinals to offer.
+        is_vulkan_build = False
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
-            gpu_ids_supported = (
-                get_device() != DeviceType.XPU and not LlamaCppBackend._is_vulkan_backend()
-            )
+
+            is_vulkan_build = LlamaCppBackend._is_vulkan_backend()
+            # Check the Vulkan build first: its picks live in ggml's own ordinal
+            # space (--device Vulkan<i>) and don't rely on torch-xpu ordinals, so
+            # they're valid even on an Intel/XPU host. Only fall through to the
+            # XPU ban for a non-Vulkan build (where a pick would need torch-xpu
+            # ordinals no visibility mask can speak).
+            if is_vulkan_build:
+                gpu_ids_supported = bool(gguf_devices)
+            elif get_device() == DeviceType.XPU:
+                gpu_ids_supported = False
+            else:
+                gpu_ids_supported = True
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True
+        # `available` stays the torch view: training consumers key GPU labels on
+        # it, and a Vulkan-only inventory doesn't make training GPU-capable.
+        # GGUF surfaces key on gguf_devices instead. gguf_backend_is_vulkan lets
+        # the frontend tell an empty gguf_devices on a Vulkan build (probe failed
+        # / masked to nothing -- GGUF budget is unknown, must NOT reuse the torch
+        # VRAM total) apart from a non-Vulkan build (where llama-server does run
+        # on the torch devices, so that total is the right GGUF budget).
         gpu_info = {
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
+            "gguf_devices": gguf_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
+            "gguf_backend_is_vulkan": is_vulkan_build,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)
         return gpu_info

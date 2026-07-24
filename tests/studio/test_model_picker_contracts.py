@@ -170,7 +170,12 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds)" in src
+    # A compare pane reconciles its own config's GPU pick against the index space
+    # stamped on that pick, so a fresh sel.config (current-kind) stays live while
+    # a cross-space storage restore is dropped -- no call-site "is this a real
+    # restore?" heuristic. Unstamped (pre-Vulkan) picks default to physical.
+    assert "reconcilePersistedGpuIds(" in src
+    assert 'ownConfig.selectedGpuIdsIndexKind ?? "physical"' in src
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -178,6 +183,36 @@ def test_compare_load_uses_each_models_gpu_config():
         "gpu_ids: effectiveSelectedGpuIds ?? undefined",
     ):
         assert field in src
+
+
+def test_gpu_pick_carries_index_kind_stamp():
+    """The GPU index-space invalidation (physical CUDA/ROCm ids vs ggml Vulkan
+    ordinals after a backend swap) is driven by a kind stamp carried WITH each
+    pick, not a call-site persisted/live guess. A pick made in the current space
+    (a live picker selection or a fresh Run-settings edit) is stamped with the
+    current kind and kept; a stored pick from the other space is dropped. This
+    is what keeps a fresh Vulkan pick from being cleared while still dropping a
+    stale physical pin, across the store, the compare pane, and Run settings."""
+    # The live picker stamps the current kind onto the store companion field.
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "selectedGpuIdsKind: GpuIndexKind | null" in store
+    assert "selectedGpuIdsKind: selectedGpuIds == null ? null : currentGpuIndexKind()" in store
+    # reconcile drops a pick only when its stamped kind differs from the current.
+    assert "savedKind != null && current != null && savedKind !== current" in store
+
+    # apply-per-model-config reads the config's stamp (default physical) and
+    # carries it into the store; no fromPersisted / cold-cache parking anymore.
+    apply = _read("features/model-picker/model-config/apply-per-model-config.ts")
+    assert 'config.selectedGpuIdsIndexKind ?? "physical"' in apply
+    assert "selectedGpuIdsKind: reconciledGpuIds == null ? null : savedKind" in apply
+    assert "fromPersisted" not in apply
+    assert "parkColdPersistedPick" not in apply
+
+    # Run settings stamps the current kind when the user edits the GPU picker,
+    # so an edited pick is never mistaken for a stale cross-space restore.
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "currentGpuIndexKind()" in page
+    assert "selectedGpuIdsIndexKind:" in page
 
 
 def test_active_native_gguf_metadata_uses_path_token():

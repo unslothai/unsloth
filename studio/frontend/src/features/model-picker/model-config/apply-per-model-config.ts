@@ -10,6 +10,7 @@ import {
   reconcilePersistedGpuIds,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { type GpuIndexKind, currentGpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
@@ -32,6 +33,22 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
   if (maxSeqLength !== store.params.maxSeqLength) {
     store.setParams({ ...store.params, maxSeqLength });
   }
+  // The pick's index space is intrinsic to the config: its
+  // selectedGpuIdsIndexKind stamp (a fresh edit stamps the current kind; a
+  // stored pick carries the kind it was saved under; absent = a pre-stamp
+  // physical pick). reconcilePersistedGpuIds drops it only when that stamp no
+  // longer matches the current backend, so a same-backend restore keeps the
+  // pick and a cross-space one is cleared -- no call-site "is this persisted?"
+  // guessing. On a cold cache the reconcile keeps the ids; the stamp is carried
+  // into the store so the load-boundary reconcile of the live value can decide.
+  const savedKind: GpuIndexKind | null =
+    config.selectedGpuIds == null
+      ? null
+      : (config.selectedGpuIdsIndexKind ?? "physical");
+  const reconciledGpuIds =
+    config.selectedGpuIds === undefined
+      ? null
+      : reconcilePersistedGpuIds(config.selectedGpuIds, savedKind);
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -50,10 +67,8 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
     splitRatio: null,
-    selectedGpuIds:
-      config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(config.selectedGpuIds)
-        : null,
+    selectedGpuIds: reconciledGpuIds,
+    selectedGpuIdsKind: reconciledGpuIds == null ? null : savedKind,
   });
 }
 
@@ -86,6 +101,16 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
+    // Carry the index space the live pick is in so a save/restore round-trip
+    // (and a cancel-restore of this snapshot) can drop it after a backend swap.
+    // Fall back to the current kind when the store stamp is missing (a /status
+    // hydration before the GPU cache warmed leaves it null): a live/active pick
+    // is by definition in the current backend's space, so this is the right
+    // stamp and avoids persisting it as an unstamped (legacy physical) pick.
+    selectedGpuIdsIndexKind:
+      s.selectedGpuIds == null
+        ? undefined
+        : ((s.selectedGpuIdsKind ?? currentGpuIndexKind()) ?? undefined),
   };
 }
 
@@ -116,9 +141,17 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.gpuMemoryMode ?? "auto",
     config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
     config.nCpuMoe ?? 0,
+    // Include the pick's index space (physical vs Vulkan ordinals): the same ids
+    // mean different cards across a backend swap, so a kind change is a real
+    // config change. It also drives the SidebarModelConfig remount key, so when
+    // the reactive fallback stamps a cold-hydrated active pick after the GPU
+    // cache warms, an open Run-settings panel re-snapshots with the new stamp
+    // instead of reloading/saving it as a legacy physical pick.
     config.selectedGpuIds == null
       ? "all"
-      : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+      : `${[...config.selectedGpuIds].sort((a, b) => a - b).join(",")}@${
+          config.selectedGpuIdsIndexKind ?? "physical"
+        }`,
   ].join("|");
 }
 
