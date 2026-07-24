@@ -163,8 +163,8 @@ def _display_admin_credentials(username: str, password: str) -> None:
     logger.info(f"🔐 Unsloth Studio admin login — username: {username}  password: {password}")
     try:
         from IPython.display import HTML, display
-
-        display(HTML(f"""
+        display(
+            HTML(f"""
     <div style="display: inline-block; padding: 18px 20px; background: #fff8e1; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
         <h3 style="color:#000;margin:0 0 8px 0;font-size:18px;font-weight:800;">Unsloth Studio admin login</h3>
@@ -174,7 +174,8 @@ def _display_admin_credentials(username: str, password: str) -> None:
             Auto-generated for this public launch and shown once. Save it now; it is not written to disk.
         </p>
     </div>
-    """))
+    """)
+        )
     except Exception:
         pass
 
@@ -404,7 +405,12 @@ def _show_and_embed(
             pass
 
 
-def start(port: int = 8888, *, cloudflare: bool = False, link_token: bool = False):
+def start(
+    port: int = 8888,
+    *,
+    cloudflare: bool = False,
+    link_token: bool = False,
+):
     """Start Unsloth Studio in Colab and display the URL.
 
     Args:
