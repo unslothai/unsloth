@@ -51,6 +51,18 @@ def _modules_json(*paths):
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
+def _requires_case_sensitive_fs(root):
+    """Skip when root's filesystem is case-insensitive (macOS/Windows): an uppercase-decoy test only
+    exercises a bypass where the loader would NOT resolve the canonical lowercase name (Linux)."""
+    probe = Path(root) / "_case_probe"
+    probe.write_text("x")
+    try:
+        if (Path(root) / "_CASE_PROBE").exists():
+            pytest.skip("requires a case-sensitive filesystem")
+    finally:
+        probe.unlink()
+
+
 def _make_cache(
     root,
     repo_id,
@@ -514,6 +526,44 @@ def test_gate_allows_stale_safetensors_index_beside_direct_safetensors(hf_cache)
     )
     with _no_network():
         assert _offline_decision("org/direct-plus-stale-index").blocked is False
+
+
+def test_gate_blocks_pytorch_index_with_uppercase_safetensors_decoy(hf_cache):
+    # On a case-sensitive FS, from_pretrained asks for the canonical lowercase model.safetensors, does
+    # not find an uppercase decoy, and selects the pytorch index instead. The decoy must not suppress.
+    _requires_case_sensitive_fs(hf_cache)
+    _make_cache(
+        hf_cache,
+        "org/upper-decoy",
+        {
+            "MODEL.SAFETENSORS": "decoy",
+            "pytorch_model.bin.index.json": (
+                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "shards/pytorch_model-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/upper-decoy")
+    assert decision.blocked is True
+    assert any(
+        u["path"] == "shards/pytorch_model-00001-of-00001.bin" for u in decision.unsafe_files
+    )
+
+
+def test_gate_blocks_direct_pickle_with_uppercase_safetensors_decoy(hf_cache):
+    # Same decoy against a direct pytorch_model.bin: the loader selects the pickle, so the uppercase
+    # safetensors must not suppress it on a case-sensitive FS.
+    _requires_case_sensitive_fs(hf_cache)
+    _make_cache(
+        hf_cache,
+        "org/upper-decoy-direct",
+        {"MODEL.SAFETENSORS": "decoy", "pytorch_model.bin": "pickle"},
+    )
+    with _no_network():
+        decision = _offline_decision("org/upper-decoy-direct")
+    assert decision.blocked is True
+    assert any(u["path"] == "pytorch_model.bin" for u in decision.unsafe_files)
 
 
 def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):

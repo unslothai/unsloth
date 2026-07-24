@@ -46,17 +46,6 @@ _PICKLE_WEIGHT_RE = re.compile(
     r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
     re.IGNORECASE,
 )
-# Base-model safetensors set: HF names the base pickle pytorch_model.bin but the safetensors
-# model.safetensors (stems differ), so a base pickle is replaced only by these, not an adapter's.
-_BASE_SAFETENSORS_RE = re.compile(
-    r"^(model(-\d+-of-\d+)?\.safetensors|model\.safetensors\.index\.json)$",
-    re.IGNORECASE,
-)
-# Adapter (PEFT) safetensors set: adapter_model.safetensors, its shards, or index.
-_ADAPTER_SAFETENSORS_RE = re.compile(
-    r"^(adapter_model(-\d+-of-\d+)?\.safetensors|adapter_model\.safetensors\.index\.json)$",
-    re.IGNORECASE,
-)
 
 # Non-blocking levels: clean or not-yet-finished. Anything else (unsafe/suspicious/
 # malicious or a future label) blocks, so Hub schema drift fails CLOSED.
@@ -357,6 +346,15 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
     return shards
 
 
+def _loader_resolves(root: Path, name: str) -> bool:
+    """True iff from_pretrained would open ``name`` under ``root``. ``is_file()`` honors the platform
+    (case-sensitive on Linux, case-insensitive on Windows/macOS), so it mirrors the loader's own
+    lookup: an oddly-cased decoy counts as an alternative only where the loader would truly open it.
+    A name-fold instead would let an uppercase MODEL.SAFETENSORS suppress the scan on Linux while the
+    loader, asking for the canonical lowercase name, silently falls through to a pickle index."""
+    return (root / name).is_file()
+
+
 def _cached_pickle_weight_files(snapshot: Path) -> list:
     """Pickle weight files a SentenceTransformer/Transformers load deserializes from snapshot's ST
     load roots, EXCLUDING those whose weight family also ships an inert safetensors in the same dir
@@ -381,10 +379,14 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             if root == snapshot:
                 raise  # top-level unreadable -> fail closed
             continue  # unreadable module subdir: nothing loadable to attest here
-        has_base_safetensors = any(_BASE_SAFETENSORS_RE.match(p.name) for p in entries)
-        has_adapter_safetensors = any(_ADAPTER_SAFETENSORS_RE.match(p.name) for p in entries)
-        # A complete direct model.safetensors outranks BOTH sharded indexes in from_pretrained.
-        has_direct_base_safetensors = any(p.name.lower() == "model.safetensors" for p in entries)
+        # Safetensors alternatives the loader would actually resolve (never a bare name-fold, which
+        # fails OPEN: see _loader_resolves). A base pickle is replaced only by a base safetensors, an
+        # adapter pickle only by an adapter one. A single model.safetensors also outranks BOTH indexes.
+        has_direct_base_safetensors = _loader_resolves(root, "model.safetensors")
+        has_base_safetensors = has_direct_base_safetensors or _loader_resolves(
+            root, "model.safetensors.index.json"
+        )
+        has_adapter_safetensors = _loader_resolves(root, "adapter_model.safetensors")
         for path in entries:
             if not _PICKLE_WEIGHT_RE.match(path.name):
                 continue
