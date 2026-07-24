@@ -591,10 +591,23 @@ def test_load_request_accepts_gpu_ids():
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_gpu_ids(model_cls):
     if model_cls is LoadResponse:
-        obj = model_cls(status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1])
+        obj = model_cls(
+            status = "loaded",
+            model = "m",
+            display_name = "m",
+            inference = {},
+            gpu_ids = [1],
+            requested_gpu_ids = [1, 2],
+        )
     else:
-        obj = model_cls(gpu_ids = [1])
+        obj = model_cls(gpu_ids = [1], requested_gpu_ids = [1, 2])
     assert obj.model_dump()["gpu_ids"] == [1]
+    assert obj.model_dump()["requested_gpu_ids"] == [1, 2]
+
+
+def test_gguf_load_and_status_responses_include_requested_gpu_pool():
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    assert route_src.count("requested_gpu_ids = llama_backend.requested_gpu_ids") == 3
 
 
 def test_gpu_ids_property_default_and_reset():
