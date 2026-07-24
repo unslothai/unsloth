@@ -36,6 +36,7 @@ from utils.transformers_version import (
     _remote_lora_base,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
+    _check_remote_auto_map_needs_510,
     _check_config_needs_530,
     _check_config_needs_550,
     _config_needs_510,
@@ -50,6 +51,7 @@ from utils.transformers_version import (
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
+    _remote_auto_map_needs_510_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
     _probe_tier_cache,
@@ -320,6 +322,19 @@ class TestCheckTokenizerConfigNeedsV5:
         result = _check_tokenizer_config_needs_v5(str(tmp_path))
         assert result is False
 
+    def test_tokenizer_auto_map_remote_import_needs_v5(self, tmp_path: Path):
+        """Remote tokenizer code importing TokenizersBackend should require 5.x (#7353)."""
+        tc = {
+            "tokenizer_class": "AstralTokenizer",
+            "auto_map": {"AutoTokenizer": ["tokenization_astral.AstralTokenizer", None]},
+        }
+        (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
+        (tmp_path / "tokenization_astral.py").write_text(
+            "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+        )
+
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
     def test_local_file_skips_network(self, tmp_path: Path):
         """When local file exists, no network request should be made."""
         tc = {"tokenizer_class": "LlamaTokenizerFast"}
@@ -489,6 +504,7 @@ class TestCheckConfigNeeds510:
     def setup_method(self):
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
 
     def test_gemma4_unified_architecture(self, tmp_path: Path):
         """config.json with Gemma4UnifiedForConditionalGeneration should return True."""
@@ -540,6 +556,133 @@ class TestCheckConfigNeeds510:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_astral_architecture(self, tmp_path: Path):
+        """Astral custom-code configs should route to the 5.10 sidecar (#7353)."""
+        cfg = {
+            "architectures": ["AstralForCausalLM"],
+            "model_type": "astral",
+            "auto_map": {
+                "AutoModelForCausalLM": "modeling_astral.AstralForCausalLM",
+            },
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_remote_modeling_auto_map_needs_510(self, tmp_path: Path):
+        """Unknown architectures with 5.10-only remote imports should return True."""
+        _remote_auto_map_needs_510_cache.clear()
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_offline_hub_remote_auto_map_not_cached(self, monkeypatch):
+        """Offline Hub scan negatives must not poison a later online read."""
+        import utils.transformers_version as tv
+
+        _remote_auto_map_needs_510_cache.clear()
+        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        assert _check_remote_auto_map_needs_510("org/custom-remote") is False
+        assert ("org/custom-remote", None) not in _remote_auto_map_needs_510_cache
+
+    def test_hf_endpoint_used_for_remote_auto_map_fetch(self, monkeypatch):
+        """Remote auto_map fetches must honor HF_ENDPOINT mirrors."""
+        from utils.transformers_version import _read_repo_text_file
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+        monkeypatch.setattr(
+            "utils.transformers_version._env_offline",
+            lambda: False,
+        )
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return b"from transformers.modeling_layers import X\n"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        text = _read_repo_text_file("org/custom-remote", "modeling_custom.py")
+        assert "modeling_layers" in text
+        assert seen["url"].startswith("https://hf-mirror.example/org/custom-remote/raw/main/")
+
+    def test_tokenizer_external_auto_map_needs_v5(self, monkeypatch, tmp_path: Path):
+        """Tokenizer auto_map pointing at an external repo must be scanned."""
+        _tokenizer_class_cache.clear()
+        tc = {
+            "tokenizer_class": "CustomTokenizer",
+            "auto_map": {
+                "AutoTokenizer": ["other/tokenizer-repo--tokenization_x.CustomTokenizer", None],
+            },
+        }
+        (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
+
+        def _fake_fetch(repo_id, hf_token = None):
+            if repo_id == "other/tokenizer-repo":
+                return [
+                    "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+                ], True
+            return [], False
+
+        monkeypatch.setattr("utils.transformers_version._fetch_hub_py_sources", _fake_fetch)
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
+    def test_tokenizer_helper_auto_map_needs_v5(self, tmp_path: Path):
+        """Tokenizer helper modules imported by auto_map must be scanned."""
+        _tokenizer_class_cache.clear()
+        tc = {
+            "tokenizer_class": "CustomTokenizer",
+            "auto_map": {"AutoTokenizer": "tokenization_custom.CustomTokenizer"},
+        }
+        (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
+        (tmp_path / "tokenization_custom.py").write_text("from helpers import sub\n")
+        helpers = tmp_path / "helpers"
+        helpers.mkdir()
+        (helpers / "sub.py").write_text(
+            "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+        )
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
+    def test_transient_auto_map_scan_miss_not_cached(self, monkeypatch):
+        """Inconclusive auto_map scans must not cache a false negative."""
+        import utils.transformers_version as tv
+
+        _remote_auto_map_needs_510_cache.clear()
+        _config_needs_510_cache.clear()
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        monkeypatch.setattr(tv, "_load_config_json", lambda *a, **k: cfg)
+        monkeypatch.setattr(tv, "_config_json_is_definitive", lambda *a, **k: True)
+        monkeypatch.setattr(tv, "_remote_auto_map_py_contents", lambda *a, **k: ([], False))
+        assert _check_remote_auto_map_needs_510("org/custom-remote") is False
+        assert ("org/custom-remote", None) not in _remote_auto_map_needs_510_cache
+        monkeypatch.setattr(
+            tv,
+            "_remote_auto_map_py_contents",
+            lambda *a, **k: (["from transformers.modeling_layers import X\n"], True),
+        )
+        assert _check_remote_auto_map_needs_510("org/custom-remote") is True
+        assert _check_config_needs_510("org/custom-remote") is True
 
     def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
         """Older Gemma 4 config should stay on the 550 tier."""
@@ -862,6 +1005,155 @@ class TestGetTransformersTier:
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_astral_local_checkpoint_returns_510(self, tmp_path: Path):
+        """Astral custom-code checkpoints should use the 5.10 sidecar (#7353)."""
+        cfg = {
+            "architectures": ["AstralForCausalLM"],
+            "model_type": "astral",
+            "auto_map": {"AutoModelForCausalLM": "modeling_astral.AstralForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_astral.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_custom_remote_auto_map_returns_510(self, tmp_path: Path):
+        """Local unknown model_types must scan auto_map before default (#7353 Codex)."""
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_helper_auto_map_returns_510(self, tmp_path: Path):
+        """Helper modules imported by auto_map entry must be scanned (Codex #4)."""
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text("from helpers import sub\n")
+        helpers = tmp_path / "helpers"
+        helpers.mkdir()
+        (helpers / "sub.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_external_auto_map_repo_returns_510(self, monkeypatch, tmp_path: Path):
+        """External auto_map repos and their helpers must be scanned (Codex #4)."""
+        import utils.transformers_version as tv
+
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {
+                "AutoModelForCausalLM": "evilorg/evilrepo--modeling_evil.Model",
+            },
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        def _fake_fetch(repo_id, hf_token = None):
+            if repo_id == "evilorg/evilrepo":
+                return [
+                    "from .helper import run\n",
+                    "from transformers.modeling_layers import GradientCheckpointingLayer\n",
+                ], True
+            return [], False
+
+        monkeypatch.setattr(tv, "_fetch_hub_py_sources", _fake_fetch)
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_lower_tier_model_type_with_auto_map_returns_510(self, tmp_path: Path):
+        """Lower-tier model_type must not skip auto_map scan (Codex round 2)."""
+        cfg = {
+            "model_type": "qwen3_moe",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_name_substring_upgraded_by_remote_auto_map(self, monkeypatch):
+        """Name fast path must upgrade when auto_map needs 5.10 (Codex round 2)."""
+        import utils.transformers_version as tv
+
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+
+        def _fake_load(model_name, hf_token = None):
+            if model_name == "org/qwen3.5-custom-remote":
+                return cfg
+            return None
+
+        def _fake_list(repo_id, hf_token = None):
+            if repo_id == "org/qwen3.5-custom-remote":
+                return {"modeling_custom.py"}, True
+            return set(), False
+
+        def _fake_read(
+            model_name,
+            filename,
+            hf_token = None,
+        ):
+            if model_name == "org/qwen3.5-custom-remote" and filename == "modeling_custom.py":
+                return "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            return None
+
+        monkeypatch.setattr(tv, "_load_config_json", _fake_load)
+        monkeypatch.setattr(tv, "_config_json_is_definitive", lambda *a, **k: True)
+        monkeypatch.setattr(tv, "_list_hub_repo_py_files", _fake_list)
+        monkeypatch.setattr(tv, "_read_repo_text_file", _fake_read)
+        _remote_auto_map_needs_510_cache.clear()
+
+        assert get_transformers_tier("org/qwen3.5-custom-remote") == "510"
+
+    def test_tier_detection_does_not_import_huggingface_hub(self, monkeypatch, tmp_path: Path):
+        """Pre-activation tier scan must stay on stdlib urllib (Codex round 2)."""
+        import builtins
+        import utils.transformers_version as tv
+
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        real_import = builtins.__import__
+        blocked = {"huggingface_hub"}
+
+        def _guarded_import(
+            name,
+            globals = None,
+            locals = None,
+            fromlist = (),
+            level = 0,
+        ):
+            root = name.split(".", 1)[0]
+            if root in blocked:
+                raise AssertionError(f"tier detection imported {name}")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _guarded_import)
+        assert get_transformers_tier(str(tmp_path)) == "510"
 
     def test_gemma4_substring_returns_550(self):
         assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
