@@ -638,7 +638,7 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
     src = _read("features/chat/api/chat-adapter.ts")
     resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
     resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
-    assert 'row.capabilities?.requires_variant === true' in resolve_fn
+    assert "row.capabilities?.requires_variant === true" in resolve_fn
     assert "if (!isGguf) return null;" in resolve_fn
     assert "listGgufVariants(row.model_id || row.id" in resolve_fn
     assert "localPath: row.path" in resolve_fn
