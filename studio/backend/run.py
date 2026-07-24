@@ -1076,6 +1076,21 @@ def _stream_isatty(stream) -> bool:
         return False
 
 
+def _console_only_stream(stream):
+    """Return the real console stream behind a _TeeStream session-log wrapper.
+
+    run_server() calls _setup_server_disk_logging() early, which replaces
+    sys.stdout/stderr with _TeeStream so diagnostics are mirrored into a retained
+    logs/server/server-*.log. A one-time secret (the auto-generated admin
+    password) must reach the operator's console but MUST NOT land in that
+    persisted file (OWASP CWE-532: never write credentials to logs). Writing to
+    the underlying stream shows the banner on the console while bypassing the tee.
+    """
+    if isinstance(stream, _TeeStream):
+        return stream._stream
+    return stream
+
+
 def _auto_generate_admin_password(admin_username: str) -> str:
     """Generate a strong random admin password and commit it for a headless
     public launch that supplied none.
@@ -1177,7 +1192,13 @@ def _terminal_password_gate(
         # and surface it once. This also protects the api-only / TIMEOUT=0 launches
         # that the deadline never covered.
         generated = _auto_generate_admin_password(_admin)
-        _print_auto_generated_credentials(_admin, generated, out = sys.stderr)
+        # Write the one-time credential to the raw console stream, NOT the
+        # _TeeStream that _setup_server_disk_logging() installed: the tee mirrors
+        # everything into a retained server-*.log, and this password must never be
+        # persisted (the banner itself promises it is not written to disk).
+        _print_auto_generated_credentials(
+            _admin, generated, out = _console_only_stream(sys.stderr)
+        )
         # Password is no longer the default; still suppress any HTML injection of a
         # stale bootstrap credential over the public URL.
         return True, True

@@ -1080,6 +1080,33 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert bootstrap_file.read_text() == ""
 
 
+def test_cli_update_password_revokes_link_tokens(monkeypatch, tmp_path):
+    # Mirror backend storage.update_password: a link token is signed with a key
+    # derived from the JWT secret rotated in this transaction, so the CLI password
+    # change must delete outstanding link_tokens in the SAME transaction. A
+    # leftover row would let a concurrent exchange that read the pre-rotation key
+    # still consume its jti and mint a session under the new secret.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    conn = studio_mod._connect_auth_db()
+    # The CLI never mints these, but shares the auth.db with the backend that does;
+    # _connect_auth_db must create the table so the revoke DELETE never errors.
+    conn.execute(
+        "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+        ("jti-live", studio_mod.DEFAULT_ADMIN_USERNAME, "2099-01-01T00:00:00"),
+    )
+    conn.commit()
+
+    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123")
+    remaining = conn.execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0]
+    conn.close()
+
+    assert remaining == 0
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+
+
 def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):
     # If auth.db cannot be removed (running Unsloth / Windows lock, read-only dir),
     # reset must abort BEFORE touching the credential files -- deleting them while

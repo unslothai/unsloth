@@ -75,6 +75,38 @@ def test_consume_link_token_is_single_use():
     assert storage.consume_link_token("jti-b", admin) is True
 
 
+def test_save_link_token_purges_expired_rows_on_mint():
+    # The frontend is not yet wired to exchange link tokens, so consume_link_token
+    # (the other purge site) may never run; without a purge on mint the table
+    # would grow without bound across reruns. Minting reclaims stale rows in the
+    # same transaction as the insert.
+    from datetime import datetime, timedelta, timezone
+
+    admin = _seed_admin()
+    past = (datetime.now(timezone.utc) - timedelta(seconds = 5)).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(seconds = 600)).isoformat()
+
+    # An already-expired row lands on disk when minted (purge runs before insert).
+    storage.save_link_token("stale", admin, past)
+    conn = storage.get_connection()
+    try:
+        assert (
+            conn.execute("SELECT 1 FROM link_tokens WHERE jti = ?", ("stale",)).fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
+
+    # The next mint reclaims the now-expired row; only the live token remains.
+    storage.save_link_token("fresh", admin, future)
+    conn = storage.get_connection()
+    try:
+        rows = {r["jti"] for r in conn.execute("SELECT jti FROM link_tokens")}
+    finally:
+        conn.close()
+    assert rows == {"fresh"}
+
+
 def test_password_change_deletes_outstanding_link_tokens():
     # A password change must invalidate outstanding link tokens atomically:
     # update_password() deletes the user's link_tokens rows in the SAME

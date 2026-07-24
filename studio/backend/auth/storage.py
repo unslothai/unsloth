@@ -218,6 +218,11 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    # Expiry-ordered purges (on mint and on consume) scan by expires_at; index it
+    # so reclaiming stale rows stays cheap as tokens are minted.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_tokens_expires_at ON link_tokens (expires_at)"
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -760,9 +765,16 @@ def save_link_token(jti: str, username: str, expires_at: str) -> None:
 
     Only the opaque jti (a random id) is stored; the token signature never
     touches disk.
+
+    Purges expired rows in the same transaction as the insert. The frontend is
+    not yet wired to exchange these tokens, so consume_link_token (the other purge
+    site) may never run; without a purge on mint the table would grow without
+    bound across reruns. Reclaiming stale rows here keeps it bounded regardless.
     """
+    now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
+        conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
         conn.execute(
             "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
             (jti, username, expires_at),

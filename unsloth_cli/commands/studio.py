@@ -544,6 +544,19 @@ def _connect_auth_db() -> sqlite3.Connection:
         );
         """
     )
+    # Mirror backend storage.get_connection: one-time link tokens live in the SAME
+    # auth.db. The CLI never mints them, but _cli_update_password revokes any
+    # outstanding rows in its password transaction (as the backend does), so the
+    # table must exist here even on a DB the CLI created before the backend ran.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            jti        TEXT PRIMARY KEY,
+            username   TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """
+    )
     auth_columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in auth_columns:
         conn.execute(
@@ -673,8 +686,15 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
-    revoke refresh tokens (PR #6651 finding), and drop the desktop secret. File
-    cleanup happens after commit; a failed unlink must not roll the change back.
+    revoke refresh tokens (PR #6651 finding), revoke outstanding one-time link
+    tokens, and drop the desktop secret. File cleanup happens after commit; a
+    failed unlink must not roll the change back.
+
+    Revoking link_tokens here mirrors backend storage.update_password: a link
+    token is signed with a key derived from the JWT secret rotated in this same
+    statement, so a leftover row would let a concurrent exchange that read the old
+    key before the rotation still consume its jti and mint a session. Deleting the
+    rows in the SAME transaction as the rotation closes that race.
     """
     password_salt, password_hash = _hash_password(new_password)
     with conn:
@@ -687,6 +707,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
         conn.execute(
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
             (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
