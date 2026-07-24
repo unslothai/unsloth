@@ -46,9 +46,6 @@ _PICKLE_WEIGHT_RE = re.compile(
     r"\.(bin|pt|pth|ckpt|pkl|pickle)$",
     re.IGNORECASE,
 )
-# Pickle suffixes from the regex above. An index-referenced shard is one the loader is told to
-# deserialize, so a pickle extension alone flags it (its stem need not match the name heuristic).
-_PICKLE_WEIGHT_SUFFIXES = frozenset({".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle"})
 # Base-model safetensors set: HF names the base pickle pytorch_model.bin but the safetensors
 # model.safetensors (stems differ), so a base pickle is replaced only by these, not an adapter's.
 _BASE_SAFETENSORS_RE = re.compile(
@@ -96,6 +93,13 @@ _INERT_SUFFIXES = frozenset(
 # gate's vector (else a flagged helper/train script would false-block).
 _SOURCE_SUFFIXES = frozenset({".py", ".pyc", ".pyx", ".pyi"})
 
+
+# Torch-family weight indexes: from_pretrained feeds each shard they name to load_state_dict, which
+# torch.load()s (pickle) any shard whose name does not end in .safetensors, whatever its stem. A
+# pytorch index is superseded when a base safetensors is present (the loader prefers it); a
+# safetensors index IS the chosen archive, so a non-safetensors target it names still loads. tf/flax
+# indexes load via non-pickle loaders, so they are not a torch.load vector here.
+_TORCH_INDEX_FILES = ("pytorch_model.bin.index.json", "model.safetensors.index.json")
 
 # Root weight-index files. from_pretrained reads these to find sharded weights, so a
 # flagged subdir pickle is a load vector iff a root index references it.
@@ -317,11 +321,13 @@ def _st_load_roots(snapshot: Path) -> list:
 
 
 def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list:
-    """Pickle shards a local weight index points a ``from_pretrained`` load at, resolved relative to
-    the index dir (``root``) like the loader so a shard in a nested dir is followed (iterdir misses
-    it). Lexical only, never ``Path.resolve()`` (HF snapshot files symlink into ``blobs/``, so
-    resolving escapes the snapshot and false-blocks every shard). Raises OSError -> caller fails
-    CLOSED on an unreadable/invalid index or a path escaping the snapshot; inert shards are ignored."""
+    """Shards a torch weight index points a ``from_pretrained`` load at that load_state_dict would
+    torch.load (pickle): every ``weight_map`` target NOT ending in ``.safetensors``, whatever its
+    stem (an arbitrary name like ``shards/payload`` still deserializes). Resolved relative to the
+    index dir (``root``) like the loader, so a shard in a nested dir is followed (iterdir misses it).
+    Lexical only, never ``Path.resolve()`` (HF snapshot files symlink into ``blobs/``, so resolving
+    escapes the snapshot and false-blocks every shard). Raises OSError -> caller fails CLOSED on an
+    unreadable/invalid index or a target escaping the snapshot."""
     import json
     import os
 
@@ -342,7 +348,7 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
         if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
             raise OSError(f"weight index escapes the snapshot: {index_path}")
         shard_path = Path(joined)
-        if shard_path.suffix.lower() in _PICKLE_WEIGHT_SUFFIXES and shard_path.is_file():
+        if not shard_path.name.lower().endswith(".safetensors") and shard_path.is_file():
             shards.append(shard_path)
     return shards
 
@@ -380,14 +386,16 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             has_alternative = has_adapter_safetensors if is_adapter else has_base_safetensors
             if not has_alternative:
                 _add(path)
-        # A local weight index makes from_pretrained load nested pickle shards iterdir never sees.
-        # All index files are base-weight, so a base safetensors set (loader-preferred) suppresses.
+        # A torch weight index makes from_pretrained load nested shards iterdir never sees; the loader
+        # torch.loads any not ending in .safetensors. A base safetensors makes it skip the pytorch
+        # index; a safetensors index is itself chosen, so its non-safetensors targets always load.
         for index_path in entries:
-            if index_path.name not in _TRANSFORMERS_INDEX_FILES:
+            if index_path.name not in _TORCH_INDEX_FILES:
+                continue
+            if index_path.name == "pytorch_model.bin.index.json" and has_base_safetensors:
                 continue
             for shard_path in _indexed_pickle_shards(index_path, root, snapshot):
-                if not has_base_safetensors:
-                    _add(shard_path)
+                _add(shard_path)
     return blocked
 
 

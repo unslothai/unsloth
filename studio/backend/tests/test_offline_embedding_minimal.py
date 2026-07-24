@@ -421,6 +421,45 @@ def test_gate_blocks_indexed_pickle_shard_with_nonstandard_stem(hf_cache):
     assert any(u["path"] == "shards/evil-00001-of-00001.bin" for u in decision.unsafe_files)
 
 
+def test_gate_blocks_safetensors_index_pointing_to_pickle_shard(hf_cache):
+    # load_state_dict picks safetensors vs torch.load by each shard's own suffix, so a
+    # model.safetensors.index.json that maps a weight to a .bin shard still deserializes it. The
+    # index's own existence must not suppress the shard it names.
+    _make_cache(
+        hf_cache,
+        "org/st-index-pickle",
+        {
+            "model.safetensors.index.json": (
+                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+            ),
+            "shards/pytorch_model-00001-of-00001.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/st-index-pickle")
+    assert decision.blocked is True
+    assert any(
+        u["path"] == "shards/pytorch_model-00001-of-00001.bin" for u in decision.unsafe_files
+    )
+
+
+def test_gate_blocks_indexed_shard_with_no_pickle_extension(hf_cache):
+    # Transformers torch.loads any indexed shard not ending in .safetensors, so an unconventional
+    # extensionless name is still a deserialization target.
+    _make_cache(
+        hf_cache,
+        "org/indexed-noext",
+        {
+            "pytorch_model.bin.index.json": '{"weight_map": {"w": "shards/payload"}}',
+            "shards/payload": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/indexed-noext")
+    assert decision.blocked is True
+    assert any(u["path"] == "shards/payload" for u in decision.unsafe_files)
+
+
 def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):
     # A weight index inside a sentence-transformers module load root points at a nested pickle shard.
     _make_cache(
