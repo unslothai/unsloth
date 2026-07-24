@@ -528,9 +528,7 @@ def test_tool_call_arguments_helper_neutralizes_dict_directly():
     assert "<|im_end|>" not in args["tags"][0]
     assert args["tags"][1] == "ok"
     # Clean dict arguments return the same list object (no copy).
-    clean = [
-        {"id": "c2", "type": "function", "function": {"name": "x", "arguments": {"q": "hi"}}}
-    ]
+    clean = [{"id": "c2", "type": "function", "function": {"name": "x", "arguments": {"q": "hi"}}}]
     assert neutralize_tool_call_arguments(clean) is clean
 
 
