@@ -572,8 +572,12 @@ def test_autoload_deduplicates_cached_and_local_candidates():
     available when the cached copy fails or has no usable quant."""
     auto_load = _autoload_section()
     assert "const seenLoadTargets = new Set<string>()" in auto_load
-    assert "markSeen(repo.load_id || repo.repo_id, repo.cache_path)" in auto_load
-    assert "isSeen(row.load_id, row.id, row.path)" in auto_load
+    # Keys carry the model kind: a folder emitting both GGUF and safetensors
+    # rows shares a path while holding two different models.
+    assert "seenLoadTargets.add(`${kind}:${value.toLowerCase()}`)" in auto_load
+    assert 'markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
+    assert 'markSeen("model", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
+    assert "isSeen(localCandidate.kind, row.load_id, row.id, row.path)" in auto_load
     # The repo-id-based dedupe that shadowed distinct local copies is gone.
     assert "isSeen(row.load_id, row.id, row.path, row.model_id)" not in auto_load
     assert "markSeen(repo.repo_id," not in auto_load
@@ -590,7 +594,7 @@ def test_local_quant_resolution_skips_failed_quants():
     assert "if (isSkippedCandidate?.(candidate)) continue;" in resolve_fn
     # The fallback loop feeds the skip set into resolution.
     auto_load = _autoload_section()
-    assert "await resolveLocalRowCandidate(row, null, (c) =>" in auto_load
+    assert "isSkippedAutoLoadCandidate," in auto_load
 
 
 def test_autoload_trust_guard_still_blocks_background_loads():
@@ -671,7 +675,7 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
     # The cascade must keep directory GGUF rows as candidates.
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert 'row.model_format === "gguf" ||' in auto_load
-    assert "await resolveLocalRowCandidate(row, null, (c) =>" in auto_load
+    assert "await resolveLocalRowCandidate(" in auto_load
 
 
 def test_remembered_local_failure_does_not_block_folder_fallback():
@@ -686,3 +690,21 @@ def test_remembered_local_failure_does_not_block_folder_fallback():
         "markSeen(" not in remembered_block
     ), "remembered-local retry must not pre-mark the row as deduped"
     assert "rememberedCandidate?.ggufVariant ?? lastLoaded.ggufVariant" in remembered_block
+
+
+def test_local_fallback_orders_by_resolved_quant_size():
+    """A GGUF folder row's size_bytes sums every quant in the folder, so the
+    smallest-first cascade must order local candidates by the resolved
+    quant's own size; otherwise a folder with a small quant loses to a
+    larger single-quant model."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
+    resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
+    assert "sizeBytes: sizeOrUnknownBytes(entry.size_bytes)" in resolve_fn
+    auto_load = _autoload_section()
+    # Local candidates are resolved BEFORE the groups are sorted.
+    assert "const localEntries = (" in auto_load
+    assert auto_load.index("const localEntries = (") < auto_load.index(
+        "const ggufGroup: FallbackCandidate[]"
+    )
+    assert "sizeBytes: resolved.sizeBytes" in auto_load
