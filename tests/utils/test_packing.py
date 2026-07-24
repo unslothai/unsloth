@@ -46,7 +46,7 @@ def _build_packed_training_setup(tmp_path, device):
             dtype = torch.float16
     elif device.type == "xpu":
         dtype = torch.bfloat16
-            
+
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM",

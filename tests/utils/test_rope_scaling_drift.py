@@ -25,7 +25,7 @@ def _has_real_gpu():
     return False
 
 
-HAS_REAL_GPU= _has_real_gpu()
+HAS_REAL_GPU = _has_real_gpu()
 requires_gpu = pytest.mark.skipif(
     not HAS_REAL_GPU,
     reason = "LlamaRotaryEmbedding builds per-device caches in __init__ (needs CUDA or XPU)",
