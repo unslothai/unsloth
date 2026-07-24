@@ -15,6 +15,7 @@ from hub.services.models.folder_browser import (
     _is_path_inside_allowlist,
 )
 from hub.utils.gguf import extract_quant_label, iter_hf_cache_snapshots
+from hub.utils.hf_tokens import hf_token_arg
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -356,13 +357,19 @@ def read_default_chat_template(
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
-        _api = HfApi()
+        request_token = hf_token_arg(hf_token)
+        _api = HfApi(token = request_token)
 
         def _remote_exceeds_cap(rel: str) -> bool:
             # Best-effort: skip the download when the remote's advertised size
             # exceeds the cap, so a maliciously large sidecar is never fetched.
             try:
-                infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
+                infos = _api.get_paths_info(
+                    resolved,
+                    [rel],
+                    repo_type = "model",
+                    token = request_token,
+                )
             except Exception:
                 return False
             for info in infos:
@@ -382,7 +389,7 @@ def read_default_chat_template(
                 path = hf_hub_download(
                     resolved,
                     rel,
-                    token = hf_token,
+                    token = request_token,
                     cache_dir = active_hf_hub_cache(),
                 )
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)

@@ -112,6 +112,7 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
+from hub.utils.hf_tokens import hf_token_arg
 
 try:
     from utils.models import (
@@ -1794,8 +1795,9 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
     try:
         from huggingface_hub import HfApi
 
-        api = HfApi(token = hf_token)
-        info = api.repo_info(model_name, repo_type = "model", token = hf_token)
+        request_token = hf_token_arg(hf_token)
+        api = HfApi(token = request_token)
+        info = api.repo_info(model_name, repo_type = "model", token = request_token)
         if not info.siblings:
             return None
 

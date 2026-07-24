@@ -258,6 +258,7 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
+  hfToken?: string | null,
 ): Promise<{
   downloaded_bytes: number;
   expected_bytes: number;
@@ -270,6 +271,7 @@ export async function getGgufDownloadProgress(
   });
   const response = await authFetch(
     `/api/models/gguf-download-progress?${params}`,
+    { headers: hubTokenHeader(hfToken) },
   );
   return parseJsonOrThrow(response);
 }
@@ -287,17 +289,23 @@ export interface DownloadProgressResponse {
 
 export async function getDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/models/download-progress?${params}`);
+  const response = await authFetch(`/api/models/download-progress?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 
 export async function getDatasetDownloadProgress(
   repoId: string,
+  hfToken?: string | null,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  const response = await authFetch(`/api/datasets/download-progress?${params}`, {
+    headers: hubTokenHeader(hfToken),
+  });
   return parseJsonOrThrow(response);
 }
 

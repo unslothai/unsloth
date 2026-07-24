@@ -34,6 +34,7 @@ from hub.utils import (
     paths,
     state_dir,
 )
+from hub.utils.hf_tokens import hf_token_arg
 from hub.workers import hf_download
 
 
@@ -3568,6 +3569,63 @@ def test_hub_hf_token_header_uses_namespaced_header_only():
     assert get_hf_token(None) is None
 
 
+@pytest.mark.parametrize(
+    ("hf_token", "expected"),
+    (
+        (None, False),
+        ("", False),
+        (" \n\t", False),
+        ("  request-token\n", "request-token"),
+    ),
+)
+def test_hf_token_arg_normalizes_explicit_tokens(hf_token, expected):
+    assert hf_token_arg(hf_token) == expected
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "expected_api_token"),
+    (
+        (None, False),
+        ("request-token", "request-token"),
+    ),
+)
+def test_hub_metadata_uses_only_explicit_request_token(monkeypatch, hf_token, expected_api_token):
+    captured_tokens = []
+
+    class _Api:
+        def __init__(self, *, token = None):
+            captured_tokens.append(token)
+
+        def model_info(self, *_args, **_kwargs):
+            return SimpleNamespace(siblings = [])
+
+        def dataset_info(self, *_args, **_kwargs):
+            return SimpleNamespace(siblings = [], private = False, gated = False)
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = _Api))
+
+    repo_suffix = "anonymous" if hf_token is None else "explicit"
+    cache_inventory.get_repo_snapshot_metadata_cached(
+        f"Security/Model-{repo_suffix}",
+        hf_token,
+    )
+    gguf_variants._fetch_gguf_variant_requirements(
+        f"Security/GGUF-{repo_suffix}",
+        hf_token,
+    )
+    gguf.list_gguf_variants(
+        f"Security/GGUF-List-{repo_suffix}",
+        hf_token,
+    )
+    dataset_downloads.get_dataset_snapshot_metadata_cached(
+        f"Security/Dataset-{repo_suffix}",
+        hf_token,
+    )
+
+    assert captured_tokens == [expected_api_token] * 4
+
+
 def test_scan_folder_rejects_credential_directories(tmp_path):
     sensitive_dir = tmp_path / ".ssh" / "models"
     sensitive_dir.mkdir(parents = True)
@@ -3993,3 +4051,58 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+
+
+@pytest.mark.parametrize(
+    "worker_args",
+    (
+        ["--repo-id", "attacker/private-model"],
+        ["--repo-id", "attacker/private-dataset", "--dataset"],
+    ),
+)
+def test_spawn_worker_does_not_reuse_backend_hf_token(monkeypatch, worker_args):
+    captured = {}
+
+    class _Proc:
+        pass
+
+    def _fake_popen(*_args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _Proc()
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", _fake_popen)
+
+    proc = download_lifecycle.spawn_worker(
+        worker_args,
+        None,
+        use_xet = False,
+    )
+
+    assert isinstance(proc, _Proc)
+    assert "HF_TOKEN" not in captured["env"]
+    assert captured["env"]["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+
+
+def test_spawn_worker_uses_explicit_request_hf_token(monkeypatch):
+    captured = {}
+
+    class _Proc:
+        pass
+
+    def _fake_popen(*_args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return _Proc()
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", _fake_popen)
+
+    proc = download_lifecycle.spawn_worker(
+        ["--repo-id", "user/private-model"],
+        "request-token",
+        use_xet = False,
+    )
+
+    assert isinstance(proc, _Proc)
+    assert captured["env"]["HF_TOKEN"] == "request-token"
+    assert captured["env"]["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"

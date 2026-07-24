@@ -5,6 +5,8 @@ import asyncio
 import sys
 import types
 
+import pytest
+
 # Keep this test runnable in lightweight environments where optional logging
 # deps are not installed.
 if "structlog" not in sys.modules:
@@ -20,6 +22,33 @@ if "structlog" not in sys.modules:
 
 import routes.models as models_route
 import utils.models.model_config as model_config_module
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "expected_token"),
+    (
+        (None, False),
+        ("  request-token\n", "request-token"),
+    ),
+)
+def test_model_size_metadata_uses_only_explicit_request_token(
+    monkeypatch, hf_token, expected_token
+):
+    captured_tokens = []
+
+    class _Api:
+        def __init__(self, *, token):
+            captured_tokens.append(token)
+
+        def repo_info(self, *_args, **kwargs):
+            captured_tokens.append(kwargs["token"])
+            return types.SimpleNamespace(siblings = [])
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi = _Api))
+
+    assert models_route._get_model_size_bytes("Org/Model", hf_token) is None
+    assert captured_tokens == [expected_token, expected_token]
 
 
 def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):

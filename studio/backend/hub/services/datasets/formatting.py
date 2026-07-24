@@ -35,6 +35,7 @@ from hub.utils.dataset_cache import (
 from hub.utils import download_registry
 from hub.utils.dataset_format import check_dataset_format, format_dataset_preview
 from hub.utils.hf_errors import hf_error_status
+from hub.utils.hf_tokens import hf_token_arg
 from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
     resolve_dataset_path,
@@ -234,12 +235,10 @@ def _load_processed_hf_preview_slice(
         "path": request.dataset_name,
         "split": request.train_split or "train",
         "download_config": DownloadConfig(local_files_only = True),
+        "token": hf_token_arg(hf_token),
     }
     if request.subset:
         load_kwargs["name"] = request.subset
-    if hf_token:
-        load_kwargs["token"] = hf_token
-
     dataset = load_dataset(**load_kwargs)
     total_rows = len(dataset)
     preview_slice = dataset.select(range(min(preview_size, total_rows)))
@@ -316,6 +315,7 @@ def check_format_response(
                 )
             else:
                 preview_slice = None
+                request_token = hf_token_arg(hf_token)
 
                 try:
                     from huggingface_hub import HfApi
@@ -324,7 +324,7 @@ def check_format_response(
                     repo_files = api.list_repo_files(
                         request.dataset_name,
                         repo_type = "dataset",
-                        token = hf_token or None,
+                        token = request_token,
                     )
                     train_split = request.train_split or "train"
                     first_file = _select_tier1_repo_file(
@@ -339,9 +339,8 @@ def check_format_response(
                             "data_files": {train_split: [first_file]},
                             "split": train_split,
                             "streaming": True,
+                            "token": request_token,
                         }
-                        if hf_token:
-                            load_kwargs["token"] = hf_token
 
                         streamed_ds = load_dataset(**load_kwargs)
                         rows = list(islice(streamed_ds, PREVIEW_SIZE))
@@ -361,12 +360,10 @@ def check_format_response(
                         "path": request.dataset_name,
                         "split": request.train_split or "train",
                         "streaming": True,
+                        "token": request_token,
                     }
                     if request.subset:
                         load_kwargs["name"] = request.subset
-                    if hf_token:
-                        load_kwargs["token"] = hf_token
-
                     streamed_ds = load_dataset(**load_kwargs)
 
                     rows = list(islice(streamed_ds, PREVIEW_SIZE))

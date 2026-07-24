@@ -47,9 +47,8 @@ from hub.utils.gguf_plan import (
     plan_from_expected_files,
     sibling_sha256,
 )
+from hub.utils.hf_tokens import hf_token_arg
 from hub.utils.state_dir import RepoType
-
-HfTokenArg = str | bool | None
 
 
 # Bound the metadata fetch so a stalled connection fails the worker (exit 1)
@@ -178,10 +177,6 @@ def _install_parent_death_watchdog(parent_pid: int | None) -> None:
     ).start()
 
 
-def _hf_token_arg(hf_token: str | None) -> HfTokenArg:
-    return hf_token if hf_token else False
-
-
 def _retry_metadata_fetch(repo_id: str, fetch, *, label: str):
     for attempt, timeout in enumerate((_METADATA_REQUEST_TIMEOUT, _METADATA_RETRY_TIMEOUT)):
         try:
@@ -203,7 +198,7 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
         repo_id,
         lambda timeout: hf_model_info(
             repo_id,
-            token = _hf_token_arg(hf_token),
+            token = hf_token_arg(hf_token),
             timeout = timeout,
             files_metadata = True,
         ),
@@ -213,7 +208,7 @@ def _model_info_with_retry(repo_id: str, hf_token: str | None):
 
 def _dataset_info_with_retry(repo_id: str, hf_token: str | None):
     from huggingface_hub import HfApi
-    api = HfApi(token = _hf_token_arg(hf_token))
+    api = HfApi(token = hf_token_arg(hf_token))
     return _retry_metadata_fetch(
         repo_id,
         lambda timeout: api.dataset_info(
@@ -504,7 +499,7 @@ def _download_snapshot(repo_id: str, hf_token: str | None, mode: str) -> None:
     _preflight_disk_space("model", repo_id, expected_files)
     snapshot_path = snapshot_download(
         repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
+        token = hf_token_arg(hf_token),
         ignore_patterns = ignore_patterns,
         max_workers = 1,
     )
@@ -642,7 +637,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
     _preflight_disk_space("model", repo_id, expected_files)
     snapshot_path = snapshot_download(
         repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
+        token = hf_token_arg(hf_token),
         allow_patterns = targets,
         max_workers = 1,
     )
@@ -709,7 +704,7 @@ def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
     _preflight_disk_space("dataset", repo_id, expected_files)
     snapshot_path = snapshot_download(
         repo_id = repo_id,
-        token = _hf_token_arg(hf_token),
+        token = hf_token_arg(hf_token),
         repo_type = "dataset",
         max_workers = 1,
     )

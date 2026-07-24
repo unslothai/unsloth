@@ -13,6 +13,7 @@ from typing import Any, Optional
 from loggers import get_logger
 
 from hub.utils import download_registry
+from hub.utils.hf_tokens import hf_token_arg
 
 logger = get_logger(__name__)
 
@@ -84,7 +85,7 @@ def _fetch_hf_dataset_card(
     try:
         from huggingface_hub import DatasetCard
 
-        card = DatasetCard.load(dataset_name, token = hf_token)
+        card = DatasetCard.load(dataset_name, token = hf_token_arg(hf_token))
         readme = card.text or ""
         if len(readme) > README_MAX_CHARS:
             cut = readme[:README_MAX_CHARS].rfind(".")

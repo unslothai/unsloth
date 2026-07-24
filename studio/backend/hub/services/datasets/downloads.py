@@ -26,6 +26,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import has_active_incomplete_blobs
+from hub.utils.hf_tokens import hf_token_arg
 from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
     resolve_cached_repo_id_case,
@@ -81,7 +82,7 @@ def get_dataset_snapshot_metadata_cached(
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi(token = hf_token).dataset_info(
+        info = HfApi(token = hf_token_arg(hf_token)).dataset_info(
             repo_id,
             files_metadata = True,
             timeout = _DATASET_SIZE_TIMEOUT_SECONDS,

@@ -25,6 +25,7 @@ from hub.utils.hf_cache_state import (
     iter_destructive_repo_cache_dirs,
     repo_cache_dir_name,
 )
+from hub.utils.hf_tokens import hf_token_arg
 from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
@@ -200,7 +201,7 @@ def _fetch_gguf_variant_requirements(
             return {}
         try:
             from huggingface_hub import HfApi
-            info = HfApi(token = hf_token).model_info(
+            info = HfApi(token = hf_token_arg(hf_token)).model_info(
                 repo_id,
                 files_metadata = True,
                 timeout = _GGUF_METADATA_TIMEOUT_SECONDS,

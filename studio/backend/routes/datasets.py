@@ -31,6 +31,7 @@ from utils.datasets import check_dataset_format
 from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -245,7 +246,7 @@ def _select_hf_preview_file(
     return _select_best_hf_preview_candidate(data_candidates, subset = subset, split = split)
 
 
-def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: str | None) -> dict | None:
+def _download_hf_metadata(*, repo_id: str, repo_files: list[str], token: HfTokenArg) -> dict | None:
     metadata_file = next(
         (
             path
@@ -541,6 +542,7 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
             # ── HuggingFace dataset ─────────────────────────────────
             # Tier 1: list_repo_files -> load one selected tabular data file
             preview_slice = None
+            request_token = hf_token_arg(request.hf_token)
 
             try:
                 from huggingface_hub import HfApi
@@ -549,12 +551,12 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
                 repo_files = api.list_repo_files(
                     request.dataset_name,
                     repo_type = "dataset",
-                    token = request.hf_token or None,
+                    token = request_token,
                 )
                 metadata = _download_hf_metadata(
                     repo_id = request.dataset_name,
                     repo_files = repo_files,
-                    token = request.hf_token or None,
+                    token = request_token,
                 )
                 selected_file = _select_hf_preview_file(
                     repo_files,
@@ -570,9 +572,8 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
                         "data_files": [selected_file],
                         "split": "train",
                         "streaming": True,
+                        "token": request_token,
                     }
-                    if request.hf_token:
-                        load_kwargs["token"] = request.hf_token
 
                     streamed_ds = load_dataset(**load_kwargs)
                     rows = list(islice(streamed_ds, PREVIEW_SIZE))
@@ -588,11 +589,10 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
                     "path": request.dataset_name,
                     "split": request.train_split,
                     "streaming": True,
+                    "token": request_token,
                 }
                 if request.subset:
                     load_kwargs["name"] = request.subset
-                if request.hf_token:
-                    load_kwargs["token"] = request.hf_token
 
                 streamed_ds = load_dataset(**load_kwargs)
 
