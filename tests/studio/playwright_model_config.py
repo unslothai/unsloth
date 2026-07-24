@@ -580,6 +580,48 @@ with sync_playwright() as p:
         else:
             info("OK reset: distinctive context cleared from unsloth_model_configs")
         shoot("08-after-reset")
+
+    # ─────────────────────────────────────────────────────
+    # 3b. Re-typing the value already shown must not pin an override (HARD).
+    # Entering the currently displayed native/default context commits no
+    # onChange (the value is unchanged), so the cached blur value must not be
+    # replayed into a stored override on Load. Otherwise re-typing the shown
+    # number, or doing so before a Reset, recreates a phantom context pin.
+    # ─────────────────────────────────────────────────────
+    step("re-typing the shown context does not pin an override")
+    ctx_in = context_input(popover)
+    native_default = _as_int(ctx_in.input_value()) if ctx_in else None
+    if ctx_in is None or native_default is None:
+        info("skip re-type-shown: Context Length input has no numeric default")
+    else:
+        remember = popover.get_by_label("Remember for this model").first
+        if _count(remember):
+            try:
+                remember.check()
+            except Exception:
+                remember.click()
+        ctx_in.click()
+        ctx_in.fill(str(native_default))
+        page.wait_for_timeout(200)
+        btn = primary_button(popover)
+        if btn is not None and btn.is_enabled():
+            # Same-click Load: the button click must commit the draft, but a draft
+            # equal to the shown value carries no override.
+            btn.click()
+            page.wait_for_timeout(1500)
+        cfg = read_configs()
+        pinned = any(
+            _as_int(e.get("customContextLength")) == native_default
+            for e in config_entries(cfg)
+        )
+        if pinned:
+            fail(
+                "re-typing the shown context pinned it as an override "
+                f"(customContextLength={native_default})"
+            )
+        else:
+            info("OK re-type-shown: shown context not stored as an override")
+        shoot("08b-after-retype-shown")
     close_picker()
 
     # ─────────────────────────────────────────────────────

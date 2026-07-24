@@ -166,7 +166,13 @@ export const NumericValueInput = forwardRef<
             lastBlurCommittedRef.current = null;
           } else {
             draftRef.current = String(final);
-            lastBlurCommittedRef.current = final;
+            // Only bridge the still-stale parent value when the blur actually
+            // dispatched onChange (final !== value). When final === value the
+            // parent is already current, so there is nothing to bridge; caching
+            // here would leave a stale pin that a later Reset or external edit
+            // (which doesn't change the displayed value) can never clear, so a
+            // following Load/Save would recreate the override Reset removed.
+            lastBlurCommittedRef.current = final !== value ? final : null;
           }
         }
         setFocused(false);
