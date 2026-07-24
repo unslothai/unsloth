@@ -415,7 +415,8 @@ function GgufAdvancedSettings({
           <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
             Lower KV cache precision to save VRAM at the cost of some quality.
-            f16/bf16 are full precision; q8_0/q5_1/q4_1 are quantized.
+            f16 is the default; bf16 and f32 are full precision; q8_0 through
+            iq4_nl are quantized.
           </InfoHint>
         </div>
         <Select
