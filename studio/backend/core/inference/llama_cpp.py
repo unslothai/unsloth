@@ -6506,29 +6506,15 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
-                # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
-                # Route and remote-download preflights reject before teardown; keep
-                # this as a final defense if classification ever disagrees.
-                if is_vulkan_backend and gpu_ids:
-                    raise ValueError(
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    )
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
-                # Backstop for the relaxed Vulkan validation gate: /load and
-                # /validate only reject a CONFIRMED-diffusion pick up front, so an
-                # uncached GGUF that turns out to be diffusion after download can
-                # still arrive here with a pin. On a Vulkan build gpu_ids are ggml
-                # Vulkan ordinals, but _diffusion_gpu_arg forwards gpu_ids[0] as a
-                # CUDA/DG_GPU token -- an ordinal there would target the wrong
-                # card. Drop the unmappable pin so the runner uses its default
-                # device selection instead (same as an unpinned diffusion load).
+                # On a Vulkan build gpu_ids are ggml Vulkan ordinals, but the diffusion
+                # runner selects its device by CUDA physical index (_diffusion_gpu_arg
+                # forwards gpu_ids[0] as a CUDA/DG_GPU token) with no mapping to them.
+                # The route rejects a CONFIRMED-diffusion pick up front; an uncached GGUF
+                # only classified as diffusion post-download still reaches here with a
+                # pin, so drop it and serve on the default device (like an unpinned load).
                 if gpu_ids and is_vulkan_backend:
                     logger.warning(
                         "Ignoring gpu_ids %s for diffusion GGUF on a Vulkan build: "

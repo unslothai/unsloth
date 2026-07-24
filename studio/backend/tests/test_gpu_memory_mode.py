@@ -771,6 +771,8 @@ def test_diffusion_vulkan_load_drops_unmappable_gpu_pin():
     drop = diff_branch.index("gpu_ids = None")
     spawn = diff_branch.index("_start_diffusion_server(")
     assert guard < drop < spawn
+    # The drop must be reachable: no earlier raise on the same predicate may preempt it.
+    assert "raise" not in diff_branch[:guard]
 
 
 def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
