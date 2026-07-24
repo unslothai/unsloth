@@ -264,6 +264,7 @@ def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
         "_load_colab_login_credentials",
         lambda: ("unsloth", "saved-pass"),
     )
+    monkeypatch.setattr(colab, "_colab_credentials_still_valid", lambda username, password: True)
 
     storage = SimpleNamespace(
         DEFAULT_ADMIN_USERNAME = "unsloth",
@@ -280,6 +281,57 @@ def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
 
     assert result == ("unsloth", "saved-pass")
     storage.update_password.assert_not_called()
+
+
+def test_finalize_colab_admin_password_drops_stale_cached_credentials(monkeypatch):
+    """After an in-app password change the cached first-run password no longer
+    authenticates, so it must not be redisplayed (#7349 Codex review)."""
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "_load_colab_login_credentials",
+        lambda: ("unsloth", "stale-pass"),
+    )
+    monkeypatch.setattr(colab, "_colab_credentials_still_valid", lambda username, password: False)
+    cleared: list[bool] = []
+    monkeypatch.setattr(
+        colab, "_clear_colab_login_credentials", lambda: cleared.append(True)
+    )
+
+    storage = SimpleNamespace(
+        DEFAULT_ADMIN_USERNAME = "unsloth",
+        ensure_default_admin = MagicMock(),
+        get_bootstrap_password = MagicMock(),
+        generate_bootstrap_password = MagicMock(),
+        requires_password_change = MagicMock(return_value = False),
+        update_password = MagicMock(),
+    )
+    auth_pkg = types.ModuleType("auth")
+    auth_pkg.storage = storage
+    with patch.dict("sys.modules", {"auth": auth_pkg, "auth.storage": storage}):
+        result = colab._finalize_colab_admin_password()
+
+    assert result is None
+    assert cleared == [True]
+    storage.update_password.assert_not_called()
+
+
+def test_colab_credentials_still_valid_matches_stored_hash(monkeypatch):
+    from auth.hashing import hash_password
+
+    salt, pwd_hash = hash_password("right-pass")
+    storage = SimpleNamespace(
+        get_user_and_secret = MagicMock(return_value = (salt, pwd_hash, "jwt", False)),
+    )
+    with patch.dict("sys.modules", {"auth.storage": storage}):
+        assert colab._colab_credentials_still_valid("unsloth", "right-pass") is True
+        assert colab._colab_credentials_still_valid("unsloth", "wrong-pass") is False
+
+
+def test_colab_credentials_still_valid_false_when_user_missing(monkeypatch):
+    storage = SimpleNamespace(get_user_and_secret = MagicMock(return_value = None))
+    with patch.dict("sys.modules", {"auth.storage": storage}):
+        assert colab._colab_credentials_still_valid("unsloth", "any") is False
 
 
 def test_colab_login_html_includes_credentials():

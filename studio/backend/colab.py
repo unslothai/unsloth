@@ -114,6 +114,39 @@ def _load_colab_login_credentials() -> "tuple[str, str] | None":
     return None
 
 
+def _clear_colab_login_credentials() -> None:
+    """Drop the cached Colab credentials once they no longer authenticate."""
+    path = _colab_login_credentials_path()
+    try:
+        path.unlink(missing_ok = True)
+    except OSError as e:
+        logger.info(f"Could not clear Colab login credentials ({e}).")
+
+
+def _colab_credentials_still_valid(username: str, password: str) -> bool:
+    """True when *password* still matches the stored admin hash.
+
+    Guards against redisplaying a cached first-run password after the user has
+    changed the admin password through the app, which would print credentials
+    that no longer authenticate to the current Cloudflare tunnel.
+    """
+    try:
+        from auth.storage import get_user_and_secret
+        from auth.hashing import verify_password
+    except Exception as e:
+        logger.info(f"Could not load auth to validate cached Colab credentials ({e}).")
+        return False
+    try:
+        row = get_user_and_secret(username)
+        if not row:
+            return False
+        salt, pwd_hash = row[0], row[1]
+        return bool(verify_password(password, salt, pwd_hash))
+    except Exception as e:
+        logger.info(f"Could not validate cached Colab credentials ({e}).")
+        return False
+
+
 def _colab_wants_cloudflare(cloudflare: "bool | None") -> bool:
     """Resolve whether to open a Cloudflare tunnel.
 
@@ -154,7 +187,13 @@ def _finalize_colab_admin_password() -> "tuple[str, str] | None":
         ensure_default_admin()
         username = DEFAULT_ADMIN_USERNAME
         if not requires_password_change(username):
-            return _load_colab_login_credentials()
+            creds = _load_colab_login_credentials()
+            if creds is not None and _colab_credentials_still_valid(username, creds[1]):
+                return creds
+            # The admin password was changed through the app after the first run,
+            # so the cached copy is stale; drop it instead of printing dead credentials.
+            _clear_colab_login_credentials()
+            return None
         password = get_bootstrap_password() or generate_bootstrap_password()
         if not update_password(username, password):
             logger.warning(
