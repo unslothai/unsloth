@@ -1088,6 +1088,30 @@ def _require_studio(
     """Return (base, server). server is a Popen only when WE auto-started it."""
     base = find_studio_server()
     if base is not None:
+        # Attaching to a server someone else started: UNSLOTH_SAMPLING_* pins only reach the
+        # server process when WE launch it (via _start_studio_server), so a sampling flag on the
+        # attach path can't take effect. Warn instead of silently dropping it, so the operator is
+        # not misled into thinking generation now uses the pinned value.
+        _pinned = [
+            _flag
+            for _flag, _value in (
+                ("--temperature", server_options.temperature),
+                ("--top-p", server_options.top_p),
+                ("--top-k", server_options.top_k),
+                ("--min-p", server_options.min_p),
+                ("--repetition-penalty", server_options.repetition_penalty),
+                ("--presence-penalty", server_options.presence_penalty),
+            )
+            if _value is not None
+        ]
+        if _pinned:
+            typer.echo(
+                f"Warning: an Unsloth server is already running at {base}; sampling pins "
+                f"({', '.join(_pinned)}) apply only when this command starts the server, so the "
+                "running server keeps its current sampling. Stop it with `unsloth studio stop` "
+                "and re-run to apply them.",
+                err = True,
+            )
         return base, None
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     # Auto-start a local server only for an interactive launch with a model to serve, and

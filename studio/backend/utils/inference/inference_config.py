@@ -202,13 +202,22 @@ def _clean_sampling_value(field: str, val: Any):
     Rejects bool, non-numeric, NaN/inf, and out-of-range values so neither a bad operator env
     var nor a malformed model recommendation can reach llama-server. NaN matters because
     ``nan < lo`` and ``nan > hi`` are both False, so a plain range check would let it through.
+    Coerce before the finiteness check: ``math.isfinite`` and ``float()`` raise ``OverflowError``
+    on an int too big for a C double (an oversized UNSLOTH_SAMPLING_TOP_K would otherwise 500 the
+    request), while an in-range int is range-checked exactly and ``int()`` rejects a NaN/inf that
+    reached an int field.
     """
     if isinstance(val, bool) or not isinstance(val, (int, float)):
         return None
-    if not math.isfinite(val):
-        return None
     _env, _default, lo, hi, is_int = _SAMPLING_FIELDS[field]
-    val = int(val) if is_int else float(val)
+    try:
+        val = int(val) if is_int else float(val)
+    except (ValueError, OverflowError):
+        # int(nan)/int(inf) and float(oversized_int) raise; treat them as unusable.
+        return None
+    # After coercion an int is always finite; only a float can still be NaN/inf.
+    if isinstance(val, float) and not math.isfinite(val):
+        return None
     if val < lo or val > hi:
         return None
     return val
@@ -257,13 +266,23 @@ def _recommended_sampling(model_id: str) -> Dict[str, Any]:
     return recommended
 
 
-def resolve_effective_sampling(model_id: Optional[str], explicit: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_effective_sampling(
+    model_id: Optional[str],
+    explicit: Dict[str, Any],
+    *,
+    fill_defaults: bool = True,
+) -> Dict[str, Any]:
     """Resolve the effective sampling params for a request.
 
     ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent
     value, or ``None`` when the client omitted it. Precedence (highest first): an
     operator ``UNSLOTH_SAMPLING_*`` pin, then the client's explicit value, then the
     per-model recommendation, then the static schema default.
+
+    When ``fill_defaults`` is False a field with no operator pin, client value, or
+    per-model recommendation is omitted from the result instead of set to the static
+    schema default, so a raw proxy body (``/v1/completions``) keeps llama-server's own
+    default for that field rather than being forced onto this schema's value.
     """
     recommended = _recommended_sampling(model_id or "")
     effective: Dict[str, Any] = {}
@@ -275,6 +294,6 @@ def resolve_effective_sampling(model_id: Optional[str], explicit: Dict[str, Any]
             effective[field] = explicit[field]
         elif field in recommended:
             effective[field] = recommended[field]
-        else:
+        elif fill_defaults:
             effective[field] = default
     return effective

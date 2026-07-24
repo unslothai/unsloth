@@ -163,6 +163,41 @@ def test_operator_override_top_k_int_and_range(monkeypatch):
     assert ic._operator_sampling_override("top_k") == -1
 
 
+@pytest.mark.parametrize(
+    "field, val",
+    [
+        ("top_k", 10 ** 400),       # oversized int on an int field: int() ok, but math.isfinite raises
+        ("top_k", float("nan")),    # NaN reaching an int field: int(nan) raises ValueError
+        ("top_k", float("inf")),    # inf reaching an int field: int(inf) raises OverflowError
+        ("temperature", 10 ** 400), # oversized int on a float field: float(huge_int) raises OverflowError
+    ],
+)
+def test_clean_sampling_value_rejects_unrepresentable(field, val):
+    # None of these may raise; each is unusable and must be dropped to None (regression: an
+    # oversized value used to raise OverflowError before the range check could drop it).
+    assert ic._clean_sampling_value(field, val) is None
+
+
+def test_oversized_operator_override_ignored(monkeypatch):
+    # A huge integer string parses via int() but overflows float(); math.isfinite would raise
+    # OverflowError and 500 the request. It must be ignored like any other bad override and the
+    # field must fall back to the schema default -- no exception.
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "9" * 400)
+    assert ic._operator_sampling_override("top_k") is None
+    _set_recommended(monkeypatch, {})  # no per-model recommendation -> schema default applies
+    eff = resolve_effective_sampling("some/model", _all_omitted())
+    assert eff["top_k"] == 20  # schema default, resolved without raising
+
+
+def test_oversized_recommendation_ignored(monkeypatch):
+    # A malformed per-model recommendation carrying an oversized int must not raise while
+    # resolving either; the field simply falls back to the schema default.
+    _set_recommended(monkeypatch, {"temperature": 10 ** 400, "top_k": 64})
+    eff = resolve_effective_sampling("some/model", _all_omitted())
+    assert eff["temperature"] == 0.6  # oversized -> dropped -> schema default
+    assert eff["top_k"] == 64  # a valid recommendation is still applied
+
+
 def test_fill_recommended_sampling_openai_payload(monkeypatch):
     from models.inference import ChatCompletionRequest
     from routes.inference import _fill_recommended_sampling_openai
@@ -194,3 +229,39 @@ def test_fill_recommended_sampling_openai_operator_pin_overrides_client(monkeypa
     )
     _fill_recommended_sampling_openai(payload, "some/model")
     assert payload.temperature == 0.9  # operator pin wins even over an explicit client value
+
+
+def test_fill_recommended_sampling_completions_body(monkeypatch):
+    # /v1/completions is a raw proxy: recommendations fill omitted fields, but a field with no
+    # recommendation and no pin is left absent so llama-server keeps its own default (unlike the
+    # chat schema, which carries per-field defaults).
+    from routes.inference import _fill_recommended_sampling_completions
+
+    _set_recommended(monkeypatch, {"temperature": 1.0, "top_k": 64, "min_p": 0.0})
+
+    body = {"prompt": "hi", "temperature": 0.2}
+    _fill_recommended_sampling_completions(body, "some/model")
+    assert body["temperature"] == 0.2  # explicit client value preserved
+    assert body["top_k"] == 64  # recommendation fills the omitted field
+    assert body["min_p"] == 0.0
+    # No recommendation and no pin -> NOT injected (llama-server keeps its default).
+    assert "top_p" not in body
+    assert "presence_penalty" not in body
+    assert "repeat_penalty" not in body
+
+
+def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
+    # An operator pin overrides the client's raw-body value, and the repetition pin is written
+    # under llama-server's "repeat_penalty" key (the schema field is repetition_penalty).
+    from routes.inference import _fill_recommended_sampling_completions
+
+    monkeypatch.setattr(ic, "load_inference_config", lambda mid: {})
+    ic._recommended_sampling.cache_clear()
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.9")
+    monkeypatch.setenv("UNSLOTH_SAMPLING_REPETITION_PENALTY", "1.2")
+
+    body = {"prompt": "hi", "temperature": 0.2, "repeat_penalty": 1.05}
+    _fill_recommended_sampling_completions(body, "some/model")
+    assert body["temperature"] == 0.9  # operator pin wins over the client's explicit value
+    assert body["repeat_penalty"] == 1.2  # repetition pin lands on llama-server's key
+    assert "repetition_penalty" not in body  # never leak the schema field name into the body

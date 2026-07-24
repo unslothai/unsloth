@@ -7410,6 +7410,33 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         setattr(payload, field, value)
 
 
+# /v1/completions is proxied to llama-server verbatim; its repetition knob is "repeat_penalty",
+# and every other sampling field keeps its name (mirrors _build_passthrough_payload).
+_COMPLETIONS_SAMPLING_BODY_KEY = {"repetition_penalty": "repeat_penalty"}
+
+
+def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
+    """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a raw
+    ``/v1/completions`` body in place, so the legacy (non-chat) endpoint honors the same pins as
+    ``/v1/chat/completions``.
+
+    Unlike :func:`_fill_recommended_sampling_openai`, which fills a ChatCompletionRequest whose
+    schema already carries per-field defaults, this body is proxied to llama-server as-is. A field
+    with no operator pin, client value, or per-model recommendation is therefore left untouched
+    (``fill_defaults = False``) so llama-server keeps its own default rather than being forced onto
+    this schema's value. llama-server names the repetition knob ``repeat_penalty``, so read and
+    write that alias for the client-sent value and any pin.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {
+        f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES
+    }
+    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
+    for field, value in effective.items():
+        body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -10677,6 +10704,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _resolved_max_tokens
         if _resolved_max_tokens is not None
         else (llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+    )
+    # Apply per-model recommended sampling and any operator UNSLOTH_SAMPLING_* pin to the raw
+    # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
+    # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
+    _fill_recommended_sampling_completions(
+        body, getattr(llama_backend, "model_identifier", None)
     )
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)

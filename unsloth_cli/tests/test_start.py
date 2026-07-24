@@ -1805,6 +1805,40 @@ def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
     assert "UNSLOTH_SAMPLING_TOP_P" not in env
 
 
+def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, capsys):
+    # Attaching to an already-running server can't apply UNSLOTH_SAMPLING_* pins (only
+    # _start_studio_server forwards them), so a sampling flag on the attach path must warn
+    # instead of being silently dropped while the command "succeeds".
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        launch = True,
+        server_options = start.ServerOptions(temperature = 0.3, top_k = 40),
+    )
+    assert base == BASE
+    assert server is None  # attach path: we did not start the server
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert "--temperature" in err and "--top-k" in err
+    # Only the pinned fields are named; an unset one is not.
+    assert "--top-p" not in err
+
+
+def test_require_studio_no_sampling_warning_without_pins(monkeypatch, capsys):
+    # Reusing a server with no sampling pins stays silent (tool flags are out of scope here).
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(enable_tools = True),
+    )
+    assert base == BASE and server is None
+    assert "sampling" not in capsys.readouterr().err.lower()
+
+
 def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     # `unsloth start claude ... --temperature 0.3 --top-k 40` routes the pins into ServerOptions.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
