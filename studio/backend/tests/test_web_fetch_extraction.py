@@ -724,9 +724,7 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
         (True, "https://example.com:8443/page?q=1"),
     ],
 )
-def test_fetch_url_raw_dns_pinning_proxy_opt_out(
-    monkeypatch, disable_dns_pinning, expected_url
-):
+def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinning, expected_url):
     import email
     import urllib.request
 
@@ -745,7 +743,11 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     requested = []
 
     class _FakeOpener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             requested.append(req)
             return _FakeResp()
 
@@ -755,15 +757,11 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
         resolved.append((host, port))
         return True, "", "203.0.113.7"
 
-    monkeypatch.setenv(
-        "UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0"
-    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
 
-    err, body, _content_type = tools_mod._fetch_url_raw(
-        "https://example.com:8443/page?q=1"
-    )
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
 
     assert err is None
     assert body == "ok"
