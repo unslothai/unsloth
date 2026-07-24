@@ -2533,6 +2533,10 @@ class LlamaCppBackend:
             self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
         else:
             self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        if self._last_load_kwargs is not None:
+            self._last_load_kwargs["gpu_ids"] = (
+                list(self._requested_gpu_ids) if self._requested_gpu_ids else None
+            )
 
     @property
     def n_layers(self) -> Optional[int]:

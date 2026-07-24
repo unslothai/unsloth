@@ -654,6 +654,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     backend = _loaded_backend("auto")
     backend._requested_gpu_ids = [0, 1]
     backend._gpu_ids = [0]
+    backend._last_load_kwargs = {"gpu_ids": [0, 1], "model_identifier": "owner/repo"}
 
     # The original request still matches after the fitter narrows it.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
@@ -663,6 +664,10 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     # reload do not restore GPU 1 after the user removed it.
     assert _target_state_gpu_ids(backend, [0]) is True
     assert backend.requested_gpu_ids == [0]
+    assert backend._last_load_kwargs == {
+        "gpu_ids": [0],
+        "model_identifier": "owner/repo",
+    }
     # A genuinely different placement pool still reloads.
     assert _target_state_gpu_ids(backend, [1]) is False
     assert _target_state_gpu_ids(backend, None) is False
