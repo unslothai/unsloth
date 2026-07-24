@@ -611,8 +611,7 @@ with sync_playwright() as p:
             page.wait_for_timeout(1500)
         cfg = read_configs()
         pinned = any(
-            _as_int(e.get("customContextLength")) == native_default
-            for e in config_entries(cfg)
+            _as_int(e.get("customContextLength")) == native_default for e in config_entries(cfg)
         )
         if pinned:
             fail(
