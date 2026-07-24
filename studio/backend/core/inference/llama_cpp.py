@@ -6586,9 +6586,7 @@ class LlamaCppBackend:
             # the meaning or validity of requested placement.
             _preflight_model_path = None
             _preflight_memory_mode = self._canonical_memory_mode(memory_mode)
-            if hf_repo and (
-                (is_vulkan_backend and gpu_ids) or _preflight_memory_mode is not None
-            ):
+            if hf_repo and ((is_vulkan_backend and gpu_ids) or _preflight_memory_mode is not None):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
