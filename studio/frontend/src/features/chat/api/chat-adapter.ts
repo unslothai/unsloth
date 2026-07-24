@@ -55,6 +55,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
+  isLocalModelPath,
   loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
@@ -1439,14 +1440,18 @@ function findCachedRepo<T extends { repo_id: string }>(
 
 /**
  * Managed-cache rows eligible for background auto-load: complete, not
- * hidden infrastructure, and not declared non-chat by the backend.
+ * hidden infrastructure, not declared non-chat by the backend, and not an
+ * adapter (loading an adapter resolves its base model, which for an
+ * uncached Hub base would start an implicit remote fetch).
  */
 function isAutoLoadableCachedRepo(repo: {
   repo_id: string;
   partial?: boolean;
+  model_format?: string | null;
   capabilities?: { can_chat?: boolean } | null;
 }): boolean {
   if (repo.partial) return false;
+  if (repo.model_format === "adapter") return false;
   if (repo.capabilities?.can_chat === false) return false;
   return !isHiddenModelId(repo.repo_id);
 }
@@ -1524,7 +1529,12 @@ async function resolveLocalRowCandidate(
     // Only GGUF folders have an automatic quant resolution path.
     if (!isGguf) return null;
     if (!rememberedVariant) {
-      const variants = await listGgufVariants(row.model_id || row.id, undefined, {
+      // Scan the folder the row will actually load from: the cache-first
+      // prefer_local_cache flow could return a quant present in the HF
+      // cache but missing at row's own path. A local-path repo id routes
+      // the backend straight to the filesystem scan of that folder.
+      const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;
+      const variants = await listGgufVariants(variantScanTarget, undefined, {
         preferLocalCache: true,
         localPath: row.path,
       });
@@ -1952,9 +1962,13 @@ export async function autoLoadOnDeviceModel(): Promise<{
           matchesRememberedLocalRow(candidateRow, lastLoaded),
         );
         if (row) {
-          markSeen(row.load_id, row.id, row.path, row.model_id);
+          // Not marked seen here: if this exact quant fails, the fallback
+          // loop may still pick another complete quant from the same folder
+          // (only the failed candidate key below is excluded, mirroring the
+          // managed-cache remembered path).
+          let rememberedCandidate: AutoLoadCandidate | null = null;
           try {
-            const rememberedCandidate = await resolveLocalRowCandidate(
+            rememberedCandidate = await resolveLocalRowCandidate(
               row,
               lastLoaded.ggufVariant,
             );
@@ -1972,9 +1986,10 @@ export async function autoLoadOnDeviceModel(): Promise<{
             hadNonTrustFailure = true;
             skippedAutoLoadCandidates.add(
               autoLoadCandidateKey(
-                row.model_format === "gguf" ? "gguf" : "model",
+                rememberedCandidate?.kind ??
+                  (row.model_format === "gguf" ? "gguf" : "model"),
                 row.id,
-                lastLoaded.ggufVariant,
+                rememberedCandidate?.ggufVariant ?? lastLoaded.ggufVariant,
               ),
             );
           }

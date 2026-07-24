@@ -528,6 +528,9 @@ def test_autoload_filters_match_picker_policy():
     cached_fn = src.split("function isAutoLoadableCachedRepo", 1)[1]
     cached_fn = cached_fn.split("\nconst ", 1)[0]
     assert "repo.partial" in cached_fn
+    # Cached adapter repos are chat-capable too and resolve a base model on
+    # load, so they must be excluded exactly like local adapter rows.
+    assert 'repo.model_format === "adapter"' in cached_fn
     assert "repo.capabilities?.can_chat === false" in cached_fn
     assert "isHiddenModelId(repo.repo_id)" in cached_fn
 
@@ -640,10 +643,30 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
     resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
     assert "row.capabilities?.requires_variant === true" in resolve_fn
     assert "if (!isGguf) return null;" in resolve_fn
-    assert "listGgufVariants(row.model_id || row.id" in resolve_fn
+    # Quants must be resolved from the folder the row will load from, not
+    # from a same-id HF cache repo whose quants may be absent locally.
+    assert (
+        "const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;"
+        in resolve_fn
+    )
+    assert "listGgufVariants(variantScanTarget" in resolve_fn
     assert "localPath: row.path" in resolve_fn
     assert "entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry)" in resolve_fn
     # The cascade must keep directory GGUF rows as candidates.
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert 'row.model_format === "gguf" ||' in auto_load
     assert "await resolveLocalRowCandidate(row)" in auto_load
+
+
+def test_remembered_local_failure_does_not_block_folder_fallback():
+    """A failed remembered local quant must exclude only that exact candidate
+    key, not mark the whole row as seen; otherwise a folder with another
+    complete quant can never fall back and Send falsely reports no model."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    remembered_block = auto_load.split("isManagedCacheSource(lastLoaded.source)", 1)[1]
+    remembered_block = remembered_block.split('} else if (lastLoaded.kind === "gguf")', 1)[0]
+    assert "markSeen(" not in remembered_block, (
+        "remembered-local retry must not pre-mark the row as deduped"
+    )
+    assert "rememberedCandidate?.ggufVariant ?? lastLoaded.ggufVariant" in remembered_block
