@@ -6634,7 +6634,7 @@ class LlamaCppBackend:
                     if _preflight_memory_mode is not None:
                         raise ValueError(
                             "GGUF host-memory modes are not supported for "
-                            "DiffusionGemma models. Use memory-mapped loading."
+                            "DiffusionGemma models. Leave Host RAM at its default."
                         )
                     if _vulkan_ordinal_pin:
                         raise ValueError(
@@ -6732,7 +6732,7 @@ class LlamaCppBackend:
                 ):
                     raise ValueError(
                         "GGUF host-memory modes are not supported for "
-                        "DiffusionGemma models. Use memory-mapped loading."
+                        "DiffusionGemma models. Leave Host RAM at its default."
                     )
                 # The diffusion runner cannot translate Vulkan ordinals to CUDA IDs.
                 if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is not False:

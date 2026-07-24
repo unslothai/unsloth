@@ -191,19 +191,19 @@ class LoadRequest(BaseModel):
             "GGUF host-memory placement mode (llama.cpp --mlock/--no-mmap). These "
             "control system RAM residency and file mapping on the host, NOT GPU VRAM "
             "placement, so they do not by themselves keep offloaded weights pinned in "
-            "VRAM. Omit the field or use 'auto' for normal memory-mapped loading. "
-            "'pinned' locks mapped host pages so the OS cannot page them out. "
-            "'resident' loads a RAM copy instead of mapping the file; on newer "
-            "llama.cpp builds that copy cannot also be locked and may still be "
-            "swapped. LLAMA_ARG_* host-memory environment variables are authoritative. "
-            "Ignored for non-GGUF models."
+            "VRAM. Omit the field or use 'auto' to leave the loading policy to the "
+            "installed llama.cpp version. 'pinned' locks mapped host pages so the OS "
+            "cannot page them out. 'resident' loads a RAM copy instead of mapping the "
+            "file; on newer llama.cpp builds that copy cannot also be locked and may "
+            "still be swapped. LLAMA_ARG_* host-memory environment variables are "
+            "authoritative. Ignored for non-GGUF models."
         ),
     )
 
     @field_validator("gguf_memory_mode", mode = "before")
     @classmethod
     def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
-        # A blank form value means normal memory-mapped loading.
+        # A blank form value leaves the policy to llama.cpp.
         if isinstance(value, str) and value.strip() == "":
             return "auto"
         return value

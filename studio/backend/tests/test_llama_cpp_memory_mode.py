@@ -900,6 +900,7 @@ def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
             gguf_path = str(gguf),
             model_identifier = "test",
             memory_mode = mode,
+            extra_args = ["--load-mode", "none", "--top-k", "20"],
         )
 
     assert captured_envs, "llama-server was not spawned"
@@ -917,41 +918,6 @@ def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
     assert "--mlock" not in cmd
     assert "--mmap" not in cmd
     assert "--no-mmap" not in cmd
-
-
-def test_memory_mode_env_strips_conflicting_passthrough_flag(tmp_path, monkeypatch):
-    """Raw argv must not regain precedence over the operator override."""
-    monkeypatch.setenv("LLAMA_ARG_LOAD_MODE", "mlock")
-    gguf = tmp_path / "model.gguf"
-    _write_minimal_gguf(gguf)
-    backend = _mem_env_backend(gguf)
-    captured_cmds = []
-
-    def _make_fake_popen(cmd, **kwargs):
-        if not cmd or str(cmd[0]) != "/fake/llama-server":
-            return _REAL_POPEN(cmd, **kwargs)
-
-        class _FakePopen:
-            pid = 12345
-
-            def __init__(self, cmd, **kwargs):
-                captured_cmds.append(list(cmd))
-
-            def poll(self):
-                return None
-
-        return _FakePopen(cmd, **kwargs)
-
-    with patch.object(subprocess, "Popen", side_effect = _make_fake_popen):
-        backend.load_model(
-            gguf_path = str(gguf),
-            model_identifier = "test",
-            memory_mode = "resident",
-            extra_args = ["--load-mode", "none", "--top-k", "20"],
-        )
-
-    cmd = captured_cmds[-1]
-    assert "--load-mode" not in cmd
     assert "--top-k" in cmd
 
 

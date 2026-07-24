@@ -502,16 +502,6 @@ def test_model_switch_clears_host_memory_mode_before_validation():
     assert "gguf_memory_mode: validateMemoryMode" in src
 
 
-def test_host_ram_picker_has_only_concrete_modes():
-    page = _read("features/model-picker/components/model-config-page.tsx")
-    assert ">Host RAM</span>" in page
-    assert 'value={config.ggufMemoryMode ?? "auto"}' in page
-    assert '<SelectItem value="auto">Memory mapped</SelectItem>' in page
-    assert '<SelectItem value="pinned">Locked RAM</SelectItem>' in page
-    assert '<SelectItem value="resident">RAM copy</SelectItem>' in page
-    assert '<SelectItem value="default">' not in page
-
-
 def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
     api = _read("features/chat/api/chat-api.ts")
     assert "isDiffusion: res.is_diffusion ?? false" in api

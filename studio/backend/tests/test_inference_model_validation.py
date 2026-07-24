@@ -44,7 +44,7 @@ from models.inference import ValidateModelRequest  # noqa: E402
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
 def test_blank_gguf_memory_mode_normalizes_to_auto(blank):
-    # A form may serialize normal memory-mapped loading as ""; avoid a 422.
+    # A form may serialize the llama.cpp default as ""; avoid a 422.
     assert _base_load_request(gguf_memory_mode = blank).gguf_memory_mode == "auto"
     assert (
         ValidateModelRequest.model_validate(

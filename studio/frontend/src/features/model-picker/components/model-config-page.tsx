@@ -425,9 +425,10 @@ function GpuMemorySettings({
           <span className={LABEL_CLASS}>Host RAM</span>
           <InfoHint>
             Controls host RAM only, not whether a GPU driver keeps weights in VRAM.
-            Memory mapped uses normal llama.cpp loading. Locked RAM prevents mapped
-            host pages from being swapped. RAM copy disables memory mapping, but
-            newer llama.cpp builds cannot also lock that copy.
+            llama.cpp default leaves the loading policy to the installed llama.cpp
+            version. Locked RAM prevents mapped host pages from being swapped. RAM
+            copy disables memory mapping, but newer llama.cpp builds cannot also lock
+            that copy.
           </InfoHint>
         </div>
         <Select
@@ -447,7 +448,7 @@ function GpuMemorySettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="auto">Memory mapped</SelectItem>
+            <SelectItem value="auto">Default</SelectItem>
             <SelectItem value="pinned">Locked RAM</SelectItem>
             <SelectItem value="resident">RAM copy</SelectItem>
           </SelectContent>
