@@ -1476,11 +1476,10 @@ async function autoLoadSmallestModel(): Promise<{
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
   const lastLoaded = readLastLocalModelLoad();
-  const toastId = toast("Loading a model…", {
+  const toastId = toast.loading("Loading a model…", {
     description: lastLoaded
       ? "Loading last used model."
       : "Auto-selecting the smallest downloaded model.",
-    duration: 5000,
     closeButton: true,
   });
   let blockedByTrustRemoteCode = false;
@@ -1764,10 +1763,9 @@ async function autoLoadSmallestModel(): Promise<{
                 isAutoLoadableGgufVariant(entry),
             );
             if (variant) {
-              toast("Loading last used model…", {
+              toast.loading("Loading last used model…", {
                 id: toastId,
                 description: `${repo.repo_id} (${variant.quant})`,
-                duration: 5000,
               });
               if (
                 await loadAutoLoadCandidate({
@@ -1793,10 +1791,9 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(modelRepos, lastLoaded.id);
         if (repo) {
           try {
-            toast("Loading last used model…", {
+            toast.loading("Loading last used model…", {
               id: toastId,
               description: repo.repo_id,
-              duration: 5000,
             });
             if (
               await loadAutoLoadCandidate({
@@ -1818,10 +1815,9 @@ async function autoLoadSmallestModel(): Promise<{
           }
         }
       }
-      toast("Loading a model…", {
+      toast.loading("Loading a model…", {
         id: toastId,
         description: "Auto-selecting the smallest downloaded model.",
-        duration: 5000,
       });
     }
 
@@ -1913,11 +1909,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
 
     // No cached models — try downloading a small default GGUF.
-    toast("Downloading a small model…", {
+    toast.loading("Downloading a small model…", {
       id: toastId,
       description:
         "No downloaded models found. Fetching Qwen3.5-4B-MTP (UD-Q4_K_XL).",
-      duration: 30000,
     });
     try {
       const rt = useChatRuntimeStore.getState();
