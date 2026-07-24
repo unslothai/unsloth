@@ -15,6 +15,8 @@ sh "$TESTS_DIR/sh/test_resolve_cuda_archs.sh"
 sh "$TESTS_DIR/sh/test_staged_validation_enabled.sh"
 sh "$TESTS_DIR/sh/test_strixhalo_wsl_reroute.sh"
 sh "$TESTS_DIR/sh/test_uninstall_shared_icon.sh"
+# bash, not sh: the extracted setup.sh function uses bash arrays (dash chokes).
+bash "$TESTS_DIR/sh/test_setup_webview_cache_clear.sh"
 sh "$TESTS_DIR/sh/test_torch_flavor.sh"
 sh "$TESTS_DIR/sh/test_redact_install_output.sh"
 sh "$TESTS_DIR/sh/test_install_uv_override_space.sh"

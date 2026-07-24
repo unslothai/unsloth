@@ -161,6 +161,64 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Clear WebView caches before the webview initializes. An in-app update runs
+// setup.sh/setup.ps1 while the old WebView still holds these files (its clear
+// silently fails), so without this a relaunch can serve the previous frontend
+// from cache. Cache-only paths; LocalStorage, IndexedDB, cookies, and app
+// data are kept. Mirrors setup.sh _clear_webview_caches / setup.ps1.
+fn clear_webview_caches(bundle_id: &str) {
+    use std::path::PathBuf;
+    let mut paths: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        if !local.is_empty() {
+            let profile = PathBuf::from(local)
+                .join(bundle_id)
+                .join("EBWebView")
+                .join("Default");
+            for sub in ["Cache", "Code Cache", "GPUCache", "Service Worker"] {
+                paths.push(profile.join(sub));
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            let home = PathBuf::from(home);
+            paths.push(home.join("Library/Caches").join(bundle_id));
+            let data = home.join("Library/WebKit").join(bundle_id).join("WebsiteData");
+            for sub in ["CacheStorage", "ServiceWorkers", "DiskCache"] {
+                paths.push(data.join(sub));
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            let home = PathBuf::from(home);
+            let cache = std::env::var("XDG_CACHE_HOME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".cache"));
+            paths.push(cache.join(bundle_id));
+            // wry keys the WebKitGTK base-cache dir to the app data dir.
+            let data = std::env::var("XDG_DATA_HOME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"))
+                .join(bundle_id);
+            for sub in ["WebKitCache", "CacheStorage", "serviceworkers", "ServiceWorkers"] {
+                paths.push(data.join(sub));
+            }
+        }
+    }
+    for p in paths {
+        let _ = fs::remove_dir_all(&p);
+    }
+}
+
 fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
@@ -170,6 +228,11 @@ fn main() {
     setup_logging();
     info!("Unsloth Studio desktop app starting");
     windows_job::initialize();
+
+    // Must run before the Builder: the config-defined window (and its
+    // WebView, which locks these files) exists by the time setup hooks run.
+    let context = tauri::generate_context!();
+    clear_webview_caches(&context.config().identifier);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -247,7 +310,7 @@ fn main() {
                 api.prevent_close();
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
