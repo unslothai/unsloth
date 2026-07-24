@@ -54,29 +54,24 @@ let systemPromise: Promise<SystemInfoResponse | null> | null = null;
 // within the index space they were saved in: physical CUDA/ROCm ids, or ggml
 // Vulkan ordinals on a Vulkan build. Swapping the llama.cpp backend flips that
 // space while keeping many numbers valid (Vulkan ordinal 1 exists but may be a
-// different card than physical id 1), so remember the last-seen space and flag
-// a change; reconcilePersistedGpuIds clears saved picks for the session.
-const GPU_INDEX_KIND_STORAGE_KEY = "unsloth-gpu-pick-index-kind";
-let gpuIndexSpaceChanged = false;
+// different card than physical id 1). Each saved pick is stamped with the kind
+// it was made under (PerModelConfig.selectedGpuIdsIndexKind, and the runtime
+// store's selectedGpuIdsKind); reconcilePersistedGpuIds drops a pick whose stamp
+// no longer matches the kind the backend reports here.
+export type GpuIndexKind = "vulkan" | "physical";
 
-function noteGpuIndexKind(data: SystemInfoResponse | null): void {
-  if (!data) return;
-  const kind = (data.gpu?.gguf_devices ?? []).length ? "vulkan" : "physical";
-  try {
-    const last = window.localStorage.getItem(GPU_INDEX_KIND_STORAGE_KEY);
-    // Installs predating the marker could only save physical picks, so a
-    // missing marker on a Vulkan host counts as a space change too.
-    gpuIndexSpaceChanged = last === null ? kind === "vulkan" : last !== kind;
-    window.localStorage.setItem(GPU_INDEX_KIND_STORAGE_KEY, kind);
-  } catch {
-    gpuIndexSpaceChanged = false;
-  }
+function systemGpuIndexKind(
+  data: SystemInfoResponse | null,
+): GpuIndexKind | null {
+  if (!data) return null;
+  return (data.gpu?.gguf_devices ?? []).length ? "vulkan" : "physical";
 }
 
-/** True when the GPU index space differs from the one the last session's picks
- * were saved in; stays true for the whole session so late restores clear too. */
-export function gpuIndexSpaceChangedSinceLastSession(): boolean {
-  return gpuIndexSpaceChanged;
+/** The index space the backend currently reports gpu_ids in, or null when the
+ * /api/system cache has not populated yet (so callers cannot decide and must
+ * defer the index-space judgement to a later warm reconcile). */
+export function currentGpuIndexKind(): GpuIndexKind | null {
+  return systemGpuIndexKind(cachedSystem);
 }
 
 async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
@@ -87,7 +82,6 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       cachedSystem = (await res.json()) as SystemInfoResponse;
-      noteGpuIndexKind(cachedSystem);
       return cachedSystem;
     } catch {
       systemPromise = null; // reset so a later call retries (backend not ready)

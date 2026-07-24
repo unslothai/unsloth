@@ -2323,9 +2323,6 @@ export function ChatPage({
       });
       const hasAppliedConfig = applyModelLoadConfigToRuntime(
         selection.config ?? rememberedConfigFor(selection),
-        // Only the rememberedConfigFor fallback is a storage restore; an
-        // explicit selection.config is a fresh pick in the current index space.
-        { fromPersisted: !selection.config },
       );
       await selectModel({
         ...selection,
@@ -2996,7 +2993,6 @@ export function ChatPage({
           });
           const hasAppliedConfig = applyModelLoadConfigToRuntime(
             rememberedConfigFor(selection),
-            { fromPersisted: true },
           );
           await selectModelRef.current({
             ...selection,

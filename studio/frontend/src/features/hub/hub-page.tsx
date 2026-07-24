@@ -1189,10 +1189,7 @@ export function ModelsPage() {
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
-      const hasAppliedConfig = applyModelLoadConfigToRuntime(rememberedConfig, {
-        // rememberedConfig is the resolveInitialConfig storage hit (or null).
-        fromPersisted: true,
-      });
+      const hasAppliedConfig = applyModelLoadConfigToRuntime(rememberedConfig);
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,

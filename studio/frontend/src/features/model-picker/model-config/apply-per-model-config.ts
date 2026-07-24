@@ -10,10 +10,7 @@ import {
   reconcilePersistedGpuIds,
   useChatRuntimeStore,
 } from "@/features/chat";
-import {
-  cachedPinnableGpuIndices,
-  ensureGpuDeviceCache,
-} from "@/hooks/use-gpu-info";
+import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
@@ -24,18 +21,7 @@ function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
 }
 
-export function applyPerModelConfigToRuntime(
-  config: PerModelConfig,
-  // ``fromPersisted`` must be true only when ``config`` was actually restored
-  // from storage (a remembered per-model config). The GPU index-space
-  // invalidation (physical CUDA/ROCm ids vs ggml Vulkan ordinals, after a
-  // backend swap) applies only to such picks. A freshly edited config -- Run
-  // settings, a compare-pane selector, a cancel-restore of the in-session
-  // config -- is already in the current index space, so it stays live (false)
-  // and its pick is never cleared.
-  opts: { fromPersisted?: boolean } = {},
-): void {
-  const fromPersisted = opts.fromPersisted ?? false;
+export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
   // Fall back to the standing default when the model has no saved
   // maxSeqLength. maxSeqLength is the only per-model field carried on
   // params (the rest are reset below), so without this a model with no
@@ -47,23 +33,22 @@ export function applyPerModelConfigToRuntime(
   if (maxSeqLength !== store.params.maxSeqLength) {
     store.setParams({ ...store.params, maxSeqLength });
   }
-  // reconcilePersistedGpuIds can only decide the index-space question once the
-  // GPU cache is warm. This runs synchronously on model selection, which can
-  // happen before any GPU hook has fetched /api/system. For a persisted pick on
-  // a cold cache we cannot yet tell whether the saved ids belong to the current
-  // backend's index space, so parking the raw ids in the store would let the
-  // load path snapshot and send them as-is (pinning the wrong card after a
-  // swap). Park null instead (all GPUs -- safe) and fill in the validated pick
-  // once the cache warms. Live picks are current-space, so they pass through.
-  const coldCache = cachedPinnableGpuIndices() === null;
-  const parkColdPersistedPick =
-    fromPersisted && coldCache && config.selectedGpuIds != null;
+  // The pick's index space is intrinsic to the config: its
+  // selectedGpuIdsIndexKind stamp (a fresh edit stamps the current kind; a
+  // stored pick carries the kind it was saved under; absent = a pre-stamp
+  // physical pick). reconcilePersistedGpuIds drops it only when that stamp no
+  // longer matches the current backend, so a same-backend restore keeps the
+  // pick and a cross-space one is cleared -- no call-site "is this persisted?"
+  // guessing. On a cold cache the reconcile keeps the ids; the stamp is carried
+  // into the store so the load-boundary reconcile of the live value can decide.
+  const savedKind: GpuIndexKind | null =
+    config.selectedGpuIds == null
+      ? null
+      : (config.selectedGpuIdsIndexKind ?? "physical");
   const reconciledGpuIds =
     config.selectedGpuIds === undefined
       ? null
-      : parkColdPersistedPick
-        ? null
-        : reconcilePersistedGpuIds(config.selectedGpuIds, { fromPersisted });
+      : reconcilePersistedGpuIds(config.selectedGpuIds, savedKind);
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -83,33 +68,15 @@ export function applyPerModelConfigToRuntime(
     nCpuMoe: config.nCpuMoe ?? 0,
     splitRatio: null,
     selectedGpuIds: reconciledGpuIds,
+    selectedGpuIdsKind: reconciledGpuIds == null ? null : savedKind,
   });
-
-  if (parkColdPersistedPick) {
-    // parkColdPersistedPick already established selectedGpuIds != null.
-    const persistedIds = config.selectedGpuIds as number[];
-    void ensureGpuDeviceCache().then(() => {
-      // Only fill in the parked pick if the user has not chosen one meanwhile
-      // (reconciledGpuIds is null here, so the store must still read null).
-      if (useChatRuntimeStore.getState().selectedGpuIds !== reconciledGpuIds) {
-        return;
-      }
-      const revalidated = reconcilePersistedGpuIds(persistedIds, {
-        fromPersisted: true,
-      });
-      if (revalidated !== reconciledGpuIds) {
-        useChatRuntimeStore.setState({ selectedGpuIds: revalidated });
-      }
-    });
-  }
 }
 
 export function applyModelLoadConfigToRuntime(
   config: PerModelConfig | null | undefined,
-  opts: { fromPersisted?: boolean } = {},
 ): boolean {
   const hasConfig = config != null;
-  applyPerModelConfigToRuntime(config ?? DEFAULT_PER_MODEL_CONFIG, opts);
+  applyPerModelConfigToRuntime(config ?? DEFAULT_PER_MODEL_CONFIG);
   return hasConfig;
 }
 
@@ -134,6 +101,10 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
+    // Carry the index space the live pick is in so a save/restore round-trip
+    // (and a cancel-restore of this snapshot) can drop it after a backend swap.
+    selectedGpuIdsIndexKind:
+      s.selectedGpuIds == null ? undefined : (s.selectedGpuIdsKind ?? undefined),
   };
 }
 

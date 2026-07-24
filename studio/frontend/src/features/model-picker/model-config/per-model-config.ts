@@ -25,6 +25,13 @@ export interface PerModelConfig {
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  // The GPU index space selectedGpuIds was saved under ("physical" CUDA/ROCm
+  // ids vs ggml "vulkan" ordinals). Bare ids mean different cards across a
+  // llama.cpp backend swap, so this stamp lets reconcilePersistedGpuIds drop a
+  // pick whose space no longer matches. Absent on pre-stamp blobs and on picks
+  // with no selection -- treated as "physical", the only space that existed
+  // before Vulkan support.
+  selectedGpuIdsIndexKind?: "vulkan" | "physical";
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -88,6 +95,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "gpuLayers",
   "nCpuMoe",
   "selectedGpuIds",
+  "selectedGpuIdsIndexKind",
 ]);
 
 function normalizeGpuFields(partial: RawConfig): {
@@ -95,12 +103,14 @@ function normalizeGpuFields(partial: RawConfig): {
   gpuLayers?: number;
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
+  selectedGpuIdsIndexKind?: "vulkan" | "physical";
 } {
   const out: {
     gpuMemoryMode?: "auto" | "manual";
     gpuLayers?: number;
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
+    selectedGpuIdsIndexKind?: "vulkan" | "physical";
   } = {};
   // Only "manual" is a real override; persisting "auto" would pin the model and
   // stop it following later changes to the global GPU Memory preference.
@@ -129,6 +139,15 @@ function normalizeGpuFields(partial: RawConfig): {
     )
   ) {
     out.selectedGpuIds = partial.selectedGpuIds.map((n) => Math.trunc(n));
+  }
+  // Only meaningful alongside a real selection; a null/absent pick carries no
+  // space, so drop the stamp to keep the stored blob minimal.
+  if (
+    Array.isArray(out.selectedGpuIds) &&
+    (partial.selectedGpuIdsIndexKind === "vulkan" ||
+      partial.selectedGpuIdsIndexKind === "physical")
+  ) {
+    out.selectedGpuIdsIndexKind = partial.selectedGpuIdsIndexKind;
   }
   return out;
 }

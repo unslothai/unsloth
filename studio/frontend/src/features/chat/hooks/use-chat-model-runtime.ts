@@ -668,6 +668,9 @@ export function useChatModelRuntime() {
           }
           let loadSelectedGpuIds = reconcilePersistedGpuIds(
             stateBeforeUnload.selectedGpuIds,
+            // The snapshot carries the index space the pick is in, so a
+            // cross-space pick (after a llama.cpp backend swap) is dropped.
+            stateBeforeUnload.selectedGpuIdsKind,
           );
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;

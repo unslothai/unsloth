@@ -19,7 +19,7 @@ import {
   readPersistedSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useGpuDevices } from "@/hooks/use-gpu-info";
+import { currentGpuIndexKind, useGpuDevices } from "@/hooks/use-gpu-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -265,7 +265,14 @@ function GpuMemorySettings({
       ? current.filter((i) => i !== index)
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
-    update({ selectedGpuIds: next.length === all.length ? null : next });
+    const nextIds = next.length === all.length ? null : next;
+    update({
+      selectedGpuIds: nextIds,
+      // Stamp the space this fresh edit is in so it is never dropped as a stale
+      // cross-space restore; clearing to all (null) drops the stamp.
+      selectedGpuIdsIndexKind:
+        nextIds == null ? undefined : (currentGpuIndexKind() ?? undefined),
+    });
   };
   return (
     <>
@@ -300,6 +307,7 @@ function GpuMemorySettings({
                     gpuLayers: undefined,
                     nCpuMoe: undefined,
                     selectedGpuIds: undefined,
+                    selectedGpuIdsIndexKind: undefined,
                   },
             )
           }
