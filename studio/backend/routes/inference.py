@@ -3996,7 +3996,6 @@ def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str
         )
 
 
-
 async def _resolve_gguf_gpu_ids_for_request(
     config: ModelConfig, gpu_ids: Optional[List[int]]
 ) -> tuple[Optional[List[int]], bool]:
@@ -5236,7 +5235,6 @@ async def validate_model(
             )
             if validated_gpu_ids:
                 from core.inference.llama_cpp import _extra_args_draft_device_pin
-
                 loaded_llama = get_llama_cpp_backend()
                 if loaded_llama.is_loaded and loaded_llama.extra_args:
                     source = loaded_llama.extra_args_source
