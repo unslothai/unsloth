@@ -193,6 +193,25 @@ def main():
         page.set_viewport_size({"width": 1440, "height": 900})
         page.wait_for_timeout(400)
 
+        step("cn keeps text-ui-* next to color classes (hub tabs)")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        page.goto(f"{BASE}/hub", wait_until = "domcontentloaded")
+        page.wait_for_timeout(2000)
+        open_appearance(page)
+        set_input(page, "UI font size", 12)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        tab = page.get_by_role("radio").filter(has_text = "Discover").first
+        tab.wait_for(state = "visible", timeout = 15000)
+        tab_font = tab.evaluate("el => parseFloat(getComputedStyle(el).fontSize)")
+        # text-ui-12p5 at scale 0.75; 16px means twMerge dropped the token.
+        if not near(tab_font, 12.5 * 12 / 16):
+            fail(f"hub tab font did not scale (twMerge drop?): {tab_font}")
+        page.goto(BASE, wait_until = "domcontentloaded")
+        page.wait_for_timeout(1500)
+        open_appearance(page)
+
         step("default restores exactly")
         page.get_by_role("dialog").get_by_role("button").filter(has_text = "Appearance").first.click()
         page.wait_for_timeout(500)

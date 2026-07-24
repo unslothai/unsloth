@@ -39,7 +39,7 @@ export const ko = {
       returnToChat: "채팅으로 돌아가기",
       compare: "비교",
       search: "검색",
-      hub: "모델",
+      hub: "모델 허브",
       train: "학습",
       recipes: "레시피",
       export: "내보내기",

@@ -36,7 +36,7 @@ export const en = {
       returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
-      hub: "Models",
+      hub: "Model hub",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
