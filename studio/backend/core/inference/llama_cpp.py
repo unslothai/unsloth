@@ -6582,9 +6582,13 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
-            # Classify remote Vulkan loads before teardown because diffusion uses CUDA IDs.
+            # Classify remote loads before teardown when diffusion would change
+            # the meaning or validity of requested placement.
             _preflight_model_path = None
-            if is_vulkan_backend and gpu_ids and hf_repo:
+            _preflight_memory_mode = self._canonical_memory_mode(memory_mode)
+            if hf_repo and (
+                (is_vulkan_backend and gpu_ids) or _preflight_memory_mode is not None
+            ):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
@@ -6600,13 +6604,19 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                     )
                 if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
-                    raise ValueError(
-                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
-                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
-                        "its device by CUDA physical index, which has no defined mapping "
-                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
-                        "device."
-                    )
+                    if _preflight_memory_mode is not None:
+                        raise ValueError(
+                            "GGUF host-memory modes are not supported for "
+                            "DiffusionGemma models. Use Auto."
+                        )
+                    if is_vulkan_backend and gpu_ids:
+                        raise ValueError(
+                            "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                            "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                            "its device by CUDA physical index, which has no defined mapping "
+                            "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                            "device."
+                        )
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:

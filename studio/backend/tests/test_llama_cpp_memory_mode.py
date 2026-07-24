@@ -958,7 +958,7 @@ def test_confirmed_diffusion_allows_physical_gpu_id_on_vulkan_build(tmp_path):
     assert captured["gpu_ids"] == [1]
 
 
-def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
+def test_remote_diffusion_rejects_explicit_memory_mode_before_teardown(tmp_path):
     gguf = tmp_path / "renamed.gguf"
     _write_minimal_gguf(gguf, arch = "diffusion-gemma")
 
@@ -971,7 +971,14 @@ def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
         "unsupported memory mode reached the diffusion runner"
     )
 
-    with pytest.raises(ValueError, match = "host-memory modes are not supported"):
+    with (
+        patch.object(
+            backend,
+            "_kill_process",
+            side_effect = AssertionError("invalid placement tore down the live model"),
+        ),
+        pytest.raises(ValueError, match = "host-memory modes are not supported"),
+    ):
         backend.load_model(
             hf_repo = "renamed/model",
             hf_variant = "Q4_K_M",
