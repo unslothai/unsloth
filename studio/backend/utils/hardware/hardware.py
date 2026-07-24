@@ -1639,17 +1639,34 @@ def get_parent_visible_gpu_ids() -> list[int]:
     return list(parent_visible_ids) if parent_visible_ids is not None else []
 
 
-def resolve_requested_gpu_ids(gpu_ids: Optional[list[int]]) -> list[int]:
+def resolve_requested_gpu_ids(
+    gpu_ids: Optional[list[int]], *, is_vulkan: bool = False
+) -> list[int]:
     parent_visible_spec = _get_parent_visible_gpu_spec()
     parent_visible_ids = get_parent_visible_gpu_ids()
     physical_gpu_count = get_physical_gpu_count()
 
     if gpu_ids is None:
-        return parent_visible_ids
+        return [] if is_vulkan else parent_visible_ids
 
     requested_ids = list(gpu_ids)
     if len(requested_ids) == 0:
-        return parent_visible_ids
+        return [] if is_vulkan else parent_visible_ids
+
+    if is_vulkan:
+        # A Vulkan build selects by ggml Vulkan ordinal (--device VulkanN), a separate
+        # index space from CUDA/ROCm ids that may be empty under CPU-only torch. The
+        # CUDA parent-visible / physical-count checks below do not apply; only reject
+        # malformed ordinals (issue #7239).
+        if len(set(requested_ids)) != len(requested_ids):
+            raise ValueError(f"Invalid gpu_ids {requested_ids}: duplicate GPU IDs are not allowed.")
+        negative_ids = [gpu_id for gpu_id in requested_ids if gpu_id < 0]
+        if negative_ids:
+            raise ValueError(
+                f"Invalid gpu_ids {requested_ids}: GPU IDs must be non-negative. "
+                f"Rejected IDs: {negative_ids}."
+            )
+        return requested_ids
 
     if not parent_visible_spec["supports_explicit_gpu_ids"]:
         raise ValueError(
@@ -2193,12 +2210,13 @@ def auto_select_gpu_ids(
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected
             logger.debug(
-                "Selected GPUs automatically",
-                model_name = model_name,
-                selected_gpu_ids = selected,
-                usable_gb = metadata["usable_gb"],
-                required_gb = metadata.get("required_gb"),
-                multi_gpu_overhead = multi_gpu_overhead,
+                "Selected GPUs automatically: model=%s selected=%s usable_gb=%s "
+                "required_gb=%s multi_gpu_overhead=%s",
+                model_name,
+                selected,
+                metadata["usable_gb"],
+                metadata.get("required_gb"),
+                multi_gpu_overhead,
             )
             return selected, metadata
 
@@ -2214,12 +2232,13 @@ def auto_select_gpu_ids(
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
     logger.warning(
-        "Falling back to all visible GPUs -- model may not fit",
-        model_name = model_name,
-        selected_gpu_ids = fallback_all,
-        usable_gb = metadata["usable_gb"],
-        required_gb = metadata.get("required_gb"),
-        multi_gpu_overhead = multi_gpu_overhead,
+        "Falling back to all visible GPUs; model may not fit: model=%s "
+        "selected=%s usable_gb=%s required_gb=%s multi_gpu_overhead=%s",
+        model_name,
+        fallback_all,
+        metadata["usable_gb"],
+        metadata.get("required_gb"),
+        multi_gpu_overhead,
     )
     return fallback_all, metadata
 
