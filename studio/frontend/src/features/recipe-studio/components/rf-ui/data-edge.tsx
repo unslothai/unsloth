@@ -1,20 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactElement } from "react";
 import {
   BaseEdge,
+  type Edge,
+  EdgeLabelRenderer,
+  type EdgeProps,
+  type Position,
   getBezierPath,
   getSmoothStepPath,
   getStraightPath,
-  Position,
-  type Edge,
-  type EdgeProps,
+  useStore,
 } from "@xyflow/react";
+import { type ReactElement, useMemo } from "react";
+import { collectObstacles } from "../../utils/graph/edge-obstacles";
+import {
+  laneOffsetFromId,
+  routeOrthogonalPath,
+} from "../../utils/graph/orthogonal-router";
+import { WireLabel } from "../wire-label";
 
 export type DataEdge = Edge<{
-  path?: "auto" | "bezier" | "smoothstep" | "step" | "straight";
+  path?: "auto" | "bezier" | "smoothstep" | "step" | "straight" | "orthogonal";
   active?: boolean;
+  label?: string;
 }>;
 
 export function DataEdge({
@@ -34,15 +43,29 @@ export function DataEdge({
     type: data.path ?? "auto",
   });
   const isActive = Boolean(data.active);
-  const [edgePath] = getPath({
-    type: resolvedPathType,
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  });
+  const nodeLookup = useStore((store) => store.nodeLookup);
+  const obstacles = useMemo(() => collectObstacles(nodeLookup), [nodeLookup]);
+  const edgePath =
+    resolvedPathType === "orthogonal"
+      ? routeOrthogonalPath({
+          sourceX,
+          sourceY,
+          sourcePosition,
+          targetX,
+          targetY,
+          targetPosition,
+          obstacles,
+          laneOffset: laneOffsetFromId(id),
+        })
+      : getPath({
+          type: resolvedPathType,
+          sourceX,
+          sourceY,
+          sourcePosition,
+          targetX,
+          targetY,
+          targetPosition,
+        })[0];
 
   const edgeStyle = {
     stroke: isActive || selected ? "var(--primary)" : "var(--muted-foreground)",
@@ -53,12 +76,24 @@ export function DataEdge({
   };
 
   return (
-    <BaseEdge
-      id={id}
-      path={edgePath}
-      markerEnd={markerEnd}
-      style={edgeStyle}
-    />
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={edgeStyle}
+      />
+      {data.label ? (
+        <EdgeLabelRenderer>
+          <WireLabel
+            label={data.label}
+            x={sourceX}
+            y={sourceY}
+            active={isActive || Boolean(selected)}
+          />
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
   );
 }
 
@@ -121,10 +156,10 @@ function getPath({
 function resolvePathType({
   type,
 }: {
-  type: "auto" | "bezier" | "smoothstep" | "step" | "straight";
-}): "bezier" | "smoothstep" | "step" | "straight" {
+  type: "auto" | "bezier" | "smoothstep" | "step" | "straight" | "orthogonal";
+}): "bezier" | "smoothstep" | "step" | "straight" | "orthogonal" {
   if (type !== "auto") {
     return type;
   }
-  return "smoothstep";
+  return "orthogonal";
 }
