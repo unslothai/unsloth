@@ -37,7 +37,12 @@ def _done() -> str:
     return "data: [DONE]\n"
 
 
-def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
+def _make_backend(
+    monkeypatch,
+    streams: list[object],
+    payloads: list[dict],
+    urls: list[str] | None = None,
+):
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = object()
     backend._healthy = True
@@ -59,7 +64,12 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
-        yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
+        if urls is not None:
+            urls.append(_url)
+        stream = streams.pop(0)
+        if isinstance(stream, BaseException):
+            raise stream
+        yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
 
     def fake_iter_text_cancellable(
         response,
@@ -70,7 +80,21 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
     monkeypatch.setattr(backend, "_iter_text_cancellable", fake_iter_text_cancellable)
+    monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
     return backend
+
+
+def _patch_successful_respawn(monkeypatch, backend, port: int | None = None) -> list[bool]:
+    calls: list[bool] = []
+
+    def fake_respawn():
+        calls.append(True)
+        if port is not None:
+            backend._port = port
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    return calls
 
 
 def _tool_names(payload: dict) -> list[str]:
@@ -2154,7 +2178,13 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
 
     payloads: list[dict] = []
     backend = _make_backend(monkeypatch, [raising_stream()], payloads)
+    respawn_calls: list[bool] = []
 
+    monkeypatch.setattr(
+        backend,
+        "_respawn_if_dead",
+        lambda: respawn_calls.append(True) or True,
+    )
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
 
     collected: list[dict] = []
@@ -2185,6 +2215,117 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     # The closing card is marked as an error, not an empty success, so the UI
     # renders it as failed.
     assert "Error" in (closing[0].get("result") or "")
+    assert respawn_calls == []
+
+
+def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
+    """A dead server before the first tool-loop response is opened is safe to retry."""
+    import httpx
+
+    payloads: list[dict] = []
+    urls: list[str] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            [_sse({"content": "Recovered."}), _done()],
+        ],
+        payloads,
+        urls,
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend, port = 49999)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "hello"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert respawn_calls == [True]
+    assert len(payloads) == 2
+    assert payloads[0] == payloads[1]
+    assert urls == [
+        "http://127.0.0.1:48847/v1/chat/completions",
+        "http://127.0.0.1:49999/v1/chat/completions",
+    ]
+    assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
+    """Recover either post-tool generation path without rerunning the tool."""
+    import httpx
+
+    for max_tool_iterations, final_text in (
+        (2, "The result is 1."),
+        (1, "Final answer."),
+    ):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _structured_tool_call("python", {"code": "print(1)"}, "call_once"),
+                httpx.ConnectError("server died between turns"),
+                [_sse({"content": final_text}), _done()],
+            ],
+            payloads,
+        )
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+        tool_calls: list[tuple[str, dict]] = []
+
+        def fake_execute_tool(name, arguments, **_kwargs):
+            tool_calls.append((name, arguments))
+            return "1"
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "print one"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = max_tool_iterations,
+            )
+        )
+
+        assert respawn_calls == [True]
+        assert tool_calls == [("python", {"code": "print(1)"})]
+        assert len(payloads) == 3
+        assert payloads[1] == payloads[2]
+        assert any(e.get("type") == "content" and e.get("text") == final_text for e in events)
+
+
+def test_connect_error_retry_is_bounded(monkeypatch):
+    """A failed retry surfaces the error without another respawn attempt."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            httpx.ConnectError("replacement is also down"),
+        ],
+        payloads,
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+    raised = False
+    try:
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "hello"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+    except RuntimeError as exc:
+        raised = True
+        assert "Lost connection" in str(exc)
+
+    assert raised
+    assert respawn_calls == [True]
+    assert len(payloads) == 2
 
 
 def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
