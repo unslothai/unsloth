@@ -595,9 +595,13 @@ with sync_playwright() as p:
                     )
                 else:
                     fail(f"Voice model picker did not wheel-scroll: {exc!r}")
-        shoot("10-settings-tabs-visited")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        # When the crash closed the context/browser (not just the page), recover_or_replace_page
+        # cannot mint a replacement and hands back the closed page; skip the cosmetic teardown rather
+        # than re-raise TargetClosedError on it. is_closed() is a local check and never raises.
+        if not page.is_closed():
+            shoot("10-settings-tabs-visited")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
         info(f"visited Settings tabs: {seen_tabs}")
         if not seen_tabs:
             soft_fail("no Settings tabs were visitable")
@@ -616,4 +620,7 @@ with sync_playwright() as p:
         sys.exit(1)
     info("PASS extra UI flow")
     _watchdog.cancel()
-    browser.close()
+    try:
+        browser.close()
+    except Exception:
+        pass  # a crashed browser may already be gone; never fail teardown after PASS
