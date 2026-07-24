@@ -1108,6 +1108,46 @@ exit 0
         return $false
     }
 
+    # ── Check for Windows App Execution Aliases that may block Python ──
+    # WindowsApps python.exe/python3.exe stubs redirect to the Microsoft Store
+    # and can shadow a real Python on PATH. Each command is checked separately:
+    # a healthy python3 must not hide a stub-blocked python, or vice versa.
+    # Returns @{ Blocking = $true/$false; Aliases = @("python.exe", ...) }
+    function Test-AppExecutionAliasesBlocking {
+        # LOCALAPPDATA may be unset in service/CI environments
+        if (-not $env:LOCALAPPDATA) { return @{ Blocking = $false; Aliases = @() } }
+
+        $windowsAppsPath = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
+        $blockingAliases = @()
+
+        foreach ($name in @("python", "python3")) {
+            $fileInfo = Get-Item (Join-Path $windowsAppsPath "$name.exe") -ErrorAction SilentlyContinue
+            if (-not $fileInfo) { continue }
+            # Alias stubs are tiny reparse points; a real python.exe is far larger
+            if (-not ($fileInfo.Length -lt 10240 -or ($fileInfo.Attributes -band [IO.FileAttributes]::ReparsePoint))) { continue }
+            # The stub only matters if it wins resolution for this command
+            # (or the command resolves nowhere at all)
+            $cmd = Get-Command $name -ErrorAction SilentlyContinue
+            if (-not $cmd -or -not $cmd.Source -or $cmd.Source -like "*\WindowsApps\*") {
+                $blockingAliases += "$name.exe"
+            }
+        }
+        return @{ Blocking = ($blockingAliases.Count -gt 0); Aliases = $blockingAliases }
+    }
+
+    function Show-AppAliasWarning {
+        param([array]$Aliases)
+        Write-Host ""
+        Write-Host "[WARNING] Windows App Execution Aliases may be blocking Python" -ForegroundColor Yellow
+        Write-Host "          The following aliases were detected: $($Aliases -join ', ')" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "          To fix this, disable 'App Installer' aliases in Windows Settings:" -ForegroundColor Cyan
+        Write-Host "          1. Open Settings > Apps > Advanced app settings > App execution aliases" -ForegroundColor White
+        Write-Host "          2. Turn OFF 'python.exe' and 'python3.exe' under 'App Installer'" -ForegroundColor White
+        Write-Host "          3. Re-run this installer" -ForegroundColor White
+        Write-Host ""
+    }
+
     # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
@@ -1234,6 +1274,14 @@ exit 0
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
+
+    # Warn early if Store aliases may shadow Python during detection
+    $preAliasCheck = Test-AppExecutionAliasesBlocking
+    if ($preAliasCheck.Blocking) {
+        Show-AppAliasWarning -Aliases $preAliasCheck.Aliases
+        substep "attempting to detect Python despite aliases..." "Yellow"
+    }
+
     $DetectedPython = Find-CompatiblePython
 
     if ($DetectedPython) {
@@ -1296,6 +1344,11 @@ exit 0
         if (-not $DetectedPython) {
             $exitNote = if ($null -ne $wingetExit) { " (winget exit code $wingetExit)" } else { "" }
             Write-Host "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
+            # Aliases can hide a freshly installed Python from PATH resolution
+            $aliasCheck = Test-AppExecutionAliasesBlocking
+            if ($aliasCheck.Blocking) {
+                Show-AppAliasWarning -Aliases $aliasCheck.Aliases
+            }
             Write-Host "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-Host "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
             Write-Host "        Then re-run this installer." -ForegroundColor Yellow
