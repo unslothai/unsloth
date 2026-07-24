@@ -56,6 +56,51 @@ def test_link_token_round_trips_once():
     assert authentication.exchange_link_token(token) is None
 
 
+def test_consume_link_token_is_single_use():
+    # Storage-level single-use: the conditional DELETE (no DELETE ... RETURNING,
+    # which would need SQLite >= 3.35) consumes a matching row exactly once.
+    from datetime import datetime, timedelta, timezone
+
+    admin = _seed_admin()
+    exp = (datetime.now(timezone.utc) + timedelta(seconds = 600)).isoformat()
+
+    storage.save_link_token("jti-a", admin, exp)
+    assert storage.consume_link_token("jti-a", admin) is True
+    # A replay finds no row and must not consume again.
+    assert storage.consume_link_token("jti-a", admin) is False
+
+    # A jti bound to one user cannot be consumed under a different username.
+    storage.save_link_token("jti-b", admin, exp)
+    assert storage.consume_link_token("jti-b", "not-the-admin") is False
+    assert storage.consume_link_token("jti-b", admin) is True
+
+
+def test_password_change_deletes_outstanding_link_tokens():
+    # A password change must invalidate outstanding link tokens atomically:
+    # update_password() deletes the user's link_tokens rows in the SAME
+    # transaction that rotates the JWT secret, closing the race where an in-flight
+    # exchange read the old derived key before the rotation.
+    admin = _seed_admin()
+    token = authentication.create_link_token(admin)
+    jti = authentication._decode_link_payload(token.split(".", 1)[0])["jti"]
+
+    conn = storage.get_connection()
+    try:
+        assert conn.execute("SELECT 1 FROM link_tokens WHERE jti = ?", (jti,)).fetchone() is not None
+    finally:
+        conn.close()
+
+    assert storage.update_password(admin, "new-human-password-456") is True
+
+    conn = storage.get_connection()
+    try:
+        assert conn.execute("SELECT 1 FROM link_tokens WHERE jti = ?", (jti,)).fetchone() is None
+    finally:
+        conn.close()
+    # User-facing: the exchange is rejected (defense in depth, the key also rotated).
+    assert authentication.exchange_link_token(token) is None
+
+
 def test_link_token_is_not_a_valid_access_bearer_token():
     # Domain separation: a link token is signed with a derived key, so it must NOT
     # validate as a normal bearer JWT (which would sidestep single-use).

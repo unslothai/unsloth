@@ -99,6 +99,57 @@ def test_start_cloudflare_tunnel_refuses_if_autogen_fails(monkeypatch):
     assert colab.start_cloudflare_tunnel(8888) is None
 
 
+# ── credential display never persists to disk ────────────────────────
+
+
+def test_display_admin_credentials_never_writes_to_stdout(monkeypatch, capsys):
+    # The auto-generated password must reach the notebook cell only through the
+    # IPython display channel (iopub display_data), never sys.stdout/stderr or a
+    # logger, because the server tees stdout/stderr to a retained on-disk session
+    # log (run._setup_server_disk_logging). Writing it there would persist the
+    # credential, contradicting the one-time / non-persistent flow.
+    import IPython.display as ipd
+
+    captured = []
+    monkeypatch.setattr(ipd, "display", lambda *a, **k: captured.append((a, k)))
+
+    secret_pw = "Sup3r-Secret-Pw-Token-xyz"
+    colab._display_admin_credentials("unsloth", secret_pw)
+
+    out = capsys.readouterr()
+    assert secret_pw not in out.out
+    assert secret_pw not in out.err
+
+    # It IS shown via the display channel (HTML card carries it in .data; a raw
+    # text/plain fallback carries it in the mimebundle dict).
+    shown = False
+    for args, _kwargs in captured:
+        for obj in args:
+            data = getattr(obj, "data", obj)
+            if secret_pw in str(data):
+                shown = True
+    assert shown, "credential was not surfaced through the IPython display channel"
+
+
+def test_display_admin_credentials_no_display_channel_is_silent(monkeypatch, capsys):
+    # If IPython is unavailable, we must NOT fall back to stdout/logging (which the
+    # server would tee to disk); showing nothing is the safe outcome.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "IPython.display" or name.startswith("IPython"):
+            raise ImportError("simulated: IPython unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    colab._display_admin_credentials("unsloth", "Another-Secret-Pw-999")
+    out = capsys.readouterr()
+    assert "Another-Secret-Pw-999" not in out.out
+    assert "Another-Secret-Pw-999" not in out.err
+
+
 # ── opt-in same-tab link token ───────────────────────────────────────
 
 

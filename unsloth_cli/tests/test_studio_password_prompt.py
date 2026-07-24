@@ -617,8 +617,13 @@ def test_studio_default_in_venv_broken_backend_exits_before_stripping_bootstrap(
     bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
     assert bootstrap_file.exists()
 
-    # Pretend we are already inside the studio venv, with a broken backend.
+    # Pretend we are already inside the studio venv, with a broken backend. The
+    # servable-frontend guard runs first (and would otherwise exit on the missing
+    # dist), so stub it satisfied to isolate the backend-load guard under test.
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "unsloth_studio"))
+    monkeypatch.setattr(
+        studio_mod, "_require_servable_frontend_or_exit", lambda **_kw: tmp_path / "dist"
+    )
 
     def _boom():
         raise ImportError("cannot import backend run.py")

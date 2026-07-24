@@ -605,6 +605,14 @@ def update_password(
     ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
     transaction: a separate delete could fail after the password commit and
     leave a pre-change token still able to mint access tokens.
+
+    Outstanding one-time link tokens are ALSO deleted in this same transaction,
+    unconditionally. Their signing key is derived from the JWT secret we rotate
+    here, so a leftover token would fail its signature check afterwards; deleting
+    the rows atomically closes the narrow race where an in-flight exchange read
+    the old key before this rotation and could otherwise still consume its jti
+    against a now-stale token. A separate post-commit delete could fail and leave
+    a pre-change link token consumable.
     """
     from .hashing import hash_password
 
@@ -620,8 +628,10 @@ def update_password(
             """,
             (salt, pwd_hash, jwt_secret, username),
         )
-        if revoke_refresh_tokens and cursor.rowcount > 0:
-            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        if cursor.rowcount > 0:
+            conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
+            if revoke_refresh_tokens:
+                conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
@@ -766,9 +776,14 @@ def consume_link_token(jti: str, username: str) -> bool:
     """Atomically validate-and-delete a one-time link token.
 
     Returns True only when a row for (jti, username) existed and had not expired;
-    the row is deleted in the same statement. DELETE ... RETURNING fuses the check
-    and delete so two concurrent exchanges cannot both consume the same token.
-    ISO-8601 timestamps compare lexicographically, matching refresh_tokens.
+    the matching row is deleted in the same conditional DELETE. SQLite serializes
+    writers (a single database-level write lock, bounded by busy_timeout), so of
+    two concurrent exchanges only one DELETE removes the row (rowcount == 1) and
+    the other matches nothing (rowcount == 0); the token cannot be consumed twice.
+    A WHERE-qualified DELETE reports an exact rowcount, so this avoids the
+    DELETE ... RETURNING syntax that needs SQLite >= 3.35 while keeping the same
+    single-use guarantee. ISO-8601 timestamps compare lexicographically, matching
+    refresh_tokens.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -779,13 +794,12 @@ def consume_link_token(jti: str, username: str) -> bool:
             """
             DELETE FROM link_tokens
             WHERE jti = ? AND username = ? AND expires_at >= ?
-            RETURNING jti
             """,
             (jti, username, now),
         )
-        row = cur.fetchone()
+        consumed = cur.rowcount == 1
         conn.commit()
-        return row is not None
+        return consumed
     finally:
         conn.close()
 

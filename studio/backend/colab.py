@@ -157,12 +157,18 @@ def _auto_generate_colab_admin_password() -> "str | None":
 def _display_admin_credentials(username: str, password: str) -> None:
     """Show an auto-generated admin credential once, in the notebook cell.
 
-    Logs a plaintext copy (so it survives even if HTML display fails) and renders
-    a branded card. Shown once only; never persisted.
+    Renders a branded HTML card with a plain-text fallback. Both paths publish
+    through the IPython display channel (iopub display_data), NOT sys.stdout, so
+    the credential is never written to the server's tee'd session log on disk
+    (see run._setup_server_disk_logging). It is never logged or persisted; if no
+    display channel is available we intentionally show nothing rather than fall
+    back to stdout/logging, which would retain the password in the log file.
     """
-    logger.info(f"🔐 Unsloth Studio admin login — username: {username}  password: {password}")
     try:
         from IPython.display import HTML, display
+    except Exception:
+        return
+    try:
         display(
             HTML(f"""
     <div style="display: inline-block; padding: 18px 20px; background: #fff8e1; border: 2px solid #000000;
@@ -177,7 +183,21 @@ def _display_admin_credentials(username: str, password: str) -> None:
     """)
         )
     except Exception:
-        pass
+        # HTML render failed; show a plain-text copy through the SAME display
+        # channel (still iopub, never sys.stdout, so still not written to disk).
+        try:
+            display(
+                {
+                    "text/plain": (
+                        "Unsloth Studio admin login  "
+                        f"username: {username}  password: {password}  "
+                        "(auto-generated for this public launch, shown once, not saved to disk)"
+                    )
+                },
+                raw = True,
+            )
+        except Exception:
+            pass
 
 
 def _mint_same_tab_link_token() -> "str | None":
