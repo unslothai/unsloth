@@ -1214,8 +1214,7 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
                 # FLAT and COMPOSITE hierarchy modes. A proven CPU-only
                 # llama.cpp build cannot apply a CUDA pin either.
                 gpu_ids_supported = (
-                    get_device() != DeviceType.XPU
-                    and not LlamaCppBackend._backend_lacks_gpu_lib()
+                    get_device() != DeviceType.XPU and not LlamaCppBackend._backend_lacks_gpu_lib()
                 )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
