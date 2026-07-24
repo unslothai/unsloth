@@ -3,8 +3,10 @@
 #
 # Unsloth Studio uninstaller for Windows PowerShell.
 # Stops running servers and removes install dir, launcher data, CLI shim,
-# desktop and Start Menu shortcuts, the user PATH entry, and the PathBackup
-# registry key. Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME
+# desktop and Start Menu shortcuts, the user PATH entry, the PathBackup
+# registry key, and WebView2 runtime data keyed by the app bundle id
+# (EBWebView caches created at first desktop-app launch, not by install.ps1).
+# Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME
 # at install time (read back from share\studio.conf).
 #
 # Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
@@ -397,6 +399,32 @@ function Uninstall-UnslothStudio {
         -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
         _RemovePath $defaultUnslothHome
     }
+
+    # WebView2/app runtime data keyed by the Tauri bundle id. Created at first
+    # desktop-app launch, not by install.ps1. LOCALAPPDATA holds the EBWebView
+    # profile (a leftover copy serves a stale frontend to the next install);
+    # APPDATA holds the app config dir.
+    _Step "Removing WebView caches and app data (ai.unsloth.studio)..."
+    $bundleId = "ai.unsloth.studio"
+    $webviewDataDirs = @()
+    if ($env:LOCALAPPDATA) { $webviewDataDirs += Join-Path $env:LOCALAPPDATA $bundleId }
+    if ($env:APPDATA) { $webviewDataDirs += Join-Path $env:APPDATA $bundleId }
+    # Stop the desktop app and any msedgewebview2.exe helper using these dirs
+    # first; WebView2 keeps open handles that make the delete fail.
+    try { Stop-Process -Name "unsloth-studio" -Force -ErrorAction SilentlyContinue } catch { }
+    try {
+        foreach ($proc in (Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)) {
+            $cl = $proc.CommandLine
+            if (-not $cl) { continue }
+            foreach ($d in $webviewDataDirs) {
+                if ($cl -ilike "*$d*") {
+                    try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { }
+                    break
+                }
+            }
+        }
+    } catch { }
+    foreach ($d in $webviewDataDirs) { _RemovePath $d }
 
     # ── Remove desktop and Start Menu shortcuts ──
     _Step "Removing desktop and Start Menu shortcuts..."

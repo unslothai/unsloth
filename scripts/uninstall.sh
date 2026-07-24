@@ -4,7 +4,9 @@
 #
 # Unsloth Studio uninstaller (macOS / Linux / WSL).
 # Stops running servers and removes install dir, launcher data,
-# CLI shim, desktop shortcut, .app bundle, and Launch Services entry.
+# CLI shim, desktop shortcut, .app bundle, Launch Services entry, and
+# WebView runtime data keyed by the app bundle id (WebKit/webkit2gtk
+# caches created at first app launch, not by install.sh).
 # Honors custom roots set via UNSLOTH_STUDIO_HOME / STUDIO_HOME at
 # install time (read back from studio.conf).
 #
@@ -80,6 +82,13 @@ $_roots_from_conf"
             pkill -KILL -f "$_pat" 2>/dev/null || true
         done
     done
+
+    # Tauri desktop app (binary "unsloth-studio"): stop it so its WebView
+    # helpers can't hold or re-create the runtime caches removed below.
+    # -x is an exact name match, so the "unsloth" CLI shim is never touched.
+    pkill -TERM -x unsloth-studio 2>/dev/null || true
+    sleep 0.5
+    pkill -KILL -x unsloth-studio 2>/dev/null || true
 }
 
 _remove_path() {
@@ -261,6 +270,25 @@ case "$_os" in
         if [ -x "$_lsr" ]; then
             "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
         fi
+        # WebView/app runtime data keyed by the bundle id. Created by macOS +
+        # WKWebView at first app launch, not by install.sh, so it survives an
+        # uninstall and a leftover WebKit cache then serves a stale frontend
+        # to the next install.
+        _bid="ai.unsloth.studio"
+        echo "Removing WebView caches and app data ($_bid)..."
+        _remove_path "$HOME/Library/Caches/$_bid"
+        _remove_path "$HOME/Library/WebKit/$_bid"
+        _remove_path "$HOME/Library/Application Support/$_bid"
+        _remove_path "$HOME/Library/HTTPStorages/$_bid"
+        _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
+        _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
+        _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
+        # Delete via defaults first: cfprefsd caches plists in memory and can
+        # re-write the file after a bare rm.
+        if command -v defaults >/dev/null 2>&1; then
+            defaults delete "$_bid" >/dev/null 2>&1 || true
+        fi
+        _remove_path "$HOME/Library/Preferences/$_bid.plist"
         ;;
     Linux)
         if [ "$_is_wsl" = "1" ]; then
@@ -403,6 +431,15 @@ case "$_os" in
                 echo "          sudo rm -rf /opt/rocm /opt/rocm-* && sudo ldconfig"
             fi
         fi
+        # WebView/app runtime data keyed by the Tauri bundle id. Created by
+        # webkit2gtk at first desktop-app launch, not by install.sh; a
+        # leftover cache serves a stale frontend to the next install.
+        _bid="ai.unsloth.studio"
+        echo "Removing WebView caches and app data ($_bid)..."
+        _remove_path "${XDG_CACHE_HOME:-$HOME/.cache}/$_bid"
+        _remove_path "${XDG_DATA_HOME:-$HOME/.local/share}/$_bid"
+        _remove_path "${XDG_CONFIG_HOME:-$HOME/.config}/$_bid"
+        _remove_path "${XDG_STATE_HOME:-$HOME/.local/state}/$_bid"
         echo "Removing Linux .desktop entry..."
         _remove_path "$HOME/.local/share/applications/unsloth-studio.desktop"
         if command -v update-desktop-database >/dev/null 2>&1; then
