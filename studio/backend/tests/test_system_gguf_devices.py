@@ -99,6 +99,7 @@ def test_vulkan_build_surfaces_llama_server_devices(main_module, monkeypatch):
 
     # Picks are valid Vulkan ordinals now, so the picker may offer them.
     assert info["gguf_gpu_ids_supported"] is True
+    assert info["gguf_backend_is_vulkan"] is True
 
 
 def test_vulkan_build_with_failed_probe_keeps_picks_unsupported(main_module, monkeypatch):
@@ -106,6 +107,10 @@ def test_vulkan_build_with_failed_probe_keeps_picks_unsupported(main_module, mon
     assert info["gguf_devices"] == []
     # No enumerable ordinal space -> the frontend has no valid picks to offer.
     assert info["gguf_gpu_ids_supported"] is False
+    # ...but the frontend must still know this is a Vulkan build so it treats the
+    # empty inventory as an unknown GGUF budget (0) rather than reusing the torch
+    # VRAM total, which on a mixed host would overclaim VRAM /load can't place.
+    assert info["gguf_backend_is_vulkan"] is True
 
 
 def test_vulkan_inventory_survives_gpu_cache_refreshes_without_reprobing(main_module, monkeypatch):
@@ -147,6 +152,9 @@ def test_non_vulkan_build_reports_no_gguf_inventory(main_module, monkeypatch):
     # CUDA/ROCm llama builds see the same devices torch does; no separate list.
     assert info["gguf_devices"] == []
     assert info["gguf_gpu_ids_supported"] is True
+    # Not a Vulkan build: the frontend keeps budgeting GGUF against the torch
+    # total, since llama-server runs on those same devices.
+    assert info["gguf_backend_is_vulkan"] is False
 
 
 if __name__ == "__main__":

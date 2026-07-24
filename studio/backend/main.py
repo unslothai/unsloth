@@ -1238,16 +1238,17 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
         # enumerated devices (gguf_devices above): the pick then lives in the
         # same ggml ordinal space `--device Vulkan<i>` pins. Without that
         # inventory the frontend has no valid ordinals to offer.
+        is_vulkan_build = False
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
-
+            is_vulkan_build = LlamaCppBackend._is_vulkan_backend()
             # Check the Vulkan build first: its picks live in ggml's own ordinal
             # space (--device Vulkan<i>) and don't rely on torch-xpu ordinals, so
             # they're valid even on an Intel/XPU host. Only fall through to the
             # XPU ban for a non-Vulkan build (where a pick would need torch-xpu
             # ordinals no visibility mask can speak).
-            if LlamaCppBackend._is_vulkan_backend():
+            if is_vulkan_build:
                 gpu_ids_supported = bool(gguf_devices)
             elif get_device() == DeviceType.XPU:
                 gpu_ids_supported = False
@@ -1258,12 +1259,17 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             gpu_ids_supported = True
         # `available` stays the torch view: training consumers key GPU labels on
         # it, and a Vulkan-only inventory doesn't make training GPU-capable.
-        # GGUF surfaces key on gguf_devices instead.
+        # GGUF surfaces key on gguf_devices instead. gguf_backend_is_vulkan lets
+        # the frontend tell an empty gguf_devices on a Vulkan build (probe failed
+        # / masked to nothing -- GGUF budget is unknown, must NOT reuse the torch
+        # VRAM total) apart from a non-Vulkan build (where llama-server does run
+        # on the torch devices, so that total is the right GGUF budget).
         gpu_info = {
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
             "gguf_devices": gguf_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
+            "gguf_backend_is_vulkan": is_vulkan_build,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)
         return gpu_info

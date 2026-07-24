@@ -11,9 +11,12 @@ export interface GpuInfo {
   memoryTotalGb: number;
   /** VRAM budget for GGUF/llama-server workloads. On a Vulkan build this sums
    * the devices llama-server actually uses (gguf_devices), which can include
-   * cards the torch backend can't see (e.g. a pre-ROCm AMD card); otherwise
-   * identical to memoryTotalGb. GGUF fit labels must use this; torch-based
-   * (training / safetensors) estimates must stay on memoryTotalGb. */
+   * cards the torch backend can't see (e.g. a pre-ROCm AMD card), and is 0 when
+   * that inventory is empty (probe failed/masked -- budget unknown, so labels
+   * stay conservative). On a non-Vulkan build llama-server runs on the torch
+   * devices, so this is identical to memoryTotalGb. GGUF fit labels must use
+   * this; torch-based (training / safetensors) estimates must stay on
+   * memoryTotalGb. */
   ggufMemoryTotalGb: number;
   cpuCore: number;
   cpuThread: number;
@@ -113,6 +116,13 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     (sum, d) => sum + (d.is_igpu ? 0 : (d.memory_total_gb ?? 0)),
     0,
   );
+  // A Vulkan build budgets GGUF against gguf_devices, not the torch view. When
+  // that inventory is empty (probe failed / masked to no discrete device) the
+  // GGUF budget is genuinely unknown, so fall back to 0 (labels stay
+  // conservative) rather than the torch total: on a mixed host torch may still
+  // see a dGPU llama-server never enumerated, and reusing that total would let
+  // fit checks pass against VRAM /load can't actually place.
+  const isVulkanBuild = gpuData?.gguf_backend_is_vulkan === true;
   if (!gpuData?.available || !devices.length) {
     // Torch sees no GPU (training stays CPU-bound / unavailable), but a Vulkan
     // llama.cpp build may still drive GPUs for GGUF: surface that budget alone.
@@ -127,7 +137,11 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     available: true,
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb,
-    ggufMemoryTotalGb: ggufDevices.length ? ggufDeviceTotalGb : memoryTotalGb,
+    ggufMemoryTotalGb: ggufDevices.length
+      ? ggufDeviceTotalGb
+      : isVulkanBuild
+        ? 0
+        : memoryTotalGb,
   };
 }
 

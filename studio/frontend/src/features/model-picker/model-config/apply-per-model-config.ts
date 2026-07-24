@@ -141,9 +141,17 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.gpuMemoryMode ?? "auto",
     config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
     config.nCpuMoe ?? 0,
+    // Include the pick's index space (physical vs Vulkan ordinals): the same ids
+    // mean different cards across a backend swap, so a kind change is a real
+    // config change. It also drives the SidebarModelConfig remount key, so when
+    // the reactive fallback stamps a cold-hydrated active pick after the GPU
+    // cache warms, an open Run-settings panel re-snapshots with the new stamp
+    // instead of reloading/saving it as a legacy physical pick.
     config.selectedGpuIds == null
       ? "all"
-      : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+      : `${[...config.selectedGpuIds].sort((a, b) => a - b).join(",")}@${
+          config.selectedGpuIdsIndexKind ?? "physical"
+        }`,
   ].join("|");
 }
 
