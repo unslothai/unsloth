@@ -829,8 +829,23 @@ export function ModelConfigPage({
     const effectiveConfig = hasPending
       ? { ...config, ...pendingPatch }
       : config;
+    // pinFixedLayerContext above was computed from the render-time config, before
+    // the same-click GPU Layers draft was committed. Recompute it from
+    // effectiveConfig so committing a positive fixed-layer value still pins the
+    // fitted context; otherwise the saved config carries customContextLength: null
+    // and a later fresh load sends the native context with fixed layers (the OOM
+    // the pin exists to avoid).
+    const effectivePinFixedLayerContext =
+      target.isGguf &&
+      effectiveConfig.gpuMemoryMode === "manual" &&
+      effectiveConfig.gpuLayers != null &&
+      effectiveConfig.gpuLayers >= 0 &&
+      effectiveConfig.customContextLength == null &&
+      activeLoadedContext != null;
     const effectiveRuntimeConfig = hasPending
-      ? { ...runtimeConfig, ...pendingPatch }
+      ? effectivePinFixedLayerContext
+        ? { ...effectiveConfig, customContextLength: activeLoadedContext }
+        : effectiveConfig
       : runtimeConfig;
     // Non-GGUF load substitutes the resolved max sequence length; recompute it
     // from the committed draft so a same-click Max Seq Length edit is not lost.

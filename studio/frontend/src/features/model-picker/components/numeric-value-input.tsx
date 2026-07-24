@@ -79,9 +79,17 @@ export const NumericValueInput = forwardRef<
   // focus / external edits (Reset, slider).
   const lastBlurCommittedRef = useRef<number | null>(null);
 
+  // The blur bridge is only valid across the single synchronous gesture that set
+  // it: blur commits during a button's mousedown and that button's onClick
+  // consumes it via commit() before React re-renders. Any settled render means the
+  // gesture is over, so drop the cache on every commit. Keying this on [value]
+  // alone missed a Reset (or other external edit) that restores the shown value
+  // unchanged when the blur did dispatch onChange (final !== value): value nets
+  // back to its prior number, so the effect never re-ran, the stale pin survived,
+  // and the next Load/Save replayed the override Reset had removed.
   useEffect(() => {
     lastBlurCommittedRef.current = null;
-  }, [value]);
+  });
 
   const commitDraft = (raw: string): number | null => {
     const parsed = Number.parseFloat(raw);

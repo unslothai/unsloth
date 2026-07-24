@@ -328,6 +328,38 @@ def test_fixed_layer_gguf_pins_displayed_context():
     assert "customContextLength: activeLoadedContext" in src
 
 
+def test_fixed_layer_pin_recomputed_after_committing_gpu_layers():
+    """pinFixedLayerContext is computed from the render-time config, before a
+    same-click GPU Layers draft is committed. handleRun must recompute it from the
+    committed effectiveConfig; otherwise typing a positive GPU Layers value on an
+    auto-fit GGUF and clicking Reload saves customContextLength: null, so a later
+    fresh load sends the native context with fixed layers (the OOM the pin avoids)."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectivePinFixedLayerContext =" in src
+    assert 'effectiveConfig.gpuMemoryMode === "manual"' in src
+    assert "effectiveConfig.gpuLayers != null" in src
+    assert "effectiveConfig.customContextLength == null" in src
+    assert "{ ...effectiveConfig, customContextLength: activeLoadedContext }" in src
+
+
+def test_blur_cache_cleared_on_every_settled_render():
+    """The lastBlurCommittedRef bridge is valid only across the single synchronous
+    same-click gesture that set it. Keying its clear on [value] missed a Reset (or
+    external edit) that restores the shown value unchanged after the blur dispatched
+    onChange: value nets back to its prior number, the effect never re-ran, and a
+    later Load/Save replayed the override Reset removed. Clear it on every settled
+    render instead."""
+    src = _read("features/model-picker/components/numeric-value-input.tsx")
+    # The clearing effect must run on every commit, not be gated on [value] alone.
+    assert not re.search(
+        r"lastBlurCommittedRef\.current = null;\s*\}, \[value\]\);", src
+    )
+    assert re.search(
+        r"useEffect\(\(\) => \{\s*lastBlurCommittedRef\.current = null;\s*\}\);",
+        src,
+    )
+
+
 def test_auto_defaults_not_persisted_as_overrides():
     """Auto GPU memory mode and Auto/default speculative type are follow-global
     defaults; normalization must not persist them as per-model overrides, else a
