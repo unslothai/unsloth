@@ -183,10 +183,12 @@ def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
 
     store = _read("features/chat/stores/chat-runtime-store.ts")
     assert 'hasOwnProperty.call(resp, "requested_gpu_ids")' in store
-    assert "const gpuIds = requestedGpuIdsFromResponse(resp)" in store
+    assert "const reportedGpuIds = requestedGpuIdsFromResponse(resp)" in store
+    assert "reportedGpuIds != null && gpuIndexKind != null" in store
 
     status = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    assert "requestedGpuIdsFromResponse(status)" in status
+    assert "const incomingGpuFields = loadedGpuMemoryFields(status)" in status
+    assert "const incomingGpuIds = incomingGpuFields.loadedGpuIds" in status
 
 
 def test_compare_load_uses_each_models_gpu_config():
@@ -508,13 +510,17 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
 
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'className={isDiffusion ? "hidden" : ROW_CLASS}' in page
-    assert "withoutUnsupportedDiffusionMemory(config)" in page
+    assert "withoutUnsupportedDiffusionSettings(config)" in page
+    assert 'isDiffusion && gpuIndexKind === "vulkan"' in page
     assert "stagedMetadataPending ||" in page
+    assert "config.selectedGpuIds != null" in page
     for field in (
         'gpuMemoryMode: "auto"',
         "gpuLayers: undefined",
         "nCpuMoe: undefined",
         "hostMemoryMode: undefined",
+        "selectedGpuIds: undefined",
+        "selectedGpuIndexKind: undefined",
     ):
         assert field in page
 

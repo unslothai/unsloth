@@ -13,7 +13,6 @@ import {
   type ReasoningStyle,
   loadOptionalBool,
   loadedGpuMemoryFields,
-  requestedGpuIdsFromResponse,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -223,9 +222,8 @@ export function applyActiveModelStatusToStore(
     incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
   const incomingSplit =
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
-  const incomingGpuIds = status.is_gguf
-    ? requestedGpuIdsFromResponse(status)
-    : null;
+  const incomingGpuFields = loadedGpuMemoryFields(status);
+  const incomingGpuIds = incomingGpuFields.loadedGpuIds;
   const incomingHostMemoryMode = status.is_gguf
     ? (status.host_memory_mode ?? null)
     : null;
@@ -251,7 +249,6 @@ export function applyActiveModelStatusToStore(
   );
   const hostMemoryModeEditPending =
     prevState.hostMemoryMode !== prevState.loadedHostMemoryMode;
-  const incomingGpuFields = loadedGpuMemoryFields(status);
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;

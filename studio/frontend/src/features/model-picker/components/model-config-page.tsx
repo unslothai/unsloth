@@ -88,14 +88,18 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   );
 }
 
-function withoutUnsupportedDiffusionMemory(
+function withoutUnsupportedDiffusionSettings(
   config: PerModelConfig,
 ): PerModelConfig {
+  const hasVulkanGpuPick =
+    config.selectedGpuIds != null &&
+    config.selectedGpuIndexKind === "vulkan";
   if (
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
-    (config.hostMemoryMode ?? "default") === "default"
+    (config.hostMemoryMode ?? "default") === "default" &&
+    !hasVulkanGpuPick
   ) {
     return config;
   }
@@ -105,6 +109,12 @@ function withoutUnsupportedDiffusionMemory(
     gpuLayers: undefined,
     nCpuMoe: undefined,
     hostMemoryMode: undefined,
+    ...(hasVulkanGpuPick
+      ? {
+          selectedGpuIds: undefined,
+          selectedGpuIndexKind: undefined,
+        }
+      : {}),
   };
 }
 
@@ -284,6 +294,7 @@ function GpuMemorySettings({
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
   // Multi-GPU only, with one backend-declared index namespace. null = all.
   const showGpuPicker =
+    !(isDiffusion && gpuIndexKind === "vulkan") &&
     gpuDevices.length > 1 &&
     gpuIndexKind !== null &&
     gpuDevices.every((d) => d.pinnable);
@@ -672,7 +683,7 @@ export function ModelConfigPage({
   const [initial] = useState(resolveInitial);
   const [config, setConfig] = useState<PerModelConfig>(() =>
     isDiffusion
-      ? withoutUnsupportedDiffusionMemory(initial.config)
+      ? withoutUnsupportedDiffusionSettings(initial.config)
       : initial.config,
   );
   const [remember, setRemember] = useState(() => initial.remembered);
@@ -734,7 +745,7 @@ export function ModelConfigPage({
         if (!cancelled) {
           setFetchedStagedDims({ key: contextFetchKey, ...dims });
           if (dims.isDiffusion) {
-            setConfig(withoutUnsupportedDiffusionMemory);
+            setConfig(withoutUnsupportedDiffusionSettings);
           }
         }
       })
@@ -765,7 +776,8 @@ export function ModelConfigPage({
     contextFetchKey != null &&
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" ||
-      (config.hostMemoryMode ?? "default") !== "default");
+      (config.hostMemoryMode ?? "default") !== "default" ||
+      config.selectedGpuIds != null);
   const resolvedIsDiffusion =
     isDiffusion || stagedDims?.isDiffusion === true;
 
@@ -799,7 +811,7 @@ export function ModelConfigPage({
     update({ customContextLength: v });
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
-    ? withoutUnsupportedDiffusionMemory(rawBaseline)
+    ? withoutUnsupportedDiffusionSettings(rawBaseline)
     : rawBaseline;
   const atBaseline = perModelConfigsEqual(config, baseline);
   // An explicit customContextLength equal to the native ceiling is still an
@@ -830,7 +842,7 @@ export function ModelConfigPage({
   // remembers, pin that shown context so a later fresh load keeps the fitted
   // placement instead of sending native/0 for fixed layers and recreating the OOM.
   const loadableConfig = resolvedIsDiffusion
-    ? withoutUnsupportedDiffusionMemory(config)
+    ? withoutUnsupportedDiffusionSettings(config)
     : config;
   const pinFixedLayerContext =
     target.isGguf &&

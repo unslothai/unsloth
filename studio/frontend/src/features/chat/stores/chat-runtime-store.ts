@@ -668,9 +668,14 @@ export function loadedGpuMemoryFields(resp: {
   const mode = resp.gpu_memory_mode ?? "auto";
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
-  const gpuIds = requestedGpuIdsFromResponse(resp);
+  const reportedGpuIds = requestedGpuIdsFromResponse(resp);
   const gpuIndexKind =
-    gpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null);
+    reportedGpuIds == null ? null : cachedPinnableGpuIndexKind();
+  // A numeric ID is unsafe to adopt or persist until discovery says whether it
+  // is a physical CUDA/ROCm ID or a Vulkan ordinal. A later status refresh can
+  // restore the requested pool after the shared system cache is warm.
+  const gpuIds =
+    reportedGpuIds != null && gpuIndexKind != null ? reportedGpuIds : null;
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -708,10 +713,9 @@ export function loadedGpuMemoryFields(resp: {
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
-    // Keep the editable picker on the user's requested set. Auto fit can narrow
-    // effective placement, but that must not silently rewrite future requests.
+    // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
-    selectedGpuIndexKind: gpuIndexKind,
+    selectedGpuIndexKind: gpuIds == null ? null : gpuIndexKind,
     loadedGpuIds: gpuIds,
     // Reset both editable and loaded state to the applied backend mode.
     hostMemoryMode: resp.host_memory_mode ?? null,
@@ -720,74 +724,7 @@ export function loadedGpuMemoryFields(resp: {
   };
 }
 
-/** loadedGpuMemoryFields (plus any seedExtras), unless a staged pick is open.
- *
- * With a staged pick open (the load fired mid-staging), preserve its editable
- * GPU knobs and seedExtras, but still advance every loaded baseline. Otherwise
- * cancelling the stage restores its edits onto the newly loaded model. The
- * status reseed cannot repair that while pendingSelection holds it off.
- */
-export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
-  resp: Parameters<typeof loadedGpuMemoryFields>[0],
-  seedExtras?: T,
-) {
-  const fields = loadedGpuMemoryFields(resp);
-  if (useChatRuntimeStore.getState().pendingSelection != null) {
-    return {
-      loadedGpuMemoryMode: fields.loadedGpuMemoryMode,
-      loadedGpuLayers: fields.loadedGpuLayers,
-      loadedNCpuMoe: fields.loadedNCpuMoe,
-      loadedSplitRatio: fields.loadedSplitRatio,
-      loadedGpuIds: fields.loadedGpuIds,
-      // These are metadata ceilings for the model that actually loaded, not
-      // editable values from the open stage. Advance them with the baselines
-      // so abandoning the stage cannot expose the previous model's limits.
-      ggufLayerCount: fields.ggufLayerCount,
-      moeLayerCount: fields.moeLayerCount,
-      // Residency is backend-owned with no editable knob, so it mirrors the
-      // model that actually loaded, not the open stage. Advance it with the
-      // baselines so a staged load can't leave a previous model's mode.
-      activeMemoryMode: fields.activeMemoryMode,
-    };
-  }
-  return { ...fields, ...seedExtras };
-}
-
-/** A local model staged for a deferred load (see `pendingSelection`). Shape is
- *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
-export type PendingModelSelection = {
-  id: string;
-  isLora?: boolean;
-  ggufVariant?: string;
-  isDownloaded?: boolean;
-  expectedBytes?: number;
-  /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
-   *  the header and to load. Absent for HF-repo models. */
-  nativePathToken?: string;
-  /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
-   *  though it carries neither an HF variant nor a native path token. */
-  isGguf?: boolean;
-  /** Native context length read from the GGUF header once the file is local.
-   *  Scoped here (not the shared `ggufContextLength`) so a staged model's
-   *  metadata never pollutes the currently-loaded model's context display. */
-  contextLength?: number | null;
-  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
-   * this + 1 (llama.cpp counts the output layer as offloadable too);
-   *  scoped here like contextLength. */
-  layerCount?: number | null;
-  /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
-   *  0 for dense models, scoped here like contextLength. */
-  moeLayerCount?: number | null;
-  /** "Load on selection" on + un-cached GGUF: download via the manager (global
-   *  indicator) without opening the sheet, then load once the download finishes. */
-  autoLoad?: boolean;
-  /** Uncached non-GGUF HF repo: download the full snapshot via the manager
-   *  (variant null) the same way GGUF picks download a variant. */
-  isHubRepo?: boolean;
-};
-
-/** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
- *  has pre-load options worth staging. Works on a selection or a staged pick. */
+/** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
 export function hasGgufSource(x: {
   ggufVariant?: string;
   nativePathToken?: string;
