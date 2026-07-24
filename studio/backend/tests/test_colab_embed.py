@@ -294,9 +294,7 @@ def test_finalize_colab_admin_password_drops_stale_cached_credentials(monkeypatc
     )
     monkeypatch.setattr(colab, "_colab_credentials_still_valid", lambda username, password: False)
     cleared: list[bool] = []
-    monkeypatch.setattr(
-        colab, "_clear_colab_login_credentials", lambda: cleared.append(True)
-    )
+    monkeypatch.setattr(colab, "_clear_colab_login_credentials", lambda: cleared.append(True))
 
     storage = SimpleNamespace(
         DEFAULT_ADMIN_USERNAME = "unsloth",
