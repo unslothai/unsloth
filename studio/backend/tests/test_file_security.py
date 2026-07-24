@@ -166,9 +166,10 @@ def test_skips_local_path():
 
 
 def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
-    # An inactive HF cache loads by snapshot path; the gate must recover the repo id
-    # from the models--org--repo/snapshots/<rev> layout and scan it, not exempt it.
-    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "rev"
+    # An inactive HF cache loads by snapshot path; the gate must recover the repo id +
+    # commit from models--org--repo/snapshots/<rev> and scan that exact commit, not exempt
+    # it and not fall back to the default branch (an older commit may hold a dropped pickle).
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
     snapshot.mkdir(parents = True)
     status = {
         "scansDone": True,
@@ -178,6 +179,7 @@ def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
         d = evaluate_file_security(str(snapshot))
     assert d.blocked is True
     assert model_info.call_args.args[0] == "evil/repo"
+    assert model_info.call_args.kwargs["revision"] == "deadbeef"
 
 
 def test_remote_gguf_named_repo_is_still_scanned():
