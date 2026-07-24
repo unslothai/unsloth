@@ -1018,6 +1018,7 @@ try:
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
+    from utils.paths import is_local_path
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
@@ -1058,6 +1059,7 @@ except ImportError:
     )
     from core.inference.tensor_fallback import load_with_tensor_fallback
     from utils.models import ModelConfig
+    from utils.paths import is_local_path
     from utils.inference import load_inference_config
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
@@ -4420,6 +4422,8 @@ async def _load_model_impl(
                     is_vision = llama_backend._is_vision,
                     is_lora = False,
                     is_gguf = True,
+                    is_local_model = native_grant_backed
+                    or is_local_path(llama_backend.model_identifier),
                     is_diffusion = llama_backend.is_diffusion,
                     is_audio = _gguf_is_audio,
                     audio_type = _gguf_audio,
@@ -4478,6 +4482,7 @@ async def _load_model_impl(
                     is_vision = _model_info.get("is_vision", False),
                     is_lora = _model_info.get("is_lora", False),
                     is_gguf = False,
+                    is_local_model = native_grant_backed or is_local_path(backend.active_model_name),
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
@@ -4798,6 +4803,7 @@ async def _load_model_impl(
                 is_vision = llama_backend.is_vision,
                 is_lora = False,
                 is_gguf = True,
+                is_local_model = config.is_local,
                 is_diffusion = llama_backend.is_diffusion,
                 is_audio = _gguf_is_audio,
                 audio_type = _gguf_audio,
@@ -4938,6 +4944,7 @@ async def _load_model_impl(
             is_vision = config.is_vision,
             is_lora = config.is_lora,
             is_gguf = False,
+            is_local_model = config.is_local,
             is_audio = config.is_audio,
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
@@ -5918,6 +5925,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 model_identifier = None if _native_grant_backed else _model_id,
                 is_vision = llama_backend.is_vision,
                 is_gguf = True,
+                is_local_model = _native_grant_backed or bool(_model_id and is_local_path(_model_id)),
                 is_diffusion = llama_backend.is_diffusion,
                 gguf_variant = llama_backend.hf_variant,
                 is_audio = getattr(llama_backend, "_is_audio", False),
@@ -5989,6 +5997,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             model_identifier = backend.active_model_name,
             is_vision = is_vision,
             is_gguf = False,
+            is_local_model = bool(
+                backend.active_model_name and is_local_path(backend.active_model_name)
+            ),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,

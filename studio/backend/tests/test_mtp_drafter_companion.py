@@ -29,7 +29,9 @@ from hub.utils.gguf_plan import (
     preferred_mtp_sibling,
 )
 from utils.models.model_config import (
+    ModelConfig,
     _is_mtp_drafter,
+    _local_gguf_companion_search_root,
     detect_gguf_model,
     detect_mtp_file,
     extract_model_size_b,
@@ -210,6 +212,36 @@ def test_detect_mtp_file_search_root(tmp_path):
     (tmp_path / "mtp-gemma-4-12b-it.gguf").write_bytes(b"x")
     found = detect_mtp_file(str(sub / "gemma-4-12b-it-Q4_K_M.gguf"), search_root = str(tmp_path))
     assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
+
+
+def test_quant_directory_selection_finds_repo_root_mtp(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    mtp_dir = tmp_path / "MTP"
+    mtp_dir.mkdir()
+    drafter = mtp_dir / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    drafter.write_bytes(b"x")
+
+    search_root = _local_gguf_companion_search_root(str(quant_dir), str(weight))
+    assert Path(search_root).resolve() == tmp_path.resolve()
+    config = ModelConfig.from_identifier(str(quant_dir))
+    assert config.is_local
+    assert config.gguf_file == str(weight.resolve())
+    assert config.gguf_mtp_file == str(drafter.resolve())
+
+
+def test_bare_relative_gguf_directory_is_local_source(tmp_path, monkeypatch):
+    model_dir = tmp_path / "outputs" / "gemma"
+    model_dir.mkdir(parents = True)
+    weight = model_dir / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    monkeypatch.chdir(tmp_path)
+
+    config = ModelConfig.from_identifier("outputs/gemma")
+    assert config.is_local
+    assert config.gguf_file == str(weight.resolve())
 
 
 def test_detect_mtp_file_falls_back_to_new_scheme_subdir(tmp_path):

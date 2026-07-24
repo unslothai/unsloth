@@ -384,6 +384,9 @@ export function ChatSettingsPanel({
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
+  const activeModelIsLocal = useChatRuntimeStore(
+    (s) => s.activeModelIsLocal,
+  );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   // Direct-file / custom-folder GGUFs load without a variant label but still
   // report a GGUF context, so detect them via the context and the checkpoint
@@ -395,7 +398,8 @@ export function ChatSettingsPanel({
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
   const isLocalGguf =
     isGguf &&
-    (activeNativePathToken != null ||
+    (activeModelIsLocal ||
+      activeNativePathToken != null ||
       isLocalModelPath(currentCheckpoint ?? "") ||
       (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false));
   const ggufMaxContextLength = useChatRuntimeStore(

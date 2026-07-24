@@ -1765,13 +1765,6 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
 
     selected = Path(selected_path)
     gguf_path = Path(gguf_file)
-    if selected.suffix.lower() != ".gguf":
-        return selected_path
-
-    gguf_dir = gguf_path.parent
-    if not gguf_dir.name:
-        return str(gguf_dir)
-
     quant_dir_re = (
         r"(UD-)?("
         r"MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -1783,9 +1776,12 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
         r"|BF16|F16|F32"
         r")"
     )
-    if re.fullmatch(quant_dir_re, gguf_dir.name, re.IGNORECASE):
-        return str(gguf_dir.parent)
-    return str(gguf_dir)
+    search_dir = gguf_path.parent if selected.suffix.lower() == ".gguf" else selected
+    if not search_dir.name:
+        return str(search_dir)
+    if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
+        return str(search_dir.parent)
+    return str(search_dir)
 
 
 def _iter_hf_cache_snapshots(repo_id: str, cache_dir: Optional[str | Path] = None):

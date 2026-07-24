@@ -152,6 +152,7 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -203,6 +204,7 @@ export interface InferenceStatusResponse {
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
   gguf_variant?: string | null;
   is_audio?: boolean;

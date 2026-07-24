@@ -26,6 +26,12 @@ def _read(rel: str) -> str:
     return path.read_text()
 
 
+def _read_backend(rel: str) -> str:
+    path = WORKDIR / "studio" / "backend" / rel
+    assert path.exists(), f"missing backend source file: {path}"
+    return path.read_text()
+
+
 def test_models_api_sends_token_via_header_not_query():
     """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
     token through hubTokenHeader, never as a ?hf_token= query param (which leaks
@@ -326,8 +332,32 @@ def test_local_mtp_warning_covers_path_and_native_gguf_sources():
     assert local
     assert "isGguf &&" in local.group(0)
     assert "activeNativePathToken" in local.group(0)
+    assert "activeModelIsLocal" in local.group(0)
     assert "isLocalModelPath" in local.group(0)
     assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
+
+
+def test_local_mtp_warning_uses_backend_source_metadata():
+    types = _read("features/chat/types/api.ts")
+    assert types.count("is_local_model?: boolean") >= 2
+
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert "activeModelIsLocal: status.is_local_model ?? false" in status
+
+    runtime = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "activeModelIsLocal: boolean" in runtime
+    assert runtime.count("activeModelIsLocal: false") >= 2
+
+    load = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "activeModelIsLocal: loadResponse.is_local_model ?? false" in load
+
+    models = _read_backend("models/inference.py")
+    assert models.count("is_local_model: bool = Field(") >= 2
+
+    route = _read_backend("routes/inference.py")
+    assert route.count("is_local_model = config.is_local") >= 2
+    assert "is_local_model = _native_grant_backed" in route
+    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():

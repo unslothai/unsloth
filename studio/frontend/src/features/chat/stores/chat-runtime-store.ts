@@ -735,6 +735,8 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /** Whether the backend loaded the active model from a filesystem path. */
+  activeModelIsLocal: boolean;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
@@ -1268,6 +1270,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
@@ -1555,6 +1558,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeModelIsLocal: false,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,

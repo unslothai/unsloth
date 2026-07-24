@@ -394,6 +394,9 @@ class LoadResponse(BaseModel):
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_local_model: bool = Field(
+        False, description = "Whether the loaded model came from a local filesystem path"
+    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )
@@ -558,6 +561,9 @@ class InferenceStatusResponse(BaseModel):
     )
     is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
+    is_local_model: bool = Field(
+        False, description = "Whether the active model came from a local filesystem path"
+    )
     is_diffusion: bool = Field(
         False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
     )

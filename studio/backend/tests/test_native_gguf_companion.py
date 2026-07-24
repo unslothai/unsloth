@@ -99,6 +99,25 @@ def test_reload_dedup_finds_repo_root_mtp_companion(tmp_path, monkeypatch):
     assert _request_matches_loaded_settings(request, backend)
 
 
+def test_reload_dedup_matches_quant_directory_selection(tmp_path, monkeypatch):
+    quant_dir = tmp_path / "Q4_0"
+    quant_dir.mkdir()
+    weight = quant_dir / "model.gguf"
+    weight.write_bytes(b"model")
+    companion_dir = tmp_path / "MTP"
+    companion_dir.mkdir()
+    companion = companion_dir / "mtp-model.gguf"
+    companion.write_bytes(b"draft")
+
+    monkeypatch.setattr(LlamaCppBackend, "_kill_orphaned_servers", staticmethod(lambda: 0))
+    backend = LlamaCppBackend()
+    backend._gguf_path = str(weight)
+    backend._mtp_draft_path = str(companion)
+
+    request = LoadRequest(model_path = str(quant_dir), gguf_variant = "Q4_0")
+    assert _request_matches_loaded_settings(request, backend)
+
+
 def test_native_vision_companion_rejects_mtp_directory(tmp_path):
     weight, companion = _write_pair(tmp_path, "MTP")
     with pytest.raises(HTTPException, match = "must live next to"):
