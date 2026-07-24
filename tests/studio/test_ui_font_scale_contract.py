@@ -17,6 +17,7 @@ SRC = REPO / "studio/frontend/src"
 INDEX_CSS = (SRC / "index.css").read_text(encoding = "utf-8")
 STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(encoding = "utf-8")
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
+UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
 # Raw numeric fontSize props are only allowed where a scaled stylesheet rule
 # (.recharts-text) overrides the presentation attribute at render time.
@@ -85,6 +86,16 @@ def test_radix_select_viewport_owns_the_scroll_state():
     assert content_cls is not None
     assert "overflow-hidden" in content_cls.group(1)
     assert "overflow-y-auto" not in content_cls.group(1)
+
+
+def test_cn_knows_the_ui_typography_tokens():
+    """Stock tailwind-merge classifies text-ui-* as a text color and deletes
+    it whenever a real color class follows in the same cn() call, so the
+    element falls back to the unscaled inherited font size."""
+    assert "extendTailwindMerge" in UTILS
+    assert '"font-size": [{ text: [isUiToken] }]' in UTILS
+    assert "leading: [{ leading: [isUiToken] }]" in UTILS
+    assert "/^ui-\\d+(p5)?$/.test(value)" in UTILS
 
 
 def test_no_raw_pixel_text_utilities():
