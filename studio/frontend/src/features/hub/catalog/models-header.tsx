@@ -64,7 +64,7 @@ export function ModelsHeader({
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
-        title={isDataset ? "Datasets" : "Models"}
+        title={isDataset ? "Datasets" : "Model hub"}
         onTitleClick={onTitleClick}
         subtitle={
           isDataset
@@ -91,7 +91,7 @@ export function ModelsHeader({
         <StatPill icon={CpuIcon} label="CPU" value={coreLabel} />
 
         {activeCheckpoint && (
-          <div className="hub-tag-soft ml-1 inline-flex items-center gap-1.5 px-2 py-1 text-[11.5px]">
+          <div className="hub-tag-soft ml-1 inline-flex items-center gap-1.5 px-2 py-1 text-ui-11p5">
             <span
               className="size-1.5 rounded-full bg-emerald-500"
               aria-hidden="true"
@@ -115,7 +115,7 @@ export function ModelsHeader({
             <button
               type="button"
               onClick={onEject}
-              className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+              className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-ui-11 text-muted-foreground transition-colors hover:text-foreground"
             >
               <HugeiconsIcon
                 icon={RemoveCircleIcon}

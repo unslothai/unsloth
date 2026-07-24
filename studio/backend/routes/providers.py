@@ -47,6 +47,20 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
+def _provider_response(row: dict) -> ProviderResponse:
+    return ProviderResponse(
+        id = row["id"],
+        provider_type = row["provider_type"],
+        display_name = row["display_name"],
+        base_url = row["base_url"],
+        is_enabled = bool(row["is_enabled"]),
+        models = row.get("models") or [],
+        available_models = row.get("available_models") or [],
+        created_at = row["created_at"],
+        updated_at = row["updated_at"],
+    )
+
+
 # ── Public key for API key encryption ─────────────────────────────
 
 
@@ -89,18 +103,7 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 async def list_provider_configs(current_subject: str = Depends(get_current_subject)):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
-    return [
-        ProviderResponse(
-            id = row["id"],
-            provider_type = row["provider_type"],
-            display_name = row["display_name"],
-            base_url = row["base_url"],
-            is_enabled = bool(row["is_enabled"]),
-            created_at = row["created_at"],
-            updated_at = row["updated_at"],
-        )
-        for row in rows
-    ]
+    return [_provider_response(row) for row in rows]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
@@ -124,18 +127,12 @@ async def create_provider_config(
         provider_type = payload.provider_type,
         display_name = payload.display_name,
         base_url = base_url,
+        models = payload.models,
+        available_models = payload.available_models,
     )
 
     row = providers_db.get_provider(provider_id)
-    return ProviderResponse(
-        id = row["id"],
-        provider_type = row["provider_type"],
-        display_name = row["display_name"],
-        base_url = row["base_url"],
-        is_enabled = bool(row["is_enabled"]),
-        created_at = row["created_at"],
-        updated_at = row["updated_at"],
-    )
+    return _provider_response(row)
 
 
 @router.put("/{provider_id}", response_model = ProviderResponse)
@@ -154,20 +151,14 @@ async def update_provider_config(
         display_name = payload.display_name,
         base_url = payload.base_url,
         is_enabled = payload.is_enabled,
+        models = payload.models,
+        available_models = payload.available_models,
     )
     if not updated:
         raise HTTPException(status_code = 400, detail = "No fields to update")
 
     row = providers_db.get_provider(provider_id)
-    return ProviderResponse(
-        id = row["id"],
-        provider_type = row["provider_type"],
-        display_name = row["display_name"],
-        base_url = row["base_url"],
-        is_enabled = bool(row["is_enabled"]),
-        created_at = row["created_at"],
-        updated_at = row["updated_at"],
-    )
+    return _provider_response(row)
 
 
 @router.delete("/{provider_id}", status_code = 204)
