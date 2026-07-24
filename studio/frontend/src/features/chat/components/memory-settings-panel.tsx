@@ -80,10 +80,16 @@ export function MemorySettingsPanel() {
   const [clearOpen, setClearOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const requestVersion = useRef(0);
+  const selectionRef = useRef("");
 
   useEffect(() => {
     void hydratePersistedSettings();
   }, [hydratePersistedSettings]);
+
+
+  useEffect(() => {
+    selectionRef.current = `${scope}:${scope === "project" ? projectId : ""}`;
+  }, [projectId, scope]);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +129,8 @@ export function MemorySettingsPanel() {
   }, [activeProjectId, t]);
 
   const loadMemories = useCallback(async () => {
+    const selection = `${scope}:${scope === "project" ? projectId : ""}`;
+    if (selection !== selectionRef.current) return;
     if (scope === "project" && !projectId) {
       requestVersion.current += 1;
       setMemories([]);

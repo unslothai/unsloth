@@ -32,5 +32,5 @@ def test_memory_capture_uses_persisted_memory_scope_thread_id():
 
 
 def test_memory_capture_rejects_negative_remember_commands():
-    assert r"(?:do\s+not|don['’]t)\s+(?:remember|save)\b" in MEMORY_RUNTIME_SRC
     assert "NEGATIVE_MEMORY_COMMAND_RE.test(source)" in MEMORY_RUNTIME_SRC
+    assert r"never)\s+(?:remember|save)" in MEMORY_RUNTIME_SRC

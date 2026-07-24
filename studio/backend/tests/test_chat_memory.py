@@ -7,6 +7,7 @@ import asyncio
 import sqlite3
 import importlib.util
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,7 @@ def _setup_source(tmp_path, monkeypatch):
             "parentId": None,
             "role": "user",
             "content": [{"type": "text", "text": "I prefer dark mode"}],
-            "createdAt": 2,
+            "createdAt": int(time.time() * 1000) + 60_000,
         }
     )
 
@@ -121,6 +122,37 @@ def test_model_forget_requires_user_correction_evidence(tmp_path, monkeypatch):
         lambda *_: {
             "threadId": "thread",
             "role": "user",
+            "content": [{"type": "text", "text": "I need to delete the dark mode preference"}],
+        },
+    )
+    assert (
+        memory.apply_capture(thread_id = "thread", source_message_id = "message", raw_output = output)
+        == []
+    )
+    assert studio_db.get_chat_memory(saved["id"]) is not None
+
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "createdAt": saved["updatedAt"] - 1,
+            "content": [{"type": "text", "text": "forget that I prefer dark mode"}],
+        },
+    )
+    assert (
+        memory.apply_capture(thread_id = "thread", source_message_id = "message", raw_output = output)
+        == []
+    )
+    assert studio_db.get_chat_memory(saved["id"]) is not None
+
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
             "content": [{"type": "text", "text": "I no longer prefer dark mode"}],
         },
     )
@@ -138,6 +170,7 @@ def test_model_forget_requires_user_correction_evidence(tmp_path, monkeypatch):
         "My phone number is +1 (415) 555-0199",
         "Text me at 415-555-0199",
         "My number is 415-555-0199",
+        "I use 415-555-0199 for work",
     ),
 )
 def test_automatic_capture_rejects_contact_pii(content):
@@ -285,6 +318,7 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
         "Can you delete the memory about my phone number?",
         "forget my phone number please",
         "forget my phone number, please?",
+        "forget my phone number from memory",
     ),
 )
 def test_explicit_forget_matches_partial_targets_and_aliases(tmp_path, monkeypatch, command):
@@ -459,6 +493,8 @@ def test_remember_command_skips_recall(tmp_path, monkeypatch):
         "Do not remember that I prefer dark mode",
         "Please don't save that I prefer dark mode",
         "Please do not save that I prefer dark mode",
+        "Never remember that I prefer dark mode",
+        "I don't want you to remember that I prefer dark mode",
     ),
 )
 def test_negative_remember_commands_skip_recall_and_capture(tmp_path, monkeypatch, command):

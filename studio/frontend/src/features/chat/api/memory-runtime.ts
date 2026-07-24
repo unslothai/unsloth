@@ -12,7 +12,7 @@ const EXPLICIT_COMMAND_RE =
   /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?(?:(?:remember|forget)\b|(?:remove|delete)\b[^\n]*\bmemor(?:y|ies)\b)/i;
 
 const NEGATIVE_MEMORY_COMMAND_RE =
-  /^(?:please\s+)?(?:do\s+not|don['’]t)\s+(?:remember|save)\b/i;
+  /^(?:please\s+)?(?:(?:do\s+not|don['’]t|never)\s+(?:remember|save)|i\s+(?:do\s+not|don['’]t)\s+want\s+(?:you\s+)?to\s+(?:remember|save))\b/i;
 const LINE_BREAK_RE = /\r?\n/;
 const FENCED_CODE_RE = /```[\s\S]*?```/g;
 const INTERROGATIVE_RE =

@@ -100,6 +100,7 @@ import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boun
 import {
   type MemoryScope,
   createChatMemory,
+  getStoredChatThread,
   isThreadIncognito,
   PLUS_MENU_ORDER,
   composerDraftKey,
@@ -3967,10 +3968,17 @@ const RememberMessageButton: FC = () => {
     if (!canWriteToCurrentThread()) {
       throw new Error(t("chat.memory.threadUnavailable"));
     }
+    const projectId =
+      scope === "project"
+        ? (await getStoredChatThread(persistedThreadId ?? ""))?.projectId
+        : null;
+    if (scope === "project" && !projectId) {
+      throw new Error(t("chat.memory.projectUnavailable"));
+    }
     const result = await createChatMemory({
       content: normalized,
       scope,
-      projectId: scope === "project" ? activeProjectId : null,
+      projectId,
     });
     toast[result.created ? "success" : "info"](
       t(result.created ? "chat.memory.saved" : "chat.memory.duplicate"),

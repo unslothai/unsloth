@@ -134,6 +134,7 @@ _STREET_ADDRESS_RE = re.compile(
 
 _CONTACT_PII_RE = re.compile(
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
+    r"\b(?:\+?1[ .-]?)?\(?[2-9]\d{2}\)?[ .-]\d{3}[ .-]\d{4}\b|"
     r"\b(?:(?:phone|mobile|cell|telephone|contact)(?:\s+number)?\s*(?:is|:|=)?|"
     r"my\s+number\s+is|(?:call|text|reach|contact)\s+me\s+at)\s*\+?\d[\d(). -]{5,}\d\b",
     re.I,
@@ -147,15 +148,16 @@ _AUTOMATIC_PROFILE_RE = re.compile(
     r"^\s*(?:my (?:name|nickname) is|call me)\b",
     re.I,
 )
-_FORGET_EVIDENCE_RE = re.compile(
-    r"\b(?:forget|remove|delete|no longer|not anymore|used to|"
+_CORRECTION_EVIDENCE_RE = re.compile(
+    r"\b(?:no longer|not anymore|used to|"
     r"stopp(?:ed|ing)\s+(?:using|liking|preferring|working))\b",
     re.I,
 )
 _POLITE_COMMAND_PREFIX = r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?"
 
 _NEGATIVE_MEMORY_COMMAND_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:do\s+not|don['’]t)\s+(?:remember|save)\b[^\n]*$",
+    r"^\s*(?:please\s+)?(?:(?:do\s+not|don['’]t|never)\s+(?:remember|save)|"
+    r"i\s+(?:do\s+not|don['’]t)\s+want\s+(?:you\s+)?to\s+(?:remember|save))\b[^\n]*$",
     re.I,
 )
 _COMMAND_RE = re.compile(
@@ -165,7 +167,9 @@ _COMMAND_RE = re.compile(
     re.I,
 )
 _FORGET_RE = re.compile(
-    _POLITE_COMMAND_PREFIX + r"forget(?:\s+(?:that|about))?\s+(.+?)(?:\s*,?\s+please)?[?.]?\s*$",
+    _POLITE_COMMAND_PREFIX
+    + r"forget(?:\s+(?:that|about))?\s+(.+?)(?:\s+from\s+(?:saved\s+)?memor(?:y|ies))?"
+    r"(?:\s*,?\s+please)?[?.]?\s*$",
     re.I,
 )
 _MEMORY_DELETE_RE = re.compile(
@@ -613,7 +617,8 @@ def _commit_automatic_operations(source_message_id: str, operations: list[dict])
 
 
 def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) -> list[dict]:
-    thread, _, evidence = verify_source(thread_id, source_message_id)
+    thread, source, evidence = verify_source(thread_id, source_message_id)
+    source_created_at = source.get("createdAt")
 
     if _NEGATIVE_MEMORY_COMMAND_RE.fullmatch(evidence):
         return []
@@ -669,10 +674,17 @@ def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) ->
             or existing["projectId"] != scope.project_id
         ):
             continue
+        if (
+            isinstance(source_created_at, (int, float))
+            and existing["updatedAt"] > source_created_at
+        ):
+            continue
         seen_targets.add(target)
         if action == "forget":
             # Only explicit forget or correction evidence can remove saved state.
-            if content is None and _FORGET_EVIDENCE_RE.search(evidence):
+            if content is None and (
+                _forget_target(evidence) is not None or _CORRECTION_EVIDENCE_RE.search(evidence)
+            ):
                 prepared.append(
                     _automatic_operation(
                         action = "forget",

@@ -4791,23 +4791,33 @@ class TestApiMonitorProviderAndCompletionStreams:
                 provider_base_url = "https://api.openai.com/v1",
                 messages = [ChatMessage(role = "user", content = "hi")],
                 stream = True,
+                cancel_id = "external-stream-cancel",
             )
-
-            response = await _proxy_to_external_provider(payload, self._Request())
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                scope = {},
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            response = await openai_chat_completions(payload, request, current_subject = "test")
+            assert payload.cancel_id in inf_mod._CANCEL_REGISTRY
             iterator = response.body_iterator
             first = await anext(iterator)
             assert "hello" in first
 
             pending = asyncio.create_task(anext(iterator))
             await asyncio.sleep(0)
-            pending.cancel()
+            assert inf_mod._cancel_by_cancel_id_or_stash(payload.cancel_id) == 1
+            assert request.state.memory_cancel_event.is_set()
             with pytest.raises(asyncio.CancelledError):
-                await pending
+                await asyncio.wait_for(pending, timeout = 1)
 
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
+
+            assert payload.cancel_id not in inf_mod._CANCEL_REGISTRY
 
         asyncio.run(_run())
 

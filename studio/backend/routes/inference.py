@@ -7140,6 +7140,13 @@ async def _proxy_to_external_provider(
         api_key = api_key,
     )
 
+    cancel_event = getattr(request.state, "memory_cancel_event", None)
+    tracker = (
+        _TrackedCancel(cancel_event, payload.cancel_id, payload.session_id)
+        if cancel_event is not None
+        else None
+    )
+
     # `top_k` defaults to 20 in ChatCompletionRequest because the local path
     # expects an int, but the external-provider path treats "field omitted from
     # JSON" as "use provider default" so callers sending only model/messages
@@ -7172,10 +7179,35 @@ async def _proxy_to_external_provider(
             fast_mode = payload.fast_mode,
             stream = payload.stream,
         )
+
+        async def _next_line():
+            task = asyncio.create_task(anext(gen))
+            try:
+                while not task.done():
+                    if await _preheader_cancelled(
+                        cancel_event,
+                        request if hasattr(request, "is_disconnected") else None,
+                    ):
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        raise asyncio.CancelledError()
+                    await asyncio.sleep(0.05)
+                return task.result()
+            finally:
+                if not task.done():
+                    task.cancel()
+
         try:
             sent_done = False
             stream_failed = False
-            async for line in gen:
+            while True:
+                try:
+                    line = await _next_line()
+                except StopAsyncIteration:
+                    break
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
@@ -7207,19 +7239,29 @@ async def _proxy_to_external_provider(
             yield "data: [DONE]\n\n"
         finally:
             try:
-                await gen.aclose()
-            except RuntimeError:
-                pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
-            await client.close()
+                try:
+                    await gen.aclose()
+                except RuntimeError:
+                    pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+                await client.close()
+            finally:
+                if tracker is not None:
+                    tracker.__exit__(None, None, None)
 
-    return StreamingResponse(
+    response = _SameTaskStreamingResponse(
         _stream(),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+        unstarted_cleanup = _tracked_cancel_unstarted_cleanup(tracker)
+        if tracker is not None
+        else None,
     )
+    if tracker is not None:
+        tracker.__enter__()
+    return response
 
 
 # ── OpenAI shell-tool container management ───────────────────────
@@ -7585,6 +7627,7 @@ async def _openai_chat_completions_impl(
             )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
+        _new_chat_cancel_event()
         return await _proxy_to_external_provider(payload, request, current_subject)
 
     # Reject a malformed function tool here: it would otherwise reach
