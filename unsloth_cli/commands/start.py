@@ -1422,10 +1422,18 @@ _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
 
 def _claude_settings_overlay(model_id: str) -> str:
     # Session-only `claude --settings` overlay (command-line tier, no ~/.claude write):
-    # suppress the attribution header, and pin availableModels to the served model so a
-    # user allowlist can't reject it. The pin must be non-empty; [] is ignored.
+    # suppress the attribution header, keep every subagent on the served model (a user
+    # CLAUDE_CODE_SUBAGENT_MODEL pin would otherwise route delegated work off the local
+    # endpoint), and pin availableModels to the served model so a user allowlist can't
+    # reject it. The pin must be non-empty; [] is ignored.
     return json.dumps(
-        {"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}, "availableModels": [model_id]}
+        {
+            "env": {
+                "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+                "CLAUDE_CODE_SUBAGENT_MODEL": "inherit",
+            },
+            "availableModels": [model_id],
+        }
     )
 
 

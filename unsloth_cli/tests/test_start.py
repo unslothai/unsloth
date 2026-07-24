@@ -127,6 +127,8 @@ def test_claude_settings_overlay_pins_served_model():
     assert overlay["availableModels"] == [MODEL["id"]]
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    # Subagents fall through to the served model instead of a user's opus/sonnet pin.
+    assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
@@ -784,7 +786,10 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
-    assert "--settings" in result.output
+    command = _launch_command(result.output)
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+    assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
 
 
