@@ -683,21 +683,37 @@ def _load_repo_json_file(
         return None
 
 
-def _own_repo_auto_map_py_contents(model_name: str, hf_token: str | None = None) -> list[str]:
-    """Contents of every own-repo ``.py`` referenced by any remote-code config file."""
-    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES, _auto_map_refs
+def _remote_auto_map_py_contents(model_name: str, hf_token: str | None = None) -> list[str]:
+    """Executable remote-code sources transformers may load (own, helper, external).
 
-    filenames: set[str] = set()
+    Delegates to ``repo_remote_code_files`` so tier detection scans the same closure
+    as the consent gate: every present ``.py`` in the repo plus external ``auto_map``
+    targets (and their repos' helper modules). Fail-open on unscannable repos.
+    """
+    from utils.security.remote_code_scan import (
+        REMOTE_CODE_CONFIG_FILES,
+        RemoteCodeUnscannable,
+        _auto_map_refs,
+        repo_remote_code_files,
+    )
+
+    has_auto_map = False
     for cfg_name in REMOTE_CODE_CONFIG_FILES:
         cfg = _load_repo_json_file(model_name, cfg_name, hf_token)
-        if isinstance(cfg, dict):
-            filenames.update(fn for repo, fn in _auto_map_refs(cfg) if repo is None)
-    contents: list[str] = []
-    for fn in sorted(filenames):
-        text = _read_repo_text_file(model_name, fn, hf_token)
-        if text is not None:
-            contents.append(text)
-    return contents
+        if isinstance(cfg, dict) and _auto_map_refs(cfg):
+            has_auto_map = True
+            break
+    if not has_auto_map:
+        return []
+
+    try:
+        return list(repo_remote_code_files(model_name, hf_token).values())
+    except RemoteCodeUnscannable as exc:
+        logger.debug("Remote auto_map source scan incomplete for '%s': %s", model_name, exc)
+        return []
+    except Exception as exc:
+        logger.debug("Remote auto_map source scan failed for '%s': %s", model_name, exc)
+        return []
 
 
 def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) -> bool:
@@ -715,7 +731,7 @@ def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = Non
     if _env_offline() and not _safe_is_dir(Path(model_name)):
         return False
 
-    sources = _own_repo_auto_map_py_contents(model_name, hf_token)
+    sources = _remote_auto_map_py_contents(model_name, hf_token)
     result = _remote_auto_map_py_matches(_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, sources)
     if result:
         logger.info("Remote auto_map check: %s needs transformers 5.10.x", model_name)
@@ -728,13 +744,14 @@ def _tokenizer_auto_map_needs_v5(data: dict, model_name: str, hf_token: str | No
     from utils.security.remote_code_scan import _auto_map_refs
 
     for repo, fn in _auto_map_refs(data):
-        if repo is not None:
-            continue
-        text = _read_repo_text_file(model_name, fn, hf_token)
+        if repo is None:
+            text = _read_repo_text_file(model_name, fn, hf_token)
+        else:
+            text = _read_repo_text_file(repo, fn, hf_token)
         if text and _remote_auto_map_py_matches(_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, [text]):
             logger.info(
                 "Remote tokenizer auto_map check: %s/%s requires transformers 5.x",
-                model_name,
+                repo or model_name,
                 fn,
             )
             return True

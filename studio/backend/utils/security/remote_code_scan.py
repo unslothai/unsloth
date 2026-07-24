@@ -626,16 +626,19 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
     the referenced entry files). Returns False if any external repo cannot be listed or a
     file cannot be fetched, so the caller fails closed.
     """
-    from pathlib import Path
-
-    from huggingface_hub import hf_hub_download, list_repo_files
-
     # Group the explicit entry refs by external repo.
     entries: dict = {}
     for repo, fn in refs:
         if repo is None:
             continue
         entries.setdefault(repo, set()).add(fn)
+
+    if not entries:
+        return True
+
+    from pathlib import Path
+
+    from huggingface_hub import hf_hub_download, list_repo_files
 
     for repo, entry_files in entries.items():
         try:

@@ -605,6 +605,25 @@ class TestCheckConfigNeeds510:
         assert "modeling_layers" in text
         assert seen["url"].startswith("https://hf-mirror.example/org/custom-remote/raw/main/")
 
+    def test_tokenizer_external_auto_map_needs_v5(self, monkeypatch, tmp_path: Path):
+        """Tokenizer auto_map pointing at an external repo must be scanned."""
+        _tokenizer_class_cache.clear()
+        tc = {
+            "tokenizer_class": "CustomTokenizer",
+            "auto_map": {
+                "AutoTokenizer": ["other/tokenizer-repo--tokenization_x.CustomTokenizer", None],
+            },
+        }
+        (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
+
+        def _fake_read(model_name, filename, hf_token = None):
+            if model_name == "other/tokenizer-repo" and filename == "tokenization_x.py":
+                return "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+            return None
+
+        monkeypatch.setattr("utils.transformers_version._read_repo_text_file", _fake_read)
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
     def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
         """Older Gemma 4 config should stay on the 550 tier."""
         cfg = {
@@ -933,6 +952,50 @@ class TestGetTransformersTier:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_custom.py").write_text(
             "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_helper_auto_map_returns_510(self, tmp_path: Path):
+        """Helper modules imported by auto_map entry must be scanned (Codex #4)."""
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text("from helpers import sub\n")
+        helpers = tmp_path / "helpers"
+        helpers.mkdir()
+        (helpers / "sub.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_external_auto_map_repo_returns_510(self, monkeypatch, tmp_path: Path):
+        """External auto_map repos and their helpers must be scanned (Codex #4)."""
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {
+                "AutoModelForCausalLM": "evilorg/evilrepo--modeling_evil.Model",
+            },
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        scanned = {
+            "evilorg/evilrepo--modeling_evil.py": "from .helper import run\n",
+            "evilorg/evilrepo--helper.py": (
+                "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            ),
+        }
+
+        def _fake_repo_remote_code_files(model_name, hf_token = None):
+            assert model_name == str(tmp_path)
+            return scanned
+
+        monkeypatch.setattr(
+            "utils.security.remote_code_scan.repo_remote_code_files",
+            _fake_repo_remote_code_files,
         )
 
         assert get_transformers_tier(str(tmp_path)) == "510"
