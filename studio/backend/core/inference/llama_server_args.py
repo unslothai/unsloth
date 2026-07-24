@@ -497,7 +497,7 @@ def strip_shadowing_flags(
     row/none/layer choice intact. ``strip_device`` and ``strip_memory_mode`` are
     off by default (opt-in, like ``strip_offload`` / ``strip_tensor_split``): a user
     may pass ``--device`` / ``--mlock`` / ``--no-mmap`` when Unsloth has no opinion,
-    so they're stripped only when the caller sets gpu_ids / gguf_memory_mode. Enabling
+    so they're stripped only when the caller sets gpu_ids / host_memory_mode. Enabling
     them by default would silently drop those inherited pass-through flags on an Apply
     that omits the field.
     """

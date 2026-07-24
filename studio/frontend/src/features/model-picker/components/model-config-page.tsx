@@ -17,7 +17,7 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
-  type GgufMemoryMode,
+  type HostMemoryMode,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useGpuDevices } from "@/hooks/use-gpu-info";
@@ -84,7 +84,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
     config.selectedGpuIds != null ||
-    config.ggufMemoryMode != null
+    (config.hostMemoryMode ?? "default") !== "default"
   );
 }
 
@@ -95,7 +95,7 @@ function withoutUnsupportedDiffusionMemory(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
-    config.ggufMemoryMode == null
+    (config.hostMemoryMode ?? "default") === "default"
   ) {
     return config;
   }
@@ -104,7 +104,7 @@ function withoutUnsupportedDiffusionMemory(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
-    ggufMemoryMode: undefined,
+    hostMemoryMode: undefined,
   };
 }
 
@@ -432,10 +432,10 @@ function GpuMemorySettings({
           </InfoHint>
         </div>
         <Select
-          value={config.ggufMemoryMode ?? "auto"}
+          value={config.hostMemoryMode ?? "default"}
           onValueChange={(value) =>
             update({
-              ggufMemoryMode: value as GgufMemoryMode,
+              hostMemoryMode: value as HostMemoryMode,
             })
           }
         >
@@ -448,7 +448,7 @@ function GpuMemorySettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="auto">Default</SelectItem>
+            <SelectItem value="default">Default</SelectItem>
             <SelectItem value="pinned">Locked RAM</SelectItem>
             <SelectItem value="resident">RAM copy</SelectItem>
           </SelectContent>
@@ -756,7 +756,7 @@ export function ModelConfigPage({
     contextFetchKey != null &&
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" ||
-      config.ggufMemoryMode != null);
+      (config.hostMemoryMode ?? "default") !== "default");
   const resolvedIsDiffusion =
     isDiffusion || stagedDims?.isDiffusion === true;
 

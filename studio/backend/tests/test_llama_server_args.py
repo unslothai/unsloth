@@ -931,7 +931,7 @@ def test_strip_shadowing_flags_keeps_memory_mode_when_not_requested():
 def test_strip_shadowing_flags_default_keeps_memory_mode():
     # Memory-mode stripping is opt-in (like offload/tensor_split/device): the default
     # must PRESERVE inherited --mlock/--mmap/--no-mmap so an Apply that omits
-    # gguf_memory_mode doesn't silently drop a user's pass-through memory flag (#7188).
+    # host_memory_mode doesn't silently drop a user's pass-through memory flag (#7188).
     assert strip_shadowing_flags(["--mlock", "--no-mmap", "--mmap"]) == [
         "--mlock",
         "--no-mmap",
@@ -962,6 +962,6 @@ def test_strip_memory_mode_valueless_preserves_next_token(flag):
 
 
 def test_strip_memory_mode_kept_when_field_not_supplied():
-    # Pass-through preserved when the user didn't change gguf_memory_mode.
+    # Pass-through preserved when the user didn't change host_memory_mode.
     out = strip_shadowing_flags(["--mmap"], strip_memory_mode = False)
     assert out == ["--mmap"]

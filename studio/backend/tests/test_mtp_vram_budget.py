@@ -870,7 +870,7 @@ class TestExtraArgsMtpDetection:
         assert "llama_backend.hf_repo" in body
 
     def test_route_matcher_strips_memory_flags_from_explicit_extras(self):
-        # Strip only request-side memory flags so explicit auto can still trigger cleanup.
+        # Strip only request-side memory flags so explicit default can still trigger cleanup.
         routes_src = (
             Path(__file__).resolve().parent.parent / "routes" / "inference.py"
         ).read_text()
@@ -879,8 +879,8 @@ class TestExtraArgsMtpDetection:
         body = "".join(routes_src[start:end].split())
         # Gated on the VALUE, not model_fields_set: an explicit null must not strip,
         # so it dedupes as "no opinion" (#7188).
-        assert "_strip_mem=request.gguf_memory_modeisnotNone" in body
-        assert '"gguf_memory_mode"infields_set' not in body
+        assert "_strip_mem=request.host_memory_modeisnotNone" in body
+        assert '"host_memory_mode"infields_set' not in body
         # The request side is stripped and compared against the UNstripped backend.
         assert "_request_extra" in body
         assert "if_request_extra!=backend_extra:" in body

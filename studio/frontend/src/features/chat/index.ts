@@ -28,7 +28,7 @@ export {
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";
-export type { GgufMemoryMode, GgufVariantDetail } from "./types/api";
+export type { HostMemoryMode, GgufVariantDetail } from "./types/api";
 export {
   ChatSettingsPanel,
   ParamSlider,

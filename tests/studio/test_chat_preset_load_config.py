@@ -55,13 +55,16 @@ def test_apply_skips_missing_load_config():
 
 def test_host_memory_mode_round_trips_through_presets():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
-    assert '| "ggufMemoryMode"' in source
-    assert "partial.ggufMemoryMode ===" in source
-    assert "snapshot.ggufMemoryMode" in source
-    assert "ggufMemoryMode: config.ggufMemoryMode" in source
+    assert '| "hostMemoryMode"' in source
+    assert "partial.hostMemoryMode ===" in source
+    assert "snapshot.hostMemoryMode" in source
+    assert "hostMemoryMode: config.hostMemoryMode" in source
+    assert 'result.hostMemoryMode === "default"' in source
+    assert 'config.hostMemoryMode === "pinned"' in source
+    assert 'config.hostMemoryMode === "resident"' in source
 
     routes = _read("studio/backend/routes/chat_history.py")
-    assert 'ggufMemoryMode: Optional[Literal["auto", "pinned", "resident"]]' in routes
+    assert 'hostMemoryMode: Optional[Literal["default", "pinned", "resident"]]' in routes
 
 
 def test_hydration_does_not_replay_preset_load_config():

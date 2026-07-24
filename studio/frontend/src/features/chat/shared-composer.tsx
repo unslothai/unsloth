@@ -995,7 +995,7 @@ export function SharedComposer({
         gpuLayers: store.gpuLayers,
         nCpuMoe: store.nCpuMoe,
         splitRatio: store.splitRatio,
-        ggufMemoryMode: store.ggufMemoryMode,
+        hostMemoryMode: store.hostMemoryMode,
         // Reconcile the pick against the GPUs present now, like the model-switch
         // path: an early remember-restore can hold a stale cross-host pick that
         // /load would reject (the device cache is populated by send time).
@@ -1065,8 +1065,8 @@ export function SharedComposer({
                 ownConfig.selectedGpuIndexKind,
               )
             : compareLoadKnobs.selectedGpuIds;
-        const effectiveMemoryMode =
-          ownConfig.ggufMemoryMode ?? compareLoadKnobs.ggufMemoryMode;
+        const effectiveHostMemoryMode =
+          ownConfig.hostMemoryMode ?? compareLoadKnobs.hostMemoryMode;
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --
         // resolveFitMaxSeqLength would treat that as a pin and load this pane at
@@ -1111,7 +1111,7 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
-                gguf_memory_mode: effectiveMemoryMode,
+                host_memory_mode: effectiveHostMemoryMode,
               }
             : {}),
         });
@@ -1180,7 +1180,7 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                gguf_memory_mode: effectiveMemoryMode,
+                host_memory_mode: effectiveHostMemoryMode,
               }
             : {}),
         });

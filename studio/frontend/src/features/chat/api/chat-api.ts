@@ -170,7 +170,7 @@ export async function validateModel(
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
       // Keep validate and load on the same host-memory policy.
-      gguf_memory_mode: payload.gguf_memory_mode ?? null,
+      host_memory_mode: payload.host_memory_mode ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

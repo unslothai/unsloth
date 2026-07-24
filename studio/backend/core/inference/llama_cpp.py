@@ -2608,12 +2608,12 @@ class LlamaCppBackend:
 
     @property
     def memory_mode(self) -> Optional[str]:
-        """Canonical active GGUF memory mode; auto is None."""
+        """Canonical active GGUF host-memory mode; default is None."""
         return self._canonical_memory_mode(self._requested_memory_mode)
 
     @property
     def requested_memory_mode(self) -> Optional[str]:
-        """Raw mode for status responses, preserving explicit auto."""
+        """Raw mode for status responses, preserving explicit default."""
         return self._requested_memory_mode
 
     def matches_memory_mode(self, memory_mode: Optional[str]) -> bool:
@@ -6408,9 +6408,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _canonical_memory_mode(memory_mode: Optional[str]) -> Optional[str]:
-        """Normalize auto, blank, and None to the default mode."""
+        """Normalize default, blank, and None to no explicit policy."""
         mode = (memory_mode or "").strip().lower()
-        if mode in ("", "auto"):
+        if mode in ("", "default"):
             return None
         return mode
 

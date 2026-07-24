@@ -151,8 +151,8 @@ def _loaded_backend(**overrides):
     "mode,expected",
     [
         (None, []),
-        ("auto", []),
-        ("AUTO", []),
+        ("default", []),
+        ("DEFAULT", []),
         ("pinned", ["--mlock"]),
         ("PINNED", ["--mlock"]),
         ("resident", ["--no-mmap", "--mlock"]),
@@ -168,7 +168,7 @@ def test_memory_mode_flags_maps_modes(mode, expected):
     "mode,expected",
     [
         (None, []),
-        ("auto", []),
+        ("default", []),
         ("pinned", ["--load-mode", "mlock"]),
         ("resident", ["--load-mode", "none"]),
     ],
@@ -531,7 +531,7 @@ def test_gpu_ids_scrubs_inherited_llama_arg_device(tmp_path, monkeypatch, gpu_id
     [
         ("resident", "--mmap", "--no-mmap"),
         ("pinned", "--no-mmap", None),
-        ("auto", "--mlock", None),
+        ("default", "--mlock", None),
     ],
 )
 def test_memory_mode_strips_conflicting_extra_args(tmp_path, mode, user_flag, winning):
@@ -748,20 +748,20 @@ def test_explicit_gpu_ids_strips_stored_device_extra_args(tmp_path):
     assert "--top-k" in stored  # unrelated extras are preserved
 
 
-def test_memory_mode_auto_matches_none_in_target_state():
-    """An explicit 'auto' request should not reload a load that omitted the field."""
+def test_memory_mode_default_matches_none_in_target_state():
+    """An explicit default request should not reload a load that omitted the field."""
     backend = _loaded_backend()
     kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "auto"
+    kwargs["memory_mode"] = "default"
     assert backend._already_in_target_state(**kwargs) is True
 
 
-def test_explicit_auto_matches_child_with_authoritative_mem_env(monkeypatch):
+def test_explicit_default_matches_child_with_authoritative_mem_env(monkeypatch):
     """A live environment override makes the UI/API mode irrelevant."""
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     backend = _loaded_backend(_launched_with_inherited_mem_env = True)
     kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "auto"
+    kwargs["memory_mode"] = "default"
     assert backend._already_in_target_state(**kwargs) is True
 
 
@@ -773,10 +773,10 @@ def test_removed_mem_env_reloads_child_that_inherited_it():
     assert backend._already_in_target_state(**kwargs) is False
 
 
-def test_explicit_auto_matches_child_without_mem_env():
+def test_explicit_default_matches_child_without_mem_env():
     backend = _loaded_backend(_launched_with_inherited_mem_env = False)
     kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "auto"
+    kwargs["memory_mode"] = "default"
     assert backend._already_in_target_state(**kwargs) is True
 
 
@@ -806,33 +806,33 @@ def test_load_response_and_status_round_trip_placement_fields():
         is_gguf = True,
         inference = {},
         gpu_ids = [0, 1],
-        gguf_memory_mode = "resident",
+        host_memory_mode = "resident",
     )
     assert load_resp.gpu_ids == [0, 1]
-    assert load_resp.gguf_memory_mode == "resident"
+    assert load_resp.host_memory_mode == "resident"
 
     status_resp = InferenceStatusResponse(
         is_gguf = True,
         gpu_ids = [0, 1],
-        gguf_memory_mode = "pinned",
+        host_memory_mode = "pinned",
     )
     assert status_resp.gpu_ids == [0, 1]
-    assert status_resp.gguf_memory_mode == "pinned"
+    assert status_resp.host_memory_mode == "pinned"
 
 
 @pytest.mark.parametrize(
     "mode,expected_requested,expected_canonical",
     [
-        ("auto", "auto", None),
-        ("AUTO", "auto", None),
+        ("default", "default", None),
+        ("DEFAULT", "default", None),
         ("pinned", "pinned", "pinned"),
         (None, None, None),
     ],
 )
-def test_requested_memory_mode_preserves_explicit_auto(
+def test_requested_memory_mode_preserves_explicit_default(
     tmp_path, mode, expected_requested, expected_canonical
 ):
-    """Preserve explicit auto for status while canonicalizing it to None."""
+    """Preserve explicit default for status while canonicalizing it to None."""
     gguf = tmp_path / "model.gguf"
     _write_minimal_gguf(gguf)
     backend = _mem_env_backend(gguf)
@@ -864,7 +864,7 @@ def _mem_env_backend(gguf):
     return backend
 
 
-@pytest.mark.parametrize("mode", ["auto", "pinned", "resident", None])
+@pytest.mark.parametrize("mode", ["default", "pinned", "resident", None])
 def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
@@ -1054,7 +1054,7 @@ def test_remote_diffusion_cpu_only_pin_reaches_runner(tmp_path):
     assert captured["gpu_ids"] == [1]
 
 
-@pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])
+@pytest.mark.parametrize("mode", [None, "default", "DEFAULT", ""])
 def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
     """A diffusion load clears stale llama-server memory-mode state."""
     gguf = tmp_path / "diffusion.gguf"

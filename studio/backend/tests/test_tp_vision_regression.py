@@ -842,9 +842,9 @@ def _mem_loaded_backend(
     return b
 
 
-def test_explicit_auto_reloads_over_passthrough_mlock_in_extras():
+def test_explicit_default_reloads_over_passthrough_mlock_in_extras():
     """A server loaded with no memory_mode keeps a pass-through --mlock and is still
-    mlocked. An explicit "auto" repeating --mlock must NOT dedupe: stripping only the
+    mlocked. An explicit default repeating --mlock must NOT dedupe: stripping only the
     request side keeps the backend's --mlock visible, so the matcher reloads."""
     from models.inference import LoadRequest
 
@@ -852,16 +852,16 @@ def test_explicit_auto_reloads_over_passthrough_mlock_in_extras():
 
     req = LoadRequest(
         model_path = "owner/repo",
-        gguf_memory_mode = "auto",
+        host_memory_mode = "default",
         llama_extra_args = ["--mlock"],
     )
-    assert "gguf_memory_mode" in req.model_fields_set
+    assert "host_memory_mode" in req.model_fields_set
     backend = _mem_loaded_backend(memory_mode = None, extra_args = ["--mlock"])
     assert inference_routes._request_matches_loaded_settings(req, backend) is False
 
 
 def test_explicit_null_memory_mode_dedupes_over_passthrough_mlock():
-    """An explicit gguf_memory_mode=null (a client echoing the status response) is "no
+    """An explicit host_memory_mode=null (a client echoing the status response) is "no
     opinion", not a mode change. Pydantic marks it set, but the dedup gates the strip on
     the VALUE: null must NOT strip the request's --mlock, so a status-hydrated Apply
     dedupes to the running server (#7188)."""
@@ -871,11 +871,11 @@ def test_explicit_null_memory_mode_dedupes_over_passthrough_mlock():
 
     req = LoadRequest(
         model_path = "owner/repo",
-        gguf_memory_mode = None,
+        host_memory_mode = None,
         llama_extra_args = ["--mlock"],
     )
     # Pydantic marks an explicit null as set -- why gating on model_fields_set was wrong.
-    assert "gguf_memory_mode" in req.model_fields_set
+    assert "host_memory_mode" in req.model_fields_set
     backend = _mem_loaded_backend(memory_mode = None, extra_args = ["--mlock"])
     assert inference_routes._request_matches_loaded_settings(req, backend) is True
 
@@ -885,7 +885,7 @@ def test_memory_env_override_reloads_child_that_did_not_inherit_it(monkeypatch):
 
     inference_routes = _load_inference_routes_module()
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
-    req = LoadRequest(model_path = "owner/repo", gguf_memory_mode = None)
+    req = LoadRequest(model_path = "owner/repo", host_memory_mode = None)
     backend = _mem_loaded_backend(
         memory_mode = None,
         extra_args = None,
@@ -904,7 +904,7 @@ def test_explicit_pinned_dedupes_when_flags_already_applied():
 
     req = LoadRequest(
         model_path = "owner/repo",
-        gguf_memory_mode = "pinned",
+        host_memory_mode = "pinned",
         llama_extra_args = ["--mlock"],
     )
     backend = _mem_loaded_backend(memory_mode = "pinned", extra_args = None)

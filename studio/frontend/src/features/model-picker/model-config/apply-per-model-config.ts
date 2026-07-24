@@ -64,7 +64,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
         : config.selectedGpuIndexKind === undefined
           ? "physical"
           : config.selectedGpuIndexKind,
-    ggufMemoryMode: config.ggufMemoryMode ?? null,
+    hostMemoryMode: config.hostMemoryMode ?? null,
   });
 }
 
@@ -98,7 +98,7 @@ export function currentRuntimePerModelConfig(
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
     selectedGpuIndexKind: s.selectedGpuIndexKind,
-    ggufMemoryMode: s.ggufMemoryMode ?? undefined,
+    hostMemoryMode: s.hostMemoryMode ?? undefined,
   };
 }
 
@@ -133,7 +133,9 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
       ? "all"
       : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
     config.selectedGpuIndexKind ?? "untagged",
-    config.ggufMemoryMode ?? "unset",
+    config.hostMemoryMode == null || config.hostMemoryMode === "default"
+      ? "unset"
+      : config.hostMemoryMode,
   ].join("|");
 }
 

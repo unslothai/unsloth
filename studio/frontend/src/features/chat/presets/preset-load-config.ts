@@ -34,7 +34,7 @@ export type PresetLoadConfig = Pick<
   | "gpuMemoryMode"
   | "gpuLayers"
   | "nCpuMoe"
-  | "ggufMemoryMode"
+  | "hostMemoryMode"
 >;
 
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
@@ -81,11 +81,11 @@ export function normalizePresetLoadConfig(
       : null;
   const gpuMemoryMode =
     partial.gpuMemoryMode === "manual" ? ("manual" as const) : undefined;
-  const ggufMemoryMode =
-    partial.ggufMemoryMode === "auto" ||
-    partial.ggufMemoryMode === "pinned" ||
-    partial.ggufMemoryMode === "resident"
-      ? partial.ggufMemoryMode
+  const hostMemoryMode =
+    partial.hostMemoryMode === "default" ||
+    partial.hostMemoryMode === "pinned" ||
+    partial.hostMemoryMode === "resident"
+      ? partial.hostMemoryMode
       : undefined;
   let gpuLayers: number | undefined;
   if (typeof partial.gpuLayers === "number" && Number.isFinite(partial.gpuLayers)) {
@@ -121,10 +121,11 @@ export function normalizePresetLoadConfig(
     ...(gpuMemoryMode ? { gpuMemoryMode } : {}),
     ...(gpuLayers !== undefined ? { gpuLayers } : {}),
     ...(nCpuMoe !== undefined ? { nCpuMoe } : {}),
-    ...(ggufMemoryMode ? { ggufMemoryMode } : {}),
+    ...(hostMemoryMode ? { hostMemoryMode } : {}),
   };
 
-  return hasPresetLoadConfig(normalized) ? normalized : undefined;
+  const coalesced = coalesceDefaultLoadKnobs(normalized);
+  return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
 }
 
 export function hasPresetLoadConfig(
@@ -171,13 +172,12 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     ...(snapshot.nCpuMoe != null && snapshot.nCpuMoe > 0
       ? { nCpuMoe: snapshot.nCpuMoe }
       : {}),
-    ...(snapshot.ggufMemoryMode
-      ? { ggufMemoryMode: snapshot.ggufMemoryMode }
+    ...(snapshot.hostMemoryMode
+      ? { hostMemoryMode: snapshot.hostMemoryMode }
       : {}),
   };
-  return hasPresetLoadConfig(coalesceDefaultLoadKnobs(captured))
-    ? coalesceDefaultLoadKnobs(captured)
-    : undefined;
+  const coalesced = coalesceDefaultLoadKnobs(captured);
+  return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
 }
 
 function coalesceDefaultLoadKnobs(
@@ -199,6 +199,9 @@ function coalesceDefaultLoadKnobs(
   }
   if ((result.nCpuMoe ?? 0) === 0) {
     delete result.nCpuMoe;
+  }
+  if (result.hostMemoryMode === "default") {
+    delete result.hostMemoryMode;
   }
   return result;
 }
@@ -224,7 +227,7 @@ export function applyPresetLoadConfig(
     nCpuMoe: config.nCpuMoe,
     selectedGpuIds: store.selectedGpuIds,
     selectedGpuIndexKind: store.selectedGpuIndexKind,
-    ggufMemoryMode: config.ggufMemoryMode,
+    hostMemoryMode: config.hostMemoryMode,
   });
 }
 
@@ -252,6 +255,11 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.tensorParallel) {
     parts.push("TP");
+  }
+  if (config.hostMemoryMode === "pinned") {
+    parts.push("Host RAM locked");
+  } else if (config.hostMemoryMode === "resident") {
+    parts.push("RAM copy");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

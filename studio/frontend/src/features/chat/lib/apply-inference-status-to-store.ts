@@ -226,8 +226,8 @@ export function applyActiveModelStatusToStore(
   const incomingGpuIds = status.is_gguf
     ? requestedGpuIdsFromResponse(status)
     : null;
-  const incomingMemoryMode = status.is_gguf
-    ? (status.gguf_memory_mode ?? null)
+  const incomingHostMemoryMode = status.is_gguf
+    ? (status.host_memory_mode ?? null)
     : null;
   const gpuStatusChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
@@ -235,7 +235,7 @@ export function applyActiveModelStatusToStore(
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
     !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
     !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
-    prevState.activeMemoryMode !== incomingMemoryMode ||
+    prevState.loadedHostMemoryMode !== incomingHostMemoryMode ||
     prevState.loadedCustomContextLength !== gpuPin;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
@@ -249,8 +249,8 @@ export function applyActiveModelStatusToStore(
     prevState.selectedGpuIds,
     prevState.loadedGpuIds,
   );
-  const memoryModeEditPending =
-    prevState.ggufMemoryMode !== prevState.activeMemoryMode;
+  const hostMemoryModeEditPending =
+    prevState.hostMemoryMode !== prevState.loadedHostMemoryMode;
   const incomingGpuFields = loadedGpuMemoryFields(status);
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
@@ -273,7 +273,7 @@ export function applyActiveModelStatusToStore(
         selectedGpuIndexKind: prevState.selectedGpuIndexKind,
       }),
     ...(preserveSameModelEdits &&
-      memoryModeEditPending && { ggufMemoryMode: prevState.ggufMemoryMode }),
+      hostMemoryModeEditPending && { hostMemoryMode: prevState.hostMemoryMode }),
   };
 
   useChatRuntimeStore.setState({
@@ -344,7 +344,7 @@ export function applyActiveModelStatusToStore(
       gpuStatusFields),
     // Advance the loaded baseline without overwriting same-model edits.
     ...(seedLoadParams && {
-      activeMemoryMode: status.gguf_memory_mode ?? null,
+      loadedHostMemoryMode: status.host_memory_mode ?? null,
     }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&

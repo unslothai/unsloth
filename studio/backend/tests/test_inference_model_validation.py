@@ -43,26 +43,26 @@ from models.inference import ValidateModelRequest  # noqa: E402
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
-def test_blank_gguf_memory_mode_normalizes_to_auto(blank):
+def test_blank_host_memory_mode_normalizes_to_default(blank):
     # A form may serialize the llama.cpp default as ""; avoid a 422.
-    assert _base_load_request(gguf_memory_mode = blank).gguf_memory_mode == "auto"
+    assert _base_load_request(host_memory_mode = blank).host_memory_mode == "default"
     assert (
         ValidateModelRequest.model_validate(
-            {"model_path": "x", "gguf_memory_mode": blank}
-        ).gguf_memory_mode
-        == "auto"
+            {"model_path": "x", "host_memory_mode": blank}
+        ).host_memory_mode
+        == "default"
     )
 
 
-@pytest.mark.parametrize("mode", ["auto", "pinned", "resident"])
-def test_valid_gguf_memory_mode_preserved(mode):
-    assert _base_load_request(gguf_memory_mode = mode).gguf_memory_mode == mode
+@pytest.mark.parametrize("mode", ["default", "pinned", "resident"])
+def test_valid_host_memory_mode_preserved(mode):
+    assert _base_load_request(host_memory_mode = mode).host_memory_mode == mode
 
 
-def test_invalid_gguf_memory_mode_still_rejected():
+def test_invalid_host_memory_mode_still_rejected():
     # Non-blank typos must still fail Literal validation (only blanks are rescued).
     with pytest.raises(ValidationError):
-        _base_load_request(gguf_memory_mode = "resdent")
+        _base_load_request(host_memory_mode = "resdent")
 
 
 # ---------- ChatCompletionRequest tool_call_id walkback ----------

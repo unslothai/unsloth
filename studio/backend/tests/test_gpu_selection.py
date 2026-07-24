@@ -1027,11 +1027,12 @@ class TestRouteErrors(unittest.TestCase):
                 return_value = None,
             ),
         ):
-            resolved = asyncio.run(
+            resolved, uses_vulkan_ordinals = asyncio.run(
                 inference_route._resolve_gguf_gpu_ids_for_request(config, [1, 0])
             )
 
         self.assertEqual(resolved, [0, 1])
+        self.assertTrue(uses_vulkan_ordinals)
 
     def test_inference_route_validates_gpu_ids_for_gguf(self):
         import utils.hardware.hardware as hardware_mod
@@ -1079,16 +1080,6 @@ class TestRouteErrors(unittest.TestCase):
             ),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
-            # Pin the device so the test deterministically exercises the CUDA
-            # physical-ID resolver it patches, rather than drifting into the
-            # non-CUDA/Vulkan deferral branch on a GPU-less runner (whose
-            # "no GPU backend detected" message contains "not supported").
-            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
-            patch.object(
-                hardware_mod,
-                "resolve_requested_gpu_ids",
-                side_effect = ValueError("Invalid gpu_ids [0, 1]: rejected by test"),
-            ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
@@ -1343,7 +1334,7 @@ class TestRouteErrors(unittest.TestCase):
             extra_args_source = (model_id, None),
         )
         config = SimpleNamespace(is_gguf = True, gguf_variant = None)
-        request = LoadRequest(model_path = model_id, gguf_memory_mode = "resident")
+        request = LoadRequest(model_path = model_id, host_memory_mode = "resident")
         with patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend):
             out = inference_route._resolve_inherited_extra_args(request, config, model_id, None)
         self.assertNotIn("--mlock", out)

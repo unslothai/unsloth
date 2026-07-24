@@ -20,7 +20,7 @@ from pydantic import (
 
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
-GgufMemoryMode = Literal["auto", "pinned", "resident"]
+HostMemoryMode = Literal["default", "pinned", "resident"]
 
 
 class LoadRequest(BaseModel):
@@ -185,13 +185,13 @@ class LoadRequest(BaseModel):
             raise ValueError("tensor_split must have a positive total")
         return value
 
-    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+    host_memory_mode: Optional[HostMemoryMode] = Field(
         None,
         description = (
             "GGUF host-memory placement mode (llama.cpp --mlock/--no-mmap). These "
             "control system RAM residency and file mapping on the host, NOT GPU VRAM "
             "placement, so they do not by themselves keep offloaded weights pinned in "
-            "VRAM. Omit the field or use 'auto' to leave the loading policy to the "
+            "VRAM. Omit the field or use 'default' to leave the loading policy to the "
             "installed llama.cpp version. 'pinned' locks mapped host pages so the OS "
             "cannot page them out. 'resident' loads a RAM copy instead of mapping the "
             "file; on newer llama.cpp builds that copy cannot also be locked and may "
@@ -200,12 +200,12 @@ class LoadRequest(BaseModel):
         ),
     )
 
-    @field_validator("gguf_memory_mode", mode = "before")
+    @field_validator("host_memory_mode", mode = "before")
     @classmethod
-    def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
+    def normalize_blank_host_memory_mode(cls, value: Any) -> Any:
         # A blank form value leaves the policy to llama.cpp.
         if isinstance(value, str) and value.strip() == "":
-            return "auto"
+            return "default"
         return value
 
     llama_extra_args: Optional[List[str]] = Field(
@@ -275,7 +275,7 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
-    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+    host_memory_mode: Optional[HostMemoryMode] = Field(
         None,
         description = (
             "Intended GGUF host-memory placement mode; mirrors /load. "
@@ -283,12 +283,12 @@ class ValidateModelRequest(BaseModel):
         ),
     )
 
-    @field_validator("gguf_memory_mode", mode = "before")
+    @field_validator("host_memory_mode", mode = "before")
     @classmethod
-    def normalize_blank_gguf_memory_mode(cls, value: Any) -> Any:
+    def normalize_blank_host_memory_mode(cls, value: Any) -> Any:
         # Mirror LoadRequest and avoid a 422 for blank form values.
         if isinstance(value, str) and value.strip() == "":
-            return "auto"
+            return "default"
         return value
 
     include_context_length: bool = Field(
@@ -545,18 +545,18 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Effective GPU indices the model is using, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
     )
     requested_gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU indices requested by the user before fit-time narrowing, or "
-            "None for automatic selection."
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
         ),
     )
-    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+    host_memory_mode: Optional[HostMemoryMode] = Field(
         None,
-        description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
+        description = "Active GGUF host-memory placement mode. Only meaningful when is_gguf is True.",
     )
 
 
@@ -724,18 +724,18 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Effective GPU indices the model is using, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
     )
     requested_gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "GPU indices requested by the user before fit-time narrowing, or "
-            "None for automatic selection."
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
         ),
     )
-    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
+    host_memory_mode: Optional[HostMemoryMode] = Field(
         None,
-        description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
+        description = "Active GGUF host-memory placement mode. Only meaningful when is_gguf is True.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

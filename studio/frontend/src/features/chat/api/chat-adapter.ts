@@ -63,7 +63,7 @@ import {
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
-  GgufMemoryMode,
+  HostMemoryMode,
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -1502,7 +1502,7 @@ async function autoLoadSmallestModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
-    gguf_memory_mode?: GgufMemoryMode | null;
+    host_memory_mode?: HostMemoryMode | null;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1570,7 +1570,7 @@ async function autoLoadSmallestModel(): Promise<{
             config.selectedGpuIndexKind,
           )
         : null;
-    const effectiveMemoryMode = config.ggufMemoryMode ?? null;
+    const effectiveHostMemoryMode = config.hostMemoryMode ?? null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
     // The context pin is per-model too, so it comes from the saved config, not
@@ -1600,7 +1600,7 @@ async function autoLoadSmallestModel(): Promise<{
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
-              gguf_memory_mode: effectiveMemoryMode,
+              host_memory_mode: effectiveHostMemoryMode,
             }
           : {}),
       }))
@@ -1634,7 +1634,7 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
-            gguf_memory_mode: effectiveMemoryMode,
+            host_memory_mode: effectiveHostMemoryMode,
           }
         : {}),
     });
@@ -1934,7 +1934,7 @@ async function autoLoadSmallestModel(): Promise<{
         "unsloth/Qwen3.5-4B-MTP-GGUF",
         "UD-Q4_K_XL",
       );
-      const defaultMemoryMode = defaultConfig.ggufMemoryMode ?? null;
+      const defaultHostMemoryMode = defaultConfig.hostMemoryMode ?? null;
       if (rt.selectedGpuIds != null) {
         await ensureGpuDeviceCache();
       }
@@ -1952,7 +1952,7 @@ async function autoLoadSmallestModel(): Promise<{
           // model has no remembered settings to prefer).
           gpu_ids: defaultGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
-          gguf_memory_mode: defaultMemoryMode,
+          host_memory_mode: defaultHostMemoryMode,
         }))
       ) {
         toast.dismiss(toastId);
@@ -1983,7 +1983,7 @@ async function autoLoadSmallestModel(): Promise<{
         gpu_layers: GPU_LAYERS_AUTO,
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
-        gguf_memory_mode: defaultMemoryMode,
+        host_memory_mode: defaultHostMemoryMode,
       });
       saveSpeculativeType(specSettings.speculativeType);
       persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
