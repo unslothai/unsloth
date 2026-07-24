@@ -19,11 +19,14 @@ from core.inference.chat_template_helpers import (
     neutralize_think_markup_streaming,
     think_markup_holdback,
 )
+import random
+
 from routes.inference import (
     _ResponsesReasoningExtractor,
     _build_openai_passthrough_body,
     _extract_responses_reasoning,
     _openai_messages_for_passthrough,
+    _think_close_is_literal_in_span,
 )
 from models.inference import ChatCompletionRequest, ChatMessage
 
@@ -211,3 +214,57 @@ def test_streaming_finalize_flushes_holdback_before_content():
     flushed, buf2 = neutralize_think_markup_streaming(buf1, finalize = True)
     assert "</think>" not in flushed
     assert buf2 == ""
+
+
+def _oracle_literal(span: str, close_idx: int) -> bool:
+    """Pre-fix string-based literal-close computation, kept as the oracle."""
+    return _think_close_is_literal_in_span(span, close_idx)
+
+
+def test_span_parity_counters_match_string_oracle():
+    """The O(1) parity counters must reproduce the old growing-string result.
+
+    Feed a consumed span split into arbitrary chunks (so ``` fences and quotes
+    straddle chunk boundaries), then assert ``_think_close_is_literal`` equals
+    the pre-fix ``_think_close_is_literal_in_span`` over ``consumed + buffer``
+    for every close position in the live buffer.
+    """
+    rng = random.Random(7066)
+    alphabet = ['`', '"', "'", "a", " ", "\n", "```", '"`', "``", "'`'"]
+    close = "</think>"
+    for _ in range(4000):
+        # Build a consumed prefix as a list of chunks with heavy quote/fence use.
+        n_chunks = rng.randint(0, 6)
+        chunks = ["".join(rng.choice(alphabet) for _ in range(rng.randint(0, 5)))
+                  for _ in range(n_chunks)]
+        prefix = "".join(chunks)
+        # Live buffer holds a close tag plus surrounding quote/fence content.
+        pre = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 6)))
+        post = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 4)))
+        buffer = pre + close + post
+
+        ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+        for chunk in chunks:
+            ex._add_to_span(chunk)
+
+        close_idx = buffer.find(close)
+        got = ex._think_close_is_literal(buffer, close_idx)
+        want = _oracle_literal(prefix + buffer, len(prefix) + close_idx)
+        assert got == want, (chunks, buffer, close_idx, got, want)
+
+
+def test_literal_close_inside_fence_across_deltas_matches_oracle():
+    """Regression: a fenced literal </think> split over deltas stays reasoning."""
+    ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+    r1, v1 = ex.feed("here is code:\n```py\nprint('")
+    r2, v2 = ex.feed("</think>')\n```\ndone thinking</think>\nvisible")
+    reasoning = r1 + r2
+    rf, vf = ex.finish()
+    reasoning += rf
+    visible = v1 + v2 + vf
+    # The fenced </think> is neutralized content, not a structural close.
+    assert "</think>" not in reasoning
+    assert "print(" in reasoning
+    assert "done thinking" in reasoning
+    # Only the bare close after the fence ends the block.
+    assert visible.strip() == "visible"

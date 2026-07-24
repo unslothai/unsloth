@@ -10791,14 +10791,71 @@ class _ResponsesReasoningExtractor:
         # Cross-delta holdback for structured reasoning_content so split
         # literal markers cannot reassemble downstream (#7066).
         self._structured_buffer = ""
-        # Text already consumed from the CURRENT reasoning block; classification
-        # context so fence state and quote parity survive buffer truncation.
-        self._span_prefix = ""
+        # Classification context for the CURRENT reasoning block. The literal
+        # </think> check only needs the parity of ``` fences and of the flanking
+        # quote char over the already-consumed text; keep O(1) parity counters
+        # instead of the whole consumed string so a long reasoning block stays
+        # linear (a growing prefix string was O(n^2) per block).
+        self._reset_span()
         # reasoning_prefilled: the template inserts an unclosed <think>, so output begins inside
         # the block; start in reasoning until the first close tag. Existing callers pass False.
         self._in_reasoning = reasoning_prefilled
         # Splitting requires marker parsing; a prefilled open implies it.
         self._parse_think_markers = parse_think_markers or reasoning_prefilled
+
+    def _reset_span(self) -> None:
+        """Clear the consumed-span parity state at a structural block boundary."""
+        # Completed non-overlapping "```" fences in the consumed span, plus the
+        # greedy carry (0-2 trailing backticks not yet forming a fence). Together
+        # they reproduce ``consumed.count("```")`` incrementally across chunks.
+        self._fence_count = 0
+        self._fence_state = 0
+        # Single-char quote counts over the consumed span (backtick doubles as a
+        # quote flank, mirroring the old ``span.count(before, ...)``).
+        self._quote_counts = {'"': 0, "'": 0, "`": 0}
+        # Last char of the consumed span, needed as ``before`` when a close tag
+        # sits at buffer start (index 0) so its flank is the span's last char.
+        self._span_last_char = ""
+
+    def _add_to_span(self, chunk: str) -> None:
+        """Fold a newly consumed chunk into the O(1) parity counters."""
+        if not chunk:
+            return
+        self._quote_counts['"'] += chunk.count('"')
+        self._quote_counts["'"] += chunk.count("'")
+        self._quote_counts["`"] += chunk.count("`")
+        # Carry the pending backticks so a fence straddling the chunk boundary is
+        # counted exactly as ``str.count("```")`` over the full concatenation.
+        combined = "`" * self._fence_state + chunk
+        self._fence_count += combined.count("```")
+        self._fence_state = (len(combined) - len(combined.rstrip("`"))) % 3
+        self._span_last_char = chunk[-1]
+
+    def _think_close_is_literal(self, buffer: str, close_idx: int) -> bool:
+        """Literal-close check over consumed span + ``buffer[:close_idx]``.
+
+        Equivalent to the old ``_think_close_is_literal_in_span(span, idx)`` with
+        ``span = consumed + buffer`` and ``idx = len(consumed) + close_idx``, but
+        the consumed portion is summarized by parity counters and only the
+        bounded live ``buffer[:close_idx]`` is scanned.
+        """
+        # Fenced-code parity: consumed fences plus any completed by the pending
+        # carry meeting the live buffer, then fences fully inside the buffer.
+        combined = "`" * self._fence_state + buffer[:close_idx]
+        if (self._fence_count + combined.count("```")) % 2 == 1:
+            return True
+        end = close_idx + len(_RESPONSES_THINK_CLOSE)
+        before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
+        after = buffer[end] if end < len(buffer) else ""
+        if not before or not after:
+            return False
+        if before in "\"'`" and after in "\"'`":
+            # Odd count of the flanking quote before the tag means it opens a
+            # span, so the close tag is quoted content (not a structural close).
+            count = self._quote_counts[before] + buffer.count(before, 0, close_idx)
+            if count % 2 == 1:
+                return True
+        return False
 
     def feed(
         self,
@@ -10849,15 +10906,12 @@ class _ResponsesReasoningExtractor:
                         reasoning_parts.append(
                             self._buffer[:hold_start].replace(_RESPONSES_THINK_OPEN, "")
                         )
-                        self._span_prefix += self._buffer[:hold_start]
+                        self._add_to_span(self._buffer[:hold_start])
                         self._buffer = self._buffer[hold_start:]
                         break
                     # Quoted / backticked / fenced </think> is content (user
                     # echo, script discussion), not the end of reasoning (#7066).
-                    if _think_close_is_literal_in_span(
-                        self._span_prefix + self._buffer,
-                        len(self._span_prefix) + close_idx,
-                    ):
+                    if self._think_close_is_literal(self._buffer, close_idx):
                         from core.inference.chat_template_helpers import (
                             neutralize_think_markup,
                         )
@@ -10867,14 +10921,14 @@ class _ResponsesReasoningExtractor:
                         )
                         reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
                         consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
-                        self._span_prefix += self._buffer[:consumed]
+                        self._add_to_span(self._buffer[:consumed])
                         self._buffer = self._buffer[consumed:]
                         continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
                     )
                     self._buffer = self._buffer[close_idx + len(_RESPONSES_THINK_CLOSE) :]
-                    self._span_prefix = ""
+                    self._reset_span()
                     self._in_reasoning = False
                     continue
                 # Hold back a trailing partial of either marker: the close (clean split across chunks)
@@ -10886,7 +10940,7 @@ class _ResponsesReasoningExtractor:
                     break
                 emit = self._buffer[:-keep] if keep else self._buffer
                 reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
-                self._span_prefix += emit
+                self._add_to_span(emit)
                 self._buffer = self._buffer[-keep:] if keep else ""
                 break
 
@@ -10899,7 +10953,7 @@ class _ResponsesReasoningExtractor:
             if open_idx != -1:
                 visible_parts.append(self._buffer[:open_idx])
                 self._buffer = self._buffer[open_idx + len(_RESPONSES_THINK_OPEN) :]
-                self._span_prefix = ""
+                self._reset_span()
                 self._in_reasoning = True
                 continue
 
@@ -10955,10 +11009,7 @@ class _ResponsesReasoningExtractor:
                 if close_idx == -1:
                     reasoning_parts.append(buf.replace(_RESPONSES_THINK_OPEN, ""))
                     break
-                if _think_close_is_literal_in_span(
-                    self._span_prefix + buf,
-                    len(self._span_prefix) + close_idx,
-                ):
+                if self._think_close_is_literal(buf, close_idx):
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup,
                     )
@@ -10966,7 +11017,7 @@ class _ResponsesReasoningExtractor:
                     reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
                     reasoning_parts.append(neutralize_think_markup(_RESPONSES_THINK_CLOSE))
                     consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
-                    self._span_prefix += buf[:consumed]
+                    self._add_to_span(buf[:consumed])
                     buf = buf[consumed:]
                     continue
                 reasoning_parts.append(buf[:close_idx].replace(_RESPONSES_THINK_OPEN, ""))
@@ -10977,7 +11028,7 @@ class _ResponsesReasoningExtractor:
                 )
                 break
             self._in_reasoning = False
-            self._span_prefix = ""
+            self._reset_span()
             return "".join(reasoning_parts), "".join(visible_parts)
         return structured_tail, remaining.replace(_RESPONSES_THINK_CLOSE, "")
 
