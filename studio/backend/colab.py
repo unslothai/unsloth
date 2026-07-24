@@ -82,7 +82,6 @@ def _is_colab_runtime() -> bool:
 
 def _colab_login_credentials_path() -> Path:
     from auth.storage import DB_PATH
-
     return DB_PATH.parent / ".colab_notebook_login"
 
 
@@ -94,7 +93,6 @@ def _store_colab_login_credentials(username: str, password: str) -> None:
         path.write_text(f"{username}\n{password}\n")
         try:
             import os
-
             os.chmod(path, 0o600)
         except OSError:
             pass
@@ -147,7 +145,9 @@ def _finalize_colab_admin_password() -> "tuple[str, str] | None":
             update_password,
         )
     except Exception as e:
-        logger.warning(f"Could not load auth for Colab setup ({e}); Cloudflare link may be blocked.")
+        logger.warning(
+            f"Could not load auth for Colab setup ({e}); Cloudflare link may be blocked."
+        )
         return None
 
     try:
@@ -157,12 +157,16 @@ def _finalize_colab_admin_password() -> "tuple[str, str] | None":
             return _load_colab_login_credentials()
         password = get_bootstrap_password() or generate_bootstrap_password()
         if not update_password(username, password):
-            logger.warning("Could not finalize Colab admin password; Cloudflare link may be blocked.")
+            logger.warning(
+                "Could not finalize Colab admin password; Cloudflare link may be blocked."
+            )
             return None
         _store_colab_login_credentials(username, password)
         return username, password
     except Exception as e:
-        logger.warning(f"Could not finalize Colab admin password ({e}); Cloudflare link may be blocked.")
+        logger.warning(
+            f"Could not finalize Colab admin password ({e}); Cloudflare link may be blocked."
+        )
         return None
 
 
@@ -218,14 +222,14 @@ def _ready_card_html(
             embed_note = (
                 "Could not open a Cloudflare tunnel, so Studio may be unreachable on Colab. "
                 "Check the logs above and re-run this cell. Pass "
-                "<code style=\"background:#f3f3f3;padding:2px 6px;border-radius:4px;\">"
+                '<code style="background:#f3f3f3;padding:2px 6px;border-radius:4px;">'
                 "cloudflare=True</code> after fixing any tunnel errors."
             )
         else:
             embed_note = (
                 "Colab proxy links cannot be opened in a new tab (they 404 outside this "
-                "notebook). Re-run with <code style=\"background:#f3f3f3;padding:2px 6px;"
-                "border-radius:4px;\">start(cloudflare=True)</code> for a working link."
+                'notebook). Re-run with <code style="background:#f3f3f3;padding:2px 6px;'
+                'border-radius:4px;">start(cloudflare=True)</code> for a working link.'
             )
         return f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;

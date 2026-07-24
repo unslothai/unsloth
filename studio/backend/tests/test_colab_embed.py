@@ -142,7 +142,11 @@ def test_show_and_embed_prefers_kernel_port_iframe(monkeypatch):
     monkeypatch.setattr(
         colab,
         "show_link",
-        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: calls.append("show_link"),
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
     )
     monkeypatch.setattr(
         colab,
@@ -269,7 +273,11 @@ def test_show_and_embed_renders_cloudflare_before_colab_login(monkeypatch):
 
     monkeypatch.setattr(colab, "get_colab_url", lambda port: "https://8888-test.prod.colab.dev/")
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
-    monkeypatch.setattr(colab, "show_link", lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: None)
+    monkeypatch.setattr(
+        colab,
+        "show_link",
+        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: None,
+    )
     monkeypatch.setattr(colab, "_embed_kernel_port_iframe", lambda port: True)
     with patch.dict("sys.modules", {"IPython.display": ipython_display}):
         colab._show_and_embed(
@@ -288,7 +296,11 @@ def test_show_and_embed_skips_iframe_on_colab_when_cloudflare_ready(monkeypatch)
 
     monkeypatch.setattr(colab, "get_colab_url", lambda port: f"https://{port}-test.prod.colab.dev/")
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
-    monkeypatch.setattr(colab, "show_link", lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: None)
+    monkeypatch.setattr(
+        colab,
+        "show_link",
+        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: None,
+    )
     monkeypatch.setattr(
         colab,
         "_embed_kernel_port_iframe",
@@ -314,7 +326,11 @@ def test_show_and_embed_uses_kernel_helper_on_colab_runtime_despite_localhost(mo
     monkeypatch.setattr(
         colab,
         "show_link",
-        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: calls.append("show_link"),
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
     )
     monkeypatch.setattr(
         colab,
@@ -341,7 +357,11 @@ def test_show_and_embed_skips_kernel_helper_for_localhost_outside_colab(monkeypa
     monkeypatch.setattr(
         colab,
         "show_link",
-        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: calls.append("show_link"),
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
     )
     monkeypatch.setattr(
         colab,
