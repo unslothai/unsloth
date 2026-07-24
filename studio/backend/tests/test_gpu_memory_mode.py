@@ -702,6 +702,16 @@ def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
     assert "model_path = _preflight_model_path or self._download_gguf(" in src
 
 
+def test_local_vulkan_diffusion_preflight_runs_before_teardown():
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    local_preflight = src.index(
+        "self._reject_vulkan_diffusion_gpu_ids_before_teardown(\n"
+        "                    gguf_path,"
+    )
+    teardown = src.index("# ── Phase 1: kill old process")
+    assert local_preflight < teardown
+
+
 def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     backend = LlamaCppBackend()
     killed = []
@@ -731,6 +741,28 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
             hf_repo = "owner/model",
             hf_variant = "Q4_K_M",
             model_identifier = "owner/model",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
+
+
+def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_path):
+    gguf_path = tmp_path / "diffusion.gguf"
+    gguf_path.write_bytes(b"GGUF")
+
+    backend = LlamaCppBackend()
+    killed = []
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            gguf_path = str(gguf_path),
+            model_identifier = "local/diffusion",
             gpu_ids = [0],
         )
 
