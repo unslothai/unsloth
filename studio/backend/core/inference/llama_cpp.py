@@ -2501,9 +2501,42 @@ class LlamaCppBackend:
     @property
     def requested_gpu_ids(self) -> Optional[List[int]]:
         """RAW requested GPU pin (before the fit narrowed it), or None for auto.
-        gpu_ids echoes the EFFECTIVE pin for /status; dedupe compares this raw one so a
-        narrowed-then-re-sent pick matches rather than needlessly reloading (#7239)."""
+        gpu_ids echoes the EFFECTIVE pin for /status."""
         return self._requested_gpu_ids
+
+    def matches_gpu_ids(self, gpu_ids: Optional[List[int]]) -> bool:
+        """Whether a requested pin is already satisfied by the active runner.
+
+        A regular GGUF load may narrow the requested placement pool to the
+        smallest fitting subset. Accept both the original request and the
+        effective status-echoed subset so either can round-trip without a
+        needless reload. Diffusion drives one device and keeps its existing
+        lowest-device normalization.
+        """
+        if self._is_diffusion:
+            requested = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+            return requested == (self._gpu_ids or None)
+
+        requested = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        raw = self._requested_gpu_ids or None
+        effective = self._gpu_ids or None
+        return requested == raw or requested == effective
+
+    def _record_matching_gpu_request(self, gpu_ids: Optional[List[int]]) -> None:
+        """Adopt the caller's explicit pool after a full already-loaded match.
+
+        Matching an effective subset avoids a reload, but the incoming request
+        is still the user's latest placement intent. Record it so status and a
+        later reload do not restore GPUs the user just removed.
+        """
+        if self._is_diffusion:
+            self._requested_gpu_ids = [sorted(int(x) for x in gpu_ids)[0]] if gpu_ids else None
+        else:
+            self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        if self._last_load_kwargs is not None:
+            self._last_load_kwargs["gpu_ids"] = (
+                list(self._requested_gpu_ids) if self._requested_gpu_ids else None
+            )
 
     @property
     def n_layers(self) -> Optional[int]:
@@ -4592,6 +4625,14 @@ class LlamaCppBackend:
             LlamaCppBackend._gguf_skip_value(f, atype)
         return None
 
+    @classmethod
+    def _gguf_path_is_diffusion(cls, gguf_path: str, model_identifier: str) -> bool:
+        """Classify a downloaded GGUF without mutating the active backend."""
+        probe = object.__new__(cls)
+        probe._model_identifier = model_identifier
+        probe._read_gguf_metadata(gguf_path)
+        return probe._is_diffusion
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -5047,9 +5088,10 @@ class LlamaCppBackend:
         # above), not the whole pick, and clears any explicit pin from a prior
         # chat load; a multi-GPU list would misreport placement and mis-dedup.
         self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
-        # Keep the raw-pin record in sync so a stale value can't leak (diffusion
-        # dedupe still compares the collapsed effective pin, not this) (#7239).
-        self._requested_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
+        # The frontend prefers requested_gpu_ids when hydrating the picker.
+        # Diffusion uses only one device, so echo the collapsed effective pin,
+        # not unused members of the original request.
+        self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -6174,8 +6216,8 @@ class LlamaCppBackend:
         gpu_layers: int = -1,
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
-        # Explicit physical GPU selection (issue #7164). None/[] = auto-select;
-        # when set, restricts llama-server to exactly these GPUs.
+        # Explicit GPU placement pool (issue #7164). None/[] = auto-select;
+        # the fitter may pin the smallest subset of this pool that fits.
         gpu_ids: Optional[List[int]] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
@@ -6295,6 +6337,37 @@ class LlamaCppBackend:
                         f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
+            # A remote uncached GGUF may only reveal that it needs the
+            # single-device diffusion runner after download. On Vulkan, an
+            # explicit gpu_ids request cannot be mapped from ggml ordinals to
+            # that runner's CUDA physical index. Download and classify the main
+            # file before killing the healthy server so this late rejection is
+            # non-destructive. The Phase 2 call below reuses this cached path.
+            _preflight_model_path = None
+            if is_vulkan_backend and gpu_ids and hf_repo:
+                _resolved_repo = _resolve_repo_id_casing(hf_repo)
+                if _resolved_repo != hf_repo:
+                    logger.info(
+                        "Using cached repo_id casing '%s' for requested '%s'",
+                        _resolved_repo,
+                        hf_repo,
+                    )
+                    hf_repo = _resolved_repo
+                with _hf_offline_if_dns_dead():
+                    _preflight_model_path = self._download_gguf(
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = hf_token,
+                    )
+                if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
+                    raise ValueError(
+                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                        "its device by CUDA physical index, which has no defined mapping "
+                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                        "device."
+                    )
+
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:
                 self._kill_process()
@@ -6320,7 +6393,7 @@ class LlamaCppBackend:
                     )
                     hf_repo = _resolved_repo
                 with _hf_offline_if_dns_dead():
-                    model_path = self._download_gguf(
+                    model_path = _preflight_model_path or self._download_gguf(
                         hf_repo = hf_repo,
                         hf_variant = hf_variant,
                         hf_token = hf_token,
@@ -6371,11 +6444,9 @@ class LlamaCppBackend:
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
                 # The diffusion runner pins its child by CUDA visibility mask, so a
-                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback). The
-                # route's _classify_diffusion_gguf rejects this up front for every LOCAL
-                # and cached-header GGUF (no kill); this covers only the residual it
-                # cannot classify pre-load -- a REMOTE uncached GGUF whose arch is first
-                # known here, after the Phase 1 kill. Reject rather than mis-pin (#7239).
+                # ggml Vulkan ordinal cannot be honored (wrong GPU / CPU fallback).
+                # Route and remote-download preflights reject before teardown; keep
+                # this as a final defense if classification ever disagrees.
                 if is_vulkan_backend and gpu_ids:
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
@@ -8812,17 +8883,6 @@ class LlamaCppBackend:
             return False
         if (self._model_identifier or "").lower() != (model_identifier or "").lower():
             return False
-        # Explicit GPU pin (issue #7164): toggling it changes the launch command /
-        # child env, so a duplicate /load that flips it must reload. The diffusion
-        # runner collapses a multi-GPU pick, so comparing raw-vs-recorded would always
-        # mismatch; skip it for diffusion (the GPU pick is still compared, collapsed,
-        # below), mirroring routes/inference.py (#7239).
-        if not self._is_diffusion:
-            _req_gpu_ids = sorted(int(x) for x in gpu_ids) if gpu_ids else None
-            # Compare the RAW requested pin, not the fit-narrowed self._gpu_ids, so a
-            # [0, 1] narrowed to [0] and re-sent as [0, 1] still dedupes (#7239).
-            if _req_gpu_ids != (getattr(self, "_requested_gpu_ids", None) or None):
-                return False
         # Direct-file loads pass hf_variant=None while the backend stores an
         # extracted filename label; compare paths to keep the guard symmetric.
         if gguf_path is not None and self._gguf_path:
@@ -8886,21 +8946,11 @@ class LlamaCppBackend:
                 )
             ):
                 return False
-        # A changed GPU pick must reload (compare order-insensitively; None/[]
-        # both mean automatic). The diffusion runner collapses a multi-GPU pick
-        # to its single lowest device, so self._gpu_ids holds just that device;
-        # normalize the request the same way, or a multi-GPU pick that resolves
-        # to the same device needlessly reloads.
-        if self._is_diffusion:
-            requested_gpu_pick = [sorted(gpu_ids)[0]] if gpu_ids else None
-            if (self._gpu_ids or None) != requested_gpu_pick:
-                return False
-        else:
-            # Compare the raw requested pin (not the fit-narrowed self._gpu_ids) so a
-            # narrowed-then-re-sent pick still dedupes; consistent with above (#7239).
-            requested_gpu_pick = sorted(gpu_ids) if gpu_ids else None
-            if (getattr(self, "_requested_gpu_ids", None) or None) != requested_gpu_pick:
-                return False
+        # A changed GPU pick must reload. Regular GGUF accepts either the raw
+        # requested placement pool or the effective status-echoed subset;
+        # diffusion compares its normalized single-device pick.
+        if not self.matches_gpu_ids(gpu_ids):
+            return False
 
         # Compare on the canonical requested mode. With --spec-type in
         # extra_args the backend stores None; mirror that here.
@@ -8957,6 +9007,7 @@ class LlamaCppBackend:
             current = list(self._extra_args) if self._extra_args is not None else []
             if list(extra_args) != current:
                 return False
+        self._record_matching_gpu_request(gpu_ids)
         return True
 
     def _classify_gpu_offload(

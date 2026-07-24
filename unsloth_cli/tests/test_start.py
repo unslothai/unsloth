@@ -127,6 +127,8 @@ def test_claude_settings_overlay_pins_served_model():
     assert overlay["availableModels"] == [MODEL["id"]]
     # The attribution-header suppression is preserved alongside it.
     assert overlay["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    # Subagents fall through to the served model instead of a user's opus/sonnet pin.
+    assert overlay["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
 
 
 def test_install_agent_prompts_then_installs(monkeypatch):
@@ -619,51 +621,223 @@ def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
     assert not (tmp_path / "model-catalog.json").exists()
 
 
-def test_write_codex_subagent_config_keeps_parent_model_out(tmp_path, monkeypatch):
+def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     local = {**MODEL, "id": MODEL["id"] + ":UD-Q4_K_XL"}
-    path = start.write_codex_subagent_config(BASE, "private-token", local, tmp_path)
-    agent = _parse_toml(path.read_text())
-    assert agent["name"] == "unsloth"
-    assert "local agent" in agent["description"].lower()
-    assert agent["model_provider"] == start._CODEX_PROFILE
-    assert agent["model"] == local["id"]
-    assert agent["model_context_window"] == MODEL["context_length"]
-    assert agent["model_providers"][start._CODEX_PROFILE] == {
-        "name": "Unsloth Studio",
-        "base_url": f"{BASE}/v1",
-        "wire_api": "responses",
-        "auth": {
-            "command": sys.executable,
-            "args": [
-                "-c",
-                "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
-                str(tmp_path / "unsloth-auth.json"),
-            ],
-            "timeout_ms": 5000,
-        },
+    path = start.write_codex_subagent_bridge(
+        BASE,
+        "private-token",
+        local,
+        tmp_path,
+        yolo = False,
+    )
+    assert json.loads(path.read_text()) == {
+        "api_key": "private-token",
+        "codex_home": str(tmp_path / "child"),
+        "bypass_permissions": False,
     }
-    assert json.loads((tmp_path / "unsloth-auth.json").read_text()) == {"token": "private-token"}
-    catalog = json.loads((tmp_path / agent["model_catalog_json"]).read_text())
+    assert path.stat().st_mode & 0o077 == 0
+    profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == local["id"]
+    assert profile["model_provider"] == start._CODEX_PROFILE
+    assert profile["model_context_window"] == MODEL["context_length"]
+    config = _parse_toml((tmp_path / "child" / "config.toml").read_text())
+    assert config["model_providers"][start._CODEX_PROFILE]["base_url"] == f"{BASE}/v1"
+    catalog = json.loads((tmp_path / "child" / profile["model_catalog_json"]).read_text())
     assert catalog["models"][0]["slug"] == local["id"]
 
 
+def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "config.toml").write_text('model = "cloud-model"\n')
+    (source / "auth.json").write_text('{"auth": "cloud"}\n')
+    (source / "sessions").mkdir()
+    (source / "AGENTS.override.md").write_text("Keep my existing instructions.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
+
+    assert (overlay / "config.toml").read_text() == 'model = "cloud-model"\n'
+    assert (overlay / "auth.json").read_text() == '{"auth": "cloud"}\n'
+    assert (overlay / "sessions").is_dir()
+    instructions = (overlay / "AGENTS.override.md").read_text()
+    assert instructions.startswith("Keep my existing instructions.\n")
+    assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
+    assert not (overlay / "AGENTS.md").exists()
+    assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
+    assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
+
+
+def test_write_codex_parent_overlay_refreshes_reused_entries(tmp_path, monkeypatch):
+    first = tmp_path / "first-codex"
+    first.mkdir()
+    (first / "auth.json").write_text('{"auth": "old"}\n')
+    (first / "old-only.toml").write_text("old\n")
+    second = tmp_path / "second-codex"
+    second.mkdir()
+    (second / "auth.json").write_text('{"auth": "new"}\n')
+    overlay_path = tmp_path / "managed" / "parent"
+
+    monkeypatch.setenv("CODEX_HOME", str(first))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+    assert (overlay / "auth.json").read_text() == '{"auth": "old"}\n'
+    assert (overlay / "old-only.toml").exists()
+
+    monkeypatch.setenv("CODEX_HOME", str(second))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+    assert (overlay / "auth.json").read_text() == '{"auth": "new"}\n'
+    assert not (overlay / "old-only.toml").exists()
+
+
+def test_write_codex_parent_overlay_does_not_use_itself_as_source(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "auth.json").write_text('{"auth": "cloud"}\n')
+    overlay_path = tmp_path / "managed" / "parent"
+    monkeypatch.setenv("CODEX_HOME", str(source))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+
+    monkeypatch.setenv("CODEX_HOME", str(overlay))
+    overlay = start.write_codex_parent_overlay(overlay_path)
+
+    assert (overlay / "auth.json").read_text() == '{"auth": "cloud"}\n'
+    manifest = json.loads((overlay / start._CODEX_PARENT_OVERLAY_MANIFEST).read_text())
+    assert manifest["source_home"] == str(source)
+
+
+def test_write_codex_parent_overlay_refreshes_fallback_copies(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    config = source / "config.toml"
+    config.write_text('model = "first"\n')
+    sessions = source / "sessions"
+    sessions.mkdir()
+    (sessions / "existing.jsonl").write_text("existing session\n")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    monkeypatch.setattr(start, "_create_directory_junction", lambda source, target: False)
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
+    (overlay / "history.jsonl").write_text("session state\n")
+    config.write_text('model = "second"\n')
+
+    overlay = start.write_codex_parent_overlay(overlay)
+
+    assert (overlay / "config.toml").read_text() == 'model = "second"\n'
+    assert (overlay / "sessions" / "existing.jsonl").read_text() == "existing session\n"
+    assert (overlay / "history.jsonl").read_text() == "session state\n"
+
+    config.unlink()
+    overlay = start.write_codex_parent_overlay(overlay)
+    assert not (overlay / "config.toml").exists()
+    assert (overlay / "history.jsonl").read_text() == "session state\n"
+
+
+def test_create_directory_junction_uses_windows_mklink(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(start.os, "name", "nt")
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+
+    assert start._create_directory_junction(source, target) is True
+    assert captured["command"] == [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "mklink",
+        "/J",
+        str(target),
+        str(source),
+    ]
+    assert captured["kwargs"] == {
+        "capture_output": True,
+        "text": True,
+        "timeout": 30,
+        "check": False,
+    }
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
-def test_codex_subagent_auth_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
+def test_write_codex_parent_overlay_uses_windows_home_for_windows_codex(tmp_path, monkeypatch):
+    windows_profile = tmp_path / "windows-profile"
+    source = windows_profile / ".codex"
+    source.mkdir(parents = True)
+    (source / "auth.json").write_text('{"auth": "windows"}\n')
+    executable = "/mnt/c/Users/x/AppData/Roaming/npm/codex"
+    monkeypatch.delenv("CODEX_HOME", raising = False)
+    monkeypatch.delenv("USERPROFILE", raising = False)
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
-    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    monkeypatch.setattr(start.shutil, "which", lambda _: executable)
+
+    def check_output(command, **kwargs):
+        if command[0] == "cmd.exe":
+            assert kwargs["cwd"] == str(Path(executable).parent)
+            return r"C:\Users\x" + "\n"
+        assert command == ["wslpath", "-u", r"C:\Users\x"]
+        return str(windows_profile) + "\n"
+
+    monkeypatch.setattr(start.subprocess, "check_output", check_output)
+
+    overlay = start.write_codex_parent_overlay(tmp_path / "managed" / "parent")
+
+    assert (overlay / "auth.json").read_text() == '{"auth": "windows"}\n'
+
+
+def test_codex_parent_overlay_launch_uses_private_temp_root_and_cleans_up(tmp_path, monkeypatch):
+    source = tmp_path / "user-codex"
+    source.mkdir()
+    (source / "auth.json").write_text("{}\n")
+    monkeypatch.setenv("CODEX_HOME", str(source))
+    agents_root = tmp_path / "agents"
+    monkeypatch.setattr(start, "_agents_config_root", lambda: agents_root)
+
+    with start._codex_parent_overlay(tmp_path / "session", launch = True, persist = False) as overlay:
+        assert overlay.parent == agents_root / ".tmp"
+        assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in (overlay / "AGENTS.md").read_text()
+        assert overlay.exists()
+
+    assert not overlay.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_codex_subagent_bridge_uses_wsl_for_windows_codex(monkeypatch, tmp_path):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil,
         "which",
         lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/codex.exe",
     )
-
-    path = start.write_codex_subagent_config(BASE, "private-token", MODEL, tmp_path)
-    auth = _parse_toml(path.read_text())["model_providers"][start._CODEX_PROFILE]["auth"]
-
-    assert auth["command"] == "wsl.exe"
-    assert auth["args"][:5] == ["-d", "Ubuntu", "--", sys.executable, "-c"]
-    assert auth["args"][-1] == str(tmp_path / "unsloth-auth.json")
+    flags = start._codex_subagent_flags(tmp_path / "subagent.json")
+    prefix = f"mcp_servers.{start._CODEX_SUBAGENT_MCP_SERVER}="
+    override = next(value for value in flags if value.startswith(prefix))
+    server = _parse_toml("server = " + override.removeprefix(prefix))["server"]
+    assert server["command"] == "wsl.exe"
+    assert server["args"] == [
+        "-d",
+        "Ubuntu",
+        "--",
+        sys.executable,
+        "-c",
+        server["args"][5],
+        str(tmp_path / "subagent.json"),
+    ]
+    assert "sys.path.insert" in server["args"][5]
+    assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][5]
+    assert server["required"] is True
+    assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
+    assert server["default_tools_approval_mode"] == "approve"
+    assert not any(value.startswith("developer_instructions=") for value in flags)
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
@@ -784,7 +958,10 @@ def test_connect_claude_no_launch(fake_studio):
     _assert_env_set(result.output, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "90")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     # Overlay is passed inline (session-only), not a path into the user's ~/.claude.
-    assert "--settings" in result.output
+    command = _launch_command(result.output)
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"] == "inherit"
+    assert "--plugin-dir" not in command
     assert ".claude/settings.json" not in result.output
 
 
@@ -808,7 +985,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
         "--plugin-dir",
         str(plugin),
         "--allowedTools",
-        start._CLAUDE_SUBAGENT_TOOL,
+        f"{start._CLAUDE_SUBAGENT_TOOL},{start._CLAUDE_SUBAGENT_PLAN_TOOL}",
         "hello",
     ]
     assert "--model" not in command
@@ -836,6 +1013,7 @@ def test_connect_claude_as_subagent_preserves_cloud_parent(fake_studio, tmp_path
     }
     skill = (plugin / "skills" / "local-agent" / "SKILL.md").read_text()
     assert "spawn an Unsloth agent or local agent" in skill
+    assert "In plan mode" in skill
     assert "Ask Claude to spawn an Unsloth or local agent." in result.output
 
 
@@ -872,6 +1050,27 @@ def test_connect_claude_compact_window_omitted_without_context(fake_studio, monk
     assert result.exit_code == 0, result.output
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in result.output
     assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in result.output
+
+
+def test_launch_native_posix_child_gets_current_pwd(fake_studio, monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/stale/outer/repo")
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+
+    def run(command, env):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+
+    result = CliRunner().invoke(start.start_app, ["opencode"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["command"][0] == "/usr/local/bin/opencode"
+    if os.name != "nt":
+        assert captured["env"]["PWD"] == os.getcwd()
 
 
 def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
@@ -990,6 +1189,11 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
 
 def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, monkeypatch):
     monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    source_home = tmp_path / "user-codex"
+    source_home.mkdir()
+    (source_home / "config.toml").write_text('model = "cloud-model"\n')
+    (source_home / "AGENTS.md").write_text("Keep the user's guidance.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
     result = CliRunner().invoke(
         start.start_app,
         [
@@ -1003,20 +1207,34 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[0] == "codex"
-    assert command[1:3] == ["--enable", "multi_agent"]
-    assert "agents.max_depth=1" in command
     assert "--oss" not in command
     assert "--profile" not in command
     assert "--model" not in command
-    assert "CODEX_HOME" not in result.output
+    parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
+    _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
     assert start._CODEX_ENV_KEY not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
-    agent_path = home / "unsloth.toml"
-    agent = _parse_toml(agent_path.read_text())
-    assert agent["model"] == MODEL["id"] + ":UD-Q4_K_XL"
-    assert "env_key" not in agent["model_providers"][start._CODEX_PROFILE]
-    assert f"agents.unsloth.config_file={json.dumps(str(agent_path))}" in command
+    bridge_path = home / "subagent.json"
+    bridge = json.loads(bridge_path.read_text())
+    assert bridge["api_key"] == "sk-unsloth-feedfacefeedface"
+    assert bridge["codex_home"] == str(home / "child")
+    assert bridge["bypass_permissions"] is False
+    profile = _parse_toml((home / "child" / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == MODEL["id"] + ":UD-Q4_K_XL"
+    prefix = f"mcp_servers.{start._CODEX_SUBAGENT_MCP_SERVER}="
+    override = next(value for value in command if value.startswith(prefix))
+    assert override.startswith(prefix)
+    server = _parse_toml("server = " + override.removeprefix(prefix))["server"]
+    assert server["command"] == sys.executable
+    assert server["args"] == ["-c", server["args"][1], str(bridge_path)]
+    assert "sys.path.insert" in server["args"][1]
+    assert f"from {start._CODEX_SUBAGENT_MCP_MODULE} import main" in server["args"][1]
+    assert server["enabled_tools"] == [start._CODEX_SUBAGENT_MCP_TOOL]
+    assert not any(value.startswith("developer_instructions=") for value in command)
+    parent_instructions = (parent_home / "AGENTS.md").read_text()
+    assert parent_instructions.startswith("Keep the user's guidance.\n")
+    assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in parent_instructions
     assert "Ask Codex to spawn an Unsloth or local agent." in result.output
 
 
@@ -1764,6 +1982,118 @@ def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
     env = captured["kwargs"]["env"]
     assert env["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
+def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
+    # Sampling pins ride to the child server through UNSLOTH_SAMPLING_*; unset ones stay absent
+    # so the backend keeps the per-model recommendation.
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["kwargs"] = kwargs
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    for _v in ("TEMPERATURE", "TOP_P", "TOP_K", "MIN_P", "REPETITION_PENALTY", "PRESENCE_PENALTY"):
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+
+    # No sampling flags -> nothing forwarded.
+    start._start_studio_server("http://127.0.0.1:8888", "unsloth/M-GGUF", start.LoadOptions())
+    env = captured["kwargs"]["env"]
+    assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in env)
+
+    # Pins are forwarded; unset ones stay absent.
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(temperature = 0.3, top_k = 40, min_p = 0.05),
+    )
+    env = captured["kwargs"]["env"]
+    assert env["UNSLOTH_SAMPLING_TEMPERATURE"] == "0.3"
+    assert env["UNSLOTH_SAMPLING_TOP_K"] == "40"
+    assert env["UNSLOTH_SAMPLING_MIN_P"] == "0.05"
+    assert "UNSLOTH_SAMPLING_TOP_P" not in env
+
+
+def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, capsys):
+    # Attaching to an already-running server can't apply UNSLOTH_SAMPLING_* pins (only
+    # _start_studio_server forwards them), so a sampling flag on the attach path must warn
+    # instead of being silently dropped while the command "succeeds".
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        launch = True,
+        server_options = start.ServerOptions(temperature = 0.3, top_k = 40),
+    )
+    assert base == BASE
+    assert server is None  # attach path: we did not start the server
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert "--temperature" in err and "--top-k" in err
+    # Only the pinned fields are named; an unset one is not.
+    assert "--top-p" not in err
+
+
+def test_require_studio_no_sampling_warning_without_pins(monkeypatch, capsys):
+    # Reusing a server with no sampling pins stays silent (tool flags are out of scope here).
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(enable_tools = True),
+    )
+    assert base == BASE and server is None
+    assert "sampling" not in capsys.readouterr().err.lower()
+
+
+def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
+    # `unsloth start claude ... --temperature 0.3 --top-k 40` routes the pins into ServerOptions.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    captured = {}
+    fake = SimpleNamespace(pid = 1, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        captured["server_options"] = server_options
+        start._auto_served_server = fake
+        return fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "claude",
+            "--model",
+            "unsloth/gemma-4-E2B-it-GGUF",
+            "--temperature",
+            "0.3",
+            "--top-k",
+            "40",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    so = captured["server_options"]
+    assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):

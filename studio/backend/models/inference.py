@@ -75,15 +75,14 @@ class LoadRequest(BaseModel):
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
-            "Physical GPU indices to use, for example [0, 1]. Omit or pass "
-            "[] to use automatic selection. Explicit gpu_ids are unsupported "
-            "when the parent visibility mask uses non-numeric or subdevice "
-            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
-            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
-            "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
-            "Intel XPU. For GGUF models this pins llama-server to exactly "
-            "these GPUs using CUDA_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES on "
-            "AMD ROCm, or --device Vulkan<i> on a Vulkan build."
+            "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
+            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
+            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
+            "physical IDs are unsupported when the parent visibility mask uses "
+            "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
+            "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
+            "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
+            "models the fitter may pin the smallest subset of this pool that fits."
         ),
     )
     speculative_type: Optional[str] = Field(
@@ -495,7 +494,14 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
 
 
@@ -659,7 +665,14 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,
