@@ -478,6 +478,7 @@ async def stream_external_local_tool_loop(
             tool_choice = "none",
             stream = True,
         )
+
         # Stop may fire while the remote read is blocked awaiting the next SSE line. Drive
         # the generator one item at a time via a cancellable task raced against the cancel
         # event so Stop abandons the read immediately (aclose() on a mid-await generator
