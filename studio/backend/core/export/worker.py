@@ -450,6 +450,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 private = cmd.get("private", False),
                 gguf = cmd.get("gguf", False),
                 gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
+                adapter_format = cmd.get("adapter_format"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"

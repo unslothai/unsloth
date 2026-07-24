@@ -229,6 +229,17 @@ class ExportGGUFRequest(BaseModel):
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 
+    adapter_format: Optional[Literal["mlx", "peft"]] = Field(
+        None,
+        description = "On-disk adapter format. Omitted resolves per platform "
+        "(Apple-silicon MLX servers write the native MLX format, CUDA servers "
+        "write the native PEFT format — omission always preserves the "
+        "platform's native output), except with gguf=True, where the adapter "
+        "files are always "
+        "PEFT (GGUF LoRA files are built from that format). Explicit 'peft' "
+        "on an MLX server converts the adapter; explicit 'mlx' on a non-MLX "
+        "server — or combined with gguf=True — is an error.",
+    )
     gguf: bool = Field(
         False,
         description = "If True, also convert the adapter to a GGUF LoRA file "

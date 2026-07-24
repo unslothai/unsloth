@@ -114,6 +114,12 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    adapter_features: Optional[Dict[str, bool]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None when no adapter config was found.",
+    )
 
 
 class LoRAScanResponse(BaseModel):

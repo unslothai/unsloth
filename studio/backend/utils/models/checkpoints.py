@@ -4,11 +4,12 @@
 """Checkpoint scanning utilities for discovering training runs and checkpoints."""
 
 import json
+import os
 import re
 import structlog
 from loggers import get_logger
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from storage.studio_db import get_connection
 from utils.training_runs import (
     build_default_output_dir_name,
@@ -137,6 +138,52 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     except Exception as e:
         logger.debug(f"Could not read loss from {trainer_state}: {e}")
     return None
+
+
+def parse_adapter_features(adapter_path: str) -> Optional[Dict[str, bool]]:
+    """Parse a compact feature summary from an adapter directory's config.
+
+    Reads adapter_config.json (either the PEFT or the MLX layout) and reports
+    booleans the export UI keys compatibility copy off: dora, full_state
+    (modules_to_save / replaced embeddings), moe_target_parameters, and
+    non_uniform (per-module rank/alpha). Returns None when no adapter config
+    exists (merged or GGUF artifacts).
+    """
+    cfg_path = os.path.join(adapter_path, "adapter_config.json")
+    try:
+        with open(cfg_path, "r", encoding = "utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+
+    def _flag(value):
+        return isinstance(value, bool) and value
+
+    def _filled(value):
+        return isinstance(value, (dict, list)) and len(value) > 0
+
+    full_state = _filled(cfg.get("full_state_modules")) or _filled(cfg.get("modules_to_save"))
+    if not full_state:
+        # PEFT artifacts carry auto-saved embedding/base state only as
+        # non-LoRA weight keys; a header-only read is cheap.
+        weights = os.path.join(adapter_path, "adapter_model.safetensors")
+        try:
+            from safetensors import safe_open
+            with safe_open(weights, framework = "numpy") as f:
+                full_state = any(".lora_" not in key for key in f.keys())
+        except Exception:
+            pass
+    return {
+        "dora": _flag(cfg.get("use_dora")) or str(cfg.get("fine_tune_type", "")).lower() == "dora",
+        "full_state": full_state,
+        "moe_target_parameters": _filled(cfg.get("target_parameters")),
+        "non_uniform": _filled(cfg.get("rank_pattern"))
+        or _filled(cfg.get("alpha_pattern"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_ranks"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_scales")),
+    }
 
 
 def scan_checkpoints(
