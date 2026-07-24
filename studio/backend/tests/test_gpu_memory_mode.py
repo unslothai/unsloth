@@ -737,18 +737,209 @@ def test_split_pin_without_mask_only_sets_pci_order(monkeypatch):
 
 
 def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
-    # ROCm: the pin must land in HIP_VISIBLE_DEVICES too, and an inherited ROCR
-    # mask is cleared so the mask can't apply twice (ROCR re-indexes, then HIP
-    # would index into the already-reduced set).
+    # ROCm with the mask sourced from HIP: the pin must land in
+    # HIP_VISIBLE_DEVICES too, and an inherited ROCR mask is cleared so the
+    # mask can't apply twice (ROCR re-indexes, then HIP would index into the
+    # already-reduced set).
     _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
-    torch_stub = _types.ModuleType("torch")
-    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
-    monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "3,1"}
+    _rocm_torch_stub(monkeypatch)
+    env = {
+        "CUDA_VISIBLE_DEVICES": "3,1",
+        "HIP_VISIBLE_DEVICES": "3,1",
+        "ROCR_VISIBLE_DEVICES": "3,1",
+    }
     LlamaCppBackend._pin_visible_gpu_order_for_split(env)
     assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
     assert env["HIP_VISIBLE_DEVICES"] == "1,3"
     assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_split_pin_preserves_inherited_rocr_mask(monkeypatch):
+    # Mask sourced from ROCR alone (e.g. an AMD SDK parent): the pin must
+    # re-emit at the ROCr layer, not swap to HIP -- clearing ROCR re-exposes
+    # every agent to HSA enumeration, which can segfault at startup on an
+    # unsupported GPU the parent mask was hiding (#7272 review). CUDA carries
+    # the post-ROCR ordinals, mirroring the prefer_rocr emission.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "3,1"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1,3"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_split_pin_keeps_hip_on_windows_despite_stray_rocr(monkeypatch):
+    # On Windows the ROCR var is dead (no ROCr layer) and the resolver never
+    # reads it, so a stray value must not flip the pin to the ROCR emission:
+    # the HIP mask is the only effective selector there.
+    _patch_split_pin_env(monkeypatch, inherited = [3, 1], reported = [1, 3])
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = {"CUDA_VISIBLE_DEVICES": "3,1", "ROCR_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._pin_visible_gpu_order_for_split(env)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1,3"
+    assert env["HIP_VISIBLE_DEVICES"] == "1,3"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def _rocm_torch_stub(monkeypatch):
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    # prefer_rocr is Linux-only (ROCR is an ROCr variable); pin the platform so
+    # these Linux-behaviour tests also pass on a Windows dev box.
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
+    # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking
+    # still enumerates every agent first, which segfaults the build on an
+    # unsupported deselected GPU (e.g. a gfx1103 iGPU under a gfx110X prebuilt).
+    # ROCR drops it at the driver layer; only one mask is set (HIP cleared).
+    _rocm_torch_stub(monkeypatch)
+    env = {"HIP_VISIBLE_DEVICES": "9"}  # stale/inherited HIP mask must not survive
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "0"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_prefer_rocr_remaps_cuda_to_post_rocr_ordinals(monkeypatch):
+    # ROCR re-indexes the visible agents from 0, and HIP (cleared here) falls back
+    # to CUDA_VISIBLE_DEVICES -- so on the prefer_rocr path CUDA must carry the
+    # post-ROCR ordinals, not the physical ids, else a non-zero pick indexes out
+    # of range and the child sees no GPU and drops to CPU (#7272 review).
+    _rocm_torch_stub(monkeypatch)
+    # Single non-zero GPU: ROCR keeps the physical id, CUDA becomes ordinal 0.
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+    # Multi-GPU subset: ROCR keeps the physical ids, CUDA is the 0-based ordinals.
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1,3", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "1,3"
+    assert env["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_subset_pin_default_still_uses_hip_and_clears_rocr(monkeypatch):
+    # Without prefer_rocr the masking is unchanged: HIP narrows, inherited ROCR
+    # is cleared so the two can't double-mask.
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "0,1"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1")
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
+    # The CPU-only sentinel never routes through ROCR (no portable "hide all"
+    # spelling); it hides every GPU via HIP.
+    _rocm_torch_stub(monkeypatch)
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "-1", prefer_rocr = True)
+    assert env["HIP_VISIBLE_DEVICES"] == "-1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def _amd_sdk_torch_stub(monkeypatch):
+    # AMD SDK wheel: torch.version.hip is None but __version__ encodes rocm.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+rocm7.2.1"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+def test_prefer_rocr_falls_back_to_hip_on_windows(monkeypatch):
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable (Windows HIP has no ROCr
+    # layer), so on Windows ROCm prefer_rocr must keep the HIP mask or a nonzero
+    # pick loses its only effective selector (#7272 review).
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = "6.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = {"ROCR_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "1", prefer_rocr = True)
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_amd_sdk_wheel_hip_none_still_masks_rocr(monkeypatch):
+    # An AMD SDK wheel leaves torch.version.hip unset but has "rocm" in __version__.
+    # It must still get the ROCR mask, else only CUDA_VISIBLE_DEVICES is set and an
+    # unsupported iGPU keeps enumerating and can crash llama-server.
+    _amd_sdk_torch_stub(monkeypatch)
+    env = {"HIP_VISIBLE_DEVICES": "9"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["ROCR_VISIBLE_DEVICES"] == "0"
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_cuda_wheel_hip_none_gets_no_rocm_mask(monkeypatch):
+    # A CUDA wheel (hip=None, no "rocm" in __version__) must NOT get a HIP/ROCR mask
+    # -- only CUDA_VISIBLE_DEVICES -- so the version-string check can't false-positive.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+cu124"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    env = {}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "0", prefer_rocr = True)
+    assert env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+    assert "HIP_VISIBLE_DEVICES" not in env
+
+
+def test_resolve_physical_ids_reads_rocr_on_amd_sdk_wheel(monkeypatch):
+    # _resolve_visible_physical_ids must use the same ROCm detection as
+    # _emit_child_gpu_visibility: on an AMD SDK wheel (hip=None, rocm in
+    # __version__) an inherited ROCR mask IS the ordinal->physical mapping.
+    # Reading it as "no mask" labels ordinal 0 as physical 0 and the child's
+    # ROCR pin then re-exposes the GPU the mask was hiding (#7272 review).
+    _amd_sdk_torch_stub(monkeypatch)
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
+
+
+def test_resolve_physical_ids_ignores_rocr_on_cuda_wheel(monkeypatch):
+    # A CUDA wheel (hip=None, no "rocm") keeps CUDA-only semantics: a stray
+    # ROCR var must not be read as the mask.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+cu124"
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() is None
+
+
+def test_resolve_physical_ids_ignores_rocr_on_windows(monkeypatch):
+    # ROCR_VISIBLE_DEVICES is a Linux ROCr variable: Windows HIP has no ROCr
+    # layer, so a stray ROCR var there does not mask the runtime. Reading it as
+    # the ordinal->physical mapping would label ordinal 0 with a stale ROCR id
+    # while the runtime still enumerates every adapter, so auto-selection could
+    # budget one card and pin another (#7272 review). HIP must still be honoured.
+    torch_stub = _types.ModuleType("torch")
+    torch_stub.version = _types.SimpleNamespace(hip = None)
+    torch_stub.__version__ = "2.9.1+rocm7.2.1"  # AMD SDK wheel
+    monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    monkeypatch.setattr(sys, "platform", "win32")
+    for var in ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() is None
+    # HIP precedence is unchanged on Windows.
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert LlamaCppBackend._resolve_visible_physical_ids() == [1]
 
 
 # ── Diffusion single-device selection ───────────────────────────────────────

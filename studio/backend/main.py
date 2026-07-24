@@ -289,6 +289,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
 
@@ -308,12 +309,14 @@ from routes import (
     training_router,
 )
 from routes.llama import router as llama_router
+from routes.whisper import router as whisper_router
 from routes.preview import router as preview_router
 from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
     token_router as hub_token_router,
 )
+from picker.routes import templates_router as picker_templates_router
 from hub.schemas.downloads import TransportCapabilities
 from hub.utils.download_registry import (
     get_download_transport_capabilities,
@@ -753,6 +756,8 @@ app.add_middleware(SecurityHeadersMiddleware)
 # headroom; non-upload routes keep the default body cap.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
+    STT_AUDIO_JSON_MAX_BYTES,
+    STT_AUDIO_RAW_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
@@ -763,6 +768,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/v1/completions",
     "/p/",
     "/api/inference",
+    "/api/picker",
     "/api/data-recipe",
     "/api/datasets",
     "/api/hub",
@@ -787,6 +793,14 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
     if path.startswith(_DATASET_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes()
+    return default_request_body_limit_bytes()
+
+
+def _get_request_body_max_bytes(path: str) -> int:
+    if path.startswith("/api/inference/audio/transcribe/raw"):
+        return STT_AUDIO_RAW_MAX_BYTES
+    if path.startswith("/api/inference/audio/transcribe"):
+        return STT_AUDIO_JSON_MAX_BYTES
     return default_request_body_limit_bytes()
 
 
@@ -832,12 +846,14 @@ class MaxBodyMiddleware:
         app,
         max_bytes_getter,
         protected_prefixes: tuple,
+        request_max_bytes_getter = None,
         upload_passthrough_prefixes: tuple = (),
         upload_passthrough_max_bytes_getter = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
         self.protected_prefixes = protected_prefixes
+        self.request_max_bytes_getter = request_max_bytes_getter
         self.upload_passthrough_prefixes = upload_passthrough_prefixes
         self.upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter
 
@@ -854,6 +870,14 @@ class MaxBodyMiddleware:
         except Exception:
             return int(self.max_bytes_getter())
 
+    def _request_max_bytes(self, path: str) -> int:
+        if self.request_max_bytes_getter is None:
+            return int(self.max_bytes_getter())
+        try:
+            return int(self.request_max_bytes_getter(path))
+        except Exception:
+            return int(self.max_bytes_getter())
+
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -866,7 +890,7 @@ class MaxBodyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        max_bytes = int(self.max_bytes_getter())
+        max_bytes = self._request_max_bytes(path)
         declared = None
         for name, value in scope.get("headers", []):
             if name == b"content-length":
@@ -931,6 +955,7 @@ app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
     protected_prefixes = _BODY_PROTECTED_PREFIXES,
+    request_max_bytes_getter = _get_request_body_max_bytes,
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
@@ -989,11 +1014,13 @@ app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
@@ -1509,6 +1536,34 @@ def _should_inject_bootstrap(request: Request) -> bool:
     return _is_local_bootstrap_request(request)
 
 
+_IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    """Serve Vite's content-hashed assets without browser revalidation."""
+
+    def file_response(
+        self,
+        full_path,
+        stat_result,
+        scope,
+        status_code = 200,
+    ):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = _IMMUTABLE_ASSET_CACHE_CONTROL
+        return response
+
+
+class _AssetGZipMiddleware(GZipMiddleware):
+    """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and any(key == b"range" for key, _ in scope["headers"]):
+            await self.app(scope, receive, send)
+            return
+        await super().__call__(scope, receive, send)
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1516,7 +1571,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     assets_dir = build_path / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
+        assets_app = _AssetGZipMiddleware(
+            ImmutableStaticFiles(directory = assets_dir),
+            minimum_size = 1024,
+            compresslevel = 6,
+        )
+        app.mount("/assets", assets_app, name = "assets")
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()

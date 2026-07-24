@@ -22,9 +22,13 @@ import {
 import { toast } from "@/lib/toast";
 import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Button } from "@/components/ui/button";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+/** Archived chats shown per page; "Show more" reveals the next page. */
+const ARCHIVED_PAGE_SIZE = 20;
 
 function formatCreatedAt(ms: number): string {
   return new Date(ms).toLocaleDateString(undefined, {
@@ -54,6 +58,9 @@ export function ArchivedChatsView() {
   const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
     null,
   );
+  // Pagination: the view remounts with its settings tab, so plain state
+  // restarts from the first page on each visit.
+  const [visibleCount, setVisibleCount] = useState(ARCHIVED_PAGE_SIZE);
 
   // Open an archived chat: leave it archived, just navigate to it.
   function openChat(item: SidebarItem) {
@@ -113,7 +120,7 @@ export function ArchivedChatsView() {
             <span className="w-32 shrink-0">Date created</span>
             <span className="w-16 shrink-0" />
           </div>
-          {archivedItems.map((item) => (
+          {archivedItems.slice(0, visibleCount).map((item) => (
             <div
               key={item.id}
               className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
@@ -159,6 +166,19 @@ export function ArchivedChatsView() {
               </span>
             </div>
           ))}
+          {archivedItems.length > visibleCount ? (
+            <div className="flex justify-center pt-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setVisibleCount(visibleCount + ARCHIVED_PAGE_SIZE)
+                }
+              >
+                Show more ({archivedItems.length - visibleCount})
+              </Button>
+            </div>
+          ) : null}
         </div>
       )}
 

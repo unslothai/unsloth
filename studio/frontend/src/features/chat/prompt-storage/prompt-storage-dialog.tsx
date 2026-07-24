@@ -10,6 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
+
 import { cn } from "@/lib/utils";
 import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,77 +72,73 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80) || "export";
 }
 
-function downloadBlob(content: string | Blob, filename: string, mimeType: string): void {
-  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+async function downloadBlob(
+  content: string | Blob | Uint8Array,
+  filename: string,
+  mimeType: string,
+): Promise<void> {
+  return downloadFile(content, filename, mimeType);
 }
 
 function csvEscape(val: string): string {
   return `"${val.replace(/"/g, '""')}"`;
 }
 
-function exportPromptJsonl(entry: PromptEntry): void {
-  downloadBlob(
+function exportPromptJsonl(entry: PromptEntry): Promise<void> {
+  return downloadBlob(
     JSON.stringify({ name: entry.name, text: entry.text }),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportPromptCsv(entry: PromptEntry): void {
-  downloadBlob(
+function exportPromptCsv(entry: PromptEntry): Promise<void> {
+  return downloadBlob(
     `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
     `${sanitizeFilename(entry.name)}.csv`,
     "text/csv",
   );
 }
 
-function exportAllPromptsJsonl(entries: PromptEntry[]): void {
+function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
   const lines = entries.map((e) => JSON.stringify({ name: e.name, text: e.text })).join("\n");
-  downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompts.jsonl", "application/x-ndjson");
 }
 
-function exportAllPromptsCsv(entries: PromptEntry[]): void {
+function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
 }
 
-function exportListJsonl(entry: PromptListEntry): void {
-  downloadBlob(
+function exportListJsonl(entry: PromptListEntry): Promise<void> {
+  return downloadBlob(
     JSON.stringify({ name: entry.name, items: entry.items }),
     `${sanitizeFilename(entry.name)}.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportAllListsJsonl(entries: PromptListEntry[]): void {
+function exportAllListsJsonl(entries: PromptListEntry[]): Promise<void> {
   const lines = entries.map((e) => JSON.stringify({ name: e.name, items: e.items })).join("\n");
-  downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompt-lists.jsonl", "application/x-ndjson");
 }
 
-function exportListCsv(entry: PromptListEntry): void {
+function exportListCsv(entry: PromptListEntry): Promise<void> {
   const rows = entry.items
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
-  downloadBlob(
+  return downloadBlob(
     `list_name,order,prompt_text\n${rows}`,
     `${sanitizeFilename(entry.name)}.csv`,
     "text/csv",
   );
 }
 
-function exportAllListsCsv(entries: PromptListEntry[]): void {
+function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -363,7 +361,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   }
 
   if (conversations.length === 0) { toast.info("No exportable content."); return; }
-  downloadBlob(
+  await downloadBlob(
     JSON.stringify({ conversations }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
@@ -378,7 +376,7 @@ export async function exportConversationRawJsonl(threadId: string): Promise<void
 
   const oaiMsgs: OAIMessage[] = messages.flatMap((msg) => messageToOpenAI(msg));
   if (oaiMsgs.length === 0) { toast.info("No exportable content."); return; }
-  downloadBlob(
+  await downloadBlob(
     JSON.stringify({ messages: oaiMsgs }),
     "conversation-" + exportTs() + ".jsonl",
     "application/x-ndjson",
@@ -397,7 +395,11 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
   }
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
-  downloadBlob(rows.join("\n"), "conversation-" + exportTs() + ".csv", "text/csv");
+  await downloadBlob(
+    rows.join("\n"),
+    "conversation-" + exportTs() + ".csv",
+    "text/csv",
+  );
 }
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
@@ -479,7 +481,11 @@ export async function exportBulkConversationsMerged(
     ? header + "\n" + parts.join("\n")
     : parts.join("\n");
 
-  downloadBlob(body, `${basename}.${exportExt(format)}`, exportMime(format));
+  await downloadBlob(
+    body,
+    `${basename}.${exportExt(format)}`,
+    exportMime(format),
+  );
 }
 
 export async function exportBulkConversationsSeparate(
@@ -504,11 +510,7 @@ export async function exportBulkConversationsSeparate(
   if (Object.keys(files).length === 0) { toast.info("No exportable content."); return; }
 
   const zipped = zipSync(files);
-  downloadBlob(
-    new Blob([zipped], { type: "application/zip" }),
-    `${basename}.zip`,
-    "application/zip",
-  );
+  await downloadBlob(zipped, `${basename}.zip`, "application/zip");
 }
 
 // Scope-level bulk export shared by the sidebar Recents menu and
@@ -536,8 +538,10 @@ export async function bulkExportConversationsByScope(
     } else {
       await exportBulkConversationsSeparate(ids, format, basename);
     }
-  } catch {
-    toast.error("Export failed.");
+  } catch (error) {
+    if (!isDownloadCancelled(error)) {
+      toast.error("Export failed.");
+    }
   }
 }
 
@@ -749,7 +753,7 @@ export async function exportFineTuneJsonl(
     return 0;
   }
   const suffix = format === "openai" ? "" : `-${format}`;
-  downloadBlob(
+  await downloadBlob(
     lines.join("\n"),
     `chat-finetune${suffix}-${exportTs()}.jsonl`,
     "application/x-ndjson",
@@ -992,21 +996,21 @@ export async function importConversationsFromFile(
 
 // ShareGPT training exports: prompt → one record (human turn + empty gpt slot);
 // list → one multi-turn record, each item a human turn.
-function exportPromptTrainingJsonl(entry: PromptEntry): void {
+function exportPromptTrainingJsonl(entry: PromptEntry): Promise<void> {
   const record = {
     conversations: [
       { from: "human", value: entry.text },
       { from: "gpt", value: "" },
     ],
   };
-  downloadBlob(
+  return downloadBlob(
     JSON.stringify(record),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportPromptsTrainingJsonl(entries: PromptEntry[]): void {
+function exportPromptsTrainingJsonl(entries: PromptEntry[]): Promise<void> {
   const lines = entries
     .map((e) =>
       JSON.stringify({
@@ -1017,22 +1021,22 @@ function exportPromptsTrainingJsonl(entries: PromptEntry[]): void {
       }),
     )
     .join("\n");
-  downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompts-training.jsonl", "application/x-ndjson");
 }
 
-function exportListTrainingJsonl(entry: PromptListEntry): void {
+function exportListTrainingJsonl(entry: PromptListEntry): Promise<void> {
   const conversations = entry.items.flatMap((text) => [
     { from: "human", value: text },
     { from: "gpt", value: "" },
   ]);
-  downloadBlob(
+  return downloadBlob(
     JSON.stringify({ conversations }),
     `${sanitizeFilename(entry.name)}-training.jsonl`,
     "application/x-ndjson",
   );
 }
 
-function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
+function exportListsTrainingJsonl(entries: PromptListEntry[]): Promise<void> {
   const lines = entries
     .map((e) => {
       const conversations = e.items.flatMap((text) => [
@@ -1042,7 +1046,7 @@ function exportListsTrainingJsonl(entries: PromptListEntry[]): void {
       return JSON.stringify({ conversations });
     })
     .join("\n");
-  downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
+  return downloadBlob(lines, "prompt-lists-training.jsonl", "application/x-ndjson");
 }
 
 // RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
@@ -1268,38 +1272,44 @@ function ExportModal({
     if (!csvAvailable) setFormat("jsonl");
   }, [csvAvailable]);
 
-  const handleExport = useCallback(() => {
-    if (ctx.kind === "prompt") {
-      if (scope === "training") exportPromptTrainingJsonl(ctx.entry);
-      else if (format === "csv") exportPromptCsv(ctx.entry);
-      else exportPromptJsonl(ctx.entry);
-    } else if (ctx.kind === "list") {
-      if (scope === "training") exportListTrainingJsonl(ctx.entry);
-      else if (format === "csv") exportListCsv(ctx.entry);
-      else exportListJsonl(ctx.entry);
-    } else {
-      const { tab, prompts, lists } = ctx;
-      if (scope === "training") {
-        if (tab === "prompts") {
-          if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          exportPromptsTrainingJsonl(prompts);
-        } else {
-          if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          exportListsTrainingJsonl(lists);
-        }
+  const handleExport = useCallback(async () => {
+    try {
+      if (ctx.kind === "prompt") {
+        if (scope === "training") await exportPromptTrainingJsonl(ctx.entry);
+        else if (format === "csv") await exportPromptCsv(ctx.entry);
+        else await exportPromptJsonl(ctx.entry);
+      } else if (ctx.kind === "list") {
+        if (scope === "training") await exportListTrainingJsonl(ctx.entry);
+        else if (format === "csv") await exportListCsv(ctx.entry);
+        else await exportListJsonl(ctx.entry);
       } else {
-        if (tab === "prompts") {
+        const { tab, prompts, lists } = ctx;
+        if (scope === "training") {
+          if (tab === "prompts") {
+            if (prompts.length === 0) { toast.info("No prompts to export"); return; }
+            await exportPromptsTrainingJsonl(prompts);
+          } else {
+            if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
+            await exportListsTrainingJsonl(lists);
+          }
+        } else if (tab === "prompts") {
           if (prompts.length === 0) { toast.info("No prompts to export"); return; }
-          if (format === "csv") exportAllPromptsCsv(prompts);
-          else exportAllPromptsJsonl(prompts);
+          if (format === "csv") await exportAllPromptsCsv(prompts);
+          else await exportAllPromptsJsonl(prompts);
         } else {
           if (lists.length === 0) { toast.info("No prompt lists to export"); return; }
-          if (format === "csv") exportAllListsCsv(lists);
-          else exportAllListsJsonl(lists);
+          if (format === "csv") await exportAllListsCsv(lists);
+          else await exportAllListsJsonl(lists);
         }
       }
+      onClose();
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Could not save export.", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    onClose();
   }, [ctx, scope, format, onClose]);
 
   const singleLabel =
@@ -1331,7 +1341,7 @@ function ExportModal({
 
           {/* */}
           <div className="flex flex-col gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Export as
             </p>
             <div className="flex flex-col gap-2">
@@ -1380,7 +1390,7 @@ function ExportModal({
                   <p className="mt-1 text-xs text-muted-foreground">
                     ShareGPT format for Unsloth fine-tuning
                   </p>
-                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground/60">
+                  <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}
                   </code>
                 </div>
@@ -1390,7 +1400,7 @@ function ExportModal({
 
           {/* */}
           <div className="flex flex-col gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            <p className="text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground/60">
               Format
             </p>
             <div className="flex items-center gap-1 self-start rounded-lg bg-muted/60 p-1">
@@ -1720,7 +1730,7 @@ function PromptListCard({
     <div className="group rounded-xl border border-border/60 bg-card p-4 flex flex-col gap-2.5 hover:border-border hover:shadow-sm transition-all">
       <div className="flex items-center gap-2">
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
           {entry.items.length}
         </span>
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1769,7 +1779,7 @@ function PromptListCard({
           </p>
         ))}
         {entry.items.length > 3 && (
-          <p className="text-[11px] text-muted-foreground/50 ml-5">
+          <p className="text-ui-11 text-muted-foreground/50 ml-5">
             +{entry.items.length - 3} more
           </p>
         )}

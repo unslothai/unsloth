@@ -1498,7 +1498,7 @@ if (-not $HasNvidiaSmi) {
             $nameArchTable = @(
                 @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (Radeon RX 9070 XT / 9080)
                 @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (Radeon RX 9070 / 9060)
-                @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                 @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                 @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
                 @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
@@ -2655,12 +2655,13 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
 # Directory-local evidence that Unsloth created $Path, used to adopt a custom-home
-# llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
-# prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
-# from a user clone on Windows and stay under the strict guard.
+# llama.cpp or whisper.cpp predating the .unsloth-studio-owned marker (see
+# setup.sh). Only Unsloth prebuilt markers count; source builds are
+# indistinguishable from a user clone on Windows and stay under the strict guard.
 function Test-StudioOwnedAdoptable {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_WHISPER_PREBUILT_INFO.json") -PathType Leaf) { return $true }
     return $false
 }
 function Assert-StudioOwnedOrAbsent {
@@ -2774,6 +2775,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 "gfx1201", "gfx1200",           # RDNA 4
                 "gfx1151", "gfx1150",           # RDNA 3.5 (Strix Halo/Point)
                 "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
+                "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
                 "gfx90a", "gfx908"              # MI200 / MI100
             )
             if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
@@ -3064,6 +3066,10 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
         "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
         "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+        "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
+        "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+        "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+        "gfx1030" = "gfx103X-all"
         "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
     }
     # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
@@ -3098,7 +3104,7 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
         # GPU arch detected but not in the supported wheel map — warn explicitly
         # so the user knows why they are getting CPU PyTorch instead of ROCm.
         substep "[WARN] AMD GPU ($ROCmGfxArch) not in supported arch list -- falling back to CPU-only PyTorch" "Yellow"
-        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx90a, gfx908" "Yellow"
+        substep "       Supported: gfx1200/1201 (RDNA 4), gfx1150/1151 (RDNA 3.5), gfx1100-1103 (RDNA 3), gfx1030-1036 (RDNA 2), gfx90a, gfx908" "Yellow"
     } else {
         # HIP SDK present ($HasROCm=true via amd-smi) but gcnArchName was not
         # readable — warn rather than silently falling back to CPU PyTorch.
@@ -3760,6 +3766,83 @@ if ($LocalLlamaCppLinked) {
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
         }
+}
+
+# ==========================================================================
+#  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
+# ==========================================================================
+# Mirrors the llama.cpp prebuilt install above; current whisper releases are
+# slim bundles that reuse the llama install's ggml runtime, so this runs after
+# llama. Failure is never fatal: local dictation falls back to Transformers STT.
+$WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
+$WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
+# Same opt-outs as setup.sh: a user-configured binary/dir or an explicit skip
+# disables the managed install entirely.
+if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
+    substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+} elseif ($env:UNSLOTH_SKIP_WHISPER_INSTALL -eq "1") {
+    substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+} elseif (Test-Path -LiteralPath $WhisperInstaller) {
+    # The installer's atomic activation replaces the whole directory, so the
+    # custom-home ownership guard must run first (mirrors the llama block).
+    if ($StudioHomeIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install"
+    }
+    $whisperArgs = @($WhisperInstaller, "--install-dir", $WhisperCppDir)
+    if ($env:UNSLOTH_WHISPER_RELEASE_TAG) {
+        $whisperArgs += @("--published-release-tag", $env:UNSLOTH_WHISPER_RELEASE_TAG)
+    }
+    if ($script:ROCmGfxArch) {
+        $whisperArgs += @("--rocm-gfx", $script:ROCmGfxArch)
+    } elseif ($HasROCm) {
+        $whisperArgs += "--has-rocm"
+    }
+    $prevEAPWhisper = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $previousNativeErrorPreferenceW = $null
+    $restoreNativeErrorPreferenceW = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreferenceW = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreferenceW = $true
+    }
+    try {
+        $whisperOutput = & python @whisperArgs 2>&1 | Out-String
+        $whisperExit = $LASTEXITCODE
+    } finally {
+        if ($restoreNativeErrorPreferenceW) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreferenceW
+        }
+    }
+    $ErrorActionPreference = $prevEAPWhisper
+    if ($whisperExit -eq 0) {
+        if ($whisperOutput -match "already matches") {
+            step "whisper.cpp" "prebuilt up to date"
+        } else {
+            step "whisper.cpp" "prebuilt installed"
+        }
+        if ($StudioHomeIsCustom -and (Test-Path -LiteralPath $WhisperCppDir -PathType Container)) {
+            Mark-StudioOwned -Path $WhisperCppDir
+        }
+    } elseif ($whisperExit -eq 3) {
+        step "whisper.cpp" "install busy; keeping existing runtime" "Yellow"
+    } elseif ($whisperExit -eq 2) {
+        $requiredWhisperLlamaTag = "unknown"
+        if ($whisperOutput -match "slim bundle requires llama\.cpp ([^;\s]+)") {
+            $requiredWhisperLlamaTag = $Matches[1]
+        }
+        $installedWhisperLlamaTag = "unknown"
+        $llamaMarker = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
+        if (Test-Path -LiteralPath $llamaMarker -PathType Leaf) {
+            try {
+                $markerPayload = Get-Content -LiteralPath $llamaMarker -Raw | ConvertFrom-Json
+                if ($markerPayload.release_tag) { $installedWhisperLlamaTag = $markerPayload.release_tag }
+            } catch {}
+        }
+        step "whisper.cpp" "no compatible prebuilt (installed llama.cpp $installedWhisperLlamaTag; whisper requires $requiredWhisperLlamaTag); curated whisper.cpp dictation is unavailable; publish paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "Yellow"
+    } else {
+        step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
+    }
 }
 
 # ==========================================================================

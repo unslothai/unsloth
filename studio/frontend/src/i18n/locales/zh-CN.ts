@@ -39,7 +39,7 @@ export const zhCN = {
       returnToChat: "返回聊天",
       compare: "对比",
       search: "搜索",
-      hub: "Hub",
+      hub: "模型",
       train: "训练",
       recipes: "配方",
       export: "导出",
@@ -113,7 +113,7 @@ export const zhCN = {
       huggingFaceTokenDescription: "用于加载受限模型和推送产物。",
       hideToken: "隐藏 token",
       showToken: "显示 token",
-      tokenSaved: "Token 已保存",
+      tokenValidated: "Token 已验证",
       password: "密码",
       passwordDescription: "更改此 Unsloth 账号的密码。",
       passwordDialog: {
@@ -901,7 +901,8 @@ export const zhCN = {
       continueAction: "继续训练",
       cancelAction: "取消训练",
       stopTitle: "停止训练",
-      stopDescription: "选择如何停止当前训练运行。",
+      stopDescription:
+        "选择如何停止当前训练运行。“停止并保存”会写入检查点，之后可从该处恢复；“停止”则无法恢复。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止并保存",

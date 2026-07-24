@@ -801,6 +801,80 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertEqual(guard_called, [])
 
+    def _validate_gguf_template(
+        self,
+        *,
+        template,
+        canonical_path = "/picked/model.gguf",
+    ):
+        # Drive validate_model for a native lease-backed GGUF template probe and
+        # capture what the embedded-template reader was called with.
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "model.gguf",
+            gguf_variant = "Q4_K_M",
+            native_path_lease = "signed-lease",
+            include_chat_template = True,
+        )
+        cfg = SimpleNamespace(
+            identifier = canonical_path,
+            display_name = "model.gguf",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            gguf_file = canonical_path,
+            path = None,
+            base_model = None,
+        )
+        import utils.models.gguf_metadata as gguf_meta
+
+        seen = {}
+
+        def _fake_read(path):
+            seen["path"] = path
+            return template
+
+        guard_called = []
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = (canonical_path, "model.gguf", True),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(gguf_meta, "read_gguf_chat_template", _fake_read),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda *a, **kw: guard_called.append(True),
+            ),
+        ):
+            resp = asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        return resp, seen, guard_called
+
+    def test_include_chat_template_reads_leased_gguf_embedded_template(self):
+        # The picker chat-template GET has no lease plumbing, so a native picked
+        # GGUF surfaces its default template through this lease-aware probe: the
+        # embedded template is read from the granted canonical path and returned.
+        resp, seen, _ = self._validate_gguf_template(template = "{{ messages }}")
+        self.assertEqual(resp.chat_template, "{{ messages }}")
+        # Read strictly the leased file's own embedded template, never a sibling
+        # sidecar: the grant authorizes just this one path.
+        self.assertEqual(seen["path"], "/picked/model.gguf")
+
+    def test_include_chat_template_skips_training_guard(self):
+        # A template-only probe allocates no VRAM, so like include_context_length
+        # it must not be refused by the training guard.
+        _, _, guard_called = self._validate_gguf_template(template = "{{ messages }}")
+        self.assertEqual(guard_called, [])
+
+    def test_include_chat_template_over_cap_is_dropped(self):
+        from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+        resp, _, _ = self._validate_gguf_template(template = "a" * (MAX_CHAT_TEMPLATE_BYTES + 1))
+        self.assertIsNone(resp.chat_template)
+
 
 # ── _estimate_gguf_required_gb (sizes the same weights the loader loads) ──────
 
