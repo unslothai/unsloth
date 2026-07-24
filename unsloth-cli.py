@@ -189,6 +189,10 @@ def run(args):
 
     is_mlx = _is_mlx_backend(unsloth)
 
+    # MLX routes get_peft_model to FastMLXModel, which ignores use_dora (plain LoRA).
+    if args.use_dora and is_mlx:
+        raise NotImplementedError("DoRA is not supported for MLX training yet.")
+
     # Load model and tokenizer
     device_map, distributed = _prepare_device_map(is_mlx)
     model, tokenizer = FastLanguageModel.from_pretrained(
