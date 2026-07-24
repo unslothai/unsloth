@@ -49,8 +49,11 @@ _MAX_AUDIO_SECONDS = 30 * 60
 _TARGET_SAMPLE_RATE = 16000
 
 # Non-weight files WhisperProcessor/WhisperForConditionalGeneration may load.
-# Weight selection is built from pinned Hub metadata so repositories publishing
-# both formats do not download the same checkpoint twice.
+# Weight selection is built from pinned Hub metadata. A custom repo id is
+# attacker-controllable, so only safetensors weights are accepted: a
+# pytorch_model.bin is a pickle and executes code while Transformers
+# deserializes it (see utils/security/file_security.py), and this path skips
+# the malware gate the normal model loader applies.
 _STT_SNAPSHOT_SUPPORT_FILES = (
     "config.json",
     "generation_config.json",
@@ -65,9 +68,7 @@ _STT_SNAPSHOT_SUPPORT_FILES = (
     "added_tokens.json",
 )
 _STT_SAFETENSORS_INDEX = "model.safetensors.index.json"
-_STT_PYTORCH_INDEX = "pytorch_model.bin.index.json"
 _STT_SAFETENSORS_WEIGHTS = "model.safetensors"
-_STT_PYTORCH_WEIGHTS = "pytorch_model.bin"
 _STT_REVISION_RECORD_VERSION = 1
 
 
@@ -350,7 +351,9 @@ def _selected_file_from_sibling(sibling) -> _SelectedHubFile:
 
 
 def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
-    """Select support files and exactly one complete Transformers weight format."""
+    """Select support files and one complete safetensors weight set. Pickle
+    (pytorch_model.bin) weights are never selected: they are an RCE sink on a
+    custom repo id (see _STT_SNAPSHOT_SUPPORT_FILES)."""
     siblings = {
         sibling.rfilename: sibling
         for sibling in (getattr(info, "siblings", None) or [])
@@ -363,12 +366,11 @@ def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
         index_name = _STT_SAFETENSORS_INDEX
     elif _STT_SAFETENSORS_WEIGHTS in siblings:
         selected.add(_STT_SAFETENSORS_WEIGHTS)
-    elif _STT_PYTORCH_INDEX in siblings:
-        index_name = _STT_PYTORCH_INDEX
-    elif _STT_PYTORCH_WEIGHTS in siblings:
-        selected.add(_STT_PYTORCH_WEIGHTS)
     else:
-        raise SttModelCompatibilityError("The STT repository has no complete model weights.")
+        raise SttModelCompatibilityError(
+            "The STT repository has no safetensors model weights. Only safetensors "
+            "checkpoints are supported; convert the model with save_pretrained(safe_serialization=True)."
+        )
 
     if index_name is not None:
         weight_map = load_index(index_name).get("weight_map")
@@ -377,6 +379,14 @@ def _select_snapshot_files(info, load_index) -> tuple[_SelectedHubFile, ...]:
         shards = set(weight_map.values())
         if not all(isinstance(shard, str) and shard in siblings for shard in shards):
             raise SttModelCompatibilityError(f"Checkpoint index '{index_name}' has missing shards.")
+        # The index JSON is attacker-controlled: a safetensors index can name
+        # pytorch_model-*.bin shards, which Transformers still loads through
+        # torch.load (pickle) since it dispatches per shard by file extension.
+        # Require every shard to be safetensors so no pickle file is selected.
+        if not all(shard.endswith(".safetensors") for shard in shards):
+            raise SttModelCompatibilityError(
+                f"Checkpoint index '{index_name}' references non-safetensors shards."
+            )
         selected.add(index_name)
         selected.update(shards)
 
@@ -441,24 +451,23 @@ def _snapshot_is_complete(snapshot: Path) -> bool:
     tokenizer, and weights directly. is_file() follows cache symlinks, so a
     link from an interrupted blob download does not count.
     """
-    index = next(
-        (
-            snapshot / name
-            for name in ("model.safetensors.index.json", "pytorch_model.bin.index.json")
-            if (snapshot / name).is_file()
-        ),
-        None,
-    )
-    if index is not None:
-        # Sharded checkpoint (safetensors or PyTorch): every shard must exist.
+    # Safetensors only: a cached pytorch_model.bin is a pickle load path and is
+    # never treated as a usable snapshot (a repo shipping only pickle weights
+    # re-resolves and fails closed in _select_snapshot_files).
+    index = snapshot / _STT_SAFETENSORS_INDEX
+    if index.is_file():
+        # Sharded safetensors checkpoint: every shard must exist and be
+        # safetensors (a safe index naming .bin shards would still pickle-load
+        # them, matching the _select_snapshot_files guard).
         weight_map = _read_json_object(index).get("weight_map")
         if not isinstance(weight_map, dict) or not weight_map:
             return False
-        has_weights = all((snapshot / shard).is_file() for shard in set(weight_map.values()))
+        shards = set(weight_map.values())
+        if not all(isinstance(shard, str) and shard.endswith(".safetensors") for shard in shards):
+            return False
+        has_weights = all((snapshot / shard).is_file() for shard in shards)
     else:
-        has_weights = any(
-            (snapshot / name).is_file() for name in (_STT_SAFETENSORS_WEIGHTS, _STT_PYTORCH_WEIGHTS)
-        )
+        has_weights = (snapshot / _STT_SAFETENSORS_WEIGHTS).is_file()
     # WhisperProcessor needs the tokenizer: either the fast tokenizer.json or
     # the slow vocab.json + merges.txt pair.
     has_tokenizer = (snapshot / "tokenizer.json").is_file() or (
@@ -880,8 +889,11 @@ class WhisperSttSidecar:
         try:
             processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
             self._raise_if_load_cancelled(cancel_event)
+            # use_safetensors forces the pickle-free load path even if a
+            # pytorch_model.bin somehow reached the cache; the selector and the
+            # completeness check already exclude pickle weights upstream.
             model = WhisperForConditionalGeneration.from_pretrained(
-                snapshot_path, torch_dtype = dtype, local_files_only = True
+                snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
             )
             self._raise_if_load_cancelled(cancel_event)
             model.to(torch.device(device))

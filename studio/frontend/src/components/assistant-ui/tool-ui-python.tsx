@@ -83,7 +83,7 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-/** Save the executed script as a .py file via a client-side Blob (no server file serving). */
+/** Save the script as a .py file via a client-side Blob. */
 function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string }) {
   const download = useCallback(() => {
     if (typeof document === "undefined") {
@@ -118,22 +118,63 @@ function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string
   );
 }
 
-/** Syntax-highlighted code via Streamdown + shiki; inherits parent container. */
+/** Syntax-highlighted code via Streamdown + shiki; inherits parent container.
+ * The script is always in the DOM (a plain monospace placeholder), but shiki
+ * only tokenizes once the block scrolls near the viewport, so a long transcript
+ * with many scripts doesn't highlight every one up front. Falls back to
+ * immediate highlight when IntersectionObserver is unavailable (SSR / tests). */
 function HighlightedCode({ code: source, language }: { code: string; language: string }) {
+  const display = useMemo(() => truncate(source), [source]);
   const markdown = useMemo(
-    () => `\`\`\`${language}\n${truncate(source)}\n\`\`\``,
-    [source, language],
+    () => `\`\`\`${language}\n${display}\n\`\`\``,
+    [display, language],
   );
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [highlight, setHighlight] = useState(
+    () => typeof IntersectionObserver === "undefined",
+  );
+  useEffect(() => {
+    if (highlight) return;
+    const el = containerRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setHighlight(true);
+          io.disconnect();
+        }
+      },
+      // Highlight just before the block enters view so it's colorized by the
+      // time the user reaches it, without tokenizing off-screen scripts.
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [highlight]);
   return (
-    <div className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0">
-      <Streamdown
-        mode="static"
-        plugins={{ code: codePlugin }}
-        controls={{ code: false }}
-        shikiTheme={SHIKI_THEME}
-      >
-        {markdown}
-      </Streamdown>
+    <div
+      ref={containerRef}
+      className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0"
+    >
+      {highlight ? (
+        <Streamdown
+          mode="static"
+          plugins={{ code: codePlugin }}
+          controls={{ code: false }}
+          shikiTheme={SHIKI_THEME}
+        >
+          {markdown}
+        </Streamdown>
+      ) : (
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would override a
+        // <pre>'s padding and shift the content by p-3 when shiki swaps in. Keep
+        // the same p-3, and whitespace-pre (not pre-wrap) so long lines scroll in
+        // the container's overflow-auto exactly like the highlighted <pre>, rather
+        // than wrapping taller and then collapsing when shiki swaps in.
+        <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
+          {display}
+        </div>
+      )}
     </div>
   );
 }
@@ -188,8 +229,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const authToken = getAuthToken();
 
   return (
-    // Run status and output collapse from history, but the script source is
-    // rendered outside ToolFallbackContent so it stays visible on reopen (#7165).
+    // Status/output collapse from history; the script source renders outside
+    // ToolFallbackContent so it stays visible on reopen (#7165).
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
