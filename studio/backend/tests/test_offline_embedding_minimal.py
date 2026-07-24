@@ -51,16 +51,25 @@ def _modules_json(*paths):
 _COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
-def _requires_case_sensitive_fs(root):
-    """Skip when root's filesystem is case-insensitive (macOS/Windows): an uppercase-decoy test only
-    exercises a bypass where the loader would NOT resolve the canonical lowercase name (Linux)."""
+def _fs_case_sensitive(root):
+    """Whether root's filesystem is case-sensitive (Linux yes; macOS/Windows usually no). The gate
+    mirrors the loader, whose file lookups follow the same rule, so some cases only exist on one."""
     probe = Path(root) / "_case_probe"
     probe.write_text("x")
     try:
-        if (Path(root) / "_CASE_PROBE").exists():
-            pytest.skip("requires a case-sensitive filesystem")
+        return not (Path(root) / "_CASE_PROBE").exists()
     finally:
         probe.unlink()
+
+
+def _requires_case_sensitive_fs(root):
+    if not _fs_case_sensitive(root):
+        pytest.skip("requires a case-sensitive filesystem")
+
+
+def _requires_case_insensitive_fs(root):
+    if _fs_case_sensitive(root):
+        pytest.skip("requires a case-insensitive filesystem")
 
 
 def _make_cache(
@@ -472,25 +481,55 @@ def test_gate_blocks_indexed_shard_with_no_pickle_extension(hf_cache):
     assert any(u["path"] == "shards/payload" for u in decision.unsafe_files)
 
 
-def test_gate_blocks_uppercase_index_filename(hf_cache):
-    # On case-insensitive volumes (Windows/macOS) from_pretrained opens an oddly-cased index when it
-    # requests the canonical lowercase name, so the index-name match must be case-insensitive too.
-    _make_cache(
-        hf_cache,
-        "org/upper-index",
-        {
-            "PYTORCH_MODEL.BIN.INDEX.JSON": (
-                '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
-            ),
-            "shards/pytorch_model-00001-of-00001.bin": "pickle",
-        },
-    )
+_UPPER_INDEX_FILES = {
+    "PYTORCH_MODEL.BIN.INDEX.JSON": (
+        '{"weight_map": {"w": "shards/pytorch_model-00001-of-00001.bin"}}'
+    ),
+    "shards/pytorch_model-00001-of-00001.bin": "pickle",
+}
+
+
+def test_gate_blocks_uppercase_index_on_case_insensitive_fs(hf_cache):
+    # On a case-insensitive volume (Windows/macOS) from_pretrained opens an oddly-cased index when it
+    # requests the canonical lowercase name, so the loader-mirror lookup resolves it and blocks.
+    _requires_case_insensitive_fs(hf_cache)
+    _make_cache(hf_cache, "org/upper-index", _UPPER_INDEX_FILES)
     with _no_network():
         decision = _offline_decision("org/upper-index")
     assert decision.blocked is True
     assert any(
         u["path"] == "shards/pytorch_model-00001-of-00001.bin" for u in decision.unsafe_files
     )
+
+
+def test_gate_allows_uppercase_index_on_case_sensitive_fs(hf_cache):
+    # On a case-sensitive FS from_pretrained's os.path.isfile of the canonical lowercase name misses
+    # the uppercase artifact and never loads its shard, so the gate must not over-block it.
+    _requires_case_sensitive_fs(hf_cache)
+    _make_cache(hf_cache, "org/upper-index", _UPPER_INDEX_FILES)
+    with _no_network():
+        assert _offline_decision("org/upper-index").blocked is False
+
+
+def test_gate_blocks_indexed_shard_named_with_backslash(hf_cache):
+    # On POSIX a backslash is a literal filename char, so from_pretrained joins the raw weight_map
+    # value and deserializes a file actually named "dir\payload.bin"; the gate must probe it verbatim.
+    import os
+
+    if os.sep != "/":
+        pytest.skip("backslash is a path separator off POSIX")
+    _make_cache(
+        hf_cache,
+        "org/backslash",
+        {
+            "pytorch_model.bin.index.json": '{"weight_map": {"w": "dir\\\\payload.bin"}}',
+            "dir\\payload.bin": "pickle",
+        },
+    )
+    with _no_network():
+        decision = _offline_decision("org/backslash")
+    assert decision.blocked is True
+    assert any(u["path"] == "dir\\payload.bin" for u in decision.unsafe_files)
 
 
 def test_gate_blocks_indexed_shard_with_uppercase_safetensors_suffix(hf_cache):

@@ -332,10 +332,13 @@ def _indexed_pickle_shards(index_path: Path, root: Path, snapshot: Path) -> list
     snapshot_norm = os.path.normpath(str(snapshot))
     shards = []
     for shard in weight_map.values():
-        rel = _normalize_repo_path(str(shard))
-        if not rel:
+        raw = str(shard)
+        if not raw:
             continue
-        joined = os.path.normpath(os.path.join(str(root), rel))
+        # Join the RAW weight_map value like from_pretrained's os.path.join: on POSIX a backslash is a
+        # literal filename char (not a separator), so normalizing it would probe a different path than
+        # the loader opens. normpath + containment stay platform-aware (os.sep) to block "..".
+        joined = os.path.normpath(os.path.join(str(root), raw))
         if joined != snapshot_norm and not joined.startswith(snapshot_norm + os.sep):
             raise OSError(f"weight index escapes the snapshot: {index_path}")
         shard_path = Path(joined)
@@ -395,20 +398,18 @@ def _cached_pickle_weight_files(snapshot: Path) -> list:
             if not has_alternative:
                 _add(path)
         # A torch weight index makes from_pretrained load nested shards iterdir never sees; the loader
-        # torch.loads any not ending in .safetensors. A direct model.safetensors wins over BOTH
-        # indexes; failing that, a base safetensors still outranks the pytorch index, while a
-        # safetensors index is itself the chosen archive, so its non-safetensors targets always load.
-        for index_path in entries:
-            # Case-insensitive like the weight/safetensors matches above: a case-insensitive volume
-            # (Windows/macOS) opens an oddly-cased index when the loader asks for the canonical name.
-            name = index_path.name.lower()
-            if name not in _TORCH_INDEX_FILES:
+        # torch.loads any not ending in .safetensors. Probe the canonical index name with the loader's
+        # own lookup (_loader_resolves), so an oddly-cased artifact it would never open does not block.
+        # A direct model.safetensors wins over BOTH indexes; failing that a base safetensors still
+        # outranks the pytorch index, while a safetensors index is itself the chosen archive.
+        for index_name in _TORCH_INDEX_FILES:
+            if not _loader_resolves(root, index_name):
                 continue
             if has_direct_base_safetensors:
                 continue
-            if name == "pytorch_model.bin.index.json" and has_base_safetensors:
+            if index_name == "pytorch_model.bin.index.json" and has_base_safetensors:
                 continue
-            for shard_path in _indexed_pickle_shards(index_path, root, snapshot):
+            for shard_path in _indexed_pickle_shards(root / index_name, root, snapshot):
                 _add(shard_path)
     return blocked
 
