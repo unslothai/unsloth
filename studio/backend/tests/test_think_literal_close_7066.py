@@ -402,6 +402,43 @@ def test_passthrough_tools_are_neutralized():
     assert "im_start" in dumped  # neutralized form retained, still human-readable
 
 
+def test_anthropic_client_tools_are_neutralized():
+    """Anthropic client tool schemas must be neutralized before passthrough (#7334).
+
+    The Anthropic /v1/messages client-tool path builds its forwarded tools from
+    ``neutralize_tools_control_markup(anthropic_tools_to_openai(payload.tools))``
+    exactly like the OpenAI passthrough path, so a description / enum carrying
+    ``</think>`` or ``<|im_start|>`` cannot reach the chat template raw.
+    """
+    from core.inference.anthropic_compat import anthropic_tools_to_openai
+
+    anthropic_tools = [
+        {
+            "name": "search",
+            "description": "handles </think> and <|im_start|> in text",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "description": "pass a </think> literal",
+                        "enum": ["<|im_end|>", "plain"],
+                    }
+                },
+            },
+        }
+    ]
+    neutralized = neutralize_tools_control_markup(anthropic_tools_to_openai(anthropic_tools))
+    dumped = json.dumps(neutralized)
+    assert "</think>" not in dumped
+    assert "<|im_start|>" not in dumped
+    assert "<|im_end|>" not in dumped
+    # Human-readable neutralized form is retained and structure is preserved.
+    assert "im_start" in dumped
+    assert neutralized[0]["function"]["name"] == "search"
+    assert neutralized[0]["function"]["parameters"]["properties"]["mode"]["type"] == "string"
+
+
 def test_assistant_tool_call_arguments_are_neutralized():
     messages = [
         {"role": "user", "content": "search it"},

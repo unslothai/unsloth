@@ -12995,9 +12995,18 @@ async def anthropic_messages(
     # The server-side agentic loop doesn't support multimodal input -- matches
     # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
     # the mixed-mode rejection were computed before the switch above.
+    # Client tool schemas are rendered into the llama-server chat template as
+    # prompt text, so neutralize control markers here too (mirrors the OpenAI
+    # passthrough path); otherwise an Anthropic tool description / enum carrying
+    # </think> or <|im_start|> bypasses the #7066 protection applied above to the
+    # translated messages.
+    from core.inference.chat_template_helpers import neutralize_tools_control_markup
+
     openai_client_tools = [
         tool
-        for tool in anthropic_tools_to_openai(payload.tools or [])
+        for tool in neutralize_tools_control_markup(
+            anthropic_tools_to_openai(payload.tools or [])
+        )
         if tool.get("function", {}).get("name") not in requested_studio_tools
     ]
 

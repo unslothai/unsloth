@@ -80,6 +80,17 @@ export function drainThinkMarkupBuffer(
   };
 }
 
+/** Non-overlapping ``` fence count in `raw[from, to)` (matches Python str.count). */
+function countFences(raw: string, from: number, to: number): number {
+  let fences = 0;
+  let f = raw.indexOf("```", from);
+  while (f !== -1 && f < to) {
+    fences++;
+    f = raw.indexOf("```", f + 3);
+  }
+  return fences;
+}
+
 /**
  * True when a close tag looks like quoted/code content rather than a block
  * end (#7066): flanked by quote chars, with the leading quote OPENING a span
@@ -90,14 +101,19 @@ function isLiteralThinkClose(
   spanStart: number,
   closeIndex: number,
 ): boolean {
-  // Inside an open ``` fence, a close tag is sample text, not a block end.
-  let fences = 0;
-  let f = raw.indexOf("```", spanStart);
-  while (f !== -1 && f < closeIndex) {
-    fences++;
-    f = raw.indexOf("```", f + 3);
+  // Inside an open ``` fence, a close tag is sample text, not a block end --
+  // but only when that fence actually closes. An unclosed fence in the
+  // reasoning (e.g. `<think>...```python\n...</think>answer`) must not make the
+  // real </think> look literal and swallow the whole visible answer, so fall
+  // back to structural when the fence never closes by end of text. Mirrors the
+  // backend Responses extractor's EOF fallback (_fence_unresolved_at_close, #7334).
+  const fencesBefore = countFences(raw, spanStart, closeIndex);
+  if (fencesBefore % 2 === 1) {
+    // Odd total fence count over the whole span means the enclosing fence never
+    // closes, so this close tag is a genuine structural close, not fenced text.
+    if (countFences(raw, spanStart, raw.length) % 2 === 1) return false;
+    return true;
   }
-  if (fences % 2 === 1) return true;
   const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
   const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
   if (!before || !after) return false;
