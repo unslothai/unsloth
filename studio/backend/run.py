@@ -1196,9 +1196,7 @@ def _terminal_password_gate(
         # _TeeStream that _setup_server_disk_logging() installed: the tee mirrors
         # everything into a retained server-*.log, and this password must never be
         # persisted (the banner itself promises it is not written to disk).
-        _print_auto_generated_credentials(
-            _admin, generated, out = _console_only_stream(sys.stderr)
-        )
+        _print_auto_generated_credentials(_admin, generated, out = _console_only_stream(sys.stderr))
         # Password is no longer the default; still suppress any HTML injection of a
         # stale bootstrap credential over the public URL.
         return True, True
