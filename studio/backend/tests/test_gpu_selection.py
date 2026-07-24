@@ -875,10 +875,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("only supported on CUDA and Intel XPU", str(exc_info.exception))
 
     def test_inference_route_resolves_gguf_gpu_ids(self):
-        # GGUF gpu_ids are now supported: /load routes them through the same
-        # resolution as non-GGUF loads (rejecting only genuinely invalid ids with
-        # the resolver's actionable message) rather than a blanket "not supported"
-        # reject, so /validate can stay consistent with /load (#7239).
+        # GGUF IDs use the normal resolver instead of a blanket rejection.
         import utils.hardware.hardware as hardware_mod
 
         inference_route = _load_route_module(
@@ -910,8 +907,6 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
-            # Patch both the package re-export and the defining module so the stub
-            # fires no matter which import path the route uses.
             patch("utils.hardware.resolve_requested_gpu_ids", _fake_resolve),
             patch.object(hardware_mod, "resolve_requested_gpu_ids", _fake_resolve),
             patch.object(
@@ -935,7 +930,6 @@ class TestRouteErrors(unittest.TestCase):
                     )
                 )
 
-        # The selection was routed through resolution (not the old blanket reject).
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("SENTINEL", exc_info.exception.detail)
         self.assertNotIn("not supported for GGUF", exc_info.exception.detail)
@@ -1040,10 +1034,6 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(resolved, [0, 1])
 
     def test_inference_route_validates_gpu_ids_for_gguf(self):
-        # gpu_ids is now SUPPORTED for GGUF (the GPU picker), but still
-        # validated: a rejected pick surfaces as a clean 400, not the old
-        # "not supported for GGUF" rejection. Patch the validator so the test
-        # is deterministic regardless of the host's (or a prior test's) GPU env.
         import utils.hardware.hardware as hardware_mod
         import utils.hardware as hardware_pkg
 
@@ -1073,8 +1063,6 @@ class TestRouteErrors(unittest.TestCase):
                 "ModelConfig",
                 SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
             ),
-            # Patch both the package re-export and the defining module so the stub
-            # fires no matter which import path the route uses.
             patch(
                 "utils.hardware.resolve_requested_gpu_ids",
                 side_effect = ValueError("Invalid gpu_ids [0, 1]: rejected by test"),
@@ -1115,15 +1103,11 @@ class TestRouteErrors(unittest.TestCase):
                     )
                 )
 
-        # The validator's ValueError (or backend capability rejection) becomes a clean 400.
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("gpu_ids", exc_info.exception.detail.lower())
 
     def test_inference_route_rejects_gpu_ids_on_cpu_only_llama_build(self):
-        # A CUDA-visible host with a CPU-only llama.cpp build: the CUDA resolver validates
-        # the mask but can't see that the build ignores CUDA_VISIBLE_DEVICES, so the pin
-        # would silently run on CPU while /load reports it active. The route must reject
-        # before teardown (mirrors the non-CUDA resolvable check) (#7188).
+        # A CPU-only llama.cpp build cannot honor a CUDA visibility pin.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1177,10 +1161,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
     def test_cpu_only_llama_build_skips_reject_for_diffusion_gguf(self):
-        # A diffusion GGUF is served by the separate visual-server runner (DG_GPU/--gpu),
-        # not llama-server, so a CPU-only llama.cpp build must NOT reject its gpu_ids. The
-        # flow skips the cpu-only reject and reaches the id resolver just after it, where a
-        # sentinel stops the load deterministically (#7188).
+        # Diffusion uses its own runner, independent of llama.cpp GPU libraries.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1236,15 +1217,11 @@ class TestRouteErrors(unittest.TestCase):
                         current_subject = "test-user",
                     )
                 )
-        # Reached the id resolver past the skipped cpu-only reject, not the reject itself.
         self.assertNotIn("cpu-only build", exc_info.exception.detail.lower())
         self.assertIn("SENTINEL_AFTER_GATE", exc_info.exception.detail)
 
     def test_diffusion_gguf_on_vulkan_build_uses_cuda_path(self):
-        # A confirmed diffusion GGUF on a CUDA host whose llama-server is a Vulkan build must
-        # validate gpu_ids through the CUDA physical-id resolver (the diffusion runner takes a
-        # CUDA --gpu/DG_GPU id), NOT the Vulkan-ordinal branch, which would size the wrong
-        # device namespace and reject a valid physical pick (#7188).
+        # The diffusion runner uses CUDA physical IDs even beside Vulkan llama.cpp.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1300,13 +1277,10 @@ class TestRouteErrors(unittest.TestCase):
                         current_subject = "test-user",
                     )
                 )
-        # Took the CUDA physical-id resolver rather than the Vulkan ordinal path.
         self.assertIn("CUDA_PATH_SENTINEL", exc_info.exception.detail)
 
     def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
-        # A same-model Apply that omits gguf_memory_mode must NOT drop an inherited
-        # --mlock/--no-mmap pass-through (opt-in memory stripping), while a first-class
-        # field the caller set (max_seq_length) still strips its shadow flag (#7188).
+        # Omission preserves memory flags while explicit context still owns -c.
         inference_route = _load_route_module(
             "inference_route_module_for_inherit_memflags_keep_test",
             "routes/inference.py",
@@ -1325,7 +1299,6 @@ class TestRouteErrors(unittest.TestCase):
         self.assertNotIn("-c", out)  # first-class max_seq_length still strips the inherited -c
 
     def test_inherited_extras_strip_memory_flags_when_mode_requested(self):
-        # A real gguf_memory_mode owns the memory flags, so an inherited one is stripped (#7188).
         inference_route = _load_route_module(
             "inference_route_module_for_inherit_memflags_strip_test",
             "routes/inference.py",

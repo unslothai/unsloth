@@ -1009,8 +1009,6 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
-              // activeMemoryMode is committed by loadedGpuMemoryFields (spread
-              // above) so every load path resets it uniformly; see its note.
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -1115,7 +1113,6 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
-                  // Restore the previous model's host-memory residency too.
                   gguf_memory_mode: stateBeforeUnload.activeMemoryMode ?? null,
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(

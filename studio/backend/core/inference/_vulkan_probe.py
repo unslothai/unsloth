@@ -26,13 +26,7 @@ _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
 
 
 def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
-    """Per-device integrated-GPU flags and names via ggml's registry.
-
-    The Vulkan reg enumerates devices in the same order as
-    ``ggml_backend_vk_get_device_memory`` (each context uses ``ctx->device =
-    i``), so reg index == device ordinal. Missing metadata degrades to an
-    all-False flag list and stable ``VulkanN`` names.
-    """
+    """Read iGPU flags and names in Vulkan ordinal order."""
     flags = [False] * count
     names = [f"Vulkan{i}" for i in range(count)]
     try:
@@ -57,8 +51,7 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
             dev = base.ggml_backend_reg_dev_get(reg, i)
             if dev:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
-                # name is the selector token (usually VulkanN); description is
-                # the hardware label users need in the picker.
+                # Prefer the user-facing hardware description.
                 raw_name = base.ggml_backend_dev_description(dev) or base.ggml_backend_dev_name(dev)
                 if raw_name:
                     name = raw_name.decode("utf-8", errors = "replace")
@@ -88,14 +81,7 @@ def main() -> int:
         base_name, vk_name = "libggml-base.so", "libggml-vulkan.so"
 
     def _find_lib(directory, stem):
-        """Find ``stem`` or a versioned ``stem.N`` in *directory*.
-
-        Prefers the unversioned name; falls back to the first versioned match.
-        Split-lib installs often ship only the versioned runtime soname
-        (e.g. ``libggml-vulkan.so.0``) without the dev-only unversioned symlink,
-        so a hard-coded unversioned-only load would miss a real Vulkan backend
-        that the detector already classified correctly (#7188).
-        """
+        """Find an unversioned library or a versioned runtime soname."""
         path = os.path.join(directory, stem)
         if os.path.isfile(path):
             return path

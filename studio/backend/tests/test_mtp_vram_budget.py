@@ -870,10 +870,7 @@ class TestExtraArgsMtpDetection:
         assert "llama_backend.hf_repo" in body
 
     def test_route_matcher_strips_memory_flags_from_explicit_extras(self):
-        # A request repeating a --mlock/--mmap/--no-mmap the loaded server already stripped
-        # must still hit the fast path, so a no-op re-Apply during training isn't reloaded
-        # (#7164). Only the request side is stripped: the backend keeps its flags so an
-        # explicit auto over a server that inherited --mlock still reloads to clear it.
+        # Strip only request-side memory flags so explicit auto can still trigger cleanup.
         routes_src = (
             Path(__file__).resolve().parent.parent / "routes" / "inference.py"
         ).read_text()
