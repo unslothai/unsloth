@@ -6553,17 +6553,7 @@ class LlamaCppBackend:
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
 
-            # Reject stale Vulkan ordinals before replacing the live model.
-            if is_vulkan_backend and gpu_ids and binary:
-                _pf_wanted = {int(x) for x in gpu_ids}
-                _pf_probed = {g[0] for g in self._get_gpu_memory(binary)}
-                if not _pf_wanted.issubset(_pf_probed):
-                    raise ValueError(
-                        f"Requested Vulkan GPU ordinal(s) {sorted(_pf_wanted)} not "
-                        f"present. Available Vulkan devices: {sorted(_pf_probed)}."
-                    )
-
-            # Classify remote Vulkan loads before teardown because diffusion uses CUDA IDs.
+            # Classify Vulkan loads before teardown because diffusion uses CUDA IDs.
             _preflight_model_path = None
             if is_vulkan_backend and gpu_ids and hf_repo:
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
@@ -6587,6 +6577,38 @@ class LlamaCppBackend:
                         "its device by CUDA physical index, which has no defined mapping "
                         "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
                         "device."
+                    )
+            elif (
+                is_vulkan_backend
+                and gpu_ids
+                and gguf_path
+                and not hf_repo
+                and gpu_ids_are_vulkan_ordinals is not False
+            ):
+                if not Path(gguf_path).is_file():
+                    raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
+                if self._gguf_path_is_diffusion(gguf_path, model_identifier):
+                    raise ValueError(
+                        "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                        "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
+                        "its device by CUDA physical index, which has no defined mapping "
+                        "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
+                        "device."
+                    )
+
+            # Reject stale Vulkan ordinals before replacing the live model.
+            if (
+                is_vulkan_backend
+                and gpu_ids
+                and binary
+                and gpu_ids_are_vulkan_ordinals is not False
+            ):
+                _pf_wanted = {int(x) for x in gpu_ids}
+                _pf_probed = {g[0] for g in self._get_gpu_memory(binary)}
+                if not _pf_wanted.issubset(_pf_probed):
+                    raise ValueError(
+                        f"Requested Vulkan GPU ordinal(s) {sorted(_pf_wanted)} not "
+                        f"present. Available Vulkan devices: {sorted(_pf_probed)}."
                     )
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
