@@ -11,6 +11,10 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 import {
+  cachedPinnableGpuIndices,
+  ensureGpuDeviceCache,
+} from "@/hooks/use-gpu-info";
+import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
   normalizeMaxSeqLength,
@@ -57,6 +61,30 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
           })
         : null,
   });
+
+  // reconcilePersistedGpuIds can only clear a wrong-space pick (physical
+  // CUDA/ROCm ids vs ggml Vulkan ordinals, after a llama.cpp backend swap) once
+  // the GPU cache is warm. This runs synchronously on model selection, which can
+  // happen before any GPU hook has fetched /api/system -- on a cold cache the
+  // reconcile passes the saved ids through unvalidated, and if it then launders
+  // into the store the later load path reconciles it as a live pick
+  // (fromPersisted false) and never clears it, pinning the wrong card. So when
+  // the pick was applied cold, warm the cache and re-reconcile, overwriting only
+  // if the user has not replaced the pick in the meantime.
+  const persistedIds = config.selectedGpuIds;
+  if (persistedIds != null && cachedPinnableGpuIndices() === null) {
+    const applied = useChatRuntimeStore.getState().selectedGpuIds;
+    void ensureGpuDeviceCache().then(() => {
+      const store = useChatRuntimeStore.getState();
+      if (store.selectedGpuIds !== applied) return; // user changed it since
+      const revalidated = reconcilePersistedGpuIds(persistedIds, {
+        fromPersisted: true,
+      });
+      if (revalidated !== store.selectedGpuIds) {
+        useChatRuntimeStore.setState({ selectedGpuIds: revalidated });
+      }
+    });
+  }
 }
 
 export function applyModelLoadConfigToRuntime(
