@@ -874,7 +874,13 @@ class TestHealerSignalAlignment:
 
     def test_heal_signals_subset_of_promotable_formats(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {"<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]"}
+        assert set(_HEAL_SIGNALS) == {
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
+        }
 
     def test_stream_healer_does_not_hold_llama_python_tag_text(self):
         from core.inference.passthrough_healing import StreamToolCallHealer

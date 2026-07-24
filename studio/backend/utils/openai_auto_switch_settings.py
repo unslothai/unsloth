@@ -8,7 +8,9 @@ Two settings, both off by default so existing API behavior is unchanged:
   names a downloaded local GGUF different from the loaded one transparently
   loads it before serving (llama-swap-style). Unknown names pass through.
 - ``openai_api_auto_unload_idle_seconds``: when > 0, the loaded GGUF is
-  unloaded after this many idle seconds to free VRAM.
+  unloaded after this many idle seconds to free VRAM. Enabled values have a
+  60s floor (0 stays "off"): a tiny TTL tears the model down between turns of
+  an active chat, forcing a full weight reload + prompt re-prefill per turn.
 
 The idle TTL can also be set at startup via the ``UNSLOTH_MODEL_IDLE_TTL`` env
 var. Unlike the stored setting (which stays gated on auto-switch), the env value
@@ -28,11 +30,14 @@ from typing import Any, Optional
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
+AUTO_UNLOAD_KEEP_KV_SETTING_KEY = "openai_api_auto_unload_keep_kv"
 MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
 MODEL_IDLE_TTL_ENV_VAR = "UNSLOTH_MODEL_IDLE_TTL"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
+DEFAULT_AUTO_UNLOAD_KEEP_KV = True
+MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
@@ -56,6 +61,10 @@ def _coerce_int(value: Any) -> int | None:
         return max(0, int(value))
     except (TypeError, ValueError):
         return None
+
+
+def _apply_idle_floor(seconds: int) -> int:
+    return 0 if seconds <= 0 else max(MIN_AUTO_UNLOAD_IDLE_SECONDS, seconds)
 
 
 def _cached_setting(key: str, default: Any) -> Any:
@@ -91,12 +100,34 @@ def _stored_idle_seconds() -> Optional[int]:
     return _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
 
 
+_env_floor_warned = False
+
+
 def _env_idle_seconds() -> Optional[int]:
-    """UNSLOTH_MODEL_IDLE_TTL as a non-negative seconds value, or None if unset/invalid."""
+    """UNSLOTH_MODEL_IDLE_TTL as a non-negative seconds value, or None if unset/invalid.
+
+    Floored to MIN_AUTO_UNLOAD_IDLE_SECONDS here (with a one-time warning) since
+    headless/container deploys have no UI to surface a validation error."""
     raw = os.environ.get(MODEL_IDLE_TTL_ENV_VAR)
     if raw is None or not raw.strip():
         return None
-    return _coerce_int(raw)
+    parsed = _coerce_int(raw)
+    if parsed is None:
+        return None
+    floored = _apply_idle_floor(parsed)
+    if floored != parsed:
+        global _env_floor_warned
+        if not _env_floor_warned:
+            _env_floor_warned = True
+            from loggers import get_logger
+            get_logger(__name__).warning(
+                "%s=%s is below the %ss minimum; using %ss",
+                MODEL_IDLE_TTL_ENV_VAR,
+                parsed,
+                MIN_AUTO_UNLOAD_IDLE_SECONDS,
+                floored,
+            )
+    return floored
 
 
 def get_stored_auto_unload_idle_seconds() -> int:
@@ -108,7 +139,9 @@ def get_stored_auto_unload_idle_seconds() -> int:
     """
     stored = _stored_idle_seconds()
     if stored is not None:
-        return stored
+        # Floor legacy values persisted before the minimum existed, so the UI
+        # displays the effective TTL and round-trips it cleanly.
+        return _apply_idle_floor(stored)
     env = _env_idle_seconds()
     return env if env is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
 
@@ -118,32 +151,63 @@ def get_auto_unload_idle_seconds() -> int:
     stored = _stored_idle_seconds()
     if stored is not None:
         # An explicit UI/API value stays gated on auto-switch: off reports 0 so the
-        # off state is identical to pre-feature.
-        return stored if get_openai_auto_switch_enabled() else 0
+        # off state is identical to pre-feature. Floored to cover values persisted
+        # before the minimum existed.
+        return _apply_idle_floor(stored) if get_openai_auto_switch_enabled() else 0
     # No stored value: UNSLOTH_MODEL_IDLE_TTL is a standalone startup default that
     # enables idle-unload even with auto-switch off (headless/container deploys).
     env = _env_idle_seconds()
     return env if env is not None else 0
 
 
-def set_openai_auto_switch(enabled: Any, idle_seconds: Any) -> tuple[bool, int]:
-    """Set both auto-switch flags in one transaction so a settings PUT can't leave
-    one key updated and the other stale. Both values are coerced before any write,
-    so an invalid value raises without persisting either."""
+def get_auto_unload_keep_kv() -> bool:
+    """Whether the idle unload persists slot KV to disk for restore on reload."""
+    parsed = _coerce_bool(_cached_setting(AUTO_UNLOAD_KEEP_KV_SETTING_KEY, None))
+    return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_KEEP_KV
+
+
+def set_openai_auto_switch(
+    enabled: Any,
+    idle_seconds: Any,
+    keep_kv: Any = None,
+) -> tuple[bool, int, bool]:
+    """One-transaction write; ``None`` leaves a stored value untouched."""
     parsed_enabled = _coerce_bool(enabled)
     if parsed_enabled is None:
         raise ValueError("OpenAI auto-switch must be true or false.")
-    parsed_idle = _coerce_int(idle_seconds)
-    if parsed_idle is None:
-        raise ValueError("Auto-unload idle seconds must be a non-negative integer.")
+    parsed_idle = None
+    if idle_seconds is not None:
+        parsed_idle = _coerce_int(idle_seconds)
+        if parsed_idle is None:
+            raise ValueError("Auto-unload idle seconds must be a non-negative integer.")
+        if 0 < parsed_idle < MIN_AUTO_UNLOAD_IDLE_SECONDS:
+            raise ValueError(
+                f"Auto-unload idle seconds must be 0 (off) or at least "
+                f"{MIN_AUTO_UNLOAD_IDLE_SECONDS}."
+            )
+    parsed_keep_kv = None
+    if keep_kv is not None:
+        parsed_keep_kv = _coerce_bool(keep_kv)
+        if parsed_keep_kv is None:
+            raise ValueError("Keep KV on idle unload must be true or false.")
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings(
-        {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled, AUTO_UNLOAD_IDLE_SETTING_KEY: parsed_idle}
-    )
+    updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
+    if parsed_idle is not None:
+        updates[AUTO_UNLOAD_IDLE_SETTING_KEY] = parsed_idle
+    if parsed_keep_kv is not None:
+        updates[AUTO_UNLOAD_KEEP_KV_SETTING_KEY] = parsed_keep_kv
+    upsert_app_settings(updates)
     _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
-    _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
-    return parsed_enabled, parsed_idle
+    if parsed_idle is not None:
+        _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
+    if parsed_keep_kv is not None:
+        _invalidate(AUTO_UNLOAD_KEEP_KV_SETTING_KEY)
+    return (
+        parsed_enabled,
+        parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
+        parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
+    )
 
 
 def get_model_overrides() -> dict[str, dict]:

@@ -139,7 +139,7 @@ class TestLoraDetectOffline:
 
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
-        # Studio catches Exception broadly; pin that the call still happens
+        # Unsloth catches Exception broadly; pin that the call still happens
         # (so cached LoRAs aren't missed) and returns fast via the mock.
         class _OfflineModeIsEnabled(Exception):
             pass

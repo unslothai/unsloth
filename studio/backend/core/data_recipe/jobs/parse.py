@@ -133,7 +133,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 source = "github",
                 status = "rate_limited",
                 retry_after_sec = seconds,
-                message = ("Waiting for GitHub rate limit. Studio will resume automatically."),
+                message = ("Waiting for GitHub rate limit. Unsloth will resume automatically."),
             ),
         )
 
@@ -147,7 +147,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 status = "rate_limited",
                 retry_after_sec = seconds,
                 message = (
-                    "Waiting for GitHub secondary rate limit. Studio will resume automatically."
+                    "Waiting for GitHub secondary rate limit. Unsloth will resume automatically."
                 ),
             ),
         )
@@ -161,7 +161,7 @@ def parse_log_message(msg: str) -> ParsedUpdate | None:
                 source = "github",
                 status = "rate_limited",
                 retry_after_sec = seconds,
-                message = ("Waiting for GitHub rate limit. Studio will resume automatically."),
+                message = ("Waiting for GitHub rate limit. Unsloth will resume automatically."),
             ),
         )
 

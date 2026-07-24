@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the Studio shim over the shared unsloth_zoo Xet -> HTTP fallback.
+"""Tests for the Unsloth shim over the shared unsloth_zoo Xet -> HTTP fallback.
 
 The transport-policy matrix is tested once in unsloth_zoo; here we assert only the
-Studio seam: re-exporting the shared API and injecting the marker-aware
+Unsloth seam: re-exporting the shared API and injecting the marker-aware
 prepare_cache_for_transport on the HTTP retry. CPU-only, no network, no real subprocess.
 """
 
@@ -69,7 +69,7 @@ def test_child_should_disable_xet_truth_table():
 
 
 def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
-    """A Xet stall retries over HTTP and the shim runs Studio's marker-aware
+    """A Xet stall retries over HTTP and the shim runs Unsloth's marker-aware
     ``prepare_cache_for_transport(..., 'http')`` before the retry."""
     _requires_shared()
     for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
@@ -101,17 +101,27 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     prepared = []
     monkeypatch.setattr(
         "hub.utils.download_registry.prepare_cache_for_transport",
-        lambda repo_type, repo_id, mode, *a, **k: prepared.append((repo_type, repo_id, mode)),
+        lambda repo_type, repo_id, mode, *a, **k: prepared.append(
+            (repo_type, repo_id, mode, k.get("root"))
+        ),
     )
 
-    out = xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None)
+    selected_cache = "/captured/hub"
+    out = xf.hf_hub_download_with_xet_fallback(
+        DL_REPO,
+        FILE,
+        None,
+        cache_dir = selected_cache,
+    )
     assert out == "/cache/model.gguf"
     assert seen_disable_xet == [False, True]  # Xet first, then HTTP
-    assert prepared == [("model", DL_REPO, "http")], "shim must run Studio's marker-aware prep"
+    assert prepared == [
+        ("model", DL_REPO, "http", Path(selected_cache))
+    ], "shim must prepare the cache captured by the download"
 
 
 def test_shim_snapshot_injects_studio_prepare(monkeypatch):
-    """The snapshot wrapper forwards Studio's marker-aware prep, like the file wrapper."""
+    """The snapshot wrapper forwards Unsloth's marker-aware prep, like the file wrapper."""
     captured = {}
 
     def fake_snapshot(repo_id, **kwargs):
@@ -120,14 +130,26 @@ def test_shim_snapshot_injects_studio_prepare(monkeypatch):
         return "/tmp/snap-dir"
 
     monkeypatch.setattr(xf, "_shared_snapshot_download_with_xet_fallback", fake_snapshot)
-    out = xf.snapshot_download_with_xet_fallback("org/model")
+    selected_cache = "/captured/hub"
+    out = xf.snapshot_download_with_xet_fallback(
+        "org/model",
+        cache_dir = selected_cache,
+    )
     assert out == "/tmp/snap-dir"
     assert captured["repo_id"] == "org/model"
-    assert captured["prepare_for_http_fn"] is xf._studio_prepare_for_http
+    prepared = []
+    monkeypatch.setattr(
+        "hub.utils.download_registry.prepare_cache_for_transport",
+        lambda repo_type, repo_id, mode, *a, **k: prepared.append(
+            (repo_type, repo_id, mode, k.get("root"))
+        ),
+    )
+    captured["prepare_for_http_fn"]("model", "org/model")
+    assert prepared == [("model", "org/model", "http", Path(selected_cache))]
 
 
 def test_degrades_gracefully_without_shared_helper(monkeypatch):
-    """On an older unsloth_zoo lacking the shared helper, the shim still imports (Studio
+    """On an older unsloth_zoo lacking the shared helper, the shim still imports (Unsloth
     boots) and exposes stub API doing plain HF downloads with the watchdog disabled."""
     import importlib
 
@@ -206,7 +228,7 @@ def test_degrades_gracefully_without_shared_helper(monkeypatch):
 def test_degrades_when_unsloth_zoo_entirely_absent():
     """When unsloth_zoo is absent entirely, the import raises
     ModuleNotFoundError(name='unsloth_zoo') (top-level package). Guard that the shim still
-    degrades and does not re-raise, breaking every Studio import that pulls it in."""
+    degrades and does not re-raise, breaking every Unsloth import that pulls it in."""
     import importlib
 
     class _BlockZoo:
@@ -248,7 +270,7 @@ def test_degrades_when_unsloth_zoo_entirely_absent():
 
 def test_degrades_when_shared_helper_import_raises_importerror():
     """unsloth_zoo can be installed yet fail to import when torch is missing (llama.cpp/GGUF-only
-    Studio), raising ImportError not ModuleNotFoundError. The shim must degrade for that too."""
+    Unsloth), raising ImportError not ModuleNotFoundError. The shim must degrade for that too."""
     import importlib
 
     class _BlockWithImportError:
@@ -329,7 +351,7 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
         # with it set); accessing DownloadStallError drives it via __getattr__.
         stall_error = degraded.DownloadStallError
         assert seen_env == [None, "1"], seen_env
-        # Both attempts raised -> Studio still boots in degraded mode.
+        # Both attempts raised -> Unsloth still boots in degraded mode.
         assert issubclass(stall_error, RuntimeError)
         # The env override must not leak past the load.
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None

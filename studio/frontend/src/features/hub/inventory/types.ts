@@ -47,6 +47,7 @@ export interface CachedInventoryRow {
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
+  lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
   pipelineTag?: string | null;
@@ -54,6 +55,7 @@ export interface CachedInventoryRow {
   libraryName?: string | null;
   quantMethod?: string | null;
   liveDownload?: boolean;
+  optimistic?: boolean;
 }
 
 export interface LocalInventoryRow {
@@ -65,6 +67,8 @@ export interface LocalInventoryRow {
   title: string;
   source: LocalSource;
   sourceLabel: string;
+  modelId?: string | null;
+  displayName?: string;
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
@@ -79,6 +83,7 @@ export interface LocalInventoryRow {
   updatedAt: number | null;
   partial?: boolean;
   partialTransport?: string | null;
+  activeCache?: boolean | null;
   pipelineTag?: string | null;
   tags?: string[];
   libraryName?: string | null;

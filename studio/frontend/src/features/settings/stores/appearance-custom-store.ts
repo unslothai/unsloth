@@ -111,8 +111,6 @@ export type AppearanceCustomization = {
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
   fontSmoothing: boolean;
-  /** true = content dissolves at panel edges; false = thin divider lines. */
-  edgeFades: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
 };
@@ -136,7 +134,6 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
-  edgeFades: true,
   sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
@@ -275,7 +272,6 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         ? source.reduceMotion
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
-    edgeFades: source.edgeFades !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
   };
 }
@@ -483,6 +479,8 @@ export function applyCustomizationToDocument(
     "--font-sans",
     c.uiFont ? `"${c.uiFont}", ${DEFAULT_SANS_STACK}` : null,
   );
+  // Custom interface fonts cascade into chat and opt out of its Inter tuning.
+  el.toggleAttribute("data-ui-font", Boolean(c.uiFont));
   setVar(
     "--font-heading",
     c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
@@ -512,11 +510,20 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
+  // The UI font size drives a typography scale factor, never the root font
+  // size: rem-based layout geometry must not move with the preference. The
+  // scale reaches text through the --text-* / --text-ui-* / --leading-*
+  // tokens in index.css.
   if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    style.fontSize = `${c.uiFontSize}px`;
+    setVar("--ui-font-scale", String(c.uiFontSize / UI_FONT_SIZE_RANGE.default));
+    el.setAttribute("data-ui-font-size", String(c.uiFontSize));
   } else {
-    style.removeProperty("font-size");
+    setVar("--ui-font-scale", null);
+    el.removeAttribute("data-ui-font-size");
   }
+  // Older builds scaled the root font size directly; clear any stale inline
+  // value so layout never scales with the preference again.
+  style.removeProperty("font-size");
 
   if (c.codeFontSize !== null) {
     el.setAttribute("data-code-font-size", "");
@@ -548,9 +555,6 @@ export function applyCustomizationToDocument(
   // the media rules in index.css skip html.force-motion.
   el.classList.toggle("force-motion", c.reduceMotion === "off");
   el.classList.toggle("no-font-smoothing", !c.fontSmoothing);
-  // Off swaps the scroll-edge dissolves for thin divider lines (index.css
-  // and hub.css key their fade rules off this class).
-  el.classList.toggle("no-edge-fades", !c.edgeFades);
 }
 
 /**

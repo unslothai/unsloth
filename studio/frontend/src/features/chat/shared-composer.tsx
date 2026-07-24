@@ -8,6 +8,7 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -22,8 +23,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import {
+  StudioDictationAdapter,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat/adapters/studio-dictation-adapter";
+import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
@@ -48,7 +57,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -62,25 +70,42 @@ import {
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  DEFAULT_MAX_SEQ_LENGTH,
+  normalizeMaxSeqLength,
+  resolveInitialConfig,
+  type PerModelConfig,
+} from "@/features/model-picker";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { loadModel, validateModel } from "./api/chat-api";
+import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/preset-policy";
+import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   PLUS_MENU_ORDER,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  loadedGpuMemoryFields,
   type ReasoningEffort,
+  reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
+  persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
@@ -144,18 +169,6 @@ const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   </svg>
 );
 
-const MicIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 256 256"
-    fill="currentColor"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
-  </svg>
-);
-
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -207,70 +220,95 @@ function formatReasoningDisabledLabel(
 function useDictation(
   setText: (value: string | ((prev: string) => string)) => void,
 ) {
+  // Re-render support state when the user switches recognition engines.
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
   const [isDictating, setIsDictating] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // True while a stopped recording's final audio is still transcribing; a
+  // second click then cancels the pending transcription instead of re-stopping.
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const sessionRef = useRef<StudioDictationSession | null>(null);
+  const startingRef = useRef(false);
+  const finalizingRef = useRef(false);
 
-  const start = useCallback(() => {
-    const SpeechRecognitionAPI =
-      typeof window !== "undefined" &&
-      (window.SpeechRecognition ??
-        (
-          window as unknown as {
-            webkitSpeechRecognition?: typeof SpeechRecognition;
-          }
-        ).webkitSpeechRecognition);
-    if (!SpeechRecognitionAPI) {
+  const start = useCallback(async () => {
+    if (startingRef.current || sessionRef.current) return;
+    // Unsupported engine (e.g. Firefox): explain and steer to the local model.
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
       return;
     }
-    const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const last = event.resultIndex;
-      const result = event.results[last];
-      if (!result?.isFinal) return;
-      const transcript = result[0]?.transcript?.trim();
+    startingRef.current = true;
+
+    let session: StudioDictationSession;
+    try {
+      // Routes to the engine chosen in Voice settings (browser or STT model),
+      // honoring the selected microphone, language, and dictionary. Compare
+      // feeds two panes, so recent dictations must not link the unrelated
+      // single-chat active thread.
+      session = new StudioDictationAdapter({ chatId: null }).listen();
+    } catch {
+      startingRef.current = false;
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    sessionRef.current = session;
+    setIsDictating(true);
+
+    // Append final transcripts; the adapter has already applied the dictionary
+    // and records the session in Recent dictations.
+    session.onSpeech((result) => {
+      if (!result.isFinal) return;
+      const transcript = result.transcript?.trim() ?? "";
       if (transcript) {
         setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
       }
-    };
-    recognition.onerror = () => {
+    });
+    session.onEnd?.(() => {
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
       setIsDictating(false);
-    };
-    recognition.onend = () => {
-      setIsDictating(false);
-    };
-    recognition.start();
-    recognitionRef.current = recognition;
-    setIsDictating(true);
+    });
+    startingRef.current = false;
   }, [setText]);
 
   const stop = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+    const session = sessionRef.current;
+    if (!session) return;
+    // A second click while the final segment is transcribing discards the
+    // pending transcription instead of leaving the pane stuck until timeout.
+    if (finalizingRef.current) {
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+      return;
     }
-    setIsDictating(false);
+    finalizingRef.current = true;
+    setIsFinalizing(true);
+    // Keep the session and dictation state alive while its final audio segment
+    // is transcribed. onEnd clears both after the transcript callbacks run.
+    void session.stop().catch((error) => {
+      console.error("Could not stop dictation:", error);
+      session.cancel();
+      if (sessionRef.current === session) sessionRef.current = null;
+      finalizingRef.current = false;
+      setIsFinalizing(false);
+      setIsDictating(false);
+    });
   }, []);
 
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
+      sessionRef.current?.cancel();
+      sessionRef.current = null;
     };
   }, []);
 
-  const supported =
-    typeof window !== "undefined" &&
-    !!(
-      window.SpeechRecognition ??
-      (window as unknown as { webkitSpeechRecognition?: unknown })
-        .webkitSpeechRecognition
-    );
+  const supported = StudioDictationAdapter.isSupported(dictationEngine);
 
-  return { isDictating, start, stop, supported };
+  return { isDictating, isFinalizing, start, stop, supported };
 }
 
 export type CompareHandles = MutableRefObject<Record<string, CompareHandle>>;
@@ -383,7 +421,23 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  config?: PerModelConfig;
 };
+
+function cleanCompareChatTemplate(
+  value: string | null | undefined,
+): string | null {
+  return value?.trim() ? value : null;
+}
+
+function resolveCompareSpecDraftNMax(
+  speculativeType: string | null,
+  value: number | null,
+): number | null {
+  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
+    ? value
+    : null;
+}
 
 // Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
@@ -506,6 +560,7 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -524,10 +579,6 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
-  );
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -680,16 +731,18 @@ export function SharedComposer({
   // can still be pre-selected, matching Web search/Code/MCP.
   const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
-  // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
-  // Code always show; the rest are conditional.
-  const pillsCompact =
-    3 +
-      (showImagePill ? 1 : 0) +
-      (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
-      (showWebFetchPill ? 1 : 0) +
-      (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
-    4;
+  // Above 4 pills, collapse to icons only. Compare, Search, Code, and
+  // permissions always show; the rest are conditional. Narrow viewports
+  // collapse too: the labelled row is wider than a phone-width composer.
+  const isMobile = useIsMobile();
+  const pillCount =
+    4 +
+    (showImagePill ? 1 : 0) +
+    (showRagPill && ragEnabled ? 1 : 0) +
+    (showWebFetchPill ? 1 : 0) +
+    (artifactsEnabled ? 1 : 0) +
+    (mcpEnabledForChat ? 1 : 0);
+  const pillsCompact = isMobile || pillCount > 4;
   // Backwards-compatible alias for call sites still referencing
   // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -700,9 +753,9 @@ export function SharedComposer({
 
   const {
     isDictating,
+    isFinalizing: isDictationFinalizing,
     start: startDictation,
     stop: stopDictation,
-    supported: dictationSupported,
   } = useDictation(setText);
 
   useEffect(() => {
@@ -914,47 +967,170 @@ export function SharedComposer({
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
       const store = useChatRuntimeStore.getState();
-      const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const chatTemplateOverride = store.chatTemplateOverride;
-      const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
-        ? chatTemplateOverride
-        : null;
+      const fallbackTensorParallel = store.tensorParallel;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
+      let loadedFromConfig = false;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
         return parts[parts.length - 1] || id;
       }
 
+      // Warm the device cache before the snapshot below reconciles the GPU
+      // pick: on a cold cache the reconcile passes a stale pick through.
+      if (store.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      // The GPU/offload knobs both compare loads must use, snapshotted at Send.
+      // ensureModelLoaded runs sequentially and the first load's response echo
+      // (loadedGpuMemoryFields) rewrites the live store -- a non-GGUF or Auto
+      // first model resets gpuLayers/nCpuMoe/split/pick to defaults -- so
+      // reading the store per load would hand model 2 the first model's echoed
+      // defaults instead of the settings the user pressed Send with.
+      const compareLoadKnobs = {
+        gpuMemoryMode: store.gpuMemoryMode,
+        gpuLayers: store.gpuLayers,
+        nCpuMoe: store.nCpuMoe,
+        splitRatio: store.splitRatio,
+        // Reconcile the pick against the GPUs present now, like the model-switch
+        // path: an early remember-restore can hold a stale cross-host pick that
+        // /load would reject (the device cache is populated by send time).
+        selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
+        customContextLength: store.customContextLength,
+      };
+      // Set when an accepted transformers install unloaded the active model
+      // server-side; a later failure must then clear the stale checkpoint.
+      let upgradeUnloadedActive = false;
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        const config = sel.config ?? null;
+        // This pane's effective config: an explicit selection config, else the
+        // remembered store config for this model/quant (never the other pane's).
+        // No saved config resolves to all-null defaults, so settings below fall
+        // through to their session default.
+        const resolved = config
+          ? { config, remembered: true }
+          : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
+        const ownConfig = resolved.config;
+        const ownRemembered = resolved.remembered;
+        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no explicit
+        // context loads at native (0 -> n_ctx_train), not the session maxSeqLength,
+        // which would silently shrink the shown context.
+        const isGgufLoad =
+          (sel.ggufVariant ?? null) != null ||
+          sel.id.toLowerCase().endsWith(".gguf");
+        // A non-GGUF pane with no saved maxSeqLength falls back to the app default,
+        // not the active model's shared runtime snapshot: else comparing a saved
+        // 128K model against an unconfigured one loads the latter at 128K and OOMs.
+        const effectiveMaxSeqLength =
+          ownConfig.customContextLength ??
+          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
+          (isGgufLoad ? 0 : DEFAULT_MAX_SEQ_LENGTH);
+        const effectiveChatTemplateOverride = cleanCompareChatTemplate(
+          ownConfig.chatTemplateOverride,
+        );
+        const effectiveSpeculativeType =
+          ownConfig.speculativeType ?? specSettings.speculativeType;
+        const effectiveSpecDraftNMax = ownRemembered
+          ? resolveCompareSpecDraftNMax(
+              effectiveSpeculativeType,
+              ownConfig.specDraftNMax,
+            )
+          : specSettings.specDraftNMax;
+        const effectiveTensorParallel = ownRemembered
+          ? ownConfig.tensorParallel
+          : fallbackTensorParallel;
+        if (ownConfig.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+        }
+        const effectiveGpuMemoryMode =
+          ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode;
+        const effectiveGpuLayers =
+          ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
+        const effectiveNCpuMoe =
+          ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
+        const effectiveSelectedGpuIds =
+          ownConfig.selectedGpuIds !== undefined
+            ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
+            : compareLoadKnobs.selectedGpuIds;
+        // A pane's context comes from its own config only: a saved pin, or null
+        // (Auto/native). It must not inherit the active model's shared snapshot --
+        // resolveFitMaxSeqLength would treat that as a pin and load this pane at
+        // the other model's context (changing VRAM/results or OOMing).
+        const effectiveCustomContextLength = ownConfig.customContextLength;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        // Already loaded (gate passed at first load): skip a redundant reload that would
-        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
-        if (isAlreadyActive) {
+        if (isAlreadyActive && !config && !loadedFromConfig) {
           return "ready";
         }
+        const targetIsGguf =
+          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null;
+        // Size validation exactly as the load below, so the training-guard
+        // preflight checks the footprint that actually loads (under Manual + Auto
+        // layers the load sends 0 / the pinned context, not raw maxSeqLength).
+        const compareMaxSeqLength = resolveFitMaxSeqLength(
+          targetIsGguf,
+          effectiveGpuMemoryMode,
+          effectiveGpuLayers,
+          // Prefer this pane's own saved context pin over the shared snapshot,
+          // falling back to its per-pane effective context (GGUF with no saved
+          // context loads at native, not the session maxSeqLength).
+          effectiveCustomContextLength,
+          effectiveMaxSeqLength,
+        );
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          // Scope the validate to the picked GPUs. GGUF-only, like the load
+          // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
+          ...(targetIsGguf
+            ? {
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                gpu_memory_mode: effectiveGpuMemoryMode,
+              }
+            : {}),
         });
+        // Upgrade dialog first (mirrors the primary load path).
+        if (validation.requires_transformers_upgrade) {
+          const upgraded = await confirmTransformersUpgradeIfNeeded({
+            modelName: sel.id,
+            upgrade: validation.transformers_upgrade,
+            // No installable release: custom-code models may fall back to the trust_remote_code gate below.
+            trustRemoteCodeFallback: validation.requires_trust_remote_code,
+          });
+          // The install unloads the active model before the swap (even when the
+          // swap then fails); if a later gate cancels or the load fails, the UI
+          // must stop pointing at that unloaded model.
+          if (
+            useTransformersUpgradeDialogStore
+              .getState()
+              .consumeServerUnloadedChat()
+            && currentStore.params.checkpoint
+          ) {
+            upgradeUnloadedActive = true;
+          }
+          if (!upgraded) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+            );
+          }
+        }
         if (
           validation.requires_trust_remote_code ||
           validation.requires_security_review
@@ -977,19 +1153,36 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
-          speculative_type: specSettings.speculativeType,
-          spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism toggle on compare loads too.
-          tensor_parallel: currentStore.tensorParallel,
+          cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          speculative_type: effectiveSpeculativeType,
+          spec_draft_n_max: effectiveSpecDraftNMax,
+          tensor_parallel: effectiveTensorParallel,
+          ...(targetIsGguf
+            ? {
+                gpu_memory_mode: effectiveGpuMemoryMode,
+                gpu_layers: effectiveGpuLayers,
+                n_cpu_moe: effectiveNCpuMoe,
+                tensor_split: compareLoadKnobs.splitRatio ?? undefined,
+                gpu_ids: effectiveSelectedGpuIds ?? undefined,
+              }
+            : {}),
         });
-        saveSpeculativeType(specSettings.speculativeType);
+        // Keep a compare pane's per-model speculative choice load-local: persist
+        // the global preference only when it came from global settings.
+        if (ownConfig.speculativeType == null) {
+          saveSpeculativeType(effectiveSpeculativeType);
+        }
+        // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
+        // so an applied manual choice survives a restart.
+        persistGpuMemoryModeOnLoad(resp, effectiveGpuMemoryMode);
+        upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -998,17 +1191,69 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        // Keep an explicit Manual+Auto context pin the load just applied (so a
+        // later Apply/Reset doesn't silently revert the model to auto-fit
+        // sizing), mirroring the interactive path's keepCustomCtx. Non-GGUF
+        // compare loads don't send the pin, so their baseline clears.
+        const keepCustomCtx = targetIsGguf
+          ? resolveManualAutoCtxPin(
+              effectiveGpuMemoryMode,
+              effectiveGpuLayers,
+              effectiveCustomContextLength,
+            )
+          : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          kvCacheDtype: resp.cache_type_kv ?? null,
+          loadedKvCacheDtype: resp.cache_type_kv ?? null,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          defaultChatTemplate: resp.chat_template ?? null,
+          chatTemplateOverride: effectiveChatTemplateOverride,
+          loadedChatTemplateOverride: effectiveChatTemplateOverride,
+          // The context baseline this pane loaded with (see keepCustomCtx above),
+          // so a later Apply/Reset can't silently revert a Manual+Auto pin.
+          loadedCustomContextLength: keepCustomCtx,
+          // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick
+          // plus loaded baselines) so the GPU controls round-trip. (gguf context,
+          // customContextLength and native-path token/expiry clear in the tail below.)
+          ...loadedGpuMemoryFields(resp),
+          // Drives the GPU Memory controls' diffusion gate; set alongside the
+          // GPU fields on every load path so the gate can't read stale.
+          loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          // Record the context this pane loaded with (like the single-model path)
+          // so when it becomes the active model, the UI and later reload/save use
+          // its context, not the previous/default one.
+          customContextLength: isGgufLoad
+            ? (ownConfig.customContextLength ?? keepCustomCtx)
+            : null,
+          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
+          ggufNativeContextLength: resp.is_gguf
+            ? (resp.native_context_length ?? null)
+            : null,
+          ggufMaxContextLength: resp.is_gguf
+            ? (resp.max_context_length ?? null)
+            : null,
+          // Compare selections load by repo/variant, never from the file picker,
+          // so they carry no native lease. Clear any prior picked file's
+          // token/expiry so the reload path never sends a stale lease.
+          activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
+        if (!isGgufLoad) {
+          // Non-GGUF panes carry their context in params.maxSeqLength.
+          store.setParams({
+            ...useChatRuntimeStore.getState().params,
+            maxSeqLength: effectiveMaxSeqLength,
+          });
+        }
+        loadedFromConfig = config != null;
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
         // state (e.g. a GGUF whose mmproj arrived after the snapshot).
@@ -1097,6 +1342,11 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
+        // The install already unloaded the previously active model; drop the
+        // checkpoint so the UI does not keep pointing at an unloaded model.
+        if (upgradeUnloadedActive) {
+          useChatRuntimeStore.getState().clearCheckpoint();
+        }
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
@@ -1151,7 +1401,7 @@ export function SharedComposer({
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!busy) {
+      if (!busy && !isDictating) {
         send();
       }
     }
@@ -1162,7 +1412,8 @@ export function SharedComposer({
       pendingImages.length > 0 ||
       pendingAudio !== null) &&
     !busy &&
-    !isComposing;
+    !isComposing &&
+    !isDictating;
 
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
   // level; the rest fall into the "More" overflow submenu. Core items (photos,
@@ -1258,9 +1509,13 @@ export function SharedComposer({
                   toast.error("No conversation to export yet.");
                   return;
                 }
-                Promise.all(exportThreadIds.map((id) => fn(id))).catch(() =>
-                  toast.error("Export failed."),
-                );
+                (async () => {
+                  for (const id of exportThreadIds) {
+                    await fn(id);
+                  }
+                })().catch((error) => {
+                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
+                });
               }}
             >
               {label}
@@ -1269,7 +1524,8 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -1280,7 +1536,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
@@ -1447,7 +1703,7 @@ export function SharedComposer({
       />
       <div className="composer-action-wrapper">
         <div
-          className="flex items-center gap-0.5"
+          className="flex min-w-0 flex-wrap items-center gap-0.5"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <input
@@ -1617,29 +1873,10 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
-          {/* Bypass sits immediately after Compare and ahead of every other
-              tool pill (Search, Code, ...) so the active danger state reads
-              first; only Compare outranks it. */}
-          {bypassPermissions && (
-            <button
-              type="button"
-              onClick={() => setBypassPermissions(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              data-variant="danger"
-              aria-label="Disable Bypass permissions"
-              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={ShieldBanIcon}
-                  strokeWidth={2}
-                  className="size-[15px]"
-                />
-              </PillGlyph>
-              <span>Bypass permissions</span>
-            </button>
-          )}
+          {/* Permission-level pill sits immediately after Compare and ahead
+              of every other tool pill (Search, Code, ...) so the Full access
+              danger state reads first; only Compare outranks it. */}
+          <PermissionModeComposerPill side="top" />
           <button
             type="button"
             disabled={searchDisabled}
@@ -1767,6 +2004,7 @@ export function SharedComposer({
                     type="button"
                     disabled={reasoningDisabled}
                     className="unsloth-thinking-pill"
+                    data-pill-label="Thinking settings"
                     data-active={thinkingActiveLook ? "true" : "false"}
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
@@ -1776,7 +2014,7 @@ export function SharedComposer({
                   >
                     <BulbIcon className="size-[15.5px]" />
                     {thinkingActiveLook ? (
-                      <span>
+                      <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
                               reasoningEffort,
@@ -1785,7 +2023,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="size-[15px]" />
+                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -1932,6 +2170,7 @@ export function SharedComposer({
                   }
                 }}
                 className="unsloth-thinking-pill"
+                data-pill-label="Thinking"
                 data-active={thinkingActiveLook ? "true" : "false"}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
@@ -1943,11 +2182,13 @@ export function SharedComposer({
                 <PillGlyph>
                   <BulbIcon className="size-[15.5px]" />
                 </PillGlyph>
-                {thinkingActiveLook ? <span>Thinking</span> : null}
+                {thinkingActiveLook ? (
+                  <span className="unsloth-thinking-label">Thinking</span>
+                ) : null}
               </button>
             )
           ) : null}
-          {dictationSupported && (
+          {
             <>
               {!isDictating ? (
                 <TooltipIconButton
@@ -1963,19 +2204,27 @@ export function SharedComposer({
                 </TooltipIconButton>
               ) : (
                 <TooltipIconButton
-                  tooltip="Stop dictation"
+                  tooltip={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                   side="bottom"
                   variant="ghost"
                   size="icon"
                   className="size-8 rounded-full text-destructive"
                   onClick={stopDictation}
-                  aria-label="Stop dictation"
+                  aria-label={
+                    isDictationFinalizing
+                      ? "Cancel transcription"
+                      : "Stop dictation"
+                  }
                 >
                   <SquareIcon className="size-3 animate-pulse fill-current" />
                 </TooltipIconButton>
               )}
             </>
-          )}
+          }
           {isQueueRunning ? (
             <button
               type="button"

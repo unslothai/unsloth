@@ -5,7 +5,7 @@
 
 With server-side tools disabled (``unsloth run --disable-tools``, every
 ``unsloth start`` coding agent), requests carrying the client's own ``tools``
-bypass Studio's tool loop and are relayed to/from llama-server verbatim. Small
+bypass Unsloth's tool loop and are relayed to/from llama-server verbatim. Small
 GGUF models often emit their tool calls as TEXT (``<tool_call>{...}</tool_call>``,
 Gemma ``<|tool_call>...``, ``<function=...>`` XML) instead of structured
 ``tool_calls`` -- on the passthrough that text reaches the agent as prose and
@@ -18,7 +18,7 @@ promotes calls whose function name exactly matches a declared tool. Promotion
 removes EXACTLY the promoted calls' markup spans (the parser reports them):
 undeclared calls, unparseable blocks, and suppressed alternate formats keep
 every byte and relay as text, so healing can never silently delete model
-output. Responses without a tool signal, requests without tools, and Studio's
+output. Responses without a tool signal, requests without tools, and Unsloth's
 own enable-tools loop are untouched. Per-request opt-out:
 ``auto_heal_tool_calls: false``. Process kill-switch:
 ``UNSLOTH_DISABLE_TOOL_CALL_HEALING=1``.
@@ -41,6 +41,9 @@ _HEAL_SIGNALS = (
     "<|tool_call>",
     "<function=",
     "[TOOL_CALLS]",
+    # TML Inkling native call marker (leaks as text when the server-side
+    # parser misses a narration-then-call turn).
+    "<|content_invoke_tool_json|>",
 )
 
 

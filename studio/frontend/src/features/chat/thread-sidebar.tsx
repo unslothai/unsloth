@@ -42,6 +42,7 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
@@ -133,9 +134,13 @@ export function ThreadSidebar({
   ) {
     try {
       const ids = await getThreadIdsForItem(item);
-      await Promise.all(ids.map((id) => fn(id)));
-    } catch {
-      toast.error("Export failed.");
+      for (const id of ids) {
+        await fn(id);
+      }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -162,8 +167,10 @@ export function ThreadSidebar({
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -259,7 +266,7 @@ export function ThreadSidebar({
                   >
                     {item.isFork ? (
                       <span
-                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
                         title="Forked from another chat"
                       >
                         fork

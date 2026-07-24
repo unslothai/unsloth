@@ -10,7 +10,6 @@ import {
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
-  EdgeFadesSwitch,
   FontSmoothingSwitch,
   HeadingFontRow,
   PointerCursorsSwitch,
@@ -141,12 +140,6 @@ export function AppearanceTab() {
           )}
         >
           <FontSmoothingSwitch />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.edgeFades.label")}
-          description={t("settings.appearance.custom.edgeFades.description")}
-        >
-          <EdgeFadesSwitch />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.layout.compactSidebar")}

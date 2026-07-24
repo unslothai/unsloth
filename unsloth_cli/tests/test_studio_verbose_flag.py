@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--verbose/-v` Studio flag: option registration on both the
+"""Tests for the `--verbose/-v` Unsloth flag: option registration on both the
 plain callback and the `run` subcommand, re-exec forwarding, the access-log
 env override, and rejection before a subcommand. Modeled on
 test_studio_secure_flag.py."""
@@ -123,7 +123,7 @@ def test_run_without_verbose_leaves_env_unset(monkeypatch):
 
 
 def test_run_verbose_preserves_llama_server_verbosity(monkeypatch):
-    # Studio consumes --verbose but still forwards llama-server's own verbosity.
+    # Unsloth consumes --verbose but still forwards llama-server's own verbosity.
     monkeypatch.delenv(_DEDUP, raising = False)
     monkeypatch.delenv(_POLL, raising = False)
     captured = _invoke_run(monkeypatch, _BASE + ["--verbose"])

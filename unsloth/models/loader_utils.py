@@ -821,7 +821,7 @@ def _exclude_rope_inv_freq_from_ddp(model):
 
 # =============================================================================
 # Offline loading - single source of truth (shared by vision.py, loader.py and
-# the Studio exporter). Decide offline ONCE at the load boundary and force it
+# the Unsloth exporter). Decide offline ONCE at the load boundary and force it
 # ONCE around the whole load, so every nested HF call inherits it.
 # =============================================================================
 

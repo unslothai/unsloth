@@ -119,7 +119,7 @@ class TestFriendlyUpstreamError:
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
         assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
-        assert "tool-calling grammar" in msg and "Update Studio" in msg
+        assert "tool-calling grammar" in msg and "Update Unsloth" in msg
 
     def test_failed_to_initialize_samplers_alone_matches(self):
         assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
@@ -262,7 +262,7 @@ class TestChatMessageToolRoles:
 
     def test_tool_empty_content_accepted(self):
         # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
-        # OpenAI and llama-server both accept it, so Studio must not 400.
+        # OpenAI and llama-server both accept it, so Unsloth must not 400.
         msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
         assert msg.content == ""
 
@@ -400,7 +400,7 @@ class TestChatCompletionRequestToolFields:
         assert req.session_id == "abc"
 
     def test_stream_defaults_false_matching_openai_spec(self):
-        # OpenAI defaults `stream` to false. Studio used to default true,
+        # OpenAI defaults `stream` to false. Unsloth used to default true,
         # breaking naive curl/.NET clients (#5047) that omit it. Pin the fix.
         req = self._make()
         assert req.stream is False
@@ -664,7 +664,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop must stay disabled")
+                raise AssertionError("Unsloth tool loop must stay disabled")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             captured["body"] = inference_route._build_openai_passthrough_body(
@@ -706,10 +706,164 @@ class TestChatCompletionRequestToolFields:
         assert entry["status"] == "completed"
         assert monitor.active_count() == 0
 
+    def test_permission_mode_does_not_reject_client_tool_passthrough(self, monkeypatch):
+        # A non-streaming client-tool passthrough (client tools, no Unsloth tool
+        # loop) that also carries permission_mode "ask"/"auto" must reach the
+        # provider passthrough, not the confirm-without-stream guard: the
+        # validator leaves confirm_tool_calls unset for passthrough, and a bare
+        # permission_mode only gates Unsloth's own local tool loop. An explicit
+        # confirm_tool_calls=True still forces the local-confirm rejection.
+        # The pre-switch guard only runs when an automatic load may run, so force
+        # that predicate on to exercise it against a resident passthrough backend.
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.permission-passthrough.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("client tools must use passthrough")
+
+            def generate_chat_completion_with_tools(self, **_kwargs):
+                raise AssertionError("Unsloth tool loop must stay disabled")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        client_tools = [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}},
+            }
+        ]
+
+        def _setup(policy = None):
+            reset_tool_policy()
+            if policy is not None:
+                set_tool_policy(policy)
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+            monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(
+                inference_route, "_openai_passthrough_non_streaming", fake_passthrough
+            )
+            return self._v1_client(monkeypatch, _GGUFBackend())
+
+        # A process --enable-tools policy must not turn a client-tool passthrough
+        # into an Unsloth local loop, so a policy of None or True both keep the
+        # passthrough (the guard mirrors _explicit_studio_tool_loop_requested).
+        for policy in (None, True):
+            for mode in ("ask", "auto"):
+                client = _setup(policy)
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json = {
+                        "messages": [{"role": "user", "content": "use client tool"}],
+                        "tools": client_tools,
+                        "permission_mode": mode,
+                        "stream": False,
+                    },
+                )
+                assert resp.status_code == 200, resp.text
+                assert resp.json()["ok"] is True
+
+        # A JSON-schema response_format is guided-decoding passthrough, not a local
+        # tool loop, so a --enable-tools policy must not 400 a non-streaming ask/auto
+        # structured-output request under the confirm guard.
+        for mode in ("ask", "auto"):
+            client = _setup(True)
+            resp = client.post(
+                "/v1/chat/completions",
+                json = {
+                    "messages": [{"role": "user", "content": "give me json"}],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": "s", "schema": {"type": "object"}},
+                    },
+                    "permission_mode": mode,
+                    "stream": False,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["ok"] is True
+
+        # An explicit confirm_tool_calls=True with client tools and no stream is
+        # still a confirm-without-stream request and must be rejected up front.
+        client = _setup()
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "tools": client_tools,
+                "confirm_tool_calls": True,
+                "stream": False,
+            },
+        )
+        assert resp.status_code == 400
+        assert "requires stream=true" in resp.json()["error"]["message"]
+
+    def test_permission_mode_policy_forced_local_loop_rejected_before_switch(self, monkeypatch):
+        # A process --enable-tools policy forces Unsloth's own tool loop on even
+        # when the request omits enable_tools and carries no client tools. A
+        # non-streaming ask/auto request is then confirm-gated with no stream to
+        # prompt on, so it must 400 at the pre-switch guard -- before
+        # _maybe_auto_switch_model runs -- rather than evicting the resident model
+        # and 400ing only at the per-backend check.
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            supports_tool_passthrough = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.policy-forced.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+        switch_calls = []
+
+        async def _no_switch(*_args, **_kwargs):
+            switch_calls.append(1)
+
+        def _setup():
+            reset_tool_policy()
+            set_tool_policy(True)
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: True)
+            monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+            monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _no_switch)
+            return self._v1_client(monkeypatch, _GGUFBackend())
+
+        try:
+            for mode in ("ask", "auto"):
+                switch_calls.clear()
+                client = _setup()
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json = {
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "permission_mode": mode,
+                        "stream": False,
+                    },
+                )
+                assert resp.status_code == 400, resp.text
+                assert "requires stream=true" in resp.json()["error"]["message"]
+                assert switch_calls == [], "guard must reject before the auto-switch"
+        finally:
+            reset_tool_policy()
+
     def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
         # DiffusionGemma forces supports_tools off while passthrough stays
         # available (#6851): enable_tools=True must not steal client tools
-        # from the passthrough into a Studio tool loop that cannot run.
+        # from the passthrough into an Unsloth tool loop that cannot run.
         import routes.inference as inference_route
 
         captured = {}
@@ -729,7 +883,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop cannot run on a non-tool backend")
+                raise AssertionError("Unsloth tool loop cannot run on a non-tool backend")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             captured["body"] = inference_route._build_openai_passthrough_body(
@@ -900,7 +1054,7 @@ class TestChatCompletionRequestToolFields:
         monkeypatch.setattr(
             inference_route,
             "_detect_safetensors_features",
-            lambda backend, chat_template: {"supports_tools": True},
+            lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -2427,7 +2581,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("Studio tool loop should not steal response_format")
+            raise AssertionError("Unsloth tool loop should not steal response_format")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2500,7 +2654,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("Studio tool loop should not replace client tools")
+            raise AssertionError("Unsloth tool loop should not replace client tools")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2572,7 +2726,7 @@ class TestGgufVisionToolRouting:
             yield "plain response"
 
         def _tools(**_kwargs):
-            raise AssertionError("tool_choice='none' must not start Studio's tool loop")
+            raise AssertionError("tool_choice='none' must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2626,7 +2780,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+            raise AssertionError("enabled_tools alone must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2690,7 +2844,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+            raise AssertionError("enabled_tools alone must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -6465,6 +6619,29 @@ class TestApiMonitorAudioInput:
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
+
+            def failing_chunks():
+                yield "partial"
+                raise RuntimeError("generation failed")
+
+            self._patch_audio_backend(monkeypatch, failing_chunks())
+            error_monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", error_monitor)
+            error_response = await openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            error_chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in error_response.body_iterator
+            ]
+
+            assert '"type": "server_error"' in error_chunks[-1]
+            assert error_chunks[-1].endswith("data: [DONE]\n\n")
+            [error_entry] = error_monitor.snapshot()
+            assert error_entry["status"] == "error"
+            assert error_monitor.active_count() == 0
 
         asyncio.run(_run())
 

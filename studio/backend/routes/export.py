@@ -51,7 +51,17 @@ def _ensure_export_supported() -> None:
 
     Keeps the backend authoritative even if a client bypasses the UI gate. Read-only endpoints
     (scan/status/logs) are intentionally NOT gated so the Export page can still render the reason.
+    Also refuses (409) while a latest-transformers install is swapping .venv_t5_latest: an
+    export worker spawned mid-swap could activate a half-replaced sidecar.
     """
+    from utils.transformers_latest import is_install_in_progress
+
+    if is_install_in_progress():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is in progress. Retry when it completes.",
+        )
+
     from utils.hardware import export_capability
 
     cap = export_capability()
@@ -97,6 +107,11 @@ async def load_checkpoint(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -308,6 +323,11 @@ async def export_merged_model(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -347,6 +367,11 @@ async def export_base_model(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -388,6 +413,11 @@ async def export_gguf(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,
@@ -428,6 +458,11 @@ async def export_lora_adapter(
     except HTTPException:
         raise
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Expected loss of the race against a sidecar install: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
             status_code = 500,

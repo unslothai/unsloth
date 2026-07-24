@@ -16,6 +16,8 @@ import {
   type ChatSearch,
 } from "@/features/chat";
 import { RemoteCodeConsentDialog } from "@/features/security";
+import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { hasAuthToken } from "@/features/auth";
@@ -194,9 +196,6 @@ function RootLayout() {
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
         chatRuntime.setIncognito(false);
-        // Detach the staging UI but keep any in-flight download running, like Hub.
-        if (chatRuntime.pendingSelection)
-          chatRuntime.abandonStagedModel({ keepDownload: true });
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -219,17 +218,15 @@ function RootLayout() {
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setIncognito(false);
-    // Leaving chat must not kill an in-flight download: detach the staging UI
-    // but keep the transfer running in the manager, like a Hub download.
-    if (chatRuntime.pendingSelection)
-      chatRuntime.abandonStagedModel({ keepDownload: true });
   }, [isChatRoute]);
 
   return (
     <AppProvider>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
+      <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
+      <TransformersUpgradeDialog />
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>
@@ -277,7 +274,7 @@ function RootLayout() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
+                    transition={{ duration: 0.06 }}
                     className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-visible"
                   >
                     <Suspense fallback={<RouteFallback />}>
