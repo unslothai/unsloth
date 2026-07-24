@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyDictationDictionary,
   recordRecentDictation,
@@ -9,6 +10,39 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { startDictationLevelMeter } from "./dictation-level";
+
+/** Chat open while dictating, so the saved dictation can link back to it. */
+export function activeDictationChatId(): string | undefined {
+  return useChatRuntimeStore.getState().activeThreadId ?? undefined;
+}
+
+/**
+ * Resolve the chat a saved dictation links to. undefined falls back to the
+ * active single chat; null (composers without one, e.g. Compare) means none.
+ */
+export function resolveDictationChatId(
+  chatId: string | null | undefined,
+): string | undefined {
+  if (chatId === undefined) return activeDictationChatId();
+  return chatId ?? undefined;
+}
+
+// Reused id so repeated network failures replace, not stack, the same toast.
+const NETWORK_TOAST_ID = "dictation-network-offline";
+
+// Short grace for the browser to finalize its latest interim hypothesis. If it
+// doesn't, promote that text instead of stalling on a finalization spinner.
+const STOP_FINALIZATION_GRACE_MS = 350;
+
+/**
+ * A dictation session with an extra onEnd hook (not part of the assistant-ui
+ * interface) so non-runtime callers can reset when the session ends by itself.
+ */
+export type StudioDictationSession = DictationAdapter.Session & {
+  onEnd?: (callback: () => void) => () => void;
+};
 
 const getSpeechRecognitionAPI = ():
   | SpeechRecognitionConstructor
@@ -18,7 +52,9 @@ const getSpeechRecognitionAPI = ():
 };
 
 const stopStream = (stream: MediaStream | null) => {
-  stream?.getTracks().forEach((track) => track.stop());
+  for (const track of stream?.getTracks() ?? []) {
+    track.stop();
+  }
 };
 
 const mediaErrorName = (error: unknown): unknown =>
@@ -48,7 +84,10 @@ export const describeMediaError = (error: unknown): string => {
     : "Dictation could not access the microphone.";
 };
 
-export const describeSpeechError = (error: string, message?: string): string => {
+export const describeSpeechError = (
+  error: string,
+  message?: string,
+): string => {
   if (error === "not-allowed") {
     return "Speech recognition was blocked by the browser. Check microphone permissions for this Unsloth page.";
   }
@@ -68,18 +107,21 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   private readonly language: string | undefined;
   private readonly continuous: boolean;
   private readonly interimResults: boolean;
+  private readonly chatId: string | null | undefined;
 
   constructor(
     options: {
       language?: string;
       continuous?: boolean;
       interimResults?: boolean;
+      chatId?: string | null;
     } = {},
   ) {
     // Resolved from Voice settings at listen() time unless overridden.
     this.language = options.language;
     this.continuous = options.continuous ?? true;
     this.interimResults = options.interimResults ?? true;
+    this.chatId = options.chatId;
   }
 
   static isSupported(): boolean {
@@ -101,6 +143,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
     recognition.interimResults = this.interimResults;
+    // Pin the linked chat now so a thread switch during finalization cannot
+    // relink the transcript to the newly opened chat.
+    const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -109,22 +154,38 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     const speechCallbacks = new Set<
       (result: DictationAdapter.Result) => void
     >();
+    const endCallbacks = new Set<() => void>();
 
     let stream: MediaStream | null = null;
     let finalTranscript = "";
     let ended = false;
     let started = false;
+    let stopping = false;
+    let stopRequestedAt = 0;
+    let stopFallbackTimer = 0;
+    let stopLevelMeter = () => {
+      // Replaced after microphone access succeeds.
+    };
+    const interimParts = new Map<number, string>();
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
     });
 
-    const session: DictationAdapter.Session = {
+    const session: StudioDictationSession = {
       status: { type: "starting" },
 
       stop: async () => {
         if (!ended && started) {
+          stopping = true;
+          stopRequestedAt = performance.now();
           recognition.stop();
+          // Ending the track now gives the browser an audio endpoint to finalize
+          // and releases the mic without waiting on its remote speech service.
+          stopLevelMeter();
+          stopStream(stream);
+          stream = null;
+          scheduleStopFallback();
         } else if (!ended) {
           finish("stopped");
         }
@@ -132,11 +193,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       },
 
       cancel: () => {
-        if (!ended && started) {
-          recognition.abort();
-        } else if (!ended) {
-          finish("cancelled");
-        }
+        if (ended) return;
+        if (started) recognition.abort();
+        finish("cancelled");
       },
 
       onSpeechStart: (callback) => {
@@ -159,23 +218,75 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
           speechCallbacks.delete(callback);
         };
       },
+
+      // Beyond DictationAdapter: lets callers reset UI when the session ends on
+      // its own (silence, error), not just via stop().
+      onEnd: (callback: () => void) => {
+        endCallbacks.add(callback);
+        return () => {
+          endCallbacks.delete(callback);
+        };
+      },
     };
+
+    const currentInterimTranscript = () =>
+      [...interimParts.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, transcript]) => transcript.trim())
+        .filter(Boolean)
+        .join(" ");
+
+    const promoteInterim = () => {
+      const interim = currentInterimTranscript();
+      interimParts.clear();
+      if (!interim) return false;
+      const corrected = applyDictationDictionary(interim).trim();
+      if (!corrected) return false;
+      finalTranscript = finalTranscript
+        ? `${finalTranscript} ${corrected}`
+        : corrected;
+      return true;
+    };
+
+    function scheduleStopFallback(): void {
+      if (!stopping || ended || stopFallbackTimer) return;
+      const elapsed = performance.now() - stopRequestedAt;
+      const delay = Math.max(0, STOP_FINALIZATION_GRACE_MS - elapsed);
+      stopFallbackTimer = window.setTimeout(() => {
+        stopFallbackTimer = 0;
+        if (!ended) {
+          promoteInterim();
+          finish("stopped");
+          recognition.abort();
+        }
+      }, delay);
+    }
 
     const finish = (reason: "stopped" | "cancelled" | "error") => {
       if (ended) return;
       ended = true;
+      stopping = false;
+      if (stopFallbackTimer) window.clearTimeout(stopFallbackTimer);
+      stopFallbackTimer = 0;
       session.status = { type: "ended", reason };
+      stopLevelMeter();
       stopStream(stream);
       stream = null;
-      if (finalTranscript) {
-        for (const callback of speechEndCallbacks) {
-          callback({ transcript: finalTranscript });
+      const transcript = reason === "cancelled" ? "" : finalTranscript;
+      if (transcript) {
+        for (const callback of speechCallbacks) {
+          callback({ transcript, isFinal: true });
         }
-        if (reason !== "cancelled") {
-          recordRecentDictation(finalTranscript);
-        }
-        finalTranscript = "";
+        recordRecentDictation(transcript, sessionChatId);
       }
+      // assistant-ui uses this callback to leave dictation mode; required even
+      // for silence and cancelled recordings.
+      for (const callback of speechEndCallbacks) {
+        callback({ transcript });
+      }
+      finalTranscript = "";
+      interimParts.clear();
+      for (const callback of endCallbacks) callback();
       resolveEnded?.();
     };
 
@@ -188,6 +299,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     });
 
     recognition.addEventListener("result", (event) => {
+      if (ended) return;
       const speechEvent = event as SpeechRecognitionEvent;
       for (
         let i = speechEvent.resultIndex;
@@ -198,6 +310,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         if (!result) continue;
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
+          interimParts.delete(i);
           const corrected = applyDictationDictionary(transcript);
           // Join final chunks with a single space so recorded transcripts do
           // not merge words when a browser omits leading whitespace.
@@ -207,25 +320,34 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
               ? `${finalTranscript} ${trimmed}`
               : trimmed;
           }
-          for (const callback of speechCallbacks) {
-            callback({ transcript: corrected, isFinal: true });
-          }
         } else {
-          for (const callback of speechCallbacks) {
-            callback({ transcript, isFinal: false });
-          }
+          interimParts.set(i, transcript);
         }
+      }
+      const interim = currentInterimTranscript();
+      if (interim) {
+        scheduleStopFallback();
       }
     });
 
     recognition.addEventListener("end", () => {
+      if (ended) {
+        return;
+      }
+      promoteInterim();
       finish("stopped");
     });
 
     recognition.addEventListener("error", (event) => {
+      if (ended) return;
       const errorEvent = event as SpeechRecognitionErrorEvent;
       if (errorEvent.error === "aborted") {
-        finish("cancelled");
+        if (stopping) {
+          promoteInterim();
+          finish("stopped");
+        } else {
+          finish("cancelled");
+        }
         return;
       }
       const description = describeSpeechError(
@@ -233,7 +355,22 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         errorEvent.message,
       );
       console.error("Dictation error:", errorEvent.error, errorEvent.message);
-      toast.error(description);
+      if (errorEvent.error === "network") {
+        // Online speech service unreachable; point the user to the offline
+        // local engine (the toast opens Voice settings).
+        toast.error("No internet connection", {
+          id: NETWORK_TOAST_ID,
+          description:
+            "Browser dictation needs the online speech service. Switch to Local in Voice settings and pick a local STT model to dictate offline.",
+          action: {
+            label: "Open Voice settings",
+            onClick: () =>
+              useSettingsDialogStore.getState().openDialog("voice"),
+          },
+        });
+      } else {
+        toast.error(description);
+      }
       finish("error");
     });
 
@@ -275,6 +412,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
             "NotFoundError",
           );
         }
+        stopLevelMeter = startDictationLevelMeter(stream);
         try {
           recognition.start(audioTrack);
         } catch (error) {
@@ -285,6 +423,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
             "Dictation start(audioTrack) failed; retrying start().",
             error,
           );
+          stopLevelMeter();
           stopStream(stream);
           stream = null;
           recognition.start();

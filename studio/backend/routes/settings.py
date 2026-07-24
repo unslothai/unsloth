@@ -60,6 +60,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 
 router = APIRouter()
 
@@ -87,6 +88,23 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class HuggingFaceCachePayload(BaseModel):
+    cache_home: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class HuggingFaceCacheResponse(BaseModel):
+    cache_home: str
+    hub_cache: str
+    xet_cache: str
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    is_custom: bool
+    available: bool
+    writable: bool
+    free_bytes: Optional[int] = None
+    environment_variable: Optional[str] = None
 
 
 class OpenAIAutoSwitchPayload(BaseModel):
@@ -133,6 +151,30 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
     )
+
+
+def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
+    return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
+
+
+@router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def get_hugging_face_cache(
+    current_subject: str = Depends(get_current_subject),
+) -> HuggingFaceCacheResponse:
+    return _hugging_face_cache_response()
+
+
+@router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def update_hugging_face_cache(
+    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
+) -> HuggingFaceCacheResponse:
+    try:
+        set_hf_cache_home(payload.cache_home)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _hugging_face_cache_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
