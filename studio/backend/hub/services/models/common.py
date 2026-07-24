@@ -150,7 +150,9 @@ def _prefer_complete_larger(
     return candidate_size_bytes > existing_size_bytes
 
 
-def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
+def _gguf_variant_state_summary(
+    repo_id: str, *, hub_cache: Optional[str | Path] = None
+) -> tuple[bool, int]:
     """Whether GGUF variant-scoped state exists and its expected size; a cancelled/in-progress variant may have only manifests/markers/`.incomplete` blobs, which inventory needs to avoid a generic fallback row."""
     from hub.utils import download_manifest
 
@@ -159,10 +161,16 @@ def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     for variant, _path in download_manifest.iter_variant_manifests(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         key = variant.lower()
         variant_keys.add(key)
-        manifest = download_manifest.read_manifest("model", repo_id, variant)
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = hub_cache,
+        )
         if manifest is None:
             continue
         size_by_variant[key] = max(
@@ -172,6 +180,7 @@ def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     for variant, _path in download_manifest.iter_variant_markers(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         variant_keys.add(variant.lower())
     return bool(variant_keys), sum(size_by_variant.values())
@@ -432,8 +441,13 @@ def _local_model_info(
     base_model_source: Optional[str] = None,
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
+    active_cache: Optional[bool] = None,
 ) -> LocalModelInfo:
-    load_id = model_id if source == "hf_cache" and model_id else str(load_path)
+    load_id = (
+        model_id
+        if source == "hf_cache" and model_id and active_cache is not False
+        else str(load_path)
+    )
     semantic_id = model_id or str(load_path)
     return LocalModelInfo(
         id = load_id,
@@ -445,6 +459,7 @@ def _local_model_info(
         ),
         load_id = load_id,
         model_id = model_id,
+        active_cache = active_cache if source == "hf_cache" else None,
         display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
         path = str(load_path),
         size_bytes = max(0, int(size_bytes or 0)),
@@ -476,6 +491,7 @@ def _classify_local_path(
     model_id: Optional[str] = None,
     updated_at: Optional[float] = None,
     partial: bool = False,
+    active_cache: Optional[bool] = None,
 ) -> list[LocalModelInfo]:
     load_path = load_path or scan_path
     files = (
@@ -512,6 +528,7 @@ def _classify_local_path(
                 requires_variant = scan_path.is_dir(),
                 format_variant = variant,
                 size_bytes = gguf_size_bytes,
+                active_cache = active_cache,
             )
         )
 
@@ -574,6 +591,7 @@ def _classify_local_path(
                 ),
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
+                active_cache = active_cache,
             )
         )
     elif not rows:
@@ -592,6 +610,7 @@ def _classify_local_path(
                 updated_at = updated_at,
                 partial = partial or trusted_hf_cache_repo,
                 size_bytes = size_bytes,
+                active_cache = active_cache,
             )
         )
 

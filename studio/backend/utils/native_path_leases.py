@@ -15,6 +15,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import importlib
 import json
 import os
 import stat as _stat_module
@@ -35,7 +36,7 @@ _USED_NONCES: dict[str, int] = {}
 _REDACTION_LOCK = threading.Lock()
 _NATIVE_PATH_REDACTIONS: list[str] = []
 _NATIVE_PATH_LABELS: dict[str, str] = {}
-_NATIVE_PATH_ENV_LOCK = threading.Lock()
+_NATIVE_PATH_ENV_LOCK = threading.RLock()
 _SECRET_INIT_LOCK = threading.Lock()
 _CACHED_LEASE_SECRET: bytes | None = None
 _SCRUB_REFCOUNT = 0
@@ -80,7 +81,9 @@ def child_env_without_native_path_secret(env: Mapping[str, str] | None = None) -
     return cleaned
 
 
-def run_without_native_path_secret(target: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+def run_without_native_path_secret(
+    target: Callable[..., Any] | str, *args: Any, **kwargs: Any
+) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
     # Runs in the spawned child: bind it to the parent's death (Linux), since
@@ -96,6 +99,11 @@ def run_without_native_path_secret(target: Callable[..., Any], *args: Any, **kwa
     os.environ.pop(LEASE_SECRET_ENV, None)
     _CACHED_LEASE_SECRET = None
     _SCRUB_SAVED_SECRET = None
+    if isinstance(target, str):
+        function_name, environment, *args = args
+        for key, value in environment.items():
+            os.environ[key] = value
+        target = getattr(importlib.import_module(target), function_name)
     return target(*args, **kwargs)
 
 
@@ -107,10 +115,9 @@ def native_path_secret_removed_for_child_start() -> Iterator[None]:
             _SCRUB_SAVED_SECRET = os.environ.pop(LEASE_SECRET_ENV, None)
             _CACHED_LEASE_SECRET = None
         _SCRUB_REFCOUNT += 1
-    try:
-        yield
-    finally:
-        with _NATIVE_PATH_ENV_LOCK:
+        try:
+            yield
+        finally:
             _SCRUB_REFCOUNT -= 1
             if _SCRUB_REFCOUNT == 0 and _SCRUB_SAVED_SECRET is not None:
                 os.environ[LEASE_SECRET_ENV] = _SCRUB_SAVED_SECRET

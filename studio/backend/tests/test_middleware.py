@@ -34,6 +34,7 @@ def main_module():
 def _make_protected_app(
     max_bytes: int,
     main_module,
+    request_max_bytes_getter = None,
     upload_passthrough_prefixes: tuple = (),
     upload_passthrough_max_bytes_getter = None,
 ):
@@ -41,7 +42,13 @@ def _make_protected_app(
     app.add_middleware(
         main_module.MaxBodyMiddleware,
         max_bytes_getter = lambda: max_bytes,
-        protected_prefixes = ("/v1/chat/completions", "/api/settings", "/api/train"),
+        protected_prefixes = (
+            "/v1/chat/completions",
+            "/api/inference",
+            "/api/settings",
+            "/api/train",
+        ),
+        request_max_bytes_getter = request_max_bytes_getter,
         upload_passthrough_prefixes = upload_passthrough_prefixes,
         upload_passthrough_max_bytes_getter = upload_passthrough_max_bytes_getter,
     )
@@ -67,6 +74,10 @@ def _make_protected_app(
                 chunks += 1
                 total += len(chunk)
         return {"ok": True, "chunks": chunks, "total": total}
+
+    @app.post("/api/inference/audio/transcribe/raw")
+    async def transcribe_raw(request: Request):
+        return {"ok": True, "total": len(await request.body())}
 
     @app.get("/api/train/status")
     async def status_get():
@@ -96,6 +107,43 @@ class TestMaxBodyMiddleware:
         r = c.post("/api/other", json = {"text": "x" * 5000})
         assert r.status_code == 200
         assert r.json()["unprotected"] is True
+
+    def test_route_specific_cap_overrides_default(self, main_module):
+        app = _make_protected_app(
+            4096,
+            main_module,
+            request_max_bytes_getter = lambda path: (
+                128 if path.endswith("/transcribe/raw") else 4096
+            ),
+        )
+        c = TestClient(app)
+
+        rejected = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 129,
+        )
+        accepted = c.post(
+            "/api/inference/audio/transcribe/raw",
+            content = b"x" * 128,
+        )
+
+        assert rejected.status_code == 413
+        assert accepted.status_code == 200
+        assert accepted.json()["total"] == 128
+
+    def test_stt_routes_use_audio_specific_caps(self, main_module):
+        from utils.upload_limits import (
+            STT_AUDIO_JSON_MAX_BYTES,
+            STT_AUDIO_RAW_MAX_BYTES,
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
+            == STT_AUDIO_RAW_MAX_BYTES
+        )
+        assert (
+            main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
+            == STT_AUDIO_JSON_MAX_BYTES
+        )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)

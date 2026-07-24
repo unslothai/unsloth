@@ -312,8 +312,100 @@ def test_load_from_file_skips_non_object_json_lines():
     return True
 
 
+def test_smart_chunk_text_empty_input_returns_no_chunks():
+    """Empty/whitespace text must yield no chunks. This tokenizer keeps one token
+    per char (like BPE/SentencePiece keeping spaces), so a len(tokens)==0 check
+    would miss whitespace; the fix guards on text.strip() before tokenizing."""
+
+    class WhitespacePreservingTokenizer:
+        def __init__(self, eos_token_id):
+            self.eos_token = "</s>" if eos_token_id is not None else None
+            self.eos_token_id = eos_token_id
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]  # whitespace -> real tokens
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(chr(32 + (t % 90)) for t in token_ids)
+
+    for eos_token_id in (2, None):
+        loader = RawTextDataLoader(
+            WhitespacePreservingTokenizer(eos_token_id), chunk_size = 2048, stride = 512
+        )
+        # Whitespace tokenizes to >0 tokens, so [] proves the pre-tokenize guard.
+        assert len(loader.tokenizer("   \n\t  ")["input_ids"]) > 0
+        for text in ("", "   \n\t  "):
+            for return_tokenized in (True, False):
+                assert (
+                    loader.smart_chunk_text(
+                        text, chunk_size = 2048, stride = 512, return_tokenized = return_tokenized
+                    )
+                    == []
+                ), f"no chunks for empty input (eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                assert loader.chunk_text(text, return_tokenized = return_tokenized) == [], (
+                    f"chunk_text: no chunks for empty input "
+                    f"(eos={eos_token_id}, text={text!r}, tokenized={return_tokenized})"
+                )
+    print("test_smart_chunk_text_empty_input_returns_no_chunks passed")
+    return True
+
+
+def test_load_from_files_all_empty_raises():
+    """All-empty file list must raise (like load_from_file) instead of returning
+    a 0-row text-column dataset in return_tokenized mode."""
+
+    class WhitespacePreservingTokenizer:
+        eos_token = "</s>"
+        eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = [ord(c) % 100 for c in text]
+            if return_tensors == "pt":
+                return {"input_ids": [token_ids]}
+            return {"input_ids": token_ids}
+
+    loader = RawTextDataLoader(WhitespacePreservingTokenizer(), chunk_size = 2048, stride = 512)
+    paths = []
+    try:
+        for content in ("", "   \n\t  "):
+            with tempfile.NamedTemporaryFile("w", suffix = ".txt", delete = False) as f:
+                f.write(content)
+                paths.append(f.name)
+        raised = False
+        try:
+            loader.load_from_files(paths, return_tokenized = True)
+        except ValueError as e:
+            raised = True
+            assert "empty" in str(e).lower() or "whitespace" in str(e).lower(), str(e)
+        assert raised, "load_from_files must raise when all files are empty/whitespace"
+    finally:
+        for p in paths:
+            os.unlink(p)
+    print("test_load_from_files_all_empty_raises passed")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
     success = test_load_from_file_skips_non_object_json_lines() and success
+    success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
+    success = test_load_from_files_all_empty_raises() and success
     sys.exit(0 if success else 1)
