@@ -183,10 +183,7 @@ def test_gpu_pick_carries_index_kind_stamp():
     # The live picker stamps the current kind onto the store companion field.
     store = _read("features/chat/stores/chat-runtime-store.ts")
     assert "selectedGpuIdsKind: GpuIndexKind | null" in store
-    assert (
-        "selectedGpuIdsKind: selectedGpuIds == null ? null : currentGpuIndexKind()"
-        in store
-    )
+    assert "selectedGpuIdsKind: selectedGpuIds == null ? null : currentGpuIndexKind()" in store
     # reconcile drops a pick only when its stamped kind differs from the current.
     assert "savedKind != null && current != null && savedKind !== current" in store
 
