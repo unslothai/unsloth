@@ -26,6 +26,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +45,20 @@ _EXPECTED_CI_SKIPS = {
 }
 
 
+def _backend_ci() -> dict:
+    return yaml.safe_load(_BACKEND_CI.read_text(encoding = "utf-8"))
+
+
+def _shell_step_script() -> str:
+    """The `run:` body of the shell-installer step, located by name through the
+    parsed YAML rather than by slicing the raw file."""
+    for job in _backend_ci()["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("name") == "Shell installer tests":
+                return step["run"]
+    raise AssertionError("Backend CI has no 'Shell installer tests' step")
+
+
 def _shell_test_files():
     files = sorted(p.name for p in _SH_DIR.glob("test_*.sh"))
     assert files, "tests/sh has no test_*.sh files -- did the directory move?"
@@ -59,19 +74,23 @@ def _skip_list(source: str) -> set[str]:
 
 class TestBackendCiRunsEveryShellTest:
     def test_step_discovers_the_directory_instead_of_listing_files(self):
-        source = _BACKEND_CI.read_text(encoding = "utf-8")
-        assert "for s in tests/sh/test_*.sh; do" in source, (
+        """Matched against the parsed step script, and on the glob rather than a
+        verbatim line, so reformatting the loop does not turn CI red -- only
+        going back to a hardcoded list does."""
+        script = _shell_step_script()
+        assert re.search(r"for\s+\w+\s+in\s+tests/sh/test_\*\.sh", script), (
             "Backend CI must glob tests/sh; a hardcoded list is how the ROCm WSL "
-            "suite went unrun for months"
+            f"suite went unrun for months. Step script was:\n{script}"
         )
+        listed = re.findall(r"tests/sh/test_[a-z0-9_]+\.sh", script)
+        assert not listed, f"Backend CI still names individual shell tests: {sorted(set(listed))}"
 
     def test_step_fails_loudly_if_discovery_finds_nothing(self):
         """A moved directory must break the build, not pass vacuously."""
-        source = _BACKEND_CI.read_text(encoding = "utf-8")
-        assert 'no shell tests discovered under tests/sh' in source
+        assert "no shell tests discovered under tests/sh" in _shell_step_script()
 
     def test_every_shell_test_runs_or_is_a_known_skip(self):
-        skips = _skip_list(_BACKEND_CI.read_text(encoding = "utf-8"))
+        skips = _skip_list(_shell_step_script())
         unexpected = skips - set(_EXPECTED_CI_SKIPS)
         assert not unexpected, (
             f"Backend CI skips {sorted(unexpected)} without a reason recorded in "
@@ -84,7 +103,7 @@ class TestBackendCiRunsEveryShellTest:
     def test_skip_entries_are_not_stale(self):
         """A skip for a deleted file quietly widens next time a name is reused."""
         existing = set(_shell_test_files())
-        for name in _skip_list(_BACKEND_CI.read_text(encoding = "utf-8")):
+        for name in _skip_list(_shell_step_script()):
             assert name in existing, f"{name} is skipped but no longer exists in tests/sh"
 
     def test_each_skip_is_documented_in_the_workflow(self):
@@ -102,7 +121,7 @@ class TestBackendCiRunsEveryShellTest:
         """The suite whose absence prompted this file: it must exist and be
         picked up (i.e. not skipped)."""
         assert "test_strixhalo_wsl_reroute.sh" in _shell_test_files()
-        assert "test_strixhalo_wsl_reroute.sh" not in _skip_list(_BACKEND_CI.read_text(encoding = "utf-8"))
+        assert "test_strixhalo_wsl_reroute.sh" not in _skip_list(_shell_step_script())
 
 
 class TestRunAllMatchesCi:
@@ -126,12 +145,14 @@ class TestBackendCiPathFilters:
     """The workflow has to fire on the files its tests assert against."""
 
     def _paths(self) -> set[str]:
-        source = _BACKEND_CI.read_text(encoding = "utf-8")
-        start = source.find("    paths:")
-        assert start != -1
-        end = source.find("  push:", start)
-        assert end != -1
-        return set(re.findall(r"^\s+- '([^']+)'", source[start:end], re.MULTILINE))
+        """Read the real trigger through the YAML parser. `on:` is a YAML 1.1
+        boolean, so pyyaml keys it as True."""
+        wf = _backend_ci()
+        triggers = wf.get("on", wf.get(True))
+        assert triggers, "Backend CI has no trigger block"
+        paths = triggers["pull_request"]["paths"]
+        assert paths, "Backend CI pull_request trigger has no paths filter"
+        return set(paths)
 
     @pytest.mark.parametrize(
         "path,why",

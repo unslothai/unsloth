@@ -248,28 +248,48 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
     return None
 
 
-# Real strings as amd-smi / rocm-smi / WMI report them, one per arch the tables
-# claim to cover, including the two ordering traps: "RX 9070 XT" must beat the
-# bare "9070" arm, and "RX 7700S" must beat the "RX 7700" arm.
-_GPU_NAME_CASES = [
-    ("AMD Radeon RX 9070 XT", "gfx1201"),
-    ("AMD Radeon RX 9070", "gfx1200"),
-    ("AMD Radeon RX 9060 XT", "gfx1200"),
+# Real strings as amd-smi / rocm-smi / WMI report them, including the two
+# ordering traps: "RX 9070 XT" must beat the bare "9070" arm, and "RX 7700S"
+# must beat the "RX 7700" arm.
+#
+# The expectation is the *AMD pip index leaf*, not the gfx id, deliberately.
+# The leaf is what the tables exist to produce -- it picks the wheel -- and it
+# is what a wrong answer actually costs the user. The gfx ids in the shipped
+# tables are only approximately right (see _ARCH_ID_DRIFT below); pinning them
+# here would freeze those errors in place and call them correct.
+_GPU_NAME_LEAF_CASES = [
+    ("AMD Radeon RX 9070 XT", "gfx120X-all"),
+    ("AMD Radeon RX 9070", "gfx120X-all"),
+    ("AMD Radeon RX 9060 XT", "gfx120X-all"),
     ("AMD Radeon 8060S Graphics", "gfx1151"),
     ("AMD Ryzen AI Max+ 395 w/ Radeon 8060S Graphics", "gfx1151"),
     ("AMD Radeon 890M Graphics", "gfx1150"),
     ("AMD Radeon 880M Graphics", "gfx1150"),
-    ("AMD Radeon RX 7900 XTX", "gfx1100"),
-    ("AMD Radeon RX 7800 XT", "gfx1100"),
-    ("AMD Radeon PRO W7900", "gfx1100"),
-    ("AMD Radeon RX 7700S", "gfx1102"),
-    ("AMD Radeon RX 7600 XT", "gfx1102"),
-    ("AMD Radeon 780M Graphics", "gfx1103"),
-    ("AMD Radeon RX 6900 XT", "gfx1030"),
-    ("AMD Radeon RX 6700 XT", "gfx1030"),
-    ("AMD Radeon RX 6600 XT", "gfx1032"),
-    ("AMD Radeon RX 6500 XT", "gfx1034"),
+    ("AMD Radeon RX 7900 XTX", "gfx110X-all"),
+    ("AMD Radeon RX 7800 XT", "gfx110X-all"),
+    ("AMD Radeon PRO W7900", "gfx110X-all"),
+    ("AMD Radeon RX 7700S", "gfx110X-all"),
+    ("AMD Radeon RX 7600 XT", "gfx110X-all"),
+    ("AMD Radeon 780M Graphics", "gfx110X-all"),
+    ("AMD Radeon RX 6900 XT", "gfx103X-all"),
+    ("AMD Radeon RX 6700 XT", "gfx103X-all"),
+    ("AMD Radeon RX 6600 XT", "gfx103X-all"),
+    ("AMD Radeon RX 6500 XT", "gfx103X-all"),
 ]
+
+# Names where every copy of the table agrees with itself but disagrees with AMD's
+# ROCm compatibility matrix. All three collapse to the correct index leaf, so no
+# user is currently misrouted and this file does not fail on them -- but they are
+# recorded so the next person to touch these tables knows they are not ground
+# truth, and so a fix shows up here as a deliberate edit.
+#   RX 9070 / 9070 GRE  -> table says gfx1200, AMD says gfx1201 (Navi 48).
+#                          "9070 XT" is correct; only the non-XT arm is wrong.
+#   RX 7800 XT / 7700 XT / PRO W7700 -> table says gfx1100, AMD says gfx1101 (Navi 32).
+#   PRO V710            -> table says gfx1102, AMD says gfx1101.
+_ARCH_ID_DRIFT = {
+    "AMD Radeon RX 9070": ("gfx1200", "gfx1201"),
+    "AMD Radeon RX 7800 XT": ("gfx1100", "gfx1101"),
+}
 
 
 def _name_tables() -> dict[str, object]:
@@ -282,24 +302,58 @@ def _name_tables() -> dict[str, object]:
     }
 
 
+def _resolve(where: str, rows, gpu_name: str) -> str | None:
+    return _match_sh(rows, gpu_name) if where.endswith(".sh") else _match_ps(rows, gpu_name)
+
+
 class TestGpuNameArchParity:
-    """All four name -> gfx tables must resolve the same GPU to the same arch."""
+    """All four name -> gfx tables must resolve the same GPU the same way."""
 
     def test_every_copy_is_non_empty(self):
         for where, rows in _name_tables().items():
             assert rows, f"{where}: parsed an empty name -> gfx table (table moved or renamed?)"
 
-    @pytest.mark.parametrize("gpu_name,expected", _GPU_NAME_CASES)
-    def test_all_copies_agree(self, gpu_name, expected):
+    @pytest.mark.parametrize("gpu_name", [name for name, _ in _GPU_NAME_LEAF_CASES])
+    def test_all_copies_return_the_same_arch(self, gpu_name):
+        """The drift guard proper: no expected value, just agreement. This is what
+        catches a table edited in one installer and not the other three, and it
+        stays honest even where the shipped gfx id is itself wrong."""
+        answers = {where: _resolve(where, rows, gpu_name) for where, rows in _name_tables().items()}
+        distinct = set(answers.values())
+        assert len(distinct) == 1, f"{gpu_name!r} resolves inconsistently: {answers}"
+        assert distinct != {None}, f"{gpu_name!r} is not matched by any copy of the table"
+
+    @pytest.mark.parametrize("gpu_name,expected_leaf", _GPU_NAME_LEAF_CASES)
+    def test_every_copy_routes_to_the_right_wheel_index(self, gpu_name, expected_leaf):
+        """What the tables are for. A wrong leaf is the user-visible failure:
+        CPU-only torch, or a wheel built for the wrong ISA."""
+        families = stack_mod._GFX_TO_AMD_INDEX_ARCH
         for where, rows in _name_tables().items():
-            got = _match_sh(rows, gpu_name) if where.endswith(".sh") else _match_ps(rows, gpu_name)
-            assert got == expected, f"{where}: {gpu_name!r} -> {got!r}, expected {expected!r}"
+            arch = _resolve(where, rows, gpu_name)
+            assert arch is not None, f"{where}: {gpu_name!r} matched nothing"
+            assert families.get(arch) == expected_leaf, (
+                f"{where}: {gpu_name!r} -> {arch} -> {families.get(arch)!r}, expected {expected_leaf!r}"
+            )
+
+    @pytest.mark.parametrize("gpu_name,shipped,amd", sorted(
+        (name, shipped, amd) for name, (shipped, amd) in _ARCH_ID_DRIFT.items()
+    ))
+    def test_known_arch_id_drift_is_still_only_cosmetic(self, gpu_name, shipped, amd):
+        """These names carry the wrong gfx id (see _ARCH_ID_DRIFT). That is
+        tolerable only for as long as the wrong id and the right one share an
+        index leaf. If AMD ever splits them, this fails and the tables must be
+        corrected before a user gets the wrong wheel."""
+        families = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        assert families.get(shipped) == families.get(amd) is not None, (
+            f"{gpu_name}: shipped {shipped} -> {families.get(shipped)!r} but AMD says {amd} -> "
+            f"{families.get(amd)!r}; the arch id is now load-bearing and must be fixed"
+        )
 
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,
         never onto a neighbouring arm."""
         for where, rows in _name_tables().items():
-            got = _match_sh(rows, "NVIDIA GeForce RTX 4090") if where.endswith(".sh") else _match_ps(rows, "NVIDIA GeForce RTX 4090")
+            got = _resolve(where, rows, "NVIDIA GeForce RTX 4090")
             assert got is None, f"{where}: RTX 4090 matched {got!r}"
 
     def test_inferred_arch_always_has_an_index_family(self):
@@ -307,8 +361,7 @@ class TestGpuNameArchParity:
         index, else detection succeeds and the install still lands on CPU torch."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
         for where, rows in _name_tables().items():
-            arches = {arch for _, arch in rows} if where.endswith(".ps1") else {arch for _, arch in rows}
-            for arch in arches:
+            for arch in {arch for _, arch in rows}:
                 assert arch in families, f"{where}: {arch} has no entry in _GFX_TO_AMD_INDEX_ARCH"
 
 

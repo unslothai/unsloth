@@ -327,9 +327,30 @@ class TestLinuxRdna4NameMatch:
     """The name regex is the fallback when a wheel omits gcnArchName."""
 
     def _pattern(self):
-        m = re.search(r're\.search\(r"(rx\\s\*90\[0-9\]0\|r9700)"', _WORKER_SOURCE)
-        assert m, "the RDNA4 device-name regex moved; update this test with it"
+        """Read whatever pattern worker.py currently uses, not a copy of the one
+        it used when this test was written. Anchoring on the literal pattern text
+        would make a *widened* regex -- the dangerous edit, since it silently
+        forces the slow Python fallback onto RDNA3 users -- fail as "moved"
+        instead of being checked against the cases below."""
+        m = re.search(r"re\.search\(r\"([^\"]+)\",\s*_lin_name\)", _WORKER_SOURCE)
+        assert m, "could not locate the RDNA4 device-name regex in worker.py"
         return m.group(1)
+
+    def test_name_is_lowercased_before_matching(self):
+        """The pattern is all-lowercase, so it only works against a lowercased
+        name. Device names arrive mixed case ("AMD Radeon RX 9070 XT")."""
+        assert self._pattern() == self._pattern().lower(), "pattern is not all-lowercase"
+        assert re.search(r"_lin_name\s*=\s*\(getattr\(_props,\s*\"name\",\s*\"\"\)\s*or\s*\"\"\)\.lower\(\)", _WORKER_SOURCE), (
+            "worker.py must lowercase the device name before matching the RDNA4 pattern"
+        )
+
+    def test_name_match_is_only_a_fallback_when_arch_is_unknown(self):
+        """gcnArchName is authoritative when present. Letting the name regex fire
+        alongside a known arch would misclassify any card whose marketing name
+        happens to look RDNA4."""
+        assert re.search(
+            r"not _lin_arch and re\.search\(r\"[^\"]+\",\s*_lin_name\)", _WORKER_SOURCE
+        ), "the RDNA4 name regex must be guarded by `not _lin_arch`"
 
     @pytest.mark.parametrize(
         "name,is_rdna4",
