@@ -845,8 +845,7 @@ def _mem_loaded_backend(
 def test_explicit_auto_reloads_over_passthrough_mlock_in_extras():
     """A server loaded with no memory_mode keeps a pass-through --mlock and is still
     mlocked. An explicit "auto" repeating --mlock must NOT dedupe: stripping only the
-    request side keeps the backend's --mlock visible, so the matcher reloads and the
-    scrub runs (Codex #7164)."""
+    request side keeps the backend's --mlock visible, so the matcher reloads."""
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()
@@ -881,8 +880,7 @@ def test_explicit_null_memory_mode_dedupes_over_passthrough_mlock():
     assert inference_routes._request_matches_loaded_settings(req, backend) is True
 
 
-def test_default_memory_mode_reloads_to_reinherit_parent_env(monkeypatch):
-    """Default cannot dedupe to an Auto child that scrubbed the parent mode."""
+def test_memory_env_override_reloads_child_that_did_not_inherit_it(monkeypatch):
     from models.inference import LoadRequest
 
     inference_routes = _load_inference_routes_module()

@@ -422,23 +422,19 @@ function GpuMemorySettings({
       )}
       <div className={isDiffusion ? "hidden" : ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Host Memory</span>
+          <span className={LABEL_CLASS}>Host RAM</span>
           <InfoHint>
             Controls host RAM only, not whether a GPU driver keeps weights in VRAM.
-            Default preserves inherited llama.cpp settings. Auto uses normal
-            memory-mapped loading. Locked RAM prevents mapped host pages from being
-            swapped. RAM copy disables memory mapping, but newer llama.cpp builds
-            cannot also lock that copy.
+            Memory mapped uses normal llama.cpp loading. Locked RAM prevents mapped
+            host pages from being swapped. RAM copy disables memory mapping, but
+            newer llama.cpp builds cannot also lock that copy.
           </InfoHint>
         </div>
         <Select
-          value={config.ggufMemoryMode ?? "default"}
+          value={config.ggufMemoryMode ?? "auto"}
           onValueChange={(value) =>
             update({
-              ggufMemoryMode:
-                value === "default"
-                  ? undefined
-                  : (value as GgufMemoryMode),
+              ggufMemoryMode: value as GgufMemoryMode,
             })
           }
         >
@@ -451,8 +447,7 @@ function GpuMemorySettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="default">Default</SelectItem>
-            <SelectItem value="auto">Auto</SelectItem>
+            <SelectItem value="auto">Memory mapped</SelectItem>
             <SelectItem value="pinned">Locked RAM</SelectItem>
             <SelectItem value="resident">RAM copy</SelectItem>
           </SelectContent>

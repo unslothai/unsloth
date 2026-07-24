@@ -2618,13 +2618,13 @@ class LlamaCppBackend:
 
     def matches_memory_mode(self, memory_mode: Optional[str]) -> bool:
         """Whether the child already has the requested host-memory behavior."""
+        if self._memory_mode_env_override():
+            return self._launched_with_inherited_mem_env
+        if self._launched_with_inherited_mem_env:
+            return False
         if self.memory_mode != self._canonical_memory_mode(memory_mode):
             return False
-        if memory_mode is not None:
-            return not self._launched_with_inherited_mem_env
-        return self._launched_with_inherited_mem_env or not any(
-            name in os.environ for name in _LLAMA_MEMORY_MODE_ENV_VARS
-        )
+        return True
 
     @property
     def n_layers(self) -> Optional[int]:
@@ -6415,6 +6415,14 @@ class LlamaCppBackend:
         return mode
 
     @staticmethod
+    def _memory_mode_env_override(
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether the operator environment owns host-memory placement."""
+        source = os.environ if env is None else env
+        return any(name in source for name in _LLAMA_MEMORY_MODE_ENV_VARS)
+
+    @staticmethod
     def _memory_mode_flags(
         memory_mode: Optional[str], *, supports_load_mode: bool = False
     ) -> List[str]:
@@ -6478,8 +6486,10 @@ class LlamaCppBackend:
 
         Returns True if the server started and the health check passed.
         """
-        # An explicit mode owns all memory-placement flags, including auto.
-        if memory_mode is not None and extra_args:
+        # LLAMA_ARG_* host-memory settings are operator overrides. When present,
+        # they also own raw pass-through flags so no request can shadow them.
+        _memory_env_override = self._memory_mode_env_override()
+        if (memory_mode is not None or _memory_env_override) and extra_args:
             extra_args = strip_shadowing_flags(
                 extra_args,
                 strip_context = False,
@@ -6597,7 +6607,9 @@ class LlamaCppBackend:
             # Classify remote loads before teardown when diffusion would change
             # the meaning or validity of requested placement.
             _preflight_model_path = None
-            _preflight_memory_mode = self._canonical_memory_mode(memory_mode)
+            _preflight_memory_mode = self._canonical_memory_mode(
+                None if _memory_env_override else memory_mode
+            )
             if hf_repo and (
                 _vulkan_ordinal_pin or _cpu_only_pin or _preflight_memory_mode is not None
             ):
@@ -6622,7 +6634,7 @@ class LlamaCppBackend:
                     if _preflight_memory_mode is not None:
                         raise ValueError(
                             "GGUF host-memory modes are not supported for "
-                            "DiffusionGemma models. Use Auto."
+                            "DiffusionGemma models. Use memory-mapped loading."
                         )
                     if _vulkan_ordinal_pin:
                         raise ValueError(
@@ -6714,10 +6726,13 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
-                if self._canonical_memory_mode(memory_mode) is not None:
+                if (
+                    not _memory_env_override
+                    and self._canonical_memory_mode(memory_mode) is not None
+                ):
                     raise ValueError(
                         "GGUF host-memory modes are not supported for "
-                        "DiffusionGemma models. Use Auto."
+                        "DiffusionGemma models. Use memory-mapped loading."
                     )
                 # The diffusion runner cannot translate Vulkan ordinals to CUDA IDs.
                 if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is not False:
@@ -7914,10 +7929,10 @@ class LlamaCppBackend:
 
                 server_caps = self.probe_server_capabilities(binary)
 
-                # Emit host-memory policy directly so manual env cleanup cannot remove it.
+                # Emit the requested policy unless the operator environment owns it.
                 cmd.extend(
                     self._memory_mode_flags(
-                        memory_mode,
+                        None if _memory_env_override else memory_mode,
                         supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     )
                 )
@@ -8293,13 +8308,9 @@ class LlamaCppBackend:
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
 
-                # Explicit modes scrub inherited placement env; omission preserves it.
-                if memory_mode is not None:
-                    for _mm_var in _LLAMA_MEMORY_MODE_ENV_VARS:
-                        env.pop(_mm_var, None)
-                    _child_inherited_mem_env = False
-                else:
-                    _child_inherited_mem_env = any(_v in env for _v in _LLAMA_MEMORY_MODE_ENV_VARS)
+                # Host-memory environment variables are authoritative over UI/API
+                # choices and raw llama-server arguments.
+                _child_inherited_mem_env = self._memory_mode_env_override(env)
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade

@@ -756,32 +756,31 @@ def test_memory_mode_auto_matches_none_in_target_state():
     assert backend._already_in_target_state(**kwargs) is True
 
 
-def test_explicit_auto_reloads_when_child_inherited_mem_env():
-    """Explicit auto reloads a child with inherited placement env vars."""
+def test_explicit_auto_matches_child_with_authoritative_mem_env(monkeypatch):
+    """A live environment override makes the UI/API mode irrelevant."""
+    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     backend = _loaded_backend(_launched_with_inherited_mem_env = True)
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "auto"
-    assert backend._already_in_target_state(**kwargs) is False
-
-
-def test_omitted_mode_does_not_reload_child_with_inherited_mem_env():
-    """Omission preserves inherited placement without reloading."""
-    backend = _loaded_backend(_launched_with_inherited_mem_env = True)
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = None
     assert backend._already_in_target_state(**kwargs) is True
 
 
-def test_explicit_auto_matches_scrubbed_child():
-    """Explicit auto deduplicates after inherited env has been scrubbed."""
+def test_removed_mem_env_reloads_child_that_inherited_it():
+    """Removing an operator override requires a reload to drop its effect."""
+    backend = _loaded_backend(_launched_with_inherited_mem_env = True)
+    kwargs = _base_target_state_kwargs(backend)
+    kwargs["memory_mode"] = None
+    assert backend._already_in_target_state(**kwargs) is False
+
+
+def test_explicit_auto_matches_child_without_mem_env():
     backend = _loaded_backend(_launched_with_inherited_mem_env = False)
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "auto"
     assert backend._already_in_target_state(**kwargs) is True
 
 
-def test_omitted_mode_reloads_scrubbed_child_to_reinherit_parent_env(monkeypatch):
-    """Default must restart an explicit-Auto child when the parent has a mode."""
+def test_new_mem_env_reloads_child_to_apply_operator_override(monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     backend = _loaded_backend(_launched_with_inherited_mem_env = False)
     kwargs = _base_target_state_kwargs(backend)
@@ -844,7 +843,7 @@ def test_requested_memory_mode_preserves_explicit_auto(
     assert backend.memory_mode == expected_canonical
 
 
-# ── inherited LLAMA_ARG_* mmap/mlock env is scrubbed when a mode is set ───────
+# ── LLAMA_ARG_* host-memory env is authoritative ─────────────────────────────
 
 
 def _mem_env_backend(gguf):
@@ -865,12 +864,8 @@ def _mem_env_backend(gguf):
     return backend
 
 
-@pytest.mark.parametrize(
-    "mode,scrubbed",
-    [("auto", True), ("pinned", True), ("resident", True), (None, False)],
-)
-def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scrubbed):
-    """Only an explicit memory mode scrubs inherited placement env vars."""
+@pytest.mark.parametrize("mode", ["auto", "pinned", "resident", None])
+def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
     monkeypatch.setenv("LLAMA_ARG_MMAP", "true")
@@ -882,6 +877,7 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
     backend = _mem_env_backend(gguf)
 
     captured_envs = []
+    captured_cmds = []
 
     def _make_fake_popen(cmd, **kwargs):
         if not cmd or str(cmd[0]) != "/fake/llama-server":
@@ -891,6 +887,7 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
             pid = 12345
 
             def __init__(self, cmd, **kwargs):
+                captured_cmds.append(list(cmd))
                 captured_envs.append(kwargs.get("env") or {})
 
             def poll(self):
@@ -914,7 +911,48 @@ def test_memory_mode_scrubs_inherited_mmap_env(tmp_path, monkeypatch, mode, scru
         "LLAMA_ARG_MMAP",
         "LLAMA_ARG_DIO",
     ):
-        assert (var not in env) == scrubbed
+        assert var in env
+    cmd = captured_cmds[-1]
+    assert "--load-mode" not in cmd
+    assert "--mlock" not in cmd
+    assert "--mmap" not in cmd
+    assert "--no-mmap" not in cmd
+
+
+def test_memory_mode_env_strips_conflicting_passthrough_flag(tmp_path, monkeypatch):
+    """Raw argv must not regain precedence over the operator override."""
+    monkeypatch.setenv("LLAMA_ARG_LOAD_MODE", "mlock")
+    gguf = tmp_path / "model.gguf"
+    _write_minimal_gguf(gguf)
+    backend = _mem_env_backend(gguf)
+    captured_cmds = []
+
+    def _make_fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+
+        class _FakePopen:
+            pid = 12345
+
+            def __init__(self, cmd, **kwargs):
+                captured_cmds.append(list(cmd))
+
+            def poll(self):
+                return None
+
+        return _FakePopen(cmd, **kwargs)
+
+    with patch.object(subprocess, "Popen", side_effect = _make_fake_popen):
+        backend.load_model(
+            gguf_path = str(gguf),
+            model_identifier = "test",
+            memory_mode = "resident",
+            extra_args = ["--load-mode", "none", "--top-k", "20"],
+        )
+
+    cmd = captured_cmds[-1]
+    assert "--load-mode" not in cmd
+    assert "--top-k" in cmd
 
 
 # ── diffusion GGUF placement ─────────────────────────────────────────────────

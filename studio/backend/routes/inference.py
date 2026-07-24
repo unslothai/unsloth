@@ -3329,7 +3329,7 @@ def _request_matches_loaded_settings(
             return False
     else:
         # Compare against the managed flags that load_model actually persisted.
-        # Keep backend memory flags so explicit auto can detect inherited placement.
+        # Keep backend memory flags so an explicit mode can replace raw argv.
         _strip_dev = bool(request.gpu_ids)
         _request_extra = (
             strip_shadowing_flags(
@@ -4268,7 +4268,8 @@ def _resolve_inherited_extra_args(
                 or effective_chat_template_override is not None
             ),
             strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # A non-null mode owns inherited memory flags.
+            # A non-null first-class mode owns prior raw argv. Operator
+            # LLAMA_ARG_* values remain authoritative in load_model.
             strip_memory_mode = getattr(request, "gguf_memory_mode", None) is not None,
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
