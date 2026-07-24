@@ -165,7 +165,8 @@ def test_deferred_gpu_pick_keeps_its_index_namespace():
 
     apply = _read("features/model-picker/model-config/apply-per-model-config.ts")
     assert "selectedGpuIndexKind: s.selectedGpuIndexKind" in apply
-    assert 'config.selectedGpuIndexKind ?? "physical"' in apply
+    assert "config.selectedGpuIndexKind === undefined" in apply
+    assert 'config.selectedGpuIndexKind ?? "physical"' not in apply
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "stateBeforeUnload.selectedGpuIndexKind," in runtime

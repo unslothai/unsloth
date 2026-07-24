@@ -881,6 +881,21 @@ def test_explicit_null_memory_mode_dedupes_over_passthrough_mlock():
     assert inference_routes._request_matches_loaded_settings(req, backend) is True
 
 
+def test_default_memory_mode_reloads_to_reinherit_parent_env(monkeypatch):
+    """Default cannot dedupe to an Auto child that scrubbed the parent mode."""
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
+    req = LoadRequest(model_path = "owner/repo", gguf_memory_mode = None)
+    backend = _mem_loaded_backend(
+        memory_mode = None,
+        extra_args = None,
+        launched_with_inherited_mem_env = False,
+    )
+    assert inference_routes._request_matches_loaded_settings(req, backend) is False
+
+
 def test_explicit_pinned_dedupes_when_flags_already_applied():
     """A server loaded WITH memory_mode="pinned" already had --mlock stripped from its
     extras. A repeat pinned Apply re-sending --mlock must still dedupe: the request-side

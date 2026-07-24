@@ -34,6 +34,7 @@ export type PresetLoadConfig = Pick<
   | "gpuMemoryMode"
   | "gpuLayers"
   | "nCpuMoe"
+  | "ggufMemoryMode"
 >;
 
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
@@ -80,6 +81,12 @@ export function normalizePresetLoadConfig(
       : null;
   const gpuMemoryMode =
     partial.gpuMemoryMode === "manual" ? ("manual" as const) : undefined;
+  const ggufMemoryMode =
+    partial.ggufMemoryMode === "auto" ||
+    partial.ggufMemoryMode === "pinned" ||
+    partial.ggufMemoryMode === "resident"
+      ? partial.ggufMemoryMode
+      : undefined;
   let gpuLayers: number | undefined;
   if (typeof partial.gpuLayers === "number" && Number.isFinite(partial.gpuLayers)) {
     gpuLayers = partial.gpuLayers < 0 ? GPU_LAYERS_AUTO : Math.floor(partial.gpuLayers);
@@ -114,6 +121,7 @@ export function normalizePresetLoadConfig(
     ...(gpuMemoryMode ? { gpuMemoryMode } : {}),
     ...(gpuLayers !== undefined ? { gpuLayers } : {}),
     ...(nCpuMoe !== undefined ? { nCpuMoe } : {}),
+    ...(ggufMemoryMode ? { ggufMemoryMode } : {}),
   };
 
   return hasPresetLoadConfig(normalized) ? normalized : undefined;
@@ -162,6 +170,9 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
         : {}),
     ...(snapshot.nCpuMoe != null && snapshot.nCpuMoe > 0
       ? { nCpuMoe: snapshot.nCpuMoe }
+      : {}),
+    ...(snapshot.ggufMemoryMode
+      ? { ggufMemoryMode: snapshot.ggufMemoryMode }
       : {}),
   };
   return hasPresetLoadConfig(coalesceDefaultLoadKnobs(captured))
@@ -213,6 +224,7 @@ export function applyPresetLoadConfig(
     nCpuMoe: config.nCpuMoe,
     selectedGpuIds: store.selectedGpuIds,
     selectedGpuIndexKind: store.selectedGpuIndexKind,
+    ggufMemoryMode: config.ggufMemoryMode,
   });
 }
 

@@ -61,7 +61,9 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
     selectedGpuIndexKind:
       selectedGpuIds == null
         ? null
-        : (config.selectedGpuIndexKind ?? "physical"),
+        : config.selectedGpuIndexKind === undefined
+          ? "physical"
+          : config.selectedGpuIndexKind,
     ggufMemoryMode: config.ggufMemoryMode ?? null,
   });
 }

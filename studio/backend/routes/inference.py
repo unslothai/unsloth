@@ -3267,13 +3267,7 @@ def _request_matches_loaded_settings(
         _loaded_gpu_ids = llama_backend.requested_gpu_ids
     if _req_gpu_ids != _loaded_gpu_ids:
         return False
-    if (
-        LlamaCppBackend._canonical_memory_mode(request.gguf_memory_mode)
-        != llama_backend.memory_mode
-    ):
-        return False
-    # Explicit auto must reload a child that inherited placement env vars.
-    if request.gguf_memory_mode is not None and llama_backend.launched_with_inherited_mem_env:
+    if not llama_backend.matches_memory_mode(request.gguf_memory_mode):
         return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above
     # matches): if the user now explicitly drops tensor intent, reload so placement

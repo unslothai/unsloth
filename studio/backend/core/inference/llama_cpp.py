@@ -126,6 +126,14 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
 )
 
+_LLAMA_MEMORY_MODE_ENV_VARS = (
+    "LLAMA_ARG_LOAD_MODE",
+    "LLAMA_ARG_MLOCK",
+    "LLAMA_ARG_NO_MMAP",
+    "LLAMA_ARG_MMAP",
+    "LLAMA_ARG_DIO",
+)
+
 
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
@@ -2608,10 +2616,15 @@ class LlamaCppBackend:
         """Raw mode for status responses, preserving explicit auto."""
         return self._requested_memory_mode
 
-    @property
-    def launched_with_inherited_mem_env(self) -> bool:
-        """Whether the child inherited llama.cpp memory-placement env vars."""
-        return self._launched_with_inherited_mem_env
+    def matches_memory_mode(self, memory_mode: Optional[str]) -> bool:
+        """Whether the child already has the requested host-memory behavior."""
+        if self.memory_mode != self._canonical_memory_mode(memory_mode):
+            return False
+        if memory_mode is not None:
+            return not self._launched_with_inherited_mem_env
+        return self._launched_with_inherited_mem_env or not any(
+            name in os.environ for name in _LLAMA_MEMORY_MODE_ENV_VARS
+        )
 
     @property
     def n_layers(self) -> Optional[int]:
@@ -8285,19 +8298,12 @@ class LlamaCppBackend:
                     env.pop("LLAMA_ARG_THREADS", None)
 
                 # Explicit modes scrub inherited placement env; omission preserves it.
-                _mm_vars = (
-                    "LLAMA_ARG_LOAD_MODE",
-                    "LLAMA_ARG_MLOCK",
-                    "LLAMA_ARG_NO_MMAP",
-                    "LLAMA_ARG_MMAP",
-                    "LLAMA_ARG_DIO",
-                )
                 if memory_mode is not None:
-                    for _mm_var in _mm_vars:
+                    for _mm_var in _LLAMA_MEMORY_MODE_ENV_VARS:
                         env.pop(_mm_var, None)
                     _child_inherited_mem_env = False
                 else:
-                    _child_inherited_mem_env = any(_v in env for _v in _mm_vars)
+                    _child_inherited_mem_env = any(_v in env for _v in _LLAMA_MEMORY_MODE_ENV_VARS)
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
@@ -9321,12 +9327,7 @@ class LlamaCppBackend:
             return False
 
         # GGUF host-memory placement mode is first-class; a change must reload (#7164).
-        if self.memory_mode != LlamaCppBackend._canonical_memory_mode(memory_mode):
-            return False
-        # An explicit memory_mode (incl. 'auto') over a child carrying inherited LLAMA_ARG_*
-        # flags must reload so the scrub runs; the canonical check above treats 'auto' as
-        # omitted and would otherwise leave the child mlocked/no-mmap (#7164).
-        if memory_mode is not None and self._launched_with_inherited_mem_env:
+        if not self.matches_memory_mode(memory_mode):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in

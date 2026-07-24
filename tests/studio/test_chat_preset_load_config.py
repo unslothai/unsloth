@@ -53,6 +53,17 @@ def test_apply_skips_missing_load_config():
     assert "if (p.loadConfig)" in sheet
 
 
+def test_host_memory_mode_round_trips_through_presets():
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    assert '| "ggufMemoryMode"' in source
+    assert "partial.ggufMemoryMode ===" in source
+    assert "snapshot.ggufMemoryMode" in source
+    assert "ggufMemoryMode: config.ggufMemoryMode" in source
+
+    routes = _read("studio/backend/routes/chat_history.py")
+    assert 'ggufMemoryMode: Optional[Literal["auto", "pinned", "resident"]]' in routes
+
+
 def test_hydration_does_not_replay_preset_load_config():
     store = _read("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
     assert "applyPresetLoadConfig(activeDefinition.loadConfig)" not in store

@@ -780,6 +780,15 @@ def test_explicit_auto_matches_scrubbed_child():
     assert backend._already_in_target_state(**kwargs) is True
 
 
+def test_omitted_mode_reloads_scrubbed_child_to_reinherit_parent_env(monkeypatch):
+    """Default must restart an explicit-Auto child when the parent has a mode."""
+    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
+    backend = _loaded_backend(_launched_with_inherited_mem_env = False)
+    kwargs = _base_target_state_kwargs(backend)
+    kwargs["memory_mode"] = None
+    assert backend._already_in_target_state(**kwargs) is False
+
+
 def test_memory_mode_pinned_does_not_match_none():
     backend = _loaded_backend()
     kwargs = _base_target_state_kwargs(backend)
