@@ -128,7 +128,7 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
 const CHIP_BASE =
-  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-ui-11p5 font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
@@ -184,7 +184,7 @@ function QuantBadge({
       // group's `overflow-hidden` sacrifices the trailing status tags instead.
       <span
         className={cn(
-          "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-[12.5px] font-medium tracking-tight tabular-nums",
+          "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-ui-12p5 font-medium tracking-tight tabular-nums",
           active ? "text-control-accent" : "text-foreground",
         )}
       >
@@ -765,7 +765,12 @@ export function GgufDownloadCard({
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
-      await deleteCachedModel(repoId, deleteTarget, hfToken || undefined);
+      await deleteCachedModel(
+        repoId,
+        deleteTarget,
+        hfToken || undefined,
+        cachePath ?? undefined,
+      );
     },
     successMessage: () =>
       `Deleted ${repoId} ${deleteTargetLabel ?? deleteTarget}`,
@@ -914,7 +919,7 @@ export function GgufDownloadCard({
               {/* Quant label + status tags travel together as one left-aligned
                   group so the fit-info icon never floats orphaned from its tags;
                   only the chevron pins right, the standard select affordance. */}
-              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-[12px] text-muted-foreground">
+              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -923,7 +928,7 @@ export function GgufDownloadCard({
                     active={Boolean(selectedIsActive)}
                   />
                 ) : (
-                  <span className="text-[12.5px] text-muted-foreground">
+                  <span className="text-ui-12p5 text-muted-foreground">
                     Select quantization
                   </span>
                 )}
@@ -1126,7 +1131,7 @@ export function GgufDownloadCard({
         <button
           type="button"
           onClick={() => void refresh()}
-          className="self-start px-1 text-[11px] text-status-warning underline-offset-2 transition-colors hover:underline"
+          className="self-start px-1 text-ui-11 text-status-warning underline-offset-2 transition-colors hover:underline"
         >
           Couldn't refresh quantizations. Retry
         </button>

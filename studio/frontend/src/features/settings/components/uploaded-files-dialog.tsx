@@ -526,7 +526,7 @@ export function UploadedFilesView() {
                       {row.name}
                     </span>
                     {row.typeLabel ? (
-                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
+                      <span className="shrink-0 rounded-md bg-black/[0.06] px-1.5 py-px text-ui-9 font-medium uppercase tracking-wide text-muted-foreground dark:bg-white/[0.1]">
                         {row.typeLabel}
                       </span>
                     ) : null}

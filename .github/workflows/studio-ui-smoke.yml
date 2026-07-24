@@ -231,6 +231,15 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: UI font size scaling regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_fontscale
+        run: |
+          mkdir -p logs/playwright_fontscale
+          python tests/studio/playwright_ui_font_scale.py
+
       - name: Stop second Unsloth
         if: always()
         run: |
@@ -352,6 +361,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_fontscale
             logs/playwright_modelcfg
             logs/playwright_ime
             logs/studio-permissions-*.log

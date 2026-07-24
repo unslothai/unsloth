@@ -270,6 +270,78 @@ def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
     assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
 
 
+def test_run_default_sets_tool_call_env(monkeypatch):
+    """Plain `unsloth run` enables healing and nudging via the inherited env
+    (written before the re-exec so the child server picks them up at import)."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
+def test_run_disable_flags_set_tool_call_env(monkeypatch):
+    """`--disable-tool-call-healing --disable-tool-call-nudging` flips both env vars."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(
+        monkeypatch,
+        _BASE + ["--disable-tool-call-healing", "--disable-tool-call-nudging"],
+    )
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+@pytest.mark.parametrize("inherited", ["0", "false", "False", "no", ""])
+def test_run_omitted_flag_respects_inherited_env(monkeypatch, inherited):
+    """When the flag is omitted, a value the parent set (e.g. `unsloth start`) wins
+    instead of being reset to the default."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", inherited)
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == inherited
+
+
+_SAMPLING_ENV_SUFFIXES = (
+    "TEMPERATURE",
+    "TOP_P",
+    "TOP_K",
+    "MIN_P",
+    "REPETITION_PENALTY",
+    "PRESENCE_PENALTY",
+)
+
+
+def test_run_sampling_flags_set_env(monkeypatch):
+    """`--temperature`/`--top-k` write UNSLOTH_SAMPLING_* (a hard override the backend applies);
+    an omitted sampling flag leaves its env unset so the per-model recommendation stays."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE + ["--temperature", "0.3", "--top-k", "40"])
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TEMPERATURE"] == "0.3"
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TOP_K"] == "40"
+    assert "UNSLOTH_SAMPLING_TOP_P" not in studio_mod.os.environ
+
+
+def test_run_no_sampling_flags_leaves_env_unset(monkeypatch):
+    """Plain `unsloth run` writes no UNSLOTH_SAMPLING_*; the server keeps the recommendation."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in studio_mod.os.environ)
+
+
+def test_run_rejects_out_of_range_sampling_flag(monkeypatch):
+    """typer enforces the documented ranges before a value can reach the server."""
+    result, _captured = _invoke_run(monkeypatch, _BASE + ["--temperature", "9"])
+    assert result.exit_code != 0
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
@@ -309,12 +381,14 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        _BASE + ["--parallel", "8", "--top-k", "20", "--temp", "0.7"],
+        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use
+        # --seed / --temp here, which remain genuine llama-server pass-through flags.
+        _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
     argv = captured[0]["argv"]
     assert _value_after(argv, "--parallel") == "8", argv
-    assert _value_after(argv, "--top-k") == "20", argv
+    assert _value_after(argv, "--seed") == "42", argv
     assert _value_after(argv, "--temp") == "0.7", argv
 
 

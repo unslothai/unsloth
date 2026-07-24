@@ -14,6 +14,7 @@ DATA_TAB = FRONTEND / "features/settings/tabs/data-tab.tsx"
 PROMPT_STORAGE = FRONTEND / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
 
 APP_SIDEBAR = FRONTEND / "components/app-sidebar.tsx"
+INDEX_CSS = FRONTEND / "index.css"
 THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
 SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
@@ -129,3 +130,26 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
         in source
     )
+
+
+def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
+    """unslothai/unsloth#7276: Recents chat kebab must be tappable on iPad."""
+    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    css_source = INDEX_CSS.read_text(encoding = "utf-8")
+    assert "renderChatSidebarItem" in sidebar_source
+    block = sidebar_source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[
+        0
+    ]
+    assert "[@media(pointer:coarse)]:pr-10" in block
+    assert "sidebar-touch-reveal" in block
+    # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
+    coarse_idx = css_source.index("@media (pointer: coarse)")
+    base_idx = css_source.index(".sidebar-row-action {")
+    assert coarse_idx > base_idx
+    coarse_block = css_source[coarse_idx : coarse_idx + 280]
+    assert "sidebar-touch-reveal" in coarse_block
+    assert "opacity-100" in coarse_block
+    assert "pointer-events-auto" in coarse_block
+    # Must not reveal every sidebar-row-action (project/run/nav rows lack padding).
+    assert ".sidebar-row-action {\n\t\t\t@apply opacity-100" not in coarse_block
+    assert ".sidebar-row-action.sidebar-touch-reveal" in coarse_block

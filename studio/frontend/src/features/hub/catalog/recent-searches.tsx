@@ -30,13 +30,13 @@ export function RecentSearches({
       onMouseDown={(event) => event.preventDefault()}
     >
       <div className="flex items-center justify-between gap-2 px-2.5 pb-1.5 pt-1">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-muted-foreground/70">
+        <span className="text-ui-11 font-semibold uppercase tracking-[0.04em] text-muted-foreground/70">
           Recent searches
         </span>
         <button
           type="button"
           onClick={onClear}
-          className="hub-recent-clear rounded-full px-2 py-0.5 text-[11.5px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          className="hub-recent-clear rounded-full px-2 py-0.5 text-ui-11p5 font-medium text-muted-foreground transition-colors hover:text-foreground"
         >
           Clear all
         </button>
@@ -55,7 +55,7 @@ export function RecentSearches({
                   strokeWidth={1.75}
                   className="size-4 shrink-0 text-muted-foreground/70"
                 />
-                <span className="truncate text-[13px] text-foreground">
+                <span className="truncate text-ui-13 text-foreground">
                   {query}
                 </span>
               </button>

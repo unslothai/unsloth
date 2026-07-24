@@ -41,7 +41,6 @@ import {
   type ProviderRegistryEntry,
   createProviderConfig,
   deleteProviderConfig,
-  listProviderConfigs,
   listProviderModels,
   listProviderRegistry,
   testProviderConnection,
@@ -49,7 +48,6 @@ import {
 } from "./api/providers-api";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
-  CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
   customProviderBaseUrlPlaceholder,
@@ -68,6 +66,10 @@ import {
   toExternalBackendProviderType,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import {
+  pruneProviderModelIds,
+  syncExternalProvidersFromBackend,
+} from "./sync-external-providers";
 
 /** Matches navbar / thread layout easing (see index.css --ease-out-quart) */
 const PROVIDER_FORM_EASE: [number, number, number, number] = [
@@ -76,58 +78,7 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
 const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
-const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
-const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
 const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
-const OPENROUTER_EXCLUDED_MODELS = new Set([
-  "google/chirp-3",
-  "kwaivgi/kling-v3.0-pro",
-  "openai/whisper-1",
-  "openai/gpt-4o-mini-transcribe",
-  "recraft/recraft-v4-pro",
-]);
-
-function normalizeUrl(input: string): string {
-  return input.trim().replace(/\/+$/, "");
-}
-
-function resolveUiProviderTypeFromConfig(
-  configProviderType: string,
-  configDisplayName: string | null | undefined,
-  configBaseUrl: string | null | undefined,
-  registryRows: ProviderRegistryEntry[],
-  existingProviderType: string | undefined,
-): string {
-  if (existingProviderType && isCustomProviderType(existingProviderType)) {
-    return existingProviderType;
-  }
-  if (configProviderType !== CUSTOM_BACKEND_PROVIDER_TYPE) {
-    return configProviderType;
-  }
-  const displayName = (configDisplayName ?? "").trim().toLowerCase();
-  const matchingCustomPreset = CUSTOM_PROVIDER_PRESETS.find(
-    (preset) => preset.displayName.toLowerCase() === displayName,
-  );
-  if (matchingCustomPreset) {
-    return matchingCustomPreset.providerType;
-  }
-  const openAiRegistry = registryRows.find(
-    (entry) => entry.provider_type === CUSTOM_BACKEND_PROVIDER_TYPE,
-  );
-  if (!openAiRegistry) {
-    return configProviderType;
-  }
-  const openAiDisplayName = openAiRegistry.display_name.trim().toLowerCase();
-  if (displayName.length > 0 && displayName !== openAiDisplayName) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
-  const configUrl = normalizeUrl(configBaseUrl ?? "");
-  const defaultUrl = normalizeUrl(openAiRegistry.base_url ?? "");
-  if (configUrl.length > 0 && configUrl !== defaultUrl) {
-    return LEGACY_CUSTOM_PROVIDER_TYPE;
-  }
-  return configProviderType;
-}
 
 function parseManualModelIds(text: string): string[] {
   const seen = new Set<string>();
@@ -180,19 +131,6 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
     providerType === "vllm" ||
     providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
-}
-
-function pruneProviderModelIds(providerType: string, modelIds: string[]): string[] {
-  if (providerType === "anthropic") {
-    return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
-  }
-  if (providerType === "openai") {
-    return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
-  }
-  if (providerType === "openrouter") {
-    return modelIds.filter((id) => !OPENROUTER_EXCLUDED_MODELS.has(id));
-  }
-  return modelIds;
 }
 
 function formatModelSummary(models: string[]): string {
@@ -360,9 +298,9 @@ export function ChatProvidersSettings({
       }
       let syncSucceeded = false;
       try {
-        const [registryRows, configRows] = await Promise.all([
+        const [registryRows, syncedProviders] = await Promise.all([
           listProviderRegistry(),
-          listProviderConfigs(),
+          syncExternalProvidersFromBackend(providersRef.current),
         ]);
         if (!isMounted) return;
         syncSucceeded = true;
@@ -377,61 +315,6 @@ export function ChatProvidersSettings({
           }
           return registryRows[0]?.provider_type ?? "";
         });
-        const existingById = new Map<string, ExternalProviderConfig>();
-        for (const provider of providersRef.current) {
-          existingById.set(provider.id, provider);
-        }
-        const syncedProviders: ExternalProviderConfig[] = configRows
-          .filter((config) => config.is_enabled)
-          .map((config) => {
-            const existing = existingById.get(config.id);
-            const uiProviderType = resolveUiProviderTypeFromConfig(
-              config.provider_type,
-              config.display_name,
-              config.base_url,
-              registryRows,
-              existing?.providerType,
-            );
-            const createdAt = Number.isFinite(Date.parse(config.created_at))
-              ? Date.parse(config.created_at)
-              : Date.now();
-            const updatedAt = Number.isFinite(Date.parse(config.updated_at))
-              ? Date.parse(config.updated_at)
-              : Date.now();
-            const registryEntry =
-              registryRows.find((entry) => entry.provider_type === uiProviderType) ??
-              registryRows.find((entry) => entry.provider_type === config.provider_type);
-            const defaultModels = pruneProviderModelIds(
-              uiProviderType,
-              registryEntry?.default_models ?? [],
-            );
-            const savedModels = existing?.models ?? [];
-            const savedAvailableModels = existing?.availableModels ?? [];
-            const existingModels = pruneProviderModelIds(
-              uiProviderType,
-              savedModels.length > 0 ? savedModels : defaultModels,
-            );
-            const existingAvailableModels = pruneProviderModelIds(
-              uiProviderType,
-              savedAvailableModels.length > 0 ? savedAvailableModels : defaultModels,
-            );
-            return {
-              id: config.id,
-              providerType: uiProviderType,
-              name: config.display_name,
-              baseUrl: config.base_url ?? "",
-              models: existingModels,
-              availableModels: existingAvailableModels,
-              enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
-                ? (existing?.enablePromptCaching ?? true)
-                : undefined,
-              isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
-                ? existing?.isReasoningModel === true
-                : undefined,
-              createdAt: existing?.createdAt ?? createdAt,
-              updatedAt,
-            };
-          });
         // Trust the backend response. An empty array means every connection was
         // removed (often from another tab); mirror that locally, else stale
         // entries become un-removable here until localStorage is cleared.
@@ -699,6 +582,10 @@ export function ChatProvidersSettings({
         providerType: backendProviderType,
         displayName,
         baseUrl,
+        models: modelsToSave,
+        availableModels: manualOnly
+          ? []
+          : pruneProviderModelIds(providerType, availableModels),
       });
       const createdAt = Number.isFinite(Date.parse(created.created_at))
         ? Date.parse(created.created_at)
@@ -814,6 +701,10 @@ export function ChatProvidersSettings({
             customProviderDisplayName(existing.providerType)
           : existing.name,
         baseUrl,
+        models: modelsToSave,
+        availableModels: manualOnly
+          ? []
+          : pruneProviderModelIds(existing.providerType, availableModels),
       });
       if (apiKey.trim()) {
         setExternalProviderApiKey(editingProviderId, apiKey.trim());
@@ -997,7 +888,7 @@ export function ChatProvidersSettings({
 
   if (page === "form") {
     return (
-      <div className="-mt-3 flex min-h-0 flex-col gap-2">
+      <div className="@container -mt-3 flex min-h-0 flex-col gap-2">
         <header className="flex items-center gap-2 pr-8">
           <Button
             type="button"
@@ -1024,7 +915,7 @@ export function ChatProvidersSettings({
         <div className="flex max-w-[760px] flex-col gap-3">
           <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
             <div className="divide-y divide-border/60">
-              <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+              <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <Label
                     htmlFor="provider-preset"
@@ -1113,7 +1004,7 @@ export function ChatProvidersSettings({
               </div>
 
               {showApiKeyField ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-api-key"
@@ -1152,7 +1043,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-custom-name"
                     className="text-sm font-medium"
@@ -1173,7 +1064,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {isCustomProvider ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
                       htmlFor="provider-base-url"
@@ -1197,7 +1088,7 @@ export function ChatProvidersSettings({
               ) : null}
 
               {showReasoningToggle ? (
-                <div className="grid grid-cols-[minmax(150px,0.8fr)_minmax(260px,1.2fr)] items-center gap-4 px-4 py-3 max-sm:grid-cols-1">
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
                     htmlFor="provider-is-reasoning"
                     className="text-sm font-medium"
@@ -1303,7 +1194,7 @@ export function ChatProvidersSettings({
                     </p>
                     {availableModels.length > 0 ? (
                       <div className="space-y-3 rounded-[8px] border border-border/70 bg-background/50 p-3">
-                        <div className="grid grid-cols-[112px_minmax(220px,330px)_auto] items-center gap-3 max-sm:grid-cols-1">
+                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
                           </span>
@@ -1395,7 +1286,7 @@ export function ChatProvidersSettings({
                   <div className="space-y-3 px-4 py-4">
                     {availableModels.length === 0 ? null : (
                       <>
-                        <div className="grid grid-cols-[112px_minmax(220px,330px)_auto] items-center gap-3 max-sm:grid-cols-1">
+                        <div className="grid grid-cols-[minmax(90px,auto)_minmax(0,1fr)_auto] items-center gap-3 @max-[520px]:grid-cols-1">
                           <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
                             {availableModelsLabel}
                           </span>
@@ -1556,7 +1447,7 @@ export function ChatProvidersSettings({
         </div>
         <p
           id="chat-connections-description"
-          className="max-w-md text-[11px] leading-snug text-muted-foreground/65 sm:text-right"
+          className="max-w-md text-ui-11 leading-snug text-muted-foreground/65 sm:text-right"
         >
           When off, all connections are disabled.
         </p>
@@ -1616,7 +1507,7 @@ export function ChatProvidersSettings({
                           <span className="truncate text-sm font-medium text-foreground">
                             {provider.name}
                           </span>
-                          <span className="shrink-0 rounded-[6px] border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-[10px] leading-none text-control-accent">
+                          <span className="shrink-0 rounded-[6px] border border-control-accent/15 bg-control-accent/8 px-1.5 py-0.5 text-ui-10 leading-none text-control-accent">
                             {provider.models.length}{" "}
                             {provider.models.length === 1 ? "model" : "models"}
                           </span>
@@ -1631,7 +1522,7 @@ export function ChatProvidersSettings({
                           ) : null}
                         </div>
                         <div
-                          className="mt-1 truncate text-[11px] leading-4 text-muted-foreground/80"
+                          className="mt-1 truncate text-ui-11 leading-4 text-muted-foreground/80"
                           title={provider.models.join(", ")}
                         >
                           {modelSummary}
