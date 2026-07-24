@@ -56,14 +56,25 @@ export const en = {
       description: "{path} does not exist.",
       backToChat: "Back to chat",
     },
+    selection: {
+      selectedCount: "{count} selected",
+    },
     dialog: {
       deleteChat: {
         title: "Delete chat",
         description: 'Are you sure you want to delete this chat "{name}"?',
       },
+      deleteChatsBulk: {
+        title: "Delete chats",
+        description: "Are you sure you want to delete {count} chats?",
+      },
       deleteRun: {
         title: "Delete training run",
         description: 'Are you sure you want to delete this run "{name}"?',
+      },
+      deleteRunsBulk: {
+        title: "Delete training runs",
+        description: "Are you sure you want to delete {count} training runs?",
       },
       renameChat: {
         title: "Rename chat",
@@ -77,7 +88,10 @@ export const en = {
     toast: {
       cannotDeleteRunningRun: "Cannot delete a running training run",
       failedToDeleteChat: "Failed to delete chat",
+      failedToDeleteSomeChats: "Failed to delete some chats",
       failedToDeleteRun: "Failed to delete run",
+      failedToDeleteSomeRuns: "Failed to delete some training runs",
+      skippedRunningRuns: "Skipped {count} running training run(s)",
       failedToRenameChat: "Failed to rename chat",
       failedToRenameRun: "Failed to rename run",
     },
