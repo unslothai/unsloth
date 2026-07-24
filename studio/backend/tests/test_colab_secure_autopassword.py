@@ -158,7 +158,6 @@ def test_display_admin_credentials_returns_true_on_success(monkeypatch):
     # A successful publish through the display channel reports True so the caller
     # may proceed to publish the shared link.
     import IPython.display as ipd
-
     monkeypatch.setattr(ipd, "display", lambda *a, **k: None)
     assert colab._display_admin_credentials("unsloth", "Shown-Pw-123") is True
 

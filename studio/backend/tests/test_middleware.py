@@ -156,8 +156,7 @@ class TestMaxBodyMiddleware:
             == main_module.AUTH_REQUEST_BODY_MAX_BYTES
         )
         assert (
-            main_module.AUTH_REQUEST_BODY_MAX_BYTES
-            < main_module.default_request_body_limit_bytes()
+            main_module.AUTH_REQUEST_BODY_MAX_BYTES < main_module.default_request_body_limit_bytes()
         )
 
     def test_settings_put_body_over_cap_rejected(self, main_module):

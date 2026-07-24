@@ -767,7 +767,12 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
                 )
 
 
-def _echo_auto_generated_credentials(username: str, password: str, *, out = None) -> None:
+def _echo_auto_generated_credentials(
+    username: str,
+    password: str,
+    *,
+    out = None,
+) -> None:
     """Surface an auto-generated admin credential once, on the parent's console.
 
     Writes to the pre-resolved *out* stream (the one the caller verified was usable
