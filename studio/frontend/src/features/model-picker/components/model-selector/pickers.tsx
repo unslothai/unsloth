@@ -3064,13 +3064,18 @@ export function HubModelPicker({
           ) : null}
         </div>
 
-        {/* Section tabs then the format and sort dropdowns, packed left with one
-          uniform gap between every control. The box is sized so the last
-          dropdown still lands on Search Hub's edge. Dropdowns hide on Connected. */}
-        <div className="flex items-center gap-2">
+        {/* Keep the left-packed controls on one line while they fit, then wrap
+          whole groups before their intrinsic widths cross the picker edge.
+          Dropdowns hide on Connected. */}
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            hasConnected ? "-mr-4" : "-mr-2",
+          )}
+        >
           {sectionToggle}
           {showConnected ? null : (
-            <div className="flex items-center gap-2">
+            <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
                 options={FORMAT_FILTER_OPTIONS}
