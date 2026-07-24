@@ -1469,6 +1469,10 @@ function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
   if (!AUTO_LOAD_LOCAL_SOURCES.has(row.source)) return false;
   if (row.capabilities?.can_chat !== true) return false;
   if (row.partial) return false;
+  // Adapters are chat-capable but load by resolving their base model, which
+  // for a Hub-id base can trigger the implicit remote fetch a background
+  // auto-load must never start. Adapters stay interactive-only.
+  if (row.model_format === "adapter") return false;
   if (isHiddenModelId(row.model_id, row.id, row.path)) return false;
   if (
     row.model_format === "gguf" &&
@@ -1504,11 +1508,50 @@ function localRowToCandidate(
   };
 }
 
+/**
+ * Build a loadable candidate for a backend-indexed local row. Directory-based
+ * GGUFs (LM Studio, models dir, custom folders) are flagged requires_variant
+ * by the backend, so without a remembered quant the folder is scanned through
+ * the same variants API the picker card uses and the smallest complete,
+ * auto-loadable quant is chosen. Returns null when no quant can be resolved.
+ */
+async function resolveLocalRowCandidate(
+  row: LocalModelInfo,
+  rememberedVariant: string | null = null,
+): Promise<AutoLoadCandidate | null> {
+  const isGguf = row.model_format === "gguf";
+  if (row.capabilities?.requires_variant === true) {
+    // Only GGUF folders have an automatic quant resolution path.
+    if (!isGguf) return null;
+    if (!rememberedVariant) {
+      const variants = await listGgufVariants(row.model_id || row.id, undefined, {
+        preferLocalCache: true,
+        localPath: row.path,
+      });
+      const downloaded = variants.variants
+        .filter(
+          (entry) =>
+            entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry),
+        )
+        .sort((a, b) => a.size_bytes - b.size_bytes);
+      if (downloaded.length === 0) return null;
+      return localRowToCandidate(row, downloaded[0].quant);
+    }
+  }
+  return localRowToCandidate(row, isGguf ? rememberedVariant : null);
+}
+
 /** Resolve a remembered local model against current backend inventory. */
 function matchesRememberedLocalRow(
   row: LocalModelInfo,
   remembered: LastLocalModelLoad,
 ): boolean {
+  // A folder holding both GGUF and safetensors weights yields two rows with
+  // the same path/load target, so the format must agree with the remembered
+  // kind before identifier matching can accept the row.
+  if ((row.model_format === "gguf") !== (remembered.kind === "gguf")) {
+    return false;
+  }
   if (
     remembered.inventoryId &&
     row.inventory_id &&
@@ -1911,17 +1954,19 @@ export async function autoLoadOnDeviceModel(): Promise<{
         if (row) {
           markSeen(row.load_id, row.id, row.path, row.model_id);
           try {
-            toast("Loading last used model…", {
-              id: toastId,
-              description: row.display_name || row.id,
-              duration: 5000,
-            });
-            if (
-              await loadAutoLoadCandidate(
-                localRowToCandidate(row, lastLoaded.ggufVariant),
-              )
-            ) {
-              return { loaded: true, blockedByTrustRemoteCode: false };
+            const rememberedCandidate = await resolveLocalRowCandidate(
+              row,
+              lastLoaded.ggufVariant,
+            );
+            if (rememberedCandidate) {
+              toast("Loading last used model…", {
+                id: toastId,
+                description: row.display_name || row.id,
+                duration: 5000,
+              });
+              if (await loadAutoLoadCandidate(rememberedCandidate)) {
+                return { loaded: true, blockedByTrustRemoteCode: false };
+              }
             }
           } catch {
             hadNonTrustFailure = true;
@@ -2030,9 +2075,12 @@ export async function autoLoadOnDeviceModel(): Promise<{
       bytes && bytes > 0 ? bytes : Number.MAX_SAFE_INTEGER;
     const bySizeAsc = (a: FallbackCandidate, b: FallbackCandidate): number =>
       a.sizeBytes - b.sizeBytes;
-    // Background loads cannot ask which quant/variant to use.
+    // Directory-based GGUF rows resolve a quant automatically below; only
+    // non-GGUF variant-requiring rows have no background resolution path.
     const cascadeLocalRows = localRows.filter(
-      (row) => row.capabilities?.requires_variant !== true,
+      (row) =>
+        row.model_format === "gguf" ||
+        row.capabilities?.requires_variant !== true,
     );
     const ggufGroup: FallbackCandidate[] = [
       ...ggufRepos.map((repo) => ({
@@ -2141,20 +2189,23 @@ export async function autoLoadOnDeviceModel(): Promise<{
       if (isSeen(row.load_id, row.id, row.path, row.model_id)) {
         continue;
       }
-      const localCandidate = localRowToCandidate(row);
-      if (
-        skippedAutoLoadCandidates.has(
-          autoLoadCandidateKey(
-            localCandidate.kind,
-            localCandidate.id,
-            localCandidate.ggufVariant,
-          ),
-        )
-      ) {
-        continue;
-      }
       markSeen(row.load_id, row.id, row.path, row.model_id);
       try {
+        const localCandidate = await resolveLocalRowCandidate(row);
+        if (!localCandidate) {
+          continue;
+        }
+        if (
+          skippedAutoLoadCandidates.has(
+            autoLoadCandidateKey(
+              localCandidate.kind,
+              localCandidate.id,
+              localCandidate.ggufVariant,
+            ),
+          )
+        ) {
+          continue;
+        }
         if (await loadAutoLoadCandidate(localCandidate)) {
           return { loaded: true, blockedByTrustRemoteCode: false };
         }

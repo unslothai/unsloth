@@ -520,6 +520,9 @@ def test_autoload_filters_match_picker_policy():
     local_fn = local_fn.split("\nfunction ", 1)[0]
     assert "row.capabilities?.can_chat !== true" in local_fn
     assert "row.partial" in local_fn
+    # Adapters resolve their base model on load; a Hub-id base would start
+    # the implicit remote fetch a background auto-load must never trigger.
+    assert 'row.model_format === "adapter"' in local_fn
     assert "isHiddenModelId(row.model_id, row.id, row.path)" in local_fn
     assert "hasBigEndianGgufMarker(row.path, row.format_variant)" in local_fn
     cached_fn = src.split("function isAutoLoadableCachedRepo", 1)[1]
@@ -552,7 +555,8 @@ def test_autoload_remembers_last_model_across_all_sources():
     auto_load = _autoload_section()
     assert "isManagedCacheSource(lastLoaded.source)" in auto_load
     assert "matchesRememberedLocalRow(candidateRow, lastLoaded)" in auto_load
-    assert "localRowToCandidate(row, lastLoaded.ggufVariant)" in auto_load
+    assert "await resolveLocalRowCandidate(" in auto_load
+    assert "lastLoaded.ggufVariant," in auto_load
     # Managed-cache candidates record their provenance for later resolution.
     assert auto_load.count('source: "hf_cache"') >= 4
 
@@ -612,3 +616,34 @@ def test_interactive_local_loads_are_remembered_without_lease_bypass():
     assert "!nativePathToken &&" in record_block
     assert "(indexedLocalSelection || !isLocalModelPath(modelId))" in record_block
     assert 'source: "local",' in record_block
+
+
+def test_remembered_local_row_match_requires_kind_agreement():
+    """A folder holding both GGUF and safetensors weights yields two inventory
+    rows with the same path/load target, so the remembered kind must gate the
+    identifier match or a remembered safetensors load can resolve to the GGUF
+    row (and vice versa)."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    match_fn = src.split("function matchesRememberedLocalRow", 1)[1]
+    match_fn = match_fn.split("\nasync function ", 1)[0].split("\nfunction ", 1)[0]
+    assert '(row.model_format === "gguf") !== (remembered.kind === "gguf")' in match_fn
+
+
+def test_directory_gguf_rows_resolve_variant_like_picker():
+    """Directory-based local GGUFs (LM Studio, models dir, custom folders) are
+    flagged requires_variant by the backend, so the fallback must resolve a
+    quant through the variants API (as the picker card does) instead of
+    silently dropping every directory row; non-GGUF variant-requiring rows
+    have no background resolution and stay excluded."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
+    resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
+    assert 'row.capabilities?.requires_variant === true' in resolve_fn
+    assert "if (!isGguf) return null;" in resolve_fn
+    assert "listGgufVariants(row.model_id || row.id" in resolve_fn
+    assert "localPath: row.path" in resolve_fn
+    assert "entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry)" in resolve_fn
+    # The cascade must keep directory GGUF rows as candidates.
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    assert 'row.model_format === "gguf" ||' in auto_load
+    assert "await resolveLocalRowCandidate(row)" in auto_load
