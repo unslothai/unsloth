@@ -109,6 +109,74 @@ import transformers
 print(f"RESULT tier={tier} preload={preload} active={transformers.__version__}")
 """
 
+# Astral (#7353): custom-code checkpoints must activate the 5.10 sidecar, not default 4.57.x.
+# Uses a local stub checkpoint (no Hub fetch) with the same worker preflight + activation path.
+_SNIPPET_ASTRAL_510 = r"""
+import json, os, sys
+sys.path.insert(0, os.getcwd())
+
+try:
+    import torch  # noqa: F401
+    _sp = os.environ.get("SPOOF_PATH")
+    if _sp and os.path.exists(_sp):
+        import importlib.util
+        _spec = importlib.util.spec_from_file_location("_zoo_aggressive_cuda_spoof", _sp)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _mod.apply()
+    else:
+        torch.cuda.is_available = lambda: True
+        torch.cuda.device_count = lambda: 1
+        torch.cuda.current_device = lambda: 0
+        torch.cuda.get_device_capability = lambda *a, **k: (8, 0)
+        torch.cuda.get_device_name = lambda *a, **k: "NVIDIA A100-SPOOFED"
+        torch.cuda.is_bf16_supported = lambda *a, **k: True
+        class _Props:
+            name = "NVIDIA A100-SPOOFED"
+            major = 8
+            minor = 0
+            total_memory = 80 * 1024**3
+            multi_processor_count = 108
+        torch.cuda.get_device_properties = lambda *a, **k: _Props()
+        torch.cuda.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
+except Exception:
+    pass
+os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
+home = os.environ["STUB_HOME"]
+model_dir = os.path.join(home, "astral-checkpoint")
+os.makedirs(model_dir, exist_ok = True)
+cfg = {
+    "architectures": ["AstralForCausalLM"],
+    "model_type": "astral",
+    "auto_map": {"AutoModelForCausalLM": "modeling_astral.AstralForCausalLM"},
+}
+with open(os.path.join(model_dir, "config.json"), "w") as f:
+    json.dump(cfg, f)
+with open(os.path.join(model_dir, "modeling_astral.py"), "w") as f:
+    f.write("from transformers.modeling_layers import GradientCheckpointingLayer\n")
+
+pkg = os.path.join(home, ".venv_t5_510", "transformers")
+os.makedirs(pkg, exist_ok = True)
+with open(os.path.join(pkg, "__init__.py"), "w") as f:
+    f.write('__version__ = "5.10.2"\n')
+os.environ["UNSLOTH_STUDIO_HOME"] = home
+
+from utils.hf_xet_fallback import child_should_disable_xet
+child_should_disable_xet({})
+_tf = sys.modules.get("transformers")
+preload = _tf.__version__ if _tf is not None else None
+
+import utils.transformers_version as tv
+tv._VENV_T5_510_DIR = os.path.join(home, ".venv_t5_510")
+tv._ensure_venv_t5_510_exists = lambda: True
+tier = tv.get_transformers_tier(model_dir, None)
+tv.activate_transformers_for_subprocess(model_dir, None)
+
+import transformers
+print(f"RESULT tier={tier} preload={preload} active={transformers.__version__}")
+"""
+
 
 def _parse(stdout: str) -> dict[str, str]:
     for line in stdout.splitlines():
@@ -152,4 +220,41 @@ def test_worker_activates_correct_transformers_version(tmp_path):
         f"(active={parsed['active']}, preloaded-before-activation={parsed['preload']}). A pre-activation "
         "transformers import (directly or via unsloth_zoo) defeated the sidecar; 5.x models (Qwen3.5, "
         "GLM-4.7, gemma-4) then fail with 'Tokenizer class TokenizersBackend does not exist'. See #6951."
+    )
+
+
+def test_worker_activates_transformers_510_for_astral(tmp_path):
+    """Astral custom-code checkpoints (#7353) must route to tier 510 and swap in the 5.10 sidecar.
+
+    Without this, training fails before model load with
+    ``No module named 'transformers.tokenization_utils_tokenizers'`` because the default
+    4.57.x sidecar is still active after worker preflight.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _SNIPPET_ASTRAL_510],
+        cwd = str(_BACKEND_DIR),
+        env = {
+            **__import__("os").environ,
+            "STUB_HOME": str(tmp_path),
+            **({"SPOOF_PATH": str(_SPOOF_PATH)} if _SPOOF_PATH.exists() else {}),
+        },
+        capture_output = True,
+        text = True,
+    )
+    assert result.returncode == 0, (
+        "Astral worker preflight + activation harness crashed.\n"
+        f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+    )
+    parsed = _parse(result.stdout)
+    assert parsed, f"No RESULT line.\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+
+    assert parsed["tier"] == "510", (
+        f"Wrong transformers tier for Astral (expected 510, got {parsed['tier']}). "
+        "Custom-code Astral checkpoints must use the 5.10 sidecar. See #7353."
+    )
+    assert parsed["active"] == "5.10.2", (
+        "Sidecar activation did NOT switch the in-process transformers to Astral's 5.10.x version "
+        f"(active={parsed['active']}, preloaded-before-activation={parsed['preload']}). "
+        "A stale pre-activation transformers import defeats the sidecar; Astral then crashes loading "
+        "its remote tokenizer. See #7353."
     )
