@@ -3981,14 +3981,41 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
 
-    # No readable local header: use only the DiffusionGemma family name as a
-    # hint. A bare "diffusion" substring is common in otherwise normal model
-    # names and must not route them to the single-GPU diffusion runner.
-    identity = " ".join(
-        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
-    ).lower()
-    normalized_identity = _re.sub(r"[^a-z0-9]+", "", identity)
-    return True if "diffusiongemma" in normalized_identity else None
+
+def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str]) -> None:
+    """Raise 400 if a DiffusionGemma GGUF was given an explicit gguf_memory_mode.
+
+    The diffusion runner is single-GPU (DG_GPU) with no --mlock/--no-mmap plumbing.
+    Called by both /validate and /load before either tears down the active model,
+    so the endpoints agree before any unload (#7188).
+    gpu_ids for diffusion is handled by the runner (collapsed to a single device), so
+    only the host-memory mode is rejected here."""
+    if not config.is_gguf:
+        return
+    if LlamaCppBackend._canonical_memory_mode(memory_mode) is None:
+        return
+    if _classify_diffusion_gguf(config) is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Explicit gguf_memory_mode is not supported for diffusion "
+                "(DiffusionGemma) GGUF models."
+            ),
+        )
+
+
+async def _resolve_gguf_gpu_ids_for_request(
+    config: ModelConfig, gpu_ids: Optional[List[int]]
+) -> tuple[Optional[List[int]], bool]:
+    """Resolve and fully validate an explicit GGUF GPU placement pool.
+
+    CUDA and ROCm use physical IDs. Vulkan uses ggml ordinals, so its device
+    existence check comes from the same ggml probe used by the loader. Both
+    /load and /validate call this before their training guard or any teardown.
+    The boolean result records whether the resolved IDs are Vulkan ordinals.
+    """
+    if not gpu_ids:
+        return None, False
 
     from utils.hardware import DeviceType, get_device
     from utils.hardware.hardware import resolve_requested_gpu_ids
@@ -5297,80 +5324,21 @@ async def validate_model(
         # Apply the same training coexistence policy as /load before the frontend
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
-        # a clean 400) before the guard sizes the model against training VRAM.
-        # XPU-host picks are rejected unless the llama.cpp build is Vulkan, in
-        # which case the Vulkan ordinal namespace is the intended target (#7188).
-        if config.is_gguf and effective_gpu_ids is not None:
-            from utils.hardware import DeviceType, get_device
-            from utils.hardware.hardware import resolve_requested_gpu_ids
-            from core.inference.llama_cpp import _extra_args_draft_device_pin
-
-            _loaded_llama = get_llama_cpp_backend()
-            _gguf_vulkan_build = await asyncio.to_thread(_loaded_llama.is_vulkan_build)
-            # Mirror /load: a confirmed diffusion GGUF uses the visual-server runner (CUDA
-            # ids via --gpu/DG_GPU), not the Vulkan llama-server, so route its gpu_ids
-            # through the CUDA resolver even on a Vulkan build (#7188).
-            _gguf_confirmed_diffusion = _classify_diffusion_gguf(config) is True
-
-            if get_device() == DeviceType.XPU and not _gguf_vulkan_build:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
-            # Mirror /load's draft-device reject for the validate-then-unload flow: a
-            # same-model reload inherits the running server's stored extras, and a
-            # stored --spec-draft-device naming a real GPU would escape the new gpu_ids
-            # pin. ValidateModelRequest carries no llama_extra_args, so only the
-            # inherited backend extras are checkable here (#7188).
-            if _loaded_llama.is_loaded and _loaded_llama.extra_args:
-                source = _loaded_llama.extra_args_source
-                resolved_variant = (config.gguf_variant or "").lower()
-                request_variant = (request.gguf_variant or "").lower()
-                stored_variant = (source[1] or "").lower() if source else ""
-                same_model = bool(
-                    source and source[0] and source[0].lower() == model_identifier.lower()
-                )
-                if request.gguf_variant:
-                    variant_mismatch = request_variant != stored_variant
-                else:
-                    variant_mismatch = bool(stored_variant and resolved_variant != stored_variant)
-                if same_model and not variant_mismatch:
-                    _draft_dev_pin = _extra_args_draft_device_pin(_loaded_llama.extra_args)
-                    if _draft_dev_pin is not None:
-                        raise HTTPException(
-                            status_code = 400,
-                            detail = (
-                                f"A draft-model device override ('{_draft_dev_pin}') cannot be "
-                                "combined with explicit gpu_ids: it would place the speculative "
-                                "drafter outside the pinned GPUs the training guard budgeted. "
-                                "Remove the draft-device flag to follow gpu_ids, or set it to cpu."
-                            ),
-                        )
-            # A Vulkan build treats gpu_ids as Vulkan ordinals, so defer to the backend
-            # probe even on a CUDA-visible host; otherwise keep the CUDA resolver (#6414/#7188).
-            # A confirmed diffusion GGUF always takes the CUDA path: its runner uses CUDA ids,
-            # not the Vulkan llama-server (#7188).
-            if get_device() == DeviceType.CUDA and (
-                not _gguf_vulkan_build or _gguf_confirmed_diffusion
-            ):
-                # A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES; the CUDA resolver
-                # can't see that, so reject a pin it would silently run on CPU (mirrors /load
-                # and the non-CUDA resolvable check). Diffusion GGUF models bypass
-                # llama-server, so the llama.cpp GPU-lib check is irrelevant (#7188).
-                if not _gguf_confirmed_diffusion and await asyncio.to_thread(
-                    _loaded_llama._backend_lacks_gpu_lib
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = (
-                            f"Requested gpu_ids {list(effective_gpu_ids)} but the llama.cpp "
-                            "build has no GPU backend (CPU-only build); it would ignore the "
-                            "pin and run on CPU. Omit gpu_ids to run on CPU."
-                        ),
+        if config.is_gguf:
+            validated_gpu_ids, _ = await _resolve_gguf_gpu_ids_for_request(
+                config,
+                effective_gpu_ids,
+            )
+            if validated_gpu_ids:
+                from core.inference.llama_cpp import _extra_args_draft_device_pin
+                loaded_llama = get_llama_cpp_backend()
+                if loaded_llama.is_loaded and loaded_llama.extra_args:
+                    source = loaded_llama.extra_args_source
+                    resolved_variant = (config.gguf_variant or "").lower()
+                    request_variant = (request.gguf_variant or "").lower()
+                    stored_variant = (source[1] or "").lower() if source else ""
+                    same_model = bool(
+                        source and source[0] and source[0].lower() == model_identifier.lower()
                     )
                 try:
                     resolve_requested_gpu_ids(effective_gpu_ids)
