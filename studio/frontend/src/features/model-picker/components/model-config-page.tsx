@@ -424,10 +424,20 @@ function GpuMemorySettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Host RAM</span>
           <InfoHint>
-            Controls system RAM, not GPU VRAM. Default lets llama.cpp and the
-            operating system manage model pages. Mapped + locked keeps mapped model
-            pages in RAM. No memory map loads the model without mapping its file, but
-            does not guarantee that it stays in RAM.
+            <div className="flex flex-col gap-1.5">
+              <div>
+                <span className="font-medium">Default:</span> uses llama.cpp's
+                default host RAM behavior.
+              </div>
+              <div>
+                <span className="font-medium">Mapped + locked:</span>{" "}
+                memory-maps the model and locks its pages in RAM.
+              </div>
+              <div>
+                <span className="font-medium">No memory map:</span> reads the
+                model data into allocated RAM.
+              </div>
+            </div>
           </InfoHint>
         </div>
         <Select
