@@ -12,10 +12,11 @@ MEMORY_RUNTIME_SRC = (
 
 
 def test_memory_scope_uses_remote_id_after_first_save():
-    start = ADAPTER_SRC.index("await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);")
+    start = ADAPTER_SRC.index("const memoryRuntime = useChatRuntimeStore.getState();")
     end = ADAPTER_SRC.index("// ── Audio model path", start)
     scope_block = ADAPTER_SRC[start:end]
 
+    assert "memoryRuntime.referenceMemories || memoryRuntime.autoSaveMemories" in scope_block
     assert "const memoryThreadId = memoryRuntime.activeThreadId || undefined;" in scope_block
     assert "ownsThread(memoryThreadId)" in scope_block
     assert "threadId: memoryThreadId" in scope_block

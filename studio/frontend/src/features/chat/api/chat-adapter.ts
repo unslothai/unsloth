@@ -224,7 +224,10 @@ function scheduleMemoryCapture({
   const pending: PendingMemoryCapture = {
     timer: null,
     controller: null,
-    cancelId: crypto.randomUUID(),
+    cancelId:
+      typeof globalThis.crypto?.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   };
   pendingMemoryCaptures.set(threadId, pending);
   pending.timer = setTimeout(() => {
@@ -2756,8 +2759,13 @@ export function createOpenAIStreamAdapter(
             .map((part) => part.text)
             .join("\n")
         : "";
-      await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);
       const memoryRuntime = useChatRuntimeStore.getState();
+      await ThreadAutosaveHandle.awaitFirstSave(
+        resolvedThreadId,
+        memoryRuntime.referenceMemories || memoryRuntime.autoSaveMemories
+          ? null
+          : undefined,
+      );
       const memoryThreadId = memoryRuntime.activeThreadId || undefined;
       const memoryScope =
         !options.pairId && memoryThreadId && ownsThread(memoryThreadId)

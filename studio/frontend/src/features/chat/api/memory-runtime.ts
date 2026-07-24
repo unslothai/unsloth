@@ -5,7 +5,7 @@ import type { MemoryScopeRequest } from "../types/api";
 
 const MAX_CAPTURE_SOURCE_CHARS = 4_000;
 const DURABLE_SIGNAL_RE =
-  /\b(?:i|my|we|our|for me|actually|no longer|instead|prefer|always|never|this (?:project|repo|app)|(?:project|repo|app) (?:uses|is|has)|goal|constraint|we use)\b/i;
+  /\b(?:i (?:prefer|like|use|work (?:as|at|with|on))|my (?:preference|favorite|favourite)|we (?:use|prefer)|this (?:project|repo|app)|(?:project|repo|app) (?:uses|is|has)|(?:my|our|the) (?:goal|constraint) is)\b/i;
 const CODE_LINE_RE =
   /^\s*(?:import\s|export\s|const\s|let\s|var\s|def\s|class\s|function\s|\{|\}|\[|\]|#include\b)/;
 const EXPLICIT_COMMAND_RE =
