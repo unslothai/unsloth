@@ -820,3 +820,54 @@ def test_stop_during_prefill_unblocks(monkeypatch):
     # Must return promptly rather than hang on the stalled read.
     out = asyncio.run(asyncio.wait_for(_run(), timeout = 5))
     assert isinstance(out, list)
+
+
+def test_stop_during_final_synthesis_unblocks(monkeypatch):
+    # The budget-exhausted final synthesis pass runs a distinct SSE reader. A Stop
+    # delivered while that reader is blocked awaiting the remote provider's next line
+    # must abandon the read immediately rather than hang until the provider responds.
+    import threading as _t
+
+    cancel = _t.Event()
+
+    class _SynthStallClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def stream_chat_completion(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                # First (and only budgeted) round emits one tool call, exhausting the budget.
+                for chunk in _one_call_stream("c1"):
+                    yield chunk
+                return
+            # Final synthesis pass: simulate a remote prefill stall and fire Stop. The
+            # loop must abandon this read via cancel instead of blocking on __anext__.
+            cancel.set()
+            while True:
+                await asyncio.sleep(0.05)
+            yield ""  # pragma: no cover
+
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool", lambda *a, **k: "hit"
+    )
+    client = _SynthStallClient()
+
+    async def _run():
+        out = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "go"}],
+            model = "m",
+            tools = [WEB_SEARCH_TOOL],
+            cancel_event = cancel,
+            max_tool_iterations = 1,
+        ):
+            out.append(line)
+        return out
+
+    # Must return promptly rather than hang on the stalled final-synthesis read.
+    out = asyncio.run(asyncio.wait_for(_run(), timeout = 5))
+    assert isinstance(out, list)
+    # Confirms the final synthesis pass was actually reached and then abandoned.
+    assert client.calls == 2

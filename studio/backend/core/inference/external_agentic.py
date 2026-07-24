@@ -478,8 +478,41 @@ async def stream_external_local_tool_loop(
             tool_choice = "none",
             stream = True,
         )
+        # Stop may fire while the remote read is blocked awaiting the next SSE line. Drive
+        # the generator one item at a time via a cancellable task raced against the cancel
+        # event so Stop abandons the read immediately (aclose() on a mid-await generator
+        # raises RuntimeError, so it can't interrupt from another task).
+        async def _wait_cancel_final() -> None:
+            while not cancel_event.is_set():
+                await asyncio.sleep(0.1)
+
         try:
-            async for line in final_gen:
+            while True:
+                if cancel_event.is_set():
+                    break
+                next_task = asyncio.ensure_future(final_gen.__anext__())
+                cancel_task = asyncio.ensure_future(_wait_cancel_final())
+                done, _pending = await asyncio.wait(
+                    {next_task, cancel_task},
+                    return_when = asyncio.FIRST_COMPLETED,
+                )
+                if next_task not in done:
+                    # Cancelled while the read was still blocked: abandon it.
+                    next_task.cancel()
+                    try:
+                        await next_task
+                    except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                        pass
+                    break
+                cancel_task.cancel()
+                try:
+                    await cancel_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                try:
+                    line = next_task.result()
+                except StopAsyncIteration:
+                    break
                 if cancel_event.is_set():
                     break
                 payload = _parse_sse_data_line(line)
