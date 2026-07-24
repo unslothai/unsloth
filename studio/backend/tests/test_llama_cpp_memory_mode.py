@@ -138,7 +138,7 @@ def _loaded_backend(**overrides):
     backend._extra_args_source = None
     backend._gguf_path = None
     backend._gpu_ids = None
-    backend._memory_mode = None
+    backend._requested_memory_mode = None
     for key, value in overrides.items():
         setattr(backend, key, value)
     if "_gpu_ids" in overrides and "_requested_gpu_ids" not in overrides:
@@ -198,13 +198,13 @@ def _base_target_state_kwargs(backend):
 
 
 def test_already_in_target_state_matches_same_memory_mode():
-    backend = _loaded_backend(_memory_mode = "resident")
+    backend = _loaded_backend(_requested_memory_mode = "resident")
     kwargs = _base_target_state_kwargs(backend)
     assert backend._already_in_target_state(**kwargs) is True
 
 
 def test_already_in_target_state_rejects_different_memory_mode():
-    backend = _loaded_backend(_memory_mode = "resident")
+    backend = _loaded_backend(_requested_memory_mode = "resident")
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "pinned"
     assert backend._already_in_target_state(**kwargs) is False
@@ -230,11 +230,8 @@ def test_already_in_target_state_strips_device_extras_under_gpu_ids():
     assert backend._already_in_target_state(**kwargs) is True
 
 
-# ── GPU selection: reject-before behaviour (host-residency / Vulkan hardening) ─
-# The pure gpu_ids filter/order/normalize picker tests from #7188 are dropped here:
-# #6414 already covers the physical-ID picker on main. What remains is the
-# resolvability preflight the route runs (assert_requested_gpu_ids_resolvable) to
-# reject a bad selection BEFORE the active model is torn down (#7188).
+# GPU selection launch behavior. Route-level validation lives in
+# test_gpu_selection.py; these tests cover the backend's emitted placement.
 
 
 def _fit_fallback_backend(
@@ -305,19 +302,6 @@ def test_empty_probe_preserves_explicit_gpu_ids(tmp_path):
     assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "1"
     cmd = captured["cmd"]
     assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "on"
-
-
-def test_empty_probe_still_rejects_vulkan_gpu_ids(tmp_path):
-    """A Vulkan build cannot map physical ids to ggml ordinals without a probe, so an
-    empty Vulkan probe must keep rejecting the selection (tracked as #7201) rather than
-    silently spreading the load across every device. The route runs this preflight via
-    assert_requested_gpu_ids_resolvable BEFORE any teardown (the merged impl moved the
-    check out of load_model into the route)."""
-    backend, _gguf = _fit_fallback_backend(tmp_path, gpu_memory = [], vulkan = True)
-
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []):
-        with pytest.raises(ValueError, match = "do not match any visible GPUs"):
-            backend.assert_requested_gpu_ids_resolvable([0])
 
 
 def test_torchless_vulkan_populated_probe_uses_identity_ordinals(tmp_path):
@@ -404,51 +388,6 @@ def test_vulkan_fit_keeps_discrete_device_selected(tmp_path):
     assert "--device" in cmd and cmd[cmd.index("--device") + 1] == "Vulkan1"
 
 
-def test_vulkan_rejects_duplicate_gpu_ids(tmp_path):
-    """The CUDA resolver's duplicate check is skipped for the Vulkan path, so the branch
-    must reject duplicates itself rather than let set() silently collapse them (#7188)."""
-    backend, _gguf = _fit_fallback_backend(
-        tmp_path, gpu_memory = [(0, 10000, 16000), (1, 8000, 16000)], vulkan = True
-    )
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []):
-        with pytest.raises(ValueError, match = "unique and non-negative"):
-            backend.assert_requested_gpu_ids_resolvable([0, 0])
-
-
-def test_empty_probe_rejects_gpu_ids_without_gpu_backend(tmp_path):
-    """A non-Vulkan build with an empty probe AND empty parent-visible mask has no GPU
-    backend, so the backend must reject gpu_ids rather than pin a non-existent device
-    and silently run on CPU (#7188)."""
-    from utils.hardware import DeviceType
-
-    backend, _gguf = _fit_fallback_backend(tmp_path, gpu_memory = [])  # empty probe
-
-    with (
-        # CUDA host (the mask governs placement) but no mask -> genuinely GPU-less.
-        patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-        patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []),
-    ):
-        with pytest.raises(ValueError, match = "no GPU backend"):
-            backend.assert_requested_gpu_ids_resolvable([0])
-
-
-def test_empty_probe_rejects_gpu_ids_outside_parent_mask(tmp_path):
-    """Empty non-Vulkan probe but a set parent-visible mask (real GPU, no telemetry):
-    a request outside that mask is a genuine 'no such GPU', so it must still raise
-    rather than pin an id the host can't offer (#7188)."""
-    from utils.hardware import DeviceType
-
-    backend, _gguf = _fit_fallback_backend(tmp_path, gpu_memory = [])  # empty probe
-
-    with (
-        # CUDA host with telemetry down: the mask [0, 1] is real, but 9 is outside it.
-        patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
-        patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [0, 1]),
-    ):
-        with pytest.raises(ValueError, match = "do not match any visible GPUs"):
-            backend.assert_requested_gpu_ids_resolvable([9])
-
-
 def test_vulkan_gpu_ids_strips_conflicting_user_device(tmp_path):
     """On Vulkan --device is the only pin. With explicit gpu_ids, a user --device in
     extras must be stripped so it can't override Unsloth's pin (#7188). Unsloth's --device
@@ -494,51 +433,6 @@ def test_vulkan_gpu_ids_strips_conflicting_user_device(tmp_path):
     assert cmd[device_idxs[0] + 1] == "Vulkan0"
     # Unrelated user extras still pass through.
     assert "--top-k" in cmd and cmd[cmd.index("--top-k") + 1] == "5"
-
-
-def test_populated_probe_nonmatching_gpu_ids_still_raises(tmp_path):
-    """When the probe DID enumerate GPUs but none match the request, the id is genuinely
-    absent and the load must still raise (the empty-probe relaxation must not swallow
-    a real 'no such GPU' error)."""
-    backend, _gguf = _fit_fallback_backend(tmp_path, gpu_memory = [(0, 10000, 16000)])
-
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [0]):
-        with pytest.raises(ValueError, match = "do not match any visible GPUs"):
-            backend.assert_requested_gpu_ids_resolvable([9])
-
-
-@pytest.mark.parametrize(
-    "bad_ids, match",
-    [
-        ([99], "do not match any visible GPUs"),  # out-of-range on a Vulkan host
-        ([0, 0], "unique and non-negative"),  # duplicate ids
-    ],
-)
-def test_invalid_gpu_ids_rejected_before_teardown(tmp_path, bad_ids, match):
-    """A bad gpu_ids (a typo like [99], or a duplicate) must be rejected by the route's
-    resolvability preflight BEFORE the active model is torn down. The merged impl does
-    the check in the route (assert_requested_gpu_ids_resolvable) rather than a Phase-0
-    block inside load_model, so exercise that helper directly; a running server is never
-    reached, hence never killed (#7188)."""
-    backend, _gguf = _fit_fallback_backend(tmp_path, gpu_memory = [(0, 10000, 16000)], vulkan = True)
-    killed = []
-    backend._kill_process = lambda: killed.append(True)
-
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []):
-        with pytest.raises(ValueError, match = match):
-            backend.assert_requested_gpu_ids_resolvable(bad_ids)
-
-    assert killed == [], f"active model was torn down before rejecting gpu_ids={bad_ids}"
-
-
-def test_valid_gpu_ids_pass_resolvable_preflight(tmp_path):
-    """The resolvability preflight must NOT over-reject a VALID selection: a good gpu_ids
-    passes without raising so the route proceeds to load."""
-    backend, _gguf = _fit_fallback_backend(tmp_path, gpu_memory = [(0, 10000, 16000)], vulkan = True)
-
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []):
-        # Does not raise.
-        backend.assert_requested_gpu_ids_resolvable([0])
 
 
 def test_gpu_ids_preserved_on_fit_fallback(tmp_path):
@@ -651,74 +545,6 @@ def test_gpu_ids_scrubs_inherited_llama_arg_device(tmp_path, monkeypatch, gpu_id
 
     assert captured_envs, "llama-server was not spawned"
     assert ("LLAMA_ARG_DEVICE" not in captured_envs[-1]) == scrubbed
-
-
-def test_memory_mode_clears_inherited_mmap_env_vars(tmp_path):
-    """An explicit memory_mode must clear stale LLAMA_ARG_* env vars."""
-    gguf = tmp_path / "model.gguf"
-    _write_minimal_gguf(gguf)
-
-    backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None: [(0, 10000, 16000)]
-    backend._read_gguf_metadata = lambda _p: None
-    backend._can_estimate_kv = lambda: False
-    backend._get_gguf_size_bytes = lambda _p: 1024
-    backend._mmproj_vram_bytes = lambda _p: 0
-    backend._resolve_launch_mmproj_path = lambda **k: None
-    backend._apu_ram_shortfall_message = lambda *a, **k: None
-    backend._amd_apu_wants_unified_memory = lambda *a, **k: False
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
-    backend._select_gpus = lambda *a, **k: ([0], False)
-    backend._wait_for_health = lambda timeout: True
-    backend._detect_audio_type_strict = lambda: None
-    backend._apply_detected_audio = lambda _d: True
-
-    base_env = dict(os.environ)
-    base_env.update(
-        {
-            "LLAMA_ARG_LOAD_MODE": "dio",
-            "LLAMA_ARG_MLOCK": "1",
-            "LLAMA_ARG_MMAP": "1",
-            "LLAMA_ARG_NO_MMAP": "1",
-            "LLAMA_ARG_DIO": "1",
-        }
-    )
-    backend._llama_server_env_for_binary = lambda _binary: dict(base_env)
-
-    captured_envs = []
-
-    def _make_fake_popen(cmd, **kwargs):
-        if not cmd or str(cmd[0]) != "/fake/llama-server":
-            return _REAL_POPEN(cmd, **kwargs)
-
-        class _FakePopen:
-            pid = 12345
-
-            def __init__(self, cmd, **kwargs):
-                captured_envs.append(kwargs.get("env") or dict(os.environ))
-
-            def poll(self):
-                return None
-
-        return _FakePopen(cmd, **kwargs)
-
-    with patch.object(subprocess, "Popen", side_effect = _make_fake_popen):
-        backend.load_model(
-            gguf_path = str(gguf),
-            model_identifier = "test",
-            memory_mode = "auto",
-        )
-
-    assert captured_envs, "llama-server was not spawned"
-    env = captured_envs[-1]
-    for var in (
-        "LLAMA_ARG_LOAD_MODE",
-        "LLAMA_ARG_MLOCK",
-        "LLAMA_ARG_MMAP",
-        "LLAMA_ARG_NO_MMAP",
-        "LLAMA_ARG_DIO",
-    ):
-        assert var not in env
 
 
 @pytest.mark.parametrize(
@@ -846,55 +672,6 @@ def test_vulkan_gpu_ids_used_as_direct_ordinals_not_remapped(tmp_path):
     assert cmd[cmd.index("--device") + 1] == "Vulkan1"
 
 
-def test_has_gpu_backend_accepts_parent_mask_when_probe_empty():
-    """A real GPU with telemetry down (empty probe) but a numeric parent-visible mask
-    must count as a backend, so /load does not 400 a selection assert_requested_gpu_ids_
-    resolvable would accept via the mask fallback. No probe AND no mask is GPU-less (#7188)."""
-    backend = LlamaCppBackend()
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
-    backend._get_gpu_memory = lambda _binary = None: []  # telemetry unavailable
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [0, 1]):
-        assert backend.has_gpu_backend() is True
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = []):
-        assert backend.has_gpu_backend() is False
-
-
-def test_partial_gpu_ids_match_is_rejected():
-    """A partial match such as [0, 99] against a probe of [0] must be rejected, not
-    silently narrowed to [0] (which would place the model on fewer GPUs than the caller
-    asked for). Every requested id must be present, not just one (#7188)."""
-    probe = [(0, 10000, 16000)]
-    for is_vulkan in (True, False):
-        with pytest.raises(ValueError, match = "do not match any visible GPUs"):
-            LlamaCppBackend._assert_gpu_ids_resolvable([0, 99], probe, is_vulkan)
-        # A full match still passes.
-        LlamaCppBackend._assert_gpu_ids_resolvable([0], probe, is_vulkan)
-
-
-def test_duplicate_or_negative_gpu_ids_rejected_on_all_backends():
-    """Duplicate/negative ids are invalid on every backend, not just Vulkan: a non-Vulkan
-    populated probe must not collapse [0, 0] into {0} and pin one GPU while recording the
-    duplicate (a torch-less CUDA host defers here, skipping the CUDA resolver) (#7188)."""
-    probe = [(0, 10000, 16000), (1, 8000, 16000)]
-    for is_vulkan in (True, False):
-        for bad in ([0, 0], [-1], [0, -1]):
-            with pytest.raises(ValueError, match = "unique and non-negative"):
-                LlamaCppBackend._assert_gpu_ids_resolvable(bad, probe, is_vulkan)
-        # A valid unique selection still passes.
-        LlamaCppBackend._assert_gpu_ids_resolvable([0, 1], probe, is_vulkan)
-
-
-def test_cpu_only_build_rejects_gpu_ids():
-    """A CPU-only llama.cpp build ignores CUDA_VISIBLE_DEVICES, so an explicit pin can't be
-    honored: reject it before teardown even with a populated nvidia-smi probe on a CUDA host,
-    instead of reporting a GPU-pinned load that silently runs on CPU (#7188)."""
-    probe = [(0, 10000, 16000)]
-    with pytest.raises(ValueError, match = "CPU-only build"):
-        LlamaCppBackend._assert_gpu_ids_resolvable([0], probe, False, backend_lacks_gpu_lib = True)
-    # With a GPU backend lib present the same pin is accepted.
-    LlamaCppBackend._assert_gpu_ids_resolvable([0], probe, False, backend_lacks_gpu_lib = False)
-
-
 def test_backend_lacks_gpu_lib_detection(tmp_path):
     """_backend_lacks_gpu_lib is True ONLY for a clear CPU-only split-lib layout (a
     ggml-cpu/base lib with no gpu sibling); a gpu lib, or an unrecognized/static layout
@@ -986,25 +763,6 @@ def test_is_vulkan_backend_matches_versioned_soname(tmp_path):
         assert LlamaCppBackend._is_vulkan_backend(binary) is False
 
 
-def test_empty_non_cuda_probe_rejects_gpu_ids_even_with_stray_mask():
-    """On a Metal/SYCL/CPU (non-CUDA) backend the launcher's CUDA_VISIBLE_DEVICES is
-    ignored (SYCL keys off ONEAPI_DEVICE_SELECTOR, Metal off none), so an empty probe
-    with a stray parent-visible mask must NOT accept gpu_ids -- the pin would be silently
-    dropped onto the default device. A CUDA host with the same empty probe + mask is the
-    real telemetry-down case and still falls through (#7188)."""
-    from utils.hardware import DeviceType
-    with patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [0]):
-        # A stray CUDA mask on a non-CUDA host must not be trusted to honor the pin.
-        for dev in (DeviceType.MLX, DeviceType.XPU, DeviceType.CPU):
-            with patch("utils.hardware.get_device", return_value = dev):
-                with pytest.raises(ValueError, match = "does not support explicit GPU selection"):
-                    LlamaCppBackend._assert_gpu_ids_resolvable([0], [], False)
-        # CUDA host (ROCm reports CUDA too): empty probe + valid mask is telemetry-down,
-        # so the selection is accepted for the loader to pin via CUDA_VISIBLE_DEVICES.
-        with patch("utils.hardware.get_device", return_value = DeviceType.CUDA):
-            LlamaCppBackend._assert_gpu_ids_resolvable([0], [], False)
-
-
 def test_explicit_gpu_ids_strips_stored_device_extra_args(tmp_path):
     """With explicit gpu_ids a user --device is dropped from BOTH the command and the
     PERSISTED extras, so a later same-model reload that inherits these (after gpu_ids is
@@ -1045,7 +803,7 @@ def test_explicit_gpu_ids_strips_stored_device_extra_args(tmp_path):
 
 def test_memory_mode_auto_matches_none_in_target_state():
     """An explicit 'auto' request should not reload a load that omitted the field."""
-    backend = _loaded_backend(_memory_mode = None)
+    backend = _loaded_backend()
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "auto"
     assert backend._already_in_target_state(**kwargs) is True
@@ -1055,7 +813,7 @@ def test_explicit_auto_reloads_when_child_inherited_mem_env():
     """When the live child was launched with no mode but inherited operator
     LLAMA_ARG_* placement flags, an explicit 'auto' request must reload so the
     scrub runs -- otherwise it dedups to already-loaded and stays mlocked (#7164)."""
-    backend = _loaded_backend(_memory_mode = None, _launched_with_inherited_mem_env = True)
+    backend = _loaded_backend(_launched_with_inherited_mem_env = True)
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "auto"
     assert backend._already_in_target_state(**kwargs) is False
@@ -1065,7 +823,7 @@ def test_omitted_mode_does_not_reload_child_with_inherited_mem_env():
     """A request that also omits the mode (memory_mode=None) does NOT reload the
     inherited-env child: omitting keeps the operator env, so there's nothing to
     scrub and no spurious reload (which would be rejected during training)."""
-    backend = _loaded_backend(_memory_mode = None, _launched_with_inherited_mem_env = True)
+    backend = _loaded_backend(_launched_with_inherited_mem_env = True)
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = None
     assert backend._already_in_target_state(**kwargs) is True
@@ -1074,14 +832,14 @@ def test_omitted_mode_does_not_reload_child_with_inherited_mem_env():
 def test_explicit_auto_matches_scrubbed_child():
     """Once the child was launched clean (no inherited env), an explicit 'auto'
     re-Apply dedups to already-loaded -- no needless reload."""
-    backend = _loaded_backend(_memory_mode = None, _launched_with_inherited_mem_env = False)
+    backend = _loaded_backend(_launched_with_inherited_mem_env = False)
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "auto"
     assert backend._already_in_target_state(**kwargs) is True
 
 
 def test_memory_mode_pinned_does_not_match_none():
-    backend = _loaded_backend(_memory_mode = None)
+    backend = _loaded_backend()
     kwargs = _base_target_state_kwargs(backend)
     kwargs["memory_mode"] = "pinned"
     assert backend._already_in_target_state(**kwargs) is False
@@ -1128,7 +886,7 @@ def test_requested_memory_mode_preserves_explicit_auto(
     """The response echoes requested_memory_mode, not the canonical placement. An explicit
     "auto" must survive as "auto" (not collapse to null) so the UI can restore it and a
     later reload re-runs the inherited-env scrub instead of letting LLAMA_ARG_MLOCK creep
-    back; canonical _memory_mode still maps "auto" -> None for placement (#7188)."""
+    back; the canonical memory_mode property still maps "auto" to None (#7188)."""
     gguf = tmp_path / "model.gguf"
     _write_minimal_gguf(gguf)
     backend = _mem_env_backend(gguf)
@@ -1297,7 +1055,7 @@ def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
 @pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])
 def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
     """auto/blank/None is the allowed no-op default for diffusion. A successful load
-    must clear any _memory_mode left by a prior llama-server load so reload-dedup
+    must clear any requested memory mode left by a prior llama-server load so reload-dedup
     doesn't force a needless kill+restart of the diffusion server. (The single-device
     gpu_ids collapse is recorded inside _start_diffusion_server, exercised by #6414's
     picker tests; this stub replaces the runner, so only the memory-mode clear, which
@@ -1312,7 +1070,6 @@ def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
     backend._start_diffusion_server = lambda **kw: True
 
     # Simulate leftover placement state from a previous llama-server GGUF load.
-    backend._memory_mode = "resident"
     backend._requested_memory_mode = "resident"
     backend._launched_with_inherited_mem_env = True
 
@@ -1324,7 +1081,7 @@ def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
         )
         is True
     )
-    assert backend._memory_mode is None
+    assert backend.memory_mode is None
     assert backend._requested_memory_mode is None
     assert backend._launched_with_inherited_mem_env is False
 

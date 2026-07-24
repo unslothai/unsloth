@@ -9,6 +9,7 @@ import {
   normalizeModelIdentity,
 } from "./model-identity";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
+import type { GgufMemoryMode } from "@/features/chat";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -27,7 +28,7 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  ggufMemoryMode?: "auto" | "pinned" | "resident";
+  ggufMemoryMode?: GgufMemoryMode;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -111,7 +112,7 @@ function normalizeGpuFields(partial: RawConfig): {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  ggufMemoryMode?: "auto" | "pinned" | "resident";
+  ggufMemoryMode?: GgufMemoryMode;
 } {
   const out: {
     gpuMemoryMode?: "auto" | "manual";
@@ -119,7 +120,7 @@ function normalizeGpuFields(partial: RawConfig): {
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
     selectedGpuIndexKind?: GpuIndexKind | null;
-    ggufMemoryMode?: "auto" | "pinned" | "resident";
+    ggufMemoryMode?: GgufMemoryMode;
   } = {};
   // Only "manual" is a real override; persisting "auto" would pin the model and
   // stop it following later changes to the global GPU Memory preference.

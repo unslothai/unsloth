@@ -1726,17 +1726,13 @@ def _extra_args_draft_offloaded_to_cpu(
     device flag has no env). An embedded MTP head follows the main -ngl, so these
     draft-only flags don't move it. Last-wins, so only each flag's final value counts."""
     ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
-    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
     args = [str(a) for a in extra_args] if extra_args else []
     last_ngl: Optional[str] = None
-    last_dev: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if flag in ngl_flags:
             last_ngl = value
-        elif flag in dev_flags:
-            last_dev = value
     if last_ngl is None:
         last_ngl = (os.environ if env is None else env).get("LLAMA_ARG_N_GPU_LAYERS_DRAFT")
     if last_ngl is not None:
@@ -1745,6 +1741,7 @@ def _extra_args_draft_offloaded_to_cpu(
                 return True
         except (TypeError, ValueError):
             pass
+    last_dev = _extra_args_draft_device(extra_args)
     if last_dev is not None:
         devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
         if devs and all(d in ("cpu", "none") for d in devs):
@@ -1752,11 +1749,20 @@ def _extra_args_draft_offloaded_to_cpu(
     return False
 
 
+def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last explicit draft-device value, if any."""
+    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
+    args = [str(a) for a in extra_args] if extra_args else []
+    last_dev: Optional[str] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag in dev_flags:
+            last_dev = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+    return last_dev
+
+
 def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the drafter's explicit device pin from user extras when it names a
-    real GPU device (not cpu/none), else None. Parses the same draft-device flags
-    as _extra_args_draft_offloaded_to_cpu (--spec-draft-device / -devd /
-    --device-draft), last-wins, inline (=) or next-token, comma-separated.
+    """Return a draft-device override that names a real GPU, not cpu/none.
 
     A separate MTP drafter normally follows the main -ngl / device selection, so
     under an explicit gpu_ids pin it lands on the pinned cards the training guard
@@ -1764,14 +1770,7 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
     the drafter on a card the guard never reserved (#7188). cpu/none is a
     supported offload (keeps the drafter off the GPU entirely), so it does not
     conflict and returns None."""
-    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
-    args = [str(a) for a in extra_args] if extra_args else []
-    last_dev: Optional[str] = None
-    for i, raw in enumerate(args):
-        flag, eq, inline = raw.partition("=")
-        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        if flag in dev_flags:
-            last_dev = value
+    last_dev = _extra_args_draft_device(extra_args)
     if last_dev is None:
         return None
     devs = [d.strip() for d in last_dev.split(",") if d.strip()]
@@ -2090,11 +2089,8 @@ class LlamaCppBackend:
         self._gpu_ids: Optional[List[int]] = None
         # Raw requested GPU pin before automatic fit narrows the active subset.
         self._requested_gpu_ids: Optional[List[int]] = None
-        # GGUF memory placement mode (None = auto; pinned/resident map to --mlock/--no-mmap).
-        self._memory_mode: Optional[str] = None
-        # Raw requested mode for the response echo. _memory_mode canonicalizes
-        # "auto" -> None, but the echo must keep an explicit "auto" so it round-trips
-        # instead of collapsing to null and letting LLAMA_ARG_MLOCK creep back (#7188).
+        # Raw requested host-memory mode. The canonical placement is derived
+        # from this so status echo and reload dedupe cannot drift apart.
         self._requested_memory_mode: Optional[str] = None
         # True when the child launched with no explicit memory_mode but inherited an
         # LLAMA_ARG_MLOCK/NO_MMAP/MMAP env; lets an explicit 'auto' reload force the
@@ -2581,12 +2577,12 @@ class LlamaCppBackend:
         """GGUF memory placement mode of the active load (auto/pinned/resident).
         Auto is canonicalised to None for dedup; use requested_memory_mode for the
         original user-requested value."""
-        return self._memory_mode
+        return self._canonical_memory_mode(self._requested_memory_mode)
 
     @property
     def requested_memory_mode(self) -> Optional[str]:
         """User's raw requested memory mode for the response echo. Distinguishes an
-        explicit "auto" (which _memory_mode canonicalizes to None) from omitted."""
+        explicit "auto" from an omitted field."""
         return self._requested_memory_mode
 
     @property
@@ -3403,23 +3399,6 @@ class LlamaCppBackend:
         # No GPU lib: CPU-only only if a CPU/base ggml lib proves the split-lib layout (not a static build).
         return any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("cpu", "base"))
 
-    def has_gpu_backend(self) -> bool:
-        """True if a GPU probe finds any device: nvidia-smi/amd-smi (CUDA/ROCm) or a
-        Vulkan build's ggml enumeration. Lets the route reject gpu_ids on a GPU-less
-        host before teardown without falsely rejecting a torch-less Vulkan host (which
-        get_device() reports as CPU, the AMD/Vulkan case #7164 targets). On a probe
-        failure return True so the caller defers to the load path (#7188)."""
-        try:
-            if self._get_gpu_memory(self._find_llama_server_binary()):
-                return True
-            # A telemetry-down GPU still exposes a parent-visible mask, which the resolver
-            # validates against; treating an empty probe as "no backend" here would 400 a
-            # selection the resolver would have accepted (#7188).
-            from utils.hardware import get_parent_visible_gpu_ids
-            return bool(get_parent_visible_gpu_ids())
-        except Exception:
-            return True
-
     def is_vulkan_build(self) -> bool:
         """True if the resolved llama-server binary is a Vulkan build. The route uses this
         to defer gpu_ids to the backend (which treats them as Vulkan ordinals) instead of
@@ -3428,90 +3407,6 @@ class LlamaCppBackend:
             return self._is_vulkan_backend(self._find_llama_server_binary())
         except Exception:
             return False
-
-    def assert_requested_gpu_ids_resolvable(self, gpu_ids: Optional[list[int]]) -> None:
-        """Raise ValueError if the requested gpu_ids can't be honored by the llama.cpp
-        backend. Self-contained (finds the binary + probes) so the route can reject a
-        bad selection BEFORE it unloads the active model; otherwise on non-CUDA hosts a
-        typo like gpu_ids=[99] tore the model down and 400'd only in load_model (#7188)."""
-        if not gpu_ids:
-            return
-        binary = self._find_llama_server_binary()
-        self._assert_gpu_ids_resolvable(
-            gpu_ids,
-            self._get_gpu_memory(binary),
-            self._is_vulkan_backend(binary),
-            self._backend_lacks_gpu_lib(binary),
-        )
-
-    @staticmethod
-    def _assert_gpu_ids_resolvable(
-        gpu_ids: Optional[list[int]],
-        gpu_mem: list[tuple[int, int, int]],
-        is_vulkan_backend: bool,
-        backend_lacks_gpu_lib: bool = False,
-    ) -> None:
-        """Raise ValueError if the requested gpu_ids cannot be honored on this host.
-
-        Side-effect-free mirror of load_model's flag-builder checks, so Phase 0 can
-        reject a bad selection (out-of-range/duplicate id, or a GPU-less host) BEFORE
-        Phase 1 kills the running server (#7188). Returns without raising for the valid
-        'real GPU, telemetry down' fall-through. The flag builder stays the backstop."""
-        if not gpu_ids:
-            return
-        # A CPU-only build (no cuda/hip/vulkan ggml lib) ignores CUDA_VISIBLE_DEVICES, so
-        # it can't honor a pin: reject before teardown rather than run silently on CPU (#7188).
-        if backend_lacks_gpu_lib:
-            raise ValueError(
-                f"Requested gpu_ids {list(gpu_ids)} but the llama.cpp build has no GPU "
-                "backend (CPU-only build); it would ignore the pin and run on CPU. Omit "
-                "gpu_ids to run on CPU."
-            )
-        # Duplicate/negative ids are invalid on every backend; enforce it here for the
-        # deferred GGUF path too, else a non-Vulkan probe collapses [0, 0] into {0} and
-        # pins one GPU while recording the duplicate (#7188).
-        _requested = list(gpu_ids)
-        if len(set(_requested)) != len(_requested) or any(g < 0 for g in _requested):
-            raise ValueError(f"Invalid gpu_ids {_requested}: IDs must be unique and non-negative.")
-        allowed = set(gpu_ids)
-        # Vulkan ordinals match the probe directly; never remap through the CUDA/HIP mask
-        # (Vulkan enumerates independently of CUDA_VISIBLE_DEVICES) (#7188).
-        matched = [g for g in gpu_mem if g[0] in allowed]
-        if gpu_mem:
-            # Every requested id must match: a partial hit like [0, 99] against [0] must be
-            # rejected, not narrowed to [0] (which places on fewer GPUs than asked) (#7188).
-            if len(matched) != len(allowed):
-                raise ValueError(f"Requested gpu_ids {list(gpu_ids)} do not match any visible GPUs")
-        elif is_vulkan_backend:
-            # Vulkan build with an empty probe: the ordinals can't be resolved.
-            raise ValueError(f"Requested gpu_ids {list(gpu_ids)} do not match any visible GPUs")
-        else:
-            from utils.hardware import DeviceType, get_device, get_parent_visible_gpu_ids
-
-            # The CUDA/HIP mask only governs placement on a CUDA/ROCm build. A Metal/SYCL/CPU
-            # backend ignores CUDA_VISIBLE_DEVICES, so an empty probe on a non-CUDA host means
-            # the pin can't be honored: reject rather than drop onto the default device
-            # (#7188). ROCm reports CUDA here, so HIP hosts keep the mask path.
-            if get_device() != DeviceType.CUDA:
-                raise ValueError(
-                    f"Requested gpu_ids {list(gpu_ids)} but this backend does not support "
-                    "explicit GPU selection (no GPU probe on a non-CUDA device); omit "
-                    "gpu_ids to run on the default device."
-                )
-            parent_visible = get_parent_visible_gpu_ids()
-            if not parent_visible:
-                raise ValueError(
-                    f"Requested gpu_ids {list(gpu_ids)} but no GPU backend is available "
-                    "(no GPU telemetry and no visible GPU mask); omit gpu_ids to run on "
-                    "CPU."
-                )
-            _outside_mask = [g for g in gpu_ids if g not in parent_visible]
-            if _outside_mask:
-                raise ValueError(
-                    f"Requested gpu_ids {list(gpu_ids)} do not match any visible GPUs "
-                    f"{parent_visible}"
-                )
-        # Valid (incl. the real-GPU / telemetry-down fall-through).
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
@@ -6840,7 +6735,6 @@ class LlamaCppBackend:
                 # This path skips the command builder that records host-memory placement,
                 # so clear any mode carried from a prior non-diffusion load (the diffusion
                 # runner has no --mlock/--no-mmap plumbing) (#7188).
-                self._memory_mode = None
                 self._requested_memory_mode = None
                 self._launched_with_inherited_mem_env = False
                 with self._lock:
@@ -8953,7 +8847,6 @@ class LlamaCppBackend:
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
-                self._memory_mode = LlamaCppBackend._canonical_memory_mode(memory_mode)
                 # Raw requested mode for the response echo, so an explicit "auto"
                 # round-trips instead of collapsing to null (#7188).
                 self._requested_memory_mode = (memory_mode or "").strip().lower() or None
@@ -9461,9 +9354,7 @@ class LlamaCppBackend:
             return False
 
         # GGUF host-memory placement mode is first-class; a change must reload (#7164).
-        if LlamaCppBackend._canonical_memory_mode(
-            self._memory_mode
-        ) != LlamaCppBackend._canonical_memory_mode(memory_mode):
+        if self.memory_mode != LlamaCppBackend._canonical_memory_mode(memory_mode):
             return False
         # An explicit memory_mode (incl. 'auto') over a child carrying inherited LLAMA_ARG_*
         # flags must reload so the scrub runs; the canonical check above treats 'auto' as
@@ -9674,9 +9565,6 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
-            self._gpu_ids = None
-            self._requested_gpu_ids = None
-            self._memory_mode = None
             self._requested_memory_mode = None
             self._launched_with_inherited_mem_env = False
             self._layer_preserves_tensor_intent = False
