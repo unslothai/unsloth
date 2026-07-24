@@ -31,6 +31,16 @@ _GATE_KWARGS = dict(
 )
 
 
+@pytest.fixture(autouse = True)
+def _tunnel_available_by_default(monkeypatch):
+    # The headless auto-generate branch now consults the real cloudflared binary on
+    # the --secure path (a missing tunnel means no public URL, so rotating the only
+    # recovery password would strip it behind a droppable one-time banner). Default
+    # to "available" so the existing auto-generate tests never touch the network;
+    # the dedicated test below flips this to exercise the fail-closed refusal.
+    monkeypatch.setattr(run, "_tunnel_binary_confirmed_unavailable", lambda: False)
+
+
 # ── pure decision matrix ─────────────────────────────────────────────
 
 
@@ -219,6 +229,113 @@ def test_gate_autogenerates_when_deadline_disabled(monkeypatch):
     calls = _stub_update_password(monkeypatch)
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
     assert len(calls) == 1, calls
+
+
+def test_gate_refuses_secure_when_tunnel_binary_unavailable(monkeypatch):
+    # --secure exposes ONLY the loopback-bound tunnel. When cloudflared is provably
+    # unavailable no public URL can come up, so the gate must NOT rotate the seeded
+    # recovery password (which a headless launch may only surface on a droppable
+    # one-time banner, locking the operator out). Mirrors the CLI: fail closed with
+    # the credential untouched, matching run_server's later secure-tunnel guard.
+    stderr = _patch_streams(monkeypatch, tty = False)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.setattr(run, "_tunnel_binary_confirmed_unavailable", lambda: True)
+    calls = _stub_update_password(monkeypatch)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    # No rotation happened: the existing recovery credential is intact.
+    assert calls == []
+    # And nothing that looks like a credential was surfaced.
+    assert "auto-generated" not in stderr.getvalue()
+
+
+def test_gate_non_secure_still_rotates_when_tunnel_unavailable(monkeypatch):
+    # A --cloudflare wildcard bind (NOT --secure) still serves the raw 0.0.0.0 port
+    # even if the tunnel fails, so the default credential must be replaced: the
+    # tunnel-availability refusal is scoped to --secure only.
+    _patch_streams(monkeypatch, tty = False)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.setattr(run, "_tunnel_binary_confirmed_unavailable", lambda: True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch)
+    kwargs = dict(_GATE_KWARGS)
+    kwargs["secure"] = False
+    kwargs["host"] = "0.0.0.0"
+    assert run._terminal_password_gate(tunnel_will_start = True, **kwargs) == (True, True)
+    assert len(calls) == 1, calls
+
+
+def test_gate_credential_falls_back_to_stdout_when_stderr_absent(monkeypatch):
+    # A GUI/service wrapper can leave sys.stderr's raw stream absent (None) while
+    # _setup_server_disk_logging() still tees sys.stdout into a retained log. The
+    # one-time credential must fall back to the raw console behind the stdout tee,
+    # NEVER to print(file=None) which would write it into that log (CWE-532).
+    log_fh = io.StringIO()
+    stderr_tee = run._TeeStream(None, log_fh)  # raw console absent behind the tee
+    console = _Stream(isatty = False)
+    stdout_tee = run._TeeStream(console, log_fh)
+    monkeypatch.setattr(sys, "stdin", _Stream(isatty = False))
+    monkeypatch.setattr(sys, "stderr", stderr_tee)
+    monkeypatch.setattr(sys, "stdout", stdout_tee)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    assert len(calls) == 1, calls
+    _username, password, _kwargs = calls[0]
+    # Surfaced on the real console (behind the stdout tee)...
+    assert password in console.getvalue()
+    assert "auto-generated" in console.getvalue()
+    # ...but never mirrored into the retained on-disk session log.
+    assert password not in log_fh.getvalue()
+    assert "auto-generated" not in log_fh.getvalue()
+
+
+def test_gate_fails_closed_when_no_console_stream(monkeypatch):
+    # A Windows pythonw/service wrapper can leave BOTH sys.stderr and sys.stdout
+    # absent (None) even while a session log is tee'd. There is then no real console
+    # to surface the one-time credential without persisting it, so the gate must
+    # fail closed WITHOUT rotating the only recovery credential -- rather than let
+    # print(file=None) fall back to the tee'd stdout and write it to disk.
+    log_fh = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", _Stream(isatty = False))
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(None, log_fh))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(None, log_fh))
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    # No rotation, and nothing written into the retained on-disk session log.
+    assert calls == []
+    assert log_fh.getvalue() == ""
+
+
+def test_one_time_secret_stream_prefers_stderr_then_stdout():
+    # Unit: prefer stderr, fall back to stdout, unwrap the tee, None when neither
+    # has a usable raw stream.
+    class _Ctx:
+        def __init__(self, stderr, stdout):
+            self.stderr, self.stdout = stderr, stdout
+
+    real_err, real_out, log = io.StringIO(), io.StringIO(), io.StringIO()
+    import contextlib
+
+    @contextlib.contextmanager
+    def _streams(stderr, stdout):
+        old_err, old_out = sys.stderr, sys.stdout
+        sys.stderr, sys.stdout = stderr, stdout
+        try:
+            yield
+        finally:
+            sys.stderr, sys.stdout = old_err, old_out
+
+    with _streams(run._TeeStream(real_err, log), run._TeeStream(real_out, log)):
+        assert run._one_time_secret_stream() is real_err  # stderr wins
+    with _streams(run._TeeStream(None, log), run._TeeStream(real_out, log)):
+        assert run._one_time_secret_stream() is real_out  # falls back past absent stderr
+    with _streams(run._TeeStream(None, log), run._TeeStream(None, log)):
+        assert run._one_time_secret_stream() is None  # no real console anywhere
 
 
 def test_gate_treats_broken_streams_as_non_interactive(monkeypatch):

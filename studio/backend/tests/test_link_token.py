@@ -199,14 +199,18 @@ def test_link_token_malformed_is_rejected():
 # ── /api/auth/link-exchange route ────────────────────────────────────
 
 
-def _auth_client() -> TestClient:
+def _load_auth_route():
     route_path = _BACKEND / "routes" / "auth.py"
     spec = importlib.util.spec_from_file_location("_link_auth_route", route_path)
     auth_route = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(auth_route)
+    return auth_route
+
+
+def _auth_client() -> TestClient:
     app = FastAPI()
-    app.include_router(auth_route.router, prefix = "/api/auth")
+    app.include_router(_load_auth_route().router, prefix = "/api/auth")
     return TestClient(app)
 
 
@@ -237,3 +241,38 @@ def test_link_exchange_route_rejects_garbage():
     client = _auth_client()
     resp = client.post("/api/auth/link-exchange", json = {"link_token": "not-a-token"})
     assert resp.status_code == 401, resp.text
+
+
+def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
+    # TOCTOU: a link token consumed just BEFORE a concurrent password change commits
+    # would otherwise mint a session under the freshly rotated JWT secret and survive
+    # the change (cf. Keycloak CVE-2026-1035 / Omni GHSA-5x9f-6vg5-qg4m: non-atomic
+    # single-use enforcement undermining rotation). The route binds issuance to the
+    # secret the token validated against and rejects if it rotated, revoking the
+    # tokens it just minted.
+    admin = _seed_admin()
+    token = authentication.create_link_token(admin)
+    auth_route = _load_auth_route()
+    app = FastAPI()
+    app.include_router(auth_route.router, prefix = "/api/auth")
+    client = TestClient(app)
+
+    minted: list = []
+    _real_create_refresh_token = auth_route.create_refresh_token
+
+    def _rotating_create_refresh_token(*, subject, **kwargs):
+        tok = _real_create_refresh_token(subject = subject, **kwargs)
+        minted.append(tok)
+        # Simulate the concurrent password change committing after consumption but
+        # before the route's secret recheck: this rotates the stored JWT secret.
+        assert storage.update_password(admin, "concurrent-new-pw-789") is True
+        return tok
+
+    monkeypatch.setattr(auth_route, "create_refresh_token", _rotating_create_refresh_token)
+
+    resp = client.post("/api/auth/link-exchange", json = {"link_token": token})
+    # Rejected rather than issuing a session that outlives the password change.
+    assert resp.status_code == 401, resp.text
+    # The refresh token minted mid-race was revoked, so it cannot be redeemed.
+    assert len(minted) == 1
+    assert storage.consume_refresh_token(minted[0]) is None

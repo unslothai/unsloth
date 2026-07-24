@@ -206,8 +206,17 @@ def create_link_token(subject: str) -> str:
     return f"{payload_b64}.{_b64url_encode(sig)}"
 
 
-def exchange_link_token(token: str) -> Optional[str]:
-    """Validate and consume a one-time link token, returning its subject or None.
+def exchange_link_token_with_secret(token: str) -> Optional[Tuple[str, str]]:
+    """Validate and consume a one-time link token, returning ``(subject, secret)``.
+
+    ``secret`` is the JWT secret whose derived key validated the signature. The
+    session-issuing route binds the tokens it mints to this exact secret: a
+    concurrent password change rotates the secret, and if it rotated between this
+    consumption and issuance the route revokes the just-minted session and rejects.
+    Without that binding a pre-change link token consumed just before the rotation
+    committed could mint a session under the NEW secret and survive the change --
+    the consume-before-rotation TOCTOU (cf. Keycloak CVE-2026-1035, where
+    non-atomic single-use enforcement undermined refresh-token rotation).
 
     Enforced in order: well-formed structure, a valid constant-time signature
     (bound to the named subject's derived key), matching subject claim, unexpired,
@@ -229,9 +238,12 @@ def exchange_link_token(token: str) -> Optional[str]:
     if not isinstance(subject, str) or not subject:
         return None
 
-    key = _link_token_key(subject)
-    if key is None:
+    # Capture the secret (not just the derived key) so the caller can detect a
+    # rotation that races issuance; None means an unknown user -> reject.
+    secret = get_jwt_secret(subject)
+    if secret is None:
         return None
+    key = hmac.new(secret.encode("utf-8"), _LINK_TOKEN_KEY_LABEL, hashlib.sha256).digest()
     expected_sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
     try:
         provided_sig = _b64url_decode(sig_b64)
@@ -253,7 +265,17 @@ def exchange_link_token(token: str) -> Optional[str]:
 
     if not consume_link_token(jti, subject):
         return None
-    return subject
+    return subject, secret
+
+
+def exchange_link_token(token: str) -> Optional[str]:
+    """Validate and consume a one-time link token, returning its subject or None.
+
+    Thin wrapper over :func:`exchange_link_token_with_secret` for callers that do
+    not issue a session and so need only the subject.
+    """
+    result = exchange_link_token_with_secret(token)
+    return result[0] if result is not None else None
 
 
 async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:

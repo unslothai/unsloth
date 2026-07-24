@@ -1091,6 +1091,44 @@ def _console_only_stream(stream):
     return stream
 
 
+def _one_time_secret_stream():
+    """Return a real console stream to surface a one-time secret, or None.
+
+    Prefers sys.stderr, then sys.stdout, unwrapping the _TeeStream session-log
+    wrapper (see _console_only_stream) so the secret bypasses the retained
+    logs/server/server-*.log (CWE-532: never write credentials to log files).
+    Returns None when neither has a usable raw stream -- e.g. a Windows
+    pythonw/service wrapper where sys.stderr and sys.stdout are both None. The
+    caller MUST then fail closed: with no real console, print(file=None) would
+    fall back to the tee'd sys.stdout and persist the credential to disk.
+    """
+    for candidate in (sys.stderr, sys.stdout):
+        raw = _console_only_stream(candidate)
+        if raw is not None:
+            return raw
+    return None
+
+
+def _tunnel_binary_confirmed_unavailable() -> bool:
+    """True only if cloudflared is provably unavailable (absent from PATH and the
+    Unsloth cache AND a download attempt failed), so a --secure tunnel cannot start.
+
+    On --secure the bind is loopback, so the tunnel is the ONLY public exposure:
+    rotating the seeded recovery password before a public URL that never comes up
+    can lock out supervisor/nohup launches that do not preserve the one-time
+    stderr banner. Mirrors the CLI's _tunnel_binary_confirmed_unavailable so the
+    direct `python run.py --secure` path makes the same decision. Returns False on
+    ANY uncertainty: a possible credential leak outweighs a recoverable lockout, so
+    the caller keeps rotating unless the tunnel is provably dead.
+    """
+    try:
+        from cloudflare_tunnel import ensure_cloudflared
+
+        return ensure_cloudflared() is None
+    except Exception:
+        return False
+
+
 def _auto_generate_admin_password(admin_username: str) -> str:
     """Generate a strong random admin password and commit it for a headless
     public launch that supplied none.
@@ -1191,12 +1229,36 @@ def _terminal_password_gate(
         # commit it (which clears must_change so the tunnel proceeds headlessly),
         # and surface it once. This also protects the api-only / TIMEOUT=0 launches
         # that the deadline never covered.
+        #
+        # Resolve the console stream BEFORE generating/committing the credential:
+        # the one-time password must reach a real console but never the tee'd
+        # session log. With no real console (stderr and stdout both absent, e.g. a
+        # Windows pythonw/service wrapper) print(file=None) would fall back to the
+        # tee'd sys.stdout and persist the password to disk (CWE-532), so fail
+        # closed WITHOUT rotating the only recovery credential.
+        out = _one_time_secret_stream()
+        if out is None:
+            return False, False
+        # --secure exposes ONLY the loopback-bound tunnel; if cloudflared is
+        # provably unavailable no public URL comes up, so rotating the seeded
+        # recovery password here would only strip it behind a one-time banner a
+        # supervisor/nohup launch may drop, locking the operator out. Mirror the
+        # CLI: refuse and leave the existing credential intact for local recovery.
+        if secure and _tunnel_binary_confirmed_unavailable():
+            print(
+                "Error: refusing to expose Unsloth: the Cloudflare tunnel binary "
+                "(cloudflared) is unavailable and could not be downloaded, so no "
+                "secure link can be published. Your admin password is unchanged.",
+                file = out,
+                flush = True,
+            )
+            return False, False
         generated = _auto_generate_admin_password(_admin)
         # Write the one-time credential to the raw console stream, NOT the
         # _TeeStream that _setup_server_disk_logging() installed: the tee mirrors
         # everything into a retained server-*.log, and this password must never be
         # persisted (the banner itself promises it is not written to disk).
-        _print_auto_generated_credentials(_admin, generated, out = _console_only_stream(sys.stderr))
+        _print_auto_generated_credentials(_admin, generated, out = out)
         # Password is no longer the default; still suppress any HTML injection of a
         # stale bootstrap credential over the public URL.
         return True, True

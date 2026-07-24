@@ -32,7 +32,7 @@ from auth import storage, hashing
 from auth.authentication import (
     create_access_token,
     create_refresh_token,
-    exchange_link_token,
+    exchange_link_token_with_secret,
     get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
@@ -464,15 +464,35 @@ async def link_exchange(payload: LinkTokenRequest) -> Token:
     login form issues. The token is consumed here (a replay is rejected) and is
     never logged. Unauthenticated by design -- the token itself is the credential.
     """
-    username = exchange_link_token(payload.link_token)
-    if username is None:
+    exchanged = exchange_link_token_with_secret(payload.link_token)
+    if exchanged is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid, expired, or already-used link token",
+        )
+    username, secret_at_exchange = exchanged
+    access_token = create_access_token(subject = username)
+    refresh_token = create_refresh_token(subject = username)
+    # Bind session issuance to the JWT secret the link token validated against. A
+    # concurrent password change rotates that secret (and revokes refresh tokens)
+    # to invalidate every outstanding session; if it rotated between the single-use
+    # consumption above and this issuance, revoke the tokens we just minted and
+    # reject, so a pre-change link token cannot mint a session that survives the
+    # change (consume-before-rotation TOCTOU). A rotation that lands after this
+    # recheck is caught by that same refresh-token revocation and the JWT signature
+    # change, so no issued session outlives the password change.
+    if storage.get_jwt_secret(username) != secret_at_exchange:
+        try:
+            storage.consume_refresh_token(refresh_token)
+        except Exception:
+            pass
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid, expired, or already-used link token",
         )
     return Token(
-        access_token = create_access_token(subject = username),
-        refresh_token = create_refresh_token(subject = username),
+        access_token = access_token,
+        refresh_token = refresh_token,
         token_type = "bearer",
         must_change_password = storage.requires_password_change(username),
     )
