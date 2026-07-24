@@ -6415,9 +6415,7 @@ class LlamaCppBackend:
         return mode
 
     @staticmethod
-    def _memory_mode_env_override(
-        env: Optional[Mapping[str, str]] = None,
-    ) -> bool:
+    def _memory_mode_env_override(env: Optional[Mapping[str, str]] = None) -> bool:
         """Whether the operator environment owns host-memory placement."""
         source = os.environ if env is None else env
         return any(name in source for name in _LLAMA_MEMORY_MODE_ENV_VARS)
