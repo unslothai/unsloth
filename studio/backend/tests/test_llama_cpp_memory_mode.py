@@ -988,6 +988,58 @@ def test_remote_diffusion_rejects_explicit_memory_mode_before_teardown(tmp_path)
         )
 
 
+def test_remote_normal_cpu_only_pin_rejects_before_teardown(tmp_path):
+    gguf = tmp_path / "renamed.gguf"
+    _write_minimal_gguf(gguf, arch = "llama")
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._backend_lacks_gpu_lib = lambda _binary = None: True
+    backend._download_gguf = lambda **_kwargs: str(gguf)
+
+    with (
+        patch.object(
+            backend,
+            "_kill_process",
+            side_effect = AssertionError("invalid CPU-only pin tore down the live model"),
+        ),
+        pytest.raises(ValueError, match = "CPU-only build"),
+    ):
+        backend.load_model(
+            hf_repo = "renamed/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "renamed/model",
+            speculative_type = "off",
+            gpu_ids = [0],
+            gpu_ids_are_vulkan_ordinals = False,
+        )
+
+
+def test_remote_diffusion_cpu_only_pin_reaches_runner(tmp_path):
+    gguf = tmp_path / "renamed.gguf"
+    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: False
+    backend._backend_lacks_gpu_lib = lambda _binary = None: True
+    backend._download_gguf = lambda **_kwargs: str(gguf)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    captured = {}
+    backend._start_diffusion_server = lambda **kwargs: captured.update(kwargs) or True
+
+    assert backend.load_model(
+        hf_repo = "renamed/model",
+        hf_variant = "Q4_K_M",
+        model_identifier = "renamed/model",
+        speculative_type = "off",
+        gpu_ids = [1],
+        gpu_ids_are_vulkan_ordinals = False,
+    )
+    assert captured["gpu_ids"] == [1]
+
+
 @pytest.mark.parametrize("mode", [None, "auto", "AUTO", ""])
 def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
     """A diffusion load clears stale llama-server memory-mode state."""

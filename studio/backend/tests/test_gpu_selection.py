@@ -1226,8 +1226,9 @@ class TestRouteErrors(unittest.TestCase):
         self.assertNotIn("cpu-only build", exc_info.exception.detail.lower())
         self.assertIn("SENTINEL_AFTER_GATE", exc_info.exception.detail)
 
-    def test_diffusion_gguf_on_vulkan_build_uses_cuda_path(self):
-        # The diffusion runner uses CUDA physical IDs even beside Vulkan llama.cpp.
+    def test_diffusion_gguf_on_vulkan_build_rejects_ordinal_pin(self):
+        # The GGUF picker supplies Vulkan ordinals, which cannot be reinterpreted
+        # as the CUDA physical IDs used by the diffusion runner.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1265,7 +1266,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(
                 _hw_module,
                 "resolve_requested_gpu_ids",
-                side_effect = ValueError("CUDA_PATH_SENTINEL"),
+                side_effect = AssertionError("Vulkan ordinal reached the CUDA resolver"),
             ),
             patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
@@ -1283,7 +1284,8 @@ class TestRouteErrors(unittest.TestCase):
                         current_subject = "test-user",
                     )
                 )
-        self.assertIn("CUDA_PATH_SENTINEL", exc_info.exception.detail)
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("no defined mapping", exc_info.exception.detail)
 
     def test_diffusion_gguf_gpu_ids_require_cuda(self):
         import utils.hardware as hardware_pkg

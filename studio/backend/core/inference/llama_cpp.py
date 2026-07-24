@@ -3644,10 +3644,12 @@ class LlamaCppBackend:
         ):
             free_mib = free_bytes // (1024 * 1024)
             capped = _apply_igpu_host_reserve_mib(free_mib, is_igpu)
-            total_gb = round(total_bytes / (1024**3), 2) if total_bytes > 0 else 0
-            free_gb = round(capped / 1024, 2)
+            total_gb = round(total_bytes / (1024**3), 2) if total_bytes > 0 and not is_igpu else 0
+            free_gb = round(capped / 1024, 2) if not is_igpu else 0
             used_gb = (
-                round(max(0, total_bytes - free_bytes) / (1024**3), 2) if total_bytes > 0 else None
+                round(max(0, total_bytes - free_bytes) / (1024**3), 2)
+                if total_bytes > 0 and not is_igpu
+                else None
             )
             devices.append(
                 {
@@ -6566,14 +6568,15 @@ class LlamaCppBackend:
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
+            _vulkan_ordinal_pin = (
+                is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
+            )
+            _cpu_only_pin = (
+                bool(gpu_ids) and not is_vulkan_backend and self._backend_lacks_gpu_lib(binary)
+            )
 
             # Reject stale Vulkan ordinals before replacing the live model.
-            if (
-                is_vulkan_backend
-                and gpu_ids
-                and binary
-                and gpu_ids_are_vulkan_ordinals is not False
-            ):
+            if _vulkan_ordinal_pin and binary:
                 _pf_wanted = {int(x) for x in gpu_ids}
                 _pf_probed = {g[0] for g in self._get_gpu_memory(binary)}
                 if not _pf_wanted.issubset(_pf_probed):
@@ -6586,7 +6589,9 @@ class LlamaCppBackend:
             # the meaning or validity of requested placement.
             _preflight_model_path = None
             _preflight_memory_mode = self._canonical_memory_mode(memory_mode)
-            if hf_repo and ((is_vulkan_backend and gpu_ids) or _preflight_memory_mode is not None):
+            if hf_repo and (
+                _vulkan_ordinal_pin or _cpu_only_pin or _preflight_memory_mode is not None
+            ):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
@@ -6601,13 +6606,16 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
+                _preflight_is_diffusion = self._gguf_path_is_diffusion(
+                    _preflight_model_path, model_identifier
+                )
+                if _preflight_is_diffusion:
                     if _preflight_memory_mode is not None:
                         raise ValueError(
                             "GGUF host-memory modes are not supported for "
                             "DiffusionGemma models. Use Auto."
                         )
-                    if is_vulkan_backend and gpu_ids:
+                    if _vulkan_ordinal_pin:
                         raise ValueError(
                             "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
                             "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
@@ -6615,6 +6623,12 @@ class LlamaCppBackend:
                             "to ggml Vulkan device ordinals. Omit gpu_ids to use the default "
                             "device."
                         )
+                elif _cpu_only_pin:
+                    raise ValueError(
+                        f"Requested gpu_ids {list(gpu_ids)} but the llama.cpp build has "
+                        "no GPU backend (CPU-only build); it would ignore the pin and run "
+                        "on CPU. Omit gpu_ids to run on CPU."
+                    )
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:

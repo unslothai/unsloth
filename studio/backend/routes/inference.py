@@ -4013,7 +4013,6 @@ async def _resolve_gguf_gpu_ids_for_request(
     diffusion_kind = _classify_diffusion_gguf(config)
     confirmed_diffusion = diffusion_kind is True
     definitively_non_diffusion = diffusion_kind is False
-    ids_are_vulkan_ordinals = is_vulkan_build and not confirmed_diffusion
     device = get_device()
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
 
@@ -4025,6 +4024,19 @@ async def _resolve_gguf_gpu_ids_for_request(
                 "Omit gpu_ids on this host."
             ),
         )
+
+    if confirmed_diffusion and is_vulkan_build:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
+                "GGUF on a Vulkan llama.cpp build: the picker uses Vulkan ordinals, "
+                "which have no defined mapping to CUDA physical indices. Omit gpu_ids "
+                "to use the default device."
+            ),
+        )
+
+    ids_are_vulkan_ordinals = is_vulkan_build
 
     if device == DeviceType.XPU and not ids_are_vulkan_ordinals:
         raise HTTPException(

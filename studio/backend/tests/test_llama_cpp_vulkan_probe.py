@@ -53,6 +53,7 @@ _maybe_stub("loggers", _build_loggers_stub)
 _maybe_stub("structlog", lambda: _types.ModuleType("structlog"))
 
 from core.inference import llama_cpp as _llama_mod  # noqa: E402
+from core.inference._vulkan_probe import _device_metadata  # noqa: E402
 from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
     _llama_lib_dir,
@@ -61,6 +62,29 @@ from core.inference.llama_cpp import (  # noqa: E402
 
 MIB = 1024 * 1024
 GIB = 1024 * MIB
+
+
+class _FakeCFunction:
+    def __init__(self, result):
+        self.result = result
+
+    def __call__(self, *_args):
+        return self.result
+
+
+def test_missing_description_symbol_keeps_igpu_detection():
+    base = _types.SimpleNamespace(
+        ggml_backend_reg_dev_count = _FakeCFunction(1),
+        ggml_backend_reg_dev_get = _FakeCFunction(1),
+        ggml_backend_dev_type = _FakeCFunction(2),
+        ggml_backend_dev_name = _FakeCFunction(b"Legacy Vulkan iGPU"),
+    )
+    lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
+
+    flags, names = _device_metadata(base, lib, 1)
+
+    assert flags == [True]
+    assert names == ["Legacy Vulkan iGPU"]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
@@ -147,6 +171,19 @@ def test_vulkan_device_info_accepts_legacy_four_column_probe(tmp_path):
     with _mock_probe([_row(2, 7 * GIB, is_igpu = 0, total_bytes = 8 * GIB)]):
         devices = LlamaCppBackend._get_vulkan_gpu_info(binary)
     assert devices[0]["name"] == "Vulkan2"
+
+
+def test_vulkan_device_info_does_not_advertise_shared_ram_as_vram(tmp_path):
+    binary = _make_vulkan_install(tmp_path)
+    rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB, name = "Integrated GPU")]
+    with _mock_probe(rows):
+        [device] = LlamaCppBackend._get_vulkan_gpu_info(binary)
+
+    assert device["memory_total_gb"] == 0
+    assert device["vram_total_gb"] == 0
+    assert device["vram_free_gb"] == 0
+    assert device["vram_used_gb"] is None
+    assert device["vram_utilization_pct"] is None
 
 
 def test_large_discrete_gpu_is_untouched(tmp_path):

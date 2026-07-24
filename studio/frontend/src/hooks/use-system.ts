@@ -47,6 +47,9 @@ export interface SystemInfoResponse {
     parent_visible_gpu_ids?: number[];
     index_kind?: string;
     devices: GpuDevice[];
+    /** GGUF placement devices, using Vulkan ordinals when applicable. */
+    gguf_devices?: GpuDevice[];
+    gguf_backend?: string;
   };
   ml_packages: {
     torch?: string;

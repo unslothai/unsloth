@@ -82,9 +82,9 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // The backend declares whether its device indices are pinnable.
+  // GGUF placement may use a different namespace from the global torch view.
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
-  return (data?.gpu?.devices ?? [])
+  return (data?.gpu?.gguf_devices ?? data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
       index: d.index as number,

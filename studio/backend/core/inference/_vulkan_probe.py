@@ -38,27 +38,42 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
         base.ggml_backend_reg_dev_get.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
         base.ggml_backend_dev_type.restype = ctypes.c_int
         base.ggml_backend_dev_type.argtypes = [ctypes.c_void_p]
-        base.ggml_backend_dev_name.restype = ctypes.c_char_p
-        base.ggml_backend_dev_name.argtypes = [ctypes.c_void_p]
-        base.ggml_backend_dev_description.restype = ctypes.c_char_p
-        base.ggml_backend_dev_description.argtypes = [ctypes.c_void_p]
-
         reg = lib.ggml_backend_vk_reg()
         if not reg:
             return flags, names
         dev_count = base.ggml_backend_reg_dev_count(reg)
-        for i in range(min(count, dev_count)):
+    except Exception:
+        return flags, names
+
+    name_functions = []
+    for symbol in ("ggml_backend_dev_description", "ggml_backend_dev_name"):
+        try:
+            function = getattr(base, symbol)
+            function.restype = ctypes.c_char_p
+            function.argtypes = [ctypes.c_void_p]
+            name_functions.append(function)
+        except Exception:
+            pass
+
+    for i in range(min(count, dev_count)):
+        try:
             dev = base.ggml_backend_reg_dev_get(reg, i)
-            if dev:
+        except Exception:
+            continue
+        if dev:
+            try:
                 flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
-                # Prefer the user-facing hardware description.
-                raw_name = base.ggml_backend_dev_description(dev) or base.ggml_backend_dev_name(dev)
+            except Exception:
+                pass
+            for function in name_functions:
+                try:
+                    raw_name = function(dev)
+                except Exception:
+                    continue
                 if raw_name:
                     name = raw_name.decode("utf-8", errors = "replace")
                     names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
-    except Exception:
-        # Best-effort metadata must never suppress the memory readings.
-        pass
+                    break
     return flags, names
 
 
