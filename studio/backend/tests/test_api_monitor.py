@@ -31,6 +31,26 @@ def test_api_monitor_tracks_reply_usage_and_context():
     assert entry["duration_ms"] is not None
 
 
+def test_api_monitor_can_redact_reply_while_preserving_usage():
+    monitor = ApiMonitor(max_entries = 1)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "[memory capture]",
+        redact_reply = True,
+    )
+    monitor.append_reply(entry_id, "private fact")
+    monitor.set_reply(entry_id, "another private fact")
+    monitor.set_usage(entry_id, prompt_tokens = 2, completion_tokens = 3)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["reply"] == "[memory capture]"
+    assert entry["total_tokens"] == 5
+    assert entry["status"] == "completed"
+
+
 def test_api_monitor_summary_omits_full_prompt_and_reply():
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(

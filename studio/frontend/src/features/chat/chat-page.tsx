@@ -1731,8 +1731,8 @@ export function ChatPage({
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
-    ? "Turn off temporary chat"
-    : "Turn on temporary chat";
+    ? "Turn off temporary chat (history and memory are currently off)"
+    : "Turn on temporary chat (no history or memory)";
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     store.setIncognito(!store.incognito);

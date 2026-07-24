@@ -80,7 +80,8 @@ import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+
+const mountedRuntimeApis = new WeakSet<object>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -828,22 +829,6 @@ function trackHistoryAppend(
   return write;
 }
 
-function trackRunStartReady(
-  messageId: string,
-  ready: Promise<void>,
-): Promise<void> {
-  pendingRunStartReadyByMessageId.set(messageId, ready);
-  const cleanup = () => {
-    setTimeout(() => {
-      if (pendingRunStartReadyByMessageId.get(messageId) === ready) {
-        pendingRunStartReadyByMessageId.delete(messageId);
-      }
-    }, 30_000);
-  };
-  ready.then(cleanup, cleanup);
-  return ready;
-}
-
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
 ): Promise<void> {
@@ -851,23 +836,14 @@ async function waitForRunStartHistoryAppend(
   if (!lastMessage || lastMessage.role !== "user") {
     return;
   }
-  const ready =
-    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
-    pendingHistoryAppendByMessageId.get(lastMessage.id);
+  const ready = pendingHistoryAppendByMessageId.get(lastMessage.id);
   if (!ready) {
     return;
   }
-  let didBecomeReady = false;
   try {
     await ready;
-    didBecomeReady = true;
-  } finally {
-    if (
-      didBecomeReady &&
-      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
-    ) {
-      pendingRunStartReadyByMessageId.delete(lastMessage.id);
-    }
+  } catch {
+    // Continue without memory scope when persistence fails.
   }
 }
 
@@ -1141,7 +1117,6 @@ function useStudioRuntimeAdapters(
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const initializeThread = aui.threadListItem().initialize();
-        trackRunStartReady(message.id, initializeThread.then(() => undefined));
         const write = (async () => {
           const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
@@ -1232,12 +1207,29 @@ function useRuntimeHook(
   pairId?: string,
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(modelType, pairId);
+
+  const aui = useAui();
+  useEffect(() => {
+    mountedRuntimeApis.add(aui);
+    return () => {
+      mountedRuntimeApis.delete(aui);
+    };
+  }, [aui]);
+  const ownsThread = useCallback(
+    (threadId: string) => {
+      if (!mountedRuntimeApis.has(aui)) {
+        return false;
+      }
+      return aui.threadListItem().getState().remoteId === threadId;
+    },
+    [aui],
+  );
   const persistedChatAdapter = useMemo(
     () =>
       createPersistedRunAdapter(
-        createOpenAIStreamAdapter({ modelType, pairId }),
+        createOpenAIStreamAdapter({ modelType, pairId, ownsThread }),
       ),
-    [modelType, pairId],
+    [modelType, ownsThread, pairId],
   );
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }

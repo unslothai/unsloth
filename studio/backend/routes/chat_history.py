@@ -184,6 +184,8 @@ class ChatSettingsPayload(BaseModel):
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 1)
+    referenceMemories: Optional[bool] = None
+    autoSaveMemories: Optional[bool] = None
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
 

@@ -35,4 +35,7 @@ export type {
 } from "./api/personalization";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
+export { SettingsRow } from "./components/settings-row";
+export { SettingsSection } from "./components/settings-section";
+
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";

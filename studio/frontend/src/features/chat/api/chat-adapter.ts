@@ -71,11 +71,15 @@ import type {
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import {
+  getStoredChatMessage,
   getStoredChatThread,
+  isThreadIncognito,
   getStoredChatProject,
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+
+import { isChatThreadDeleted } from "../utils/chat-thread-tombstones";
 import {
   readLastLocalModelLoad,
   recordLastLocalModelLoad,
@@ -97,6 +101,12 @@ import {
   StreamInterruptedError,
   validateModel,
 } from "./chat-api";
+
+import { applyChatMemoryCapture } from "./chat-memory-api";
+import {
+  buildMemoryScope,
+  shouldCaptureMemoryCandidate,
+} from "./memory-runtime";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -109,6 +119,231 @@ import {
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+const MEMORY_CAPTURE_DEBOUNCE_MS = 600;
+export const MEMORY_CAPTURE_TIMEOUT_MS = 10_000;
+type PendingMemoryCapture = {
+  timer: ReturnType<typeof setTimeout> | null;
+  controller: AbortController | null;
+  cancelId: string;
+};
+
+const pendingMemoryCaptures = new Map<string, PendingMemoryCapture>();
+
+function cancelInferenceGeneration(cancelId: string): void {
+  const token = getAuthToken();
+  void fetch(apiUrl("/api/inference/cancel"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ cancel_id: cancelId }),
+    keepalive: true,
+  }).catch(() => {});
+}
+
+export function cancelPendingMemoryCapture(threadId?: string): void {
+  const entries = threadId
+    ? ([[threadId, pendingMemoryCaptures.get(threadId)]] as const)
+    : Array.from(pendingMemoryCaptures.entries());
+  for (const [key, pending] of entries) {
+    if (!pending) continue;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.controller?.abort();
+    cancelInferenceGeneration(pending.cancelId);
+    if (pendingMemoryCaptures.get(key) === pending) {
+      pendingMemoryCaptures.delete(key);
+    }
+  }
+}
+
+function isMemoryCaptureCurrent(
+  threadId: string,
+  checkpoint: string,
+  authToken: string,
+  pending: PendingMemoryCapture,
+  ownsThread: (threadId: string) => boolean,
+): boolean {
+  const state = useChatRuntimeStore.getState();
+  return (
+    pendingMemoryCaptures.get(threadId) === pending &&
+    getAuthToken() === authToken &&
+    ownsThread(threadId) &&
+    !isThreadIncognito(threadId) &&
+    !isChatThreadDeleted(threadId) &&
+    state.autoSaveMemories &&
+    state.params.checkpoint === checkpoint
+  );
+}
+
+async function resolveForegroundMemoryScope({
+  threadId,
+  sourceMessageId,
+  referenceMemories,
+  autoSaveMemories,
+}: {
+  threadId: string | undefined;
+  sourceMessageId: string | undefined;
+  referenceMemories: boolean;
+  autoSaveMemories: boolean;
+}) {
+  if (!threadId || isThreadIncognito(threadId)) return undefined;
+  const [thread, message] = await Promise.all([
+    getStoredChatThread(threadId),
+    sourceMessageId
+      ? getStoredChatMessage(threadId, sourceMessageId)
+      : undefined,
+  ]);
+  if (!thread || message?.role !== "user") return undefined;
+  return buildMemoryScope({
+    threadId,
+    sourceMessageId,
+    incognito: false,
+    referenceMemories,
+    autoSaveMemories,
+  });
+}
+
+function scheduleMemoryCapture({
+  threadId,
+  sourceMessageId,
+  checkpoint,
+  ownsThread,
+  buildPayload,
+}: {
+  threadId: string;
+  sourceMessageId: string;
+  checkpoint: string;
+  ownsThread: (threadId: string) => boolean;
+  buildPayload: (cancelId: string) => Promise<OpenAIChatCompletionsRequest>;
+}): void {
+  cancelPendingMemoryCapture(threadId);
+  const authToken = getAuthToken();
+  if (!authToken) return;
+  const pending: PendingMemoryCapture = {
+    timer: null,
+    controller: null,
+    cancelId: crypto.randomUUID(),
+  };
+  pendingMemoryCaptures.set(threadId, pending);
+  pending.timer = setTimeout(() => {
+    pending.timer = null;
+    if (
+      !isMemoryCaptureCurrent(
+        threadId,
+        checkpoint,
+        authToken,
+        pending,
+        ownsThread,
+      )
+    ) {
+      if (pendingMemoryCaptures.get(threadId) === pending) {
+        pendingMemoryCaptures.delete(threadId);
+      }
+      return;
+    }
+    const controller = new AbortController();
+
+    controller.signal.addEventListener(
+      "abort",
+      () => cancelInferenceGeneration(pending.cancelId),
+      { once: true },
+    );
+    pending.controller = controller;
+    const unsubscribe = useChatRuntimeStore.subscribe(() => {
+      if (
+        !isMemoryCaptureCurrent(
+          threadId,
+          checkpoint,
+          authToken,
+          pending,
+          ownsThread,
+        )
+      ) {
+        controller.abort();
+      }
+    });
+    const lifecycleWatch = window.setInterval(() => {
+      if (
+        !isMemoryCaptureCurrent(
+          threadId,
+          checkpoint,
+          authToken,
+          pending,
+          ownsThread,
+        )
+      ) {
+        controller.abort();
+      }
+    }, 100);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      MEMORY_CAPTURE_TIMEOUT_MS,
+    );
+    void (async () => {
+      try {
+        if (
+          !isMemoryCaptureCurrent(
+            threadId,
+            checkpoint,
+            authToken,
+            pending,
+            ownsThread,
+          )
+        ) {
+          return;
+        }
+        const payload = await buildPayload(pending.cancelId);
+        if (
+          !isMemoryCaptureCurrent(
+            threadId,
+            checkpoint,
+            authToken,
+            pending,
+            ownsThread,
+          )
+        ) {
+          return;
+        }
+        let rawOutput = "";
+        for await (const chunk of streamChatCompletions(
+          payload,
+          controller.signal,
+          "/v1/chat/completions/memory-capture",
+        )) {
+          const content = chunk.choices?.[0]?.delta?.content;
+          if (typeof content === "string") rawOutput += content;
+        }
+        if (
+          rawOutput &&
+          !controller.signal.aborted &&
+          isMemoryCaptureCurrent(
+            threadId,
+            checkpoint,
+            authToken,
+            pending,
+            ownsThread,
+          )
+        ) {
+          await applyChatMemoryCapture(
+            { threadId, sourceMessageId, rawOutput },
+            controller.signal,
+          );
+        }
+      } catch {
+        // Capture is silent and best-effort.
+      } finally {
+        clearTimeout(timeout);
+        window.clearInterval(lifecycleWatch);
+        unsubscribe();
+        if (pendingMemoryCaptures.get(threadId) === pending) {
+          pendingMemoryCaptures.delete(threadId);
+        }
+      }
+    })();
+  }, MEMORY_CAPTURE_DEBOUNCE_MS);
+}
 
 function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
   if (mode === "on") return true;
@@ -193,6 +428,7 @@ type RunMessage = RunMessages[number];
 type OpenAIStreamAdapterOptions = {
   modelType?: ModelType;
   pairId?: string;
+  ownsThread?: (threadId: string) => boolean;
 };
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
@@ -229,7 +465,10 @@ const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
 
 type ThreadAutosaveHandle = {
   registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
-  awaitFirstSave(threadId: string | undefined): Promise<void>;
+  awaitFirstSave(
+    threadId: string | undefined,
+    timeoutMs?: number | null,
+  ): Promise<void>;
 };
 
 const pendingFirstThreadSaves = new Map<string, Promise<void>>();
@@ -411,7 +650,7 @@ export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
     return cleanupPromise;
   },
 
-  async awaitFirstSave(threadId) {
+  async awaitFirstSave(threadId, timeoutMs = FIRST_THREAD_SAVE_TIMEOUT_MS) {
     if (!threadId) {
       return;
     }
@@ -419,7 +658,9 @@ export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
     if (!pending) {
       return;
     }
-    await Promise.race([pending, wait(FIRST_THREAD_SAVE_TIMEOUT_MS)]);
+    await (timeoutMs === null
+      ? pending
+      : Promise.race([pending, wait(timeoutMs)]));
   },
 };
 
@@ -2040,12 +2281,19 @@ export function createOpenAIStreamAdapter(
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
+      // Foreground work preempts memory capture.
+      cancelPendingMemoryCapture();
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const ownsThread =
+        options.ownsThread ??
+        ((threadId: string) => {
+          return useChatRuntimeStore.getState().activeThreadId === threadId;
+        });
       const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
       const toolConfirmationScopeId = resolvedThreadId
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
@@ -2499,6 +2747,27 @@ export function createOpenAIStreamAdapter(
         runtime.clearPendingAudio();
       }
       const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
+      const latestUserMessage = [...survivingMessages]
+        .reverse()
+        .find((message) => message.role === "user");
+      const latestUserText = latestUserMessage
+        ? latestUserMessage.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n")
+        : "";
+      await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);
+      const memoryRuntime = useChatRuntimeStore.getState();
+      const memoryThreadId = memoryRuntime.activeThreadId || undefined;
+      const memoryScope =
+        !options.pairId && memoryThreadId && ownsThread(memoryThreadId)
+          ? await resolveForegroundMemoryScope({
+              threadId: memoryThreadId,
+              sourceMessageId: latestUserMessage?.id,
+              referenceMemories: memoryRuntime.referenceMemories,
+              autoSaveMemories: memoryRuntime.autoSaveMemories,
+            }).catch(() => undefined)
+          : undefined;
 
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
@@ -2524,6 +2793,7 @@ export function createOpenAIStreamAdapter(
               min_p: params.minP,
               repetition_penalty: params.repetitionPenalty,
               presence_penalty: params.presencePenalty,
+              ...(memoryScope ? { memory_scope: memoryScope } : {}),
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
             abortSignal,
@@ -2761,6 +3031,7 @@ export function createOpenAIStreamAdapter(
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
+        if (resolvedThreadId) cancelPendingMemoryCapture(resolvedThreadId);
         // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
         // unmounts (navigation / background thread switch) and detach=false for an
         // explicit Stop. Only a real Stop cancels the backend run; a detach must
@@ -3245,6 +3516,9 @@ export function createOpenAIStreamAdapter(
           };
         };
 
+        let successfulRequestPayload: OpenAIChatCompletionsRequest | null =
+          null;
+
         let retriedWithRefreshedKey = false;
         while (true) {
           try {
@@ -3253,11 +3527,13 @@ export function createOpenAIStreamAdapter(
               requestPayload = await buildRequestPayload(
                 retriedWithRefreshedKey,
               );
+              if (memoryScope) requestPayload.memory_scope = memoryScope;
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
             }
             clearSelectedImageEditReference();
+            successfulRequestPayload = requestPayload;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, abortSignal);
 
@@ -3924,6 +4200,7 @@ export function createOpenAIStreamAdapter(
                 if (!reasoningContentOpen) {
                   cumulativeText += `<think>${reasoning}`;
                   reasoningContentOpen = true;
+
                 } else {
                   cumulativeText += reasoning;
                 }
@@ -4059,6 +4336,77 @@ export function createOpenAIStreamAdapter(
             Math.round((Date.now() - reasoningStartAt) / 1000),
           );
         }
+        if (
+          memoryScope &&
+          runtime.autoSaveMemories &&
+          latestUserMessage?.id &&
+          shouldCaptureMemoryCandidate(latestUserText) &&
+          successfulRequestPayload &&
+          !abortSignal.aborted
+        ) {
+          scheduleMemoryCapture({
+            threadId: memoryScope.thread_id,
+            sourceMessageId: latestUserMessage.id,
+            checkpoint: params.checkpoint,
+            ownsThread,
+            buildPayload: async (cancelId) => {
+              const currentProvider = externalProvider
+                ? loadExternalProviders().find(
+                    (provider) => provider.id === externalProvider.id,
+                  )
+                : null;
+              if (
+                externalProvider &&
+                (!useExternalProvidersStore.getState().connectionsEnabled ||
+                  !currentProvider ||
+                  currentProvider.providerType !==
+                    externalProvider.providerType ||
+                  currentProvider.baseUrl !== externalProvider.baseUrl ||
+                  currentProvider.updatedAt !== externalProvider.updatedAt)
+              ) {
+                throw new Error("Connection changed before memory capture.");
+              }
+              const providerId =
+                currentProvider?.id ?? successfulRequestPayload.provider_id;
+              const providerType = currentProvider
+                ? toExternalBackendProviderType(currentProvider.providerType)
+                : successfulRequestPayload.provider_type;
+              const providerBaseUrl = currentProvider?.baseUrl ?? null;
+              const currentApiKey = currentProvider
+                ? getExternalProviderApiKey(currentProvider.id).trim()
+                : "";
+              const encryptedApiKey = currentApiKey
+                ? await encryptProviderApiKey(currentApiKey)
+                : undefined;
+              return {
+                model: successfulRequestPayload.model,
+                // Source IDs are authoritative; the backend rebuilds the prompt.
+                messages: [],
+                stream: true,
+                temperature: 0,
+                max_tokens: 128,
+                memory_scope: {
+                  thread_id: memoryScope.thread_id,
+                  source_message_id: memoryScope.source_message_id,
+                  recall:
+                    useChatRuntimeStore.getState().referenceMemories,
+                  allow_explicit_commands: false,
+                  auto_capture: false,
+                },
+                cancel_id: cancelId,
+                ...(providerId ? { provider_id: providerId } : {}),
+                ...(providerType ? { provider_type: providerType } : {}),
+                ...(providerBaseUrl
+                  ? { provider_base_url: providerBaseUrl }
+                  : {}),
+                ...(encryptedApiKey
+                  ? { encrypted_api_key: encryptedApiKey }
+                  : {}),
+              };
+            },
+          });
+        }
+
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),

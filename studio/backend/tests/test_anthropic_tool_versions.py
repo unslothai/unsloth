@@ -136,6 +136,46 @@ def _capture_outbound(monkeypatch, model: str) -> dict:
     return captured
 
 
+def test_outbound_body_merges_system_messages(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_anthropic(
+            messages = [
+                {"role": "system", "content": "project instructions"},
+                {"role": "system", "content": "saved memory context"},
+                {"role": "user", "content": "hi"},
+            ],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    system = captured["system"]
+    system_text = system if isinstance(system, str) else system[0]["text"]
+    assert system_text == "project instructions\n\nsaved memory context"
+    [user_message] = captured["messages"]
+    user_content = user_message["content"]
+    user_text = user_content if isinstance(user_content, str) else user_content[0]["text"]
+    assert user_message["role"] == "user"
+    assert user_text == "hi"
+
+
 def test_outbound_body_uses_new_versions_on_opus_4_7(monkeypatch):
     captured = _capture_outbound(monkeypatch, "claude-opus-4-7")
     tool_types = {t.get("type") for t in (captured["body"].get("tools") or [])}

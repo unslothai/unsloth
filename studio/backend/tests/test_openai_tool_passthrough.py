@@ -17,9 +17,14 @@ sys.path.insert(0, _backend)
 import httpx
 import pytest
 from fastapi import HTTPException
+
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
+
 
 from models.inference import (
+    MemoryScopeRequest,
     ChatCompletionRequest,
     ChatMessage,
     CompletionChoice,
@@ -71,12 +76,14 @@ from routes.inference import (
     _openai_admission_wait_stream_chunks,
     _wait_for_openai_admission_non_streaming,
     _proxy_to_external_provider,
+    _defer_memory_commit,
     _SameTaskStreamingResponse,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
     _set_or_prepend_system_message,
     openai_completions,
     openai_embeddings,
     openai_chat_completions,
+    openai_memory_capture_completions,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
 
@@ -1611,7 +1618,7 @@ class TestOpenAICompatibilityHelpers:
     def test_openai_stream_error_sse_closes_with_done(self):
         error = {"error": {"message": "boom"}}
         assert _openai_stream_error_sse(error) == (
-            'data: {"error": {"message": "boom"}}\n\n' "data: [DONE]\n\n"
+            'data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n'
         )
 
     @pytest.mark.parametrize(
@@ -3532,6 +3539,298 @@ class TestApiMonitorProviderAndCompletionStreams:
         async def is_disconnected(self):
             return False
 
+    def test_failed_chat_request_does_not_commit_memory(self, monkeypatch):
+        async def _run():
+            from core.inference import memory as chat_memory
+
+            commits = []
+            monkeypatch.setattr(chat_memory, "get_memory_settings", lambda: (True, True))
+            monkeypatch.setattr(
+                chat_memory, "explicit_command", lambda *_: commits.append("explicit")
+            )
+            monkeypatch.setattr(
+                chat_memory, "direct_statement", lambda *_: commits.append("direct")
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                scope = {},
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "I prefer dark mode")],
+                logprobs = True,
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = False,
+                ),
+            )
+
+            with pytest.raises(HTTPException):
+                await openai_chat_completions(payload, request, current_subject = "test")
+            assert commits == []
+
+        asyncio.run(_run())
+
+    def test_deferred_memory_commit_rechecks_auto_save_setting(self, monkeypatch):
+        async def _run():
+            from core.inference import memory as chat_memory
+
+            settings = {"auto_save": True}
+            commits = []
+            monkeypatch.setattr(
+                chat_memory,
+                "get_memory_settings",
+                lambda: (True, settings["auto_save"]),
+            )
+            monkeypatch.setattr(
+                chat_memory, "direct_statement", lambda *_: commits.append("direct")
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                scope = {},
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "I prefer dark mode")],
+                logprobs = True,
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = False,
+                    allow_explicit_commands = False,
+                    auto_capture = True,
+                ),
+            )
+
+            with pytest.raises(HTTPException):
+                await openai_chat_completions(payload, request, current_subject = "test")
+            settings["auto_save"] = False
+            request.state.memory_commit()
+            assert commits == []
+
+        asyncio.run(_run())
+
+    def test_memory_capture_recall_respects_persisted_setting(self, monkeypatch):
+        async def _run():
+            from core.inference import memory as chat_memory
+
+            recalls = []
+            monkeypatch.setattr(chat_memory, "get_memory_settings", lambda: (False, True))
+            monkeypatch.setattr(
+                chat_memory,
+                "recall_context",
+                lambda *_args, **_kwargs: recalls.append("recalled"),
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                scope = {},
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [],
+                logprobs = True,
+                request_purpose = "memory_capture",
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = True,
+                    allow_explicit_commands = False,
+                    auto_capture = False,
+                ),
+            )
+
+            with pytest.raises(HTTPException):
+                await openai_chat_completions(payload, request, current_subject = "test")
+            assert recalls == []
+
+        asyncio.run(_run())
+
+    def test_deferred_memory_commit_requires_completed_stream(self):
+        async def _consume(lines, *, cancel_before_done = False):
+            commits = []
+            cancel_event = threading.Event()
+
+            async def body():
+                for line in lines:
+                    if cancel_before_done and "[DONE]" in line:
+                        cancel_event.set()
+                    yield line
+
+            response = _defer_memory_commit(
+                StreamingResponse(body(), media_type = "text/event-stream"),
+                lambda: commits.append("saved"),
+                cancel_event = cancel_event,
+            )
+            _ = [chunk async for chunk in response.body_iterator]
+            return commits
+
+        assert asyncio.run(_consume(["data: {}\n\n", "data: [DONE]\n\n"])) == ["saved"]
+        assert (
+            asyncio.run(_consume(['data: {"error":{"message":"failed"}}\n\n', "data: [DONE]\n\n"]))
+            == []
+        )
+        assert asyncio.run(_consume(["data: {}\n\n"])) == []
+        assert (
+            asyncio.run(_consume(["data: {}\n\n", "data: [DONE]\n\n"], cancel_before_done = True))
+            == []
+        )
+
+    def test_deferred_memory_commit_propagates_send_cancellation(self):
+        async def _run():
+            commits = []
+            cleaned = asyncio.Event()
+            cancelled = asyncio.Event()
+            cancel_event = threading.Event()
+
+            async def body():
+                try:
+                    yield "data: {}\n\n"
+                    yield "data: [DONE]\n\n"
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                finally:
+                    cleaned.set()
+
+            response = _defer_memory_commit(
+                _SameTaskStreamingResponse(body(), media_type = "text/event-stream"),
+                lambda: commits.append("saved"),
+                cancel_event = cancel_event,
+            )
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                if message.get("type") == "http.response.body" and b"[DONE]" in message.get(
+                    "body", b""
+                ):
+                    raise OSError("client disconnected")
+
+            with pytest.raises(ClientDisconnect):
+                await response({}, receive, send)
+            assert cancel_event.is_set()
+            assert cancelled.is_set()
+            assert cleaned.is_set()
+            assert commits == []
+
+        asyncio.run(_run())
+
+    def test_non_stream_memory_commit_requires_response_delivery(self):
+        async def _deliver(*, fail = False):
+            commits = []
+            response = _defer_memory_commit(
+                JSONResponse({"ok": True}),
+                lambda: commits.append("saved"),
+                cancel_event = threading.Event(),
+            )
+            assert commits == []
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                if fail and message.get("type") == "http.response.body":
+                    raise OSError("client disconnected")
+
+            if fail:
+                with pytest.raises(OSError):
+                    await response({"type": "http"}, receive, send)
+            else:
+                await response({"type": "http"}, receive, send)
+            return commits
+
+        assert asyncio.run(_deliver()) == ["saved"]
+        assert asyncio.run(_deliver(fail = True)) == []
+
+    def test_only_dedicated_capture_route_redacts_api_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+            from core.inference import memory as chat_memory
+
+            class DummyExternalClient:
+                def __init__(self, **_kwargs):
+                    pass
+
+                async def stream_chat_completion(self, **_kwargs):
+                    yield json.dumps(
+                        {
+                            "choices": [{"delta": {"content": "private extracted fact"}}],
+                            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                        }
+                    )
+
+                async def close(self):
+                    pass
+
+            monkeypatch.setattr(chat_memory, "get_memory_settings", lambda: (True, True))
+            monkeypatch.setattr(
+                chat_memory,
+                "verify_source",
+                lambda *_: ({"id": "thread"}, {"id": "message"}, "private evidence"),
+            )
+            monkeypatch.setattr(
+                chat_memory, "recall_context", lambda *_args, **_kwargs: "private memory"
+            )
+            monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+
+            def make_request(path = "/v1/chat/completions"):
+                return SimpleNamespace(
+                    state = SimpleNamespace(),
+                    scope = {},
+                    url = SimpleNamespace(path = path),
+                    method = "POST",
+                )
+
+            def make_payload(*, request_purpose = "chat"):
+                return ChatCompletionRequest(
+                    model = "default",
+                    external_model = "gpt-test",
+                    provider_type = "openai",
+                    provider_base_url = "https://api.openai.com/v1",
+                    messages = [],
+                    request_purpose = request_purpose,
+                    memory_scope = MemoryScopeRequest(
+                        thread_id = "thread",
+                        source_message_id = "message",
+                    ),
+                )
+
+            public_request = make_request()
+            with pytest.raises(HTTPException) as exc:
+                await openai_chat_completions(
+                    make_payload(request_purpose = "memory_capture"),
+                    public_request,
+                    current_subject = "test",
+                )
+            assert exc.value.status_code == 400
+            assert monitor.snapshot() == []
+            assert public_request.state.redact_memory_capture_monitor is False
+
+            monitor.clear()
+            internal_request = make_request("/v1/chat/completions/memory-capture")
+            response = await openai_memory_capture_completions(
+                make_payload(), internal_request, current_subject = "test"
+            )
+            _ = [chunk async for chunk in response.body_iterator]
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "completed"
+            assert entry["prompt"] == "[memory capture]"
+            assert entry["reply"] == "[memory capture]"
+            assert entry["total_tokens"] == 5
+            assert internal_request.state.redact_memory_capture_monitor is True
+
+        asyncio.run(_run())
+
     async def _run_passthrough_stream(
         self,
         monkeypatch,
@@ -4421,6 +4720,49 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert entry["prompt_tokens"] == 3
             assert entry["completion_tokens"] == 4
             assert entry["total_tokens"] == 7
+
+        asyncio.run(_run())
+
+    def test_request_provider_overrides_saved_provider_route(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            captured = {}
+
+            class DummyExternalClient:
+                def __init__(self, **kwargs):
+                    captured.update(kwargs)
+
+                async def stream_chat_completion(self, **_kwargs):
+                    yield json.dumps({"choices": [{"message": {"content": "ok"}}]})
+
+                async def close(self):
+                    pass
+
+            monkeypatch.setattr(
+                inf_mod.providers_db,
+                "get_provider",
+                lambda _provider_id: {
+                    "is_enabled": True,
+                    "display_name": "Saved provider",
+                    "provider_type": "anthropic",
+                    "base_url": "https://saved.example/v1",
+                },
+            )
+            monkeypatch.setattr(inf_mod, "ExternalProviderClient", DummyExternalClient)
+            payload = ChatCompletionRequest(
+                model = "default",
+                external_model = "gpt-test",
+                provider_id = "saved",
+                provider_type = "openai",
+                provider_base_url = "https://override.example/v1",
+                messages = [ChatMessage(role = "user", content = "hi")],
+            )
+
+            response = await _proxy_to_external_provider(payload, self._Request())
+            _ = [chunk async for chunk in response.body_iterator]
+            assert captured["provider_type"] == "openai"
+            assert captured["base_url"] == "https://override.example/v1"
 
         asyncio.run(_run())
 
@@ -6709,6 +7051,72 @@ class TestApiMonitorAudioInput:
             assert entry["model"] == "tts-model"
             assert entry["reply"] == "[Generated audio]"
             assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_cancelled_non_gguf_tts_does_not_commit_memory(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+            from core.inference import memory as chat_memory
+
+            class DummyTtsBackend:
+                active_model_name = "tts-model"
+                models = {
+                    "tts-model": {
+                        "is_audio": True,
+                        "audio_type": "snac",
+                    }
+                }
+
+            commits = []
+
+            async def fake_generate_audio(
+                _payload,
+                _request,
+                current_subject = None,
+            ):
+                assert inf_mod._cancel_by_cancel_id_or_stash("tts-cancel") == 1
+                return inf_mod.JSONResponse(content = {"choices": []})
+
+            monkeypatch.setattr(chat_memory, "get_memory_settings", lambda: (True, True))
+            monkeypatch.setattr(
+                chat_memory, "explicit_command", lambda *_: commits.append("explicit")
+            )
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(is_loaded = False),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
+            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "remember that I use tabs")],
+                cancel_id = "tts-cancel",
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = False,
+                    allow_explicit_commands = True,
+                    auto_capture = False,
+                ),
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            response = await inf_mod.openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            assert request.state.memory_cancel_event.is_set()
+            assert response.background is not None
+            await response.background()
+            assert commits == []
 
         asyncio.run(_run())
 

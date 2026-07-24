@@ -26,6 +26,9 @@ export interface PersistedChatSettings {
   collapseHtmlArtifacts?: boolean;
   allowArtifactNetworkAccess?: boolean;
   autoHealToolCalls?: boolean;
+
+  referenceMemories?: boolean;
+  autoSaveMemories?: boolean;
   nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;

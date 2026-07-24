@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+from functools import wraps
 import os
 import sys
 import time
@@ -12,6 +13,8 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+
+from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, List, Literal, Optional, Union
 import json
@@ -1758,7 +1761,7 @@ from auth.authentication import get_current_subject
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
-from core.inference.model_ids import public_model_id
+from core.inference.model_ids import model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
@@ -7031,6 +7034,20 @@ def _build_external_messages(
     return result
 
 
+_MEMORY_CAPTURE_MONITOR_LABEL = "[memory capture]"
+
+
+def _monitor_prompt_for_request(request: Request, messages: list) -> str:
+    if getattr(request.state, "redact_memory_capture_monitor", False):
+        return _MEMORY_CAPTURE_MONITOR_LABEL
+    original = getattr(request.state, "memory_original_messages", None)
+    return _monitor_prompt_from_messages(original if isinstance(original, list) else messages)
+
+
+def _redact_memory_monitor_reply(request: Request) -> bool:
+    return bool(getattr(request.state, "redact_memory_capture_monitor", False))
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
@@ -7111,9 +7128,10 @@ async def _proxy_to_external_provider(
             endpoint = request.url.path,
             method = request.method,
             model = model,
-            prompt = _monitor_prompt_from_messages(payload.messages),
+            prompt = _monitor_prompt_for_request(request, payload.messages),
             context_length = None,
             subject = current_subject,
+            redact_reply = _redact_memory_monitor_reply(request),
         )
 
     client = ExternalProviderClient(
@@ -7381,8 +7399,7 @@ async def delete_openai_container(
         await client.close()
 
 
-@router.post("/chat/completions")
-async def openai_chat_completions(
+async def _openai_chat_completions_impl(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -7403,6 +7420,122 @@ async def openai_chat_completions(
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # Memory is opt-in; invalid capture sources are no-ops.
+    from core.inference import memory as chat_memory
+
+    scope = payload.memory_scope
+    recall_enabled, auto_save_enabled = (
+        chat_memory.get_memory_settings() if scope is not None else (False, False)
+    )
+
+    def _new_chat_cancel_event():
+        cancel_event = threading.Event()
+        request.state.memory_cancel_event = cancel_event
+        return cancel_event
+
+    if payload.request_purpose == "memory_capture":
+        if scope is None or not auto_save_enabled:
+            return JSONResponse({"id": "memory-capture-skipped", "choices": []})
+        try:
+            _, _, evidence = chat_memory.verify_source(scope.thread_id, scope.source_message_id)
+        except chat_memory.MemoryValidationError:
+            return JSONResponse({"id": "memory-capture-skipped", "choices": []})
+
+        request.state.redact_memory_capture_monitor = bool(
+            getattr(request.state, "internal_memory_capture", False)
+        )
+        # Rebuild this bounded private request from persisted evidence.
+        payload.messages = [
+            ChatMessage(role = "system", content = chat_memory.CAPTURE_SYSTEM_PROMPT),
+            ChatMessage(role = "user", content = evidence),
+        ]
+        payload.stream = True
+        payload.temperature = 0
+        payload.top_p = 1
+        payload.top_k = 20
+        payload.min_p = 0
+        payload.repetition_penalty = 1
+        payload.presence_penalty = 0
+        payload.max_tokens = 128
+        payload.max_completion_tokens = None
+        payload.n = 1
+        payload.stop = None
+        payload.logprobs = False
+        payload.top_logprobs = None
+        payload.stream_options = None
+        payload.tools = None
+        payload.tool_choice = "none"
+        payload.enable_tools = False
+        payload.enabled_tools = []
+        payload.mcp_enabled = False
+        payload.enable_thinking = False
+        payload.reasoning_effort = "none"
+        payload.thinking = None
+        payload.image_base64 = None
+        payload.audio_base64 = None
+        payload.rag_scope = None
+        payload.enable_prompt_caching = False
+        payload.fast_mode = False
+
+        # Local capture only uses the resident model; switch races are no-ops.
+        if not (payload.provider_id or payload.provider_type):
+            requested_model = payload.model if isinstance(payload.model, str) else None
+            llama_backend = get_llama_cpp_backend()
+            inference_backend = get_inference_backend()
+            resident_ids = [
+                getattr(llama_backend, "model_identifier", None)
+                if llama_backend.is_loaded
+                else None,
+                getattr(llama_backend, "_openai_advertised_id", None)
+                if llama_backend.is_loaded
+                else None,
+                getattr(inference_backend, "active_model_name", None),
+            ]
+            if not requested_model or not any(
+                model_id_matches(requested_model, resident)
+                or (
+                    isinstance(resident, str)
+                    and public_model_id(resident)
+                    and requested_model.casefold() == public_model_id(resident).casefold()
+                )
+                for resident in resident_ids
+            ):
+                return JSONResponse({"id": "memory-capture-skipped", "choices": []})
+            disable_openai_auto_switch_for_request(request.scope)
+
+    if scope is not None:
+        if payload.request_purpose == "chat" and (
+            scope.allow_explicit_commands or (scope.auto_capture and auto_save_enabled)
+        ):
+
+            def _commit_deterministic_memory() -> None:
+                if scope.allow_explicit_commands:
+                    chat_memory.explicit_command(scope.thread_id, scope.source_message_id)
+                if scope.auto_capture and chat_memory.get_memory_settings()[1]:
+                    chat_memory.direct_statement(scope.thread_id, scope.source_message_id)
+
+            request.state.memory_commit = _commit_deterministic_memory
+        try:
+            if scope.recall and recall_enabled:
+                context = chat_memory.recall_context(
+                    scope.thread_id,
+                    scope.source_message_id,
+                    include_ids = payload.request_purpose == "memory_capture",
+                )
+                if context:
+                    request.state.memory_original_messages = list(payload.messages)
+                    payload.messages = list(payload.messages)
+                    # Keep leading instructions and cache prefixes before memory.
+                    insert_at = 0
+                    while insert_at < len(payload.messages) and payload.messages[
+                        insert_at
+                    ].role in {"system", "developer"}:
+                        insert_at += 1
+                    payload.messages.insert(insert_at, ChatMessage(role = "system", content = context))
+        except Exception:
+            # Recall fails open without logging source content.
+            logger.warning("chat_memory.prepass_failed")
+
     # OpenAI's newer "developer" role is equivalent to "system". Normalize it
     # before provider routing so external providers (which may not accept the
     # "developer" role) get "system" too, matching the local path.
@@ -7621,23 +7754,32 @@ async def openai_chat_completions(
 
     async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
         tts_monitor_id = None
+        cancel_event = getattr(request.state, "memory_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = _new_chat_cancel_event()
+        tracker = _TrackedCancel(cancel_event, payload.cancel_id, payload.session_id)
+        tracker.__enter__()
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
                 endpoint = request.url.path,
                 method = request.method,
                 model = model_label,
-                prompt = _monitor_prompt_from_messages(payload.messages),
+                prompt = _monitor_prompt_for_request(request, payload.messages),
                 context_length = context_length,
                 subject = current_subject,
+                redact_reply = _redact_memory_monitor_reply(request),
             )
         try:
             response = await generate_audio(payload, request)
         except asyncio.CancelledError:
+            cancel_event.set()
             api_monitor.finish(tts_monitor_id, "cancelled")
             raise
         except Exception as e:
             api_monitor.fail(tts_monitor_id, _friendly_error(e))
             raise
+        finally:
+            tracker.__exit__(None, None, None)
         if isinstance(response, JSONResponse):
             try:
                 body = json.loads(response.body.decode())
@@ -7648,7 +7790,7 @@ async def openai_chat_completions(
                     api_monitor.set_reply(tts_monitor_id, content)
             except Exception:
                 pass
-        api_monitor.finish(tts_monitor_id)
+        api_monitor.finish(tts_monitor_id, "cancelled" if cancel_event.is_set() else "completed")
         return response
 
     if using_gguf:
@@ -7693,9 +7835,10 @@ async def openai_chat_completions(
                 endpoint = request.url.path,
                 method = request.method,
                 model = model_name,
-                prompt = _monitor_prompt_from_messages(payload.messages),
+                prompt = _monitor_prompt_for_request(request, payload.messages),
                 context_length = _monitor_context_length(),
                 subject = current_subject,
+                redact_reply = _redact_memory_monitor_reply(request),
             )
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
@@ -7706,7 +7849,7 @@ async def openai_chat_completions(
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
-            cancel_event = threading.Event()
+            cancel_event = _new_chat_cancel_event()
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
 
@@ -7830,9 +7973,10 @@ async def openai_chat_completions(
             endpoint = request.url.path,
             method = request.method,
             model = model_name,
-            prompt = _monitor_prompt_from_messages(payload.messages),
+            prompt = _monitor_prompt_for_request(request, payload.messages),
             context_length = _monitor_context_length(),
             subject = current_subject,
+            redact_reply = _redact_memory_monitor_reply(request),
         )
 
     # Finalize the monitor entry on validation rejection before raising.
@@ -7940,7 +8084,7 @@ async def openai_chat_completions(
                 "Image provided but current GGUF model does not support vision.",
             )
 
-        cancel_event = threading.Event()
+        cancel_event = _new_chat_cancel_event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
         # parity). Naive curl / .NET / System.Text.Json clients omitting the
@@ -8014,7 +8158,7 @@ async def openai_chat_completions(
         if audio_b64:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
 
-        cancel_event = threading.Event()
+        cancel_event = _new_chat_cancel_event()
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
@@ -9385,7 +9529,7 @@ async def openai_chat_completions(
             reasoning_prefilled = _sf_reasoning_prefilled,
         )
 
-    cancel_event = threading.Event()
+    cancel_event = _new_chat_cancel_event()
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
@@ -10250,6 +10394,156 @@ async def openai_chat_completions(
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+
+
+def _memory_stream_state(chunk) -> tuple[bool, bool]:
+    """Return (done, failed) for OpenAI-compatible SSE carried by a chunk."""
+    if isinstance(chunk, bytes):
+        chunk = chunk.decode("utf-8", errors = "replace")
+    done = failed = False
+    for line in str(chunk).splitlines():
+        if not line.startswith("data:"):
+            continue
+        data = line.removeprefix("data:").strip()
+        if data == "[DONE]":
+            done = True
+            continue
+        try:
+            event = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        failed = failed or (isinstance(event, dict) and "error" in event)
+    return done, failed
+
+
+def _commit_memory_safely(commit) -> None:
+    try:
+        commit()
+    except Exception:
+        logger.warning("chat_memory.commit_failed")
+
+
+def _defer_memory_commit(
+    response,
+    commit,
+    *,
+    cancel_event = None,
+):
+    if commit is None:
+        return response
+
+    def _cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    if isinstance(response, StreamingResponse):
+        body_iterator = response.body_iterator
+
+        async def _cancel_body_iterator() -> None:
+            if cancel_event is not None:
+                cancel_event.set()
+            athrow = getattr(body_iterator, "athrow", None)
+            if athrow is not None:
+                try:
+                    await athrow(asyncio.CancelledError())
+                    return
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    return
+                except RuntimeError:
+                    pass
+            aclose = getattr(body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
+
+        async def _commit_after_stream():
+            done = failed = False
+            try:
+                async for chunk in body_iterator:
+                    chunk_done, chunk_failed = _memory_stream_state(chunk)
+                    done = done or chunk_done
+                    failed = failed or chunk_failed
+                    yield chunk
+            except (asyncio.CancelledError, GeneratorExit):
+                failed = True
+                await _cancel_body_iterator()
+                raise
+            finally:
+                if done and not failed and not _cancelled():
+                    _commit_memory_safely(commit)
+
+        response.body_iterator = _commit_after_stream()
+        return response
+    if 200 <= response.status_code < 300:
+        original_background = response.background
+
+        async def _commit_after_send() -> None:
+            if original_background is not None:
+                await original_background()
+            if not _cancelled():
+                _commit_memory_safely(commit)
+
+        response.background = BackgroundTask(_commit_after_send)
+    return response
+
+
+async def _dispatch_openai_chat_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str,
+    *,
+    internal_memory_capture: bool,
+):
+    # Clear memory state when tests reuse a request object.
+    request.state.memory_commit = None
+    request.state.memory_original_messages = None
+
+    request.state.memory_cancel_event = None
+    request.state.internal_memory_capture = internal_memory_capture
+    request.state.redact_memory_capture_monitor = False
+    if internal_memory_capture:
+        payload.request_purpose = "memory_capture"
+    elif payload.request_purpose == "memory_capture":
+        raise HTTPException(
+            status_code = 400,
+            detail = "memory_capture requests must use /v1/chat/completions/memory-capture.",
+        )
+    response = await _openai_chat_completions_impl(payload, request, current_subject)
+    return _defer_memory_commit(
+        response,
+        request.state.memory_commit,
+        cancel_event = request.state.memory_cancel_event,
+    )
+
+
+@router.post("/chat/completions")
+@wraps(_openai_chat_completions_impl, assigned = ())
+async def openai_chat_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    if not hasattr(request, "state"):
+        return await _openai_chat_completions_impl(payload, request, current_subject)
+    return await _dispatch_openai_chat_completions(
+        payload,
+        request,
+        current_subject,
+        internal_memory_capture = False,
+    )
+
+
+@router.post("/chat/completions/memory-capture", include_in_schema = False)
+async def openai_memory_capture_completions(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Run Studio's private memory extraction protocol with monitor redaction."""
+    return await _dispatch_openai_chat_completions(
+        payload,
+        request,
+        current_subject,
+        internal_memory_capture = True,
+    )
 
 
 # =====================================================================

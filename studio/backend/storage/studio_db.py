@@ -465,6 +465,75 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id_created_at ON chat_messages(thread_id, created_at)"
     )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_memories (
+            id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL CHECK (scope IN ('global', 'project')),
+            project_id TEXT REFERENCES chat_projects(id) ON DELETE CASCADE,
+            content TEXT NOT NULL,
+            normalized_content TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK (
+                source_type IN ('manual', 'explicit', 'heuristic', 'model')
+            ),
+            source_thread_id TEXT,
+            source_message_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            CHECK (
+                (scope = 'global' AND project_id IS NULL) OR
+                (scope = 'project' AND project_id IS NOT NULL)
+            )
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_memories_global_normalized
+        ON chat_memories(normalized_content) WHERE scope = 'global'
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_memories_project_normalized
+        ON chat_memories(project_id, normalized_content) WHERE scope = 'project'
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chat_memories_scope_updated
+        ON chat_memories(scope, project_id, updated_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_memory_source_operations (
+            source_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            operation_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY (source_message_id, operation_key)
+        )
+        """
+    )
+
+    # Older review databases may contain content-bearing operation keys.
+    rows = conn.execute(
+        "SELECT source_message_id, operation_key FROM chat_memory_source_operations "
+        "WHERE operation_key NOT LIKE 'sha256:%'"
+    ).fetchall()
+    for row in rows:
+        digest = "sha256:" + hashlib.sha256(row["operation_key"].encode("utf-8")).hexdigest()
+        conn.execute(
+            "UPDATE OR IGNORE chat_memory_source_operations SET operation_key = ? "
+            "WHERE source_message_id = ? AND operation_key = ?",
+            (digest, row["source_message_id"], row["operation_key"]),
+        )
+        conn.execute(
+            "DELETE FROM chat_memory_source_operations WHERE source_message_id = ? "
+            "AND operation_key = ?",
+            (row["source_message_id"], row["operation_key"]),
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_settings (
@@ -2620,6 +2689,287 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
         conn.close()
 
 
+def _chat_memory_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "scope": data["scope"],
+        "projectId": data["project_id"],
+        "content": data["content"],
+        "sourceType": data["source_type"],
+        "sourceThreadId": data["source_thread_id"],
+        "sourceMessageId": data["source_message_id"],
+        "createdAt": data["created_at"],
+        "updatedAt": data["updated_at"],
+    }
+
+
+def list_chat_memories(scope: Optional[str] = None, project_id: Optional[str] = None) -> list[dict]:
+    clauses: list[str] = []
+    values: list[object] = []
+    if scope is not None:
+        clauses.append("scope = ?")
+        values.append(scope)
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        values.append(project_id)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT * FROM chat_memories{where} ORDER BY updated_at DESC, id ASC", values
+        ).fetchall()
+        return [_chat_memory_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_chat_memory(memory_id: str) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM chat_memories WHERE id = ?", (memory_id,)).fetchone()
+        return _chat_memory_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def insert_chat_memory(memory: dict, maximum: int | None = None) -> Optional[dict]:
+    """Insert an already validated memory with its capacity check in one transaction."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if maximum is not None:
+            count = conn.execute(
+                """SELECT COUNT(*) FROM chat_memories WHERE scope = ?
+                AND ((project_id IS NULL AND ? IS NULL) OR project_id = ?)""",
+                (memory["scope"], memory.get("projectId"), memory.get("projectId")),
+            ).fetchone()[0]
+            if count >= maximum:
+                raise ValueError("memory scope full")
+        result = conn.execute(
+            """INSERT INTO chat_memories (id, scope, project_id, content, normalized_content,
+            source_type, source_thread_id, source_message_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+            (
+                memory["id"],
+                memory["scope"],
+                memory.get("projectId"),
+                memory["content"],
+                memory["normalizedContent"],
+                memory["sourceType"],
+                memory.get("sourceThreadId"),
+                memory.get("sourceMessageId"),
+                memory["createdAt"],
+                memory["updatedAt"],
+            ),
+        )
+        row = conn.execute("SELECT * FROM chat_memories WHERE id = ?", (memory["id"],)).fetchone()
+        conn.commit()
+        return _chat_memory_from_row(row) if result.rowcount else None
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def update_chat_memory(
+    memory_id: str,
+    patch: dict,
+    maximum: int | None = None,
+) -> Optional[dict]:
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute("SELECT * FROM chat_memories WHERE id = ?", (memory_id,)).fetchone()
+        if existing is None:
+            conn.commit()
+            return None
+        scope = patch.get("scope", existing["scope"])
+        project_id = patch.get("project_id", existing["project_id"])
+        moved = (scope, project_id) != (existing["scope"], existing["project_id"])
+        if maximum is not None and moved:
+            count = conn.execute(
+                """SELECT COUNT(*) FROM chat_memories WHERE scope = ?
+                AND ((project_id IS NULL AND ? IS NULL) OR project_id = ?)""",
+                (scope, project_id, project_id),
+            ).fetchone()[0]
+            if count >= maximum:
+                raise ValueError("memory scope full")
+        assignments = ", ".join(f"{column} = ?" for column in patch)
+        conn.execute(
+            f"UPDATE chat_memories SET {assignments} WHERE id = ?", (*patch.values(), memory_id)
+        )
+        row = conn.execute("SELECT * FROM chat_memories WHERE id = ?", (memory_id,)).fetchone()
+        conn.commit()
+        return _chat_memory_from_row(row)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def delete_chat_memory(memory_id: str) -> bool:
+    conn = get_connection()
+    try:
+        result = conn.execute("DELETE FROM chat_memories WHERE id = ?", (memory_id,))
+        conn.commit()
+        return result.rowcount > 0
+    finally:
+        conn.close()
+
+
+def clear_chat_memories(scope: str, project_id: Optional[str]) -> int:
+    conn = get_connection()
+    try:
+        result = conn.execute(
+            """
+            DELETE FROM chat_memories
+            WHERE scope = ? AND ((project_id IS NULL AND ? IS NULL) OR project_id = ?)
+            """,
+            (scope, project_id, project_id),
+        )
+        conn.commit()
+        return result.rowcount
+    finally:
+        conn.close()
+
+
+def apply_chat_memory_capture_operations(
+    source_message_id: str,
+    operations: list[dict],
+    *,
+    maximum_operations: int,
+    maximum_memories: int,
+) -> list[dict]:
+    """Atomically apply accepted automatic operations and then reserve them."""
+    if not operations:
+        return []
+    conn = get_connection()
+    results: list[dict] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for operation in operations[:maximum_operations]:
+            key = operation["operationKey"]
+            reserved = conn.execute(
+                "SELECT 1 FROM chat_memory_source_operations "
+                "WHERE source_message_id = ? AND operation_key = ?",
+                (source_message_id, key),
+            ).fetchone()
+            if reserved is not None:
+                continue
+            used = conn.execute(
+                "SELECT COUNT(*) FROM chat_memory_source_operations WHERE source_message_id = ?",
+                (source_message_id,),
+            ).fetchone()[0]
+            if used >= maximum_operations:
+                continue
+            action = operation["action"]
+            memory_id = operation.get("memoryId")
+            row = None
+            if action == "add":
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM chat_memories WHERE scope = ? "
+                    "AND ((project_id IS NULL AND ? IS NULL) OR project_id = ?)",
+                    (operation["scope"], operation["projectId"], operation["projectId"]),
+                ).fetchone()[0]
+                if count >= maximum_memories:
+                    continue
+                inserted = conn.execute(
+                    """INSERT INTO chat_memories (id, scope, project_id, content,
+                    normalized_content, source_type, source_thread_id, source_message_id,
+                    created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT DO NOTHING""",
+                    (
+                        operation["id"],
+                        operation["scope"],
+                        operation["projectId"],
+                        operation["content"],
+                        operation["normalizedContent"],
+                        operation["sourceType"],
+                        operation["sourceThreadId"],
+                        operation["sourceMessageId"],
+                        operation["createdAt"],
+                        operation["updatedAt"],
+                    ),
+                )
+                if not inserted.rowcount:
+                    continue
+                row = conn.execute(
+                    "SELECT * FROM chat_memories WHERE id = ?", (operation["id"],)
+                ).fetchone()
+            elif action == "replace" and memory_id:
+                existing = conn.execute(
+                    "SELECT * FROM chat_memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+                if (
+                    existing is None
+                    or existing["scope"] != operation["scope"]
+                    or existing["project_id"] != operation["projectId"]
+                ):
+                    continue
+                duplicate = conn.execute(
+                    "SELECT 1 FROM chat_memories WHERE scope = ? "
+                    "AND ((project_id IS NULL AND ? IS NULL) OR project_id = ?) "
+                    "AND normalized_content = ? AND id != ?",
+                    (
+                        operation["scope"],
+                        operation["projectId"],
+                        operation["projectId"],
+                        operation["normalizedContent"],
+                        memory_id,
+                    ),
+                ).fetchone()
+                if (
+                    duplicate is not None
+                    or existing["normalized_content"] == operation["normalizedContent"]
+                ):
+                    continue
+                conn.execute(
+                    """UPDATE chat_memories SET content = ?, normalized_content = ?, source_type = ?,
+                    source_thread_id = ?, source_message_id = ?, updated_at = ? WHERE id = ?""",
+                    (
+                        operation["content"],
+                        operation["normalizedContent"],
+                        operation["sourceType"],
+                        operation["sourceThreadId"],
+                        operation["sourceMessageId"],
+                        operation["updatedAt"],
+                        memory_id,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM chat_memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+            elif action == "forget" and memory_id:
+                row = conn.execute(
+                    "SELECT * FROM chat_memories WHERE id = ?", (memory_id,)
+                ).fetchone()
+                if (
+                    row is None
+                    or row["scope"] != operation["scope"]
+                    or row["project_id"] != operation["projectId"]
+                ):
+                    continue
+                conn.execute("DELETE FROM chat_memories WHERE id = ?", (memory_id,))
+            if row is None:
+                continue
+            conn.execute(
+                "INSERT INTO chat_memory_source_operations "
+                "(source_message_id, operation_key, created_at) VALUES (?, ?, ?)",
+                (source_message_id, key, int(datetime.now(timezone.utc).timestamp() * 1000)),
+            )
+            results.append(_chat_memory_from_row(row))
+        conn.commit()
+        return results
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_app_setting(key: str, fallback = None):
     conn = get_connection()
     try:
@@ -2695,10 +3045,7 @@ def list_chat_settings() -> dict[str, Any]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT key, value_json FROM chat_settings ORDER BY key").fetchall()
-        settings: dict[str, Any] = {}
-        for row in rows:
-            settings[row["key"]] = _json_loads(row["value_json"], None)
-        return settings
+        return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
     finally:
         conn.close()
 
@@ -2737,8 +3084,7 @@ def _deep_merge_settings(current: dict[str, Any], updates: dict[str, Any]) -> di
 
 
 def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
-    """Atomic read-merge-write under BEGIN IMMEDIATE so concurrent writers
-    cannot drop each other's updates."""
+    """Atomically deep-merge installation-global chat settings."""
     if not updates:
         return list_chat_settings()
     conn = get_connection()

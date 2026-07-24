@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { MemorySettingsPanel } from "@/features/chat";
 import { ProfilePersonalizationPanel } from "@/features/profile";
 import { useT } from "@/i18n";
 
@@ -25,6 +26,8 @@ export function ProfileTab() {
       </header>
 
       <ProfilePersonalizationPanel />
+
+      <MemorySettingsPanel />
     </div>
   );
 }

@@ -357,6 +357,13 @@ export interface OpenAIChatMessage {
   name?: string;
 }
 
+export interface MemoryScopeRequest {
+  thread_id: string;
+  source_message_id: string;
+  recall: boolean;
+  allow_explicit_commands: boolean;
+  auto_capture: boolean;
+}
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
@@ -416,6 +423,7 @@ export interface OpenAIChatCompletionsRequest {
   nudge_tool_calls?: boolean;
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
+  memory_scope?: MemoryScopeRequest;
   session_id?: string;
   cancel_id?: string;
   provider_id?: string;

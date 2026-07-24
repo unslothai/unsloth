@@ -47,6 +47,15 @@ import {
   useScrollThreadToBottom,
 } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { Button } from "@/components/ui/button";
+
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { MascotImg } from "@/components/mascot-img";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -89,6 +98,9 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
 import {
+  type MemoryScope,
+  createChatMemory,
+  isThreadIncognito,
   PLUS_MENU_ORDER,
   composerDraftKey,
   readComposerDraft,
@@ -103,6 +115,7 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { useT } from "@/i18n";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -3933,6 +3946,196 @@ const DeleteMessageButton: FC = () => {
   );
 };
 
+const RememberMessageButton: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const activeProjectId = useChatRuntimeStore((state) => state.activeProjectId);
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
+  const threadListItemRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+  // Only the active persisted thread can create memories.
+  const persistedThreadId = threadListItemRemoteId;
+  const ownsPersistedThread =
+    Boolean(persistedThreadId) && activeThreadId === persistedThreadId;
+  const unavailable =
+    !ownsPersistedThread ||
+    isThreadIncognito(threadListItemId) ||
+    isThreadIncognito(persistedThreadId);
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState("");
+  const [scope, setScope] = useState<MemoryScope>("global");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const contentId = `remember-memory-content-${messageId}`;
+  const scopeId = `remember-memory-scope-${messageId}`;
+
+  const openDialog = () => {
+    setContent(aui.message().getCopyText().slice(0, 300));
+    setScope("global");
+    setError(null);
+    setOpen(true);
+  };
+
+  const canWriteToCurrentThread = () =>
+    Boolean(persistedThreadId) &&
+    aui.threadListItem().getState().remoteId === persistedThreadId &&
+    useChatRuntimeStore.getState().activeThreadId === persistedThreadId &&
+    !isThreadIncognito(threadListItemId) &&
+    !isThreadIncognito(persistedThreadId);
+
+  const persistMemory = async (normalized: string) => {
+    if (!canWriteToCurrentThread()) {
+      throw new Error(t("chat.memory.threadUnavailable"));
+    }
+    const result = await createChatMemory({
+      content: normalized,
+      scope,
+      projectId: scope === "project" ? activeProjectId : null,
+    });
+    toast[result.created ? "success" : "info"](
+      t(result.created ? "chat.memory.saved" : "chat.memory.duplicate"),
+    );
+    setOpen(false);
+  };
+
+  const saveMemory = async () => {
+    const normalized = content.trim();
+    setError(null);
+    if (!normalized) {
+      setError(t("chat.memory.saveError"));
+      return;
+    }
+    if (scope === "project" && !activeProjectId) {
+      setError(t("chat.memory.projectUnavailable"));
+      return;
+    }
+    if (!canWriteToCurrentThread()) {
+      setError(t("chat.memory.threadUnavailable"));
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await persistMemory(normalized);
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("chat.memory.saveError"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (unavailable) {
+    return null;
+  }
+
+  return (
+    <>
+      <TooltipIconButton
+        tooltip={t("chat.memory.remember")}
+        disabled={isRunning || saving}
+        onClick={openDialog}
+      >
+        <HugeiconsIcon
+          icon={Bookmark02Icon}
+          strokeWidth={1.75}
+          className="size-icon"
+        />
+      </TooltipIconButton>
+      <Dialog
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (!saving) {
+            setOpen(nextOpen);
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("chat.memory.dialogTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("chat.memory.dialogDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-1.5">
+              <label htmlFor={contentId} className="text-sm font-medium">
+                {t("chat.memory.content")}
+              </label>
+              <textarea
+                id={contentId}
+                className="min-h-24 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
+                maxLength={300}
+                value={content}
+                onChange={(event) => setContent(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t("chat.memory.characterCount", { count: content.length })}
+              </p>
+            </div>
+            <div className="grid gap-1.5">
+              <label htmlFor={scopeId} className="text-sm font-medium">
+                {t("chat.memory.scope")}
+              </label>
+              <select
+                id={scopeId}
+                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                value={scope}
+                onChange={(event) =>
+                  setScope(event.target.value as MemoryScope)
+                }
+              >
+                <option value="global">{t("chat.memory.global")}</option>
+                <option value="project" disabled={!activeProjectId}>
+                  {t("chat.memory.currentProject")}
+                </option>
+              </select>
+              {activeProjectId ? null : (
+                <p className="text-xs text-muted-foreground">
+                  {t("chat.memory.projectUnavailable")}
+                </p>
+              )}
+            </div>
+            {error ? (
+              <p className="text-sm text-destructive" role="alert">
+                {error}
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={saving}
+              onClick={() => setOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              disabled={
+                saving ||
+                !content.trim() ||
+                (scope === "project" && !activeProjectId)
+              }
+              onClick={saveMemory}
+            >
+              {saving ? t("common.saving") : t("common.save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+};
+
 const CopyButton: FC = () => {
   const aui = useAui();
   const [copied, setCopied] = useState(false);
@@ -4013,6 +4216,8 @@ const AssistantActionBar: FC = () => {
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
+
+        <RememberMessageButton />
         <EditAssistantMessageButton />
         <ActionBarPrimitive.Reload asChild={true}>
           <TooltipIconButton tooltip="Refresh">
@@ -4148,6 +4353,8 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
+
+      <RememberMessageButton />
       <ActionBarPrimitive.Edit asChild={true}>
         <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
           <HugeiconsIcon

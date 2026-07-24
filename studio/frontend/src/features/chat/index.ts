@@ -119,6 +119,16 @@ export {
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";
+export {
+  createChatMemory,
+  type MemoryScope,
+} from "./api/chat-memory-api";
+export { MemorySettingsPanel } from "./components/memory-settings-panel";
+export {
+  getStoredChatMessage,
+  getStoredChatThread,
+  isThreadIncognito,
+} from "./utils/chat-history-storage";
 export { subscribeDictationLevel } from "./adapters/dictation-level";
 export {
   StudioDictationAdapter,

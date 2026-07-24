@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
+
 from pydantic import (
     BaseModel,
     Discriminator,
@@ -19,6 +20,17 @@ from pydantic import (
 )
 
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
+
+class MemoryScopeRequest(BaseModel):
+    """Strict memory opt-in; absent scope preserves raw OpenAI API behavior."""
+
+    model_config = {"extra": "forbid"}
+    thread_id: str = Field(min_length = 1, max_length = 200)
+    source_message_id: str = Field(min_length = 1, max_length = 200)
+    recall: bool = True
+    allow_explicit_commands: bool = True
+    auto_capture: bool = True
 
 
 class LoadRequest(BaseModel):
@@ -1094,6 +1106,11 @@ class ChatCompletionRequest(BaseModel):
         ge = 1,
         description = "[x-unsloth] Timeout in seconds for each tool call execution (9999 = no limit).",
     )
+    memory_scope: Optional["MemoryScopeRequest"] = Field(
+        None, description = "[x-unsloth] Persisted thread/source identifiers for opt-in memory."
+    )
+    request_purpose: Literal["chat", "memory_capture"] = "chat"
+
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",

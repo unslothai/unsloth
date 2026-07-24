@@ -400,6 +400,64 @@ export const en = {
         "Photo updated for this session, but may not persist after reload.",
       photoUpdateErrorTitle: "Could not update profile photo",
       imageUseError: "Could not use this image.",
+
+      memory: {
+        title: "Memory",
+        description:
+          "Memory is on by default. Studio may save directly stated preferences and project facts after a chat, then send relevant memories to your selected model. External-model automatic saving can make one small second request to the same provider.",
+        referenceLabel: "Reference saved memories",
+        referenceDescription: "Use relevant saved notes in new chats.",
+        autoSaveLabel: "Automatically save useful memories",
+        autoSaveDescription:
+          "Manual saves and Remember remain available when off.",
+        savedTitle: "Saved memories",
+        savedDescription:
+          "Add, edit, move, or remove notes that help personalize chats.",
+        scope: "Scope",
+        global: "Global",
+        project: "Project",
+        selectProject: "Select a project",
+        projectRequired: "Select a project to view project memories.",
+        projectsLoadError: "Could not load projects",
+        export: "Export JSON",
+        exportError: "Could not export memories",
+        add: "Add memory",
+        addTitle: "Add memory",
+        edit: "Edit",
+        editTitle: "Edit memory",
+        editorDescription: "Keep this note concise and useful across chats.",
+
+        modelDisclosure:
+          "Saved memory may be sent to your selected model or provider.",
+        archived: "archived",
+        content: "Memory",
+        characterCount: "{count}/300 characters",
+        saveError: "Could not save memory",
+        updateError: "Could not update memory",
+        saved: "Memory saved",
+        updated: "Memory updated",
+        duplicate: "That memory is already saved",
+
+        savedManually: "Saved manually",
+        savedExplicitly: "Saved from a Remember request",
+        savedAutomatically: "Saved automatically",
+        loading: "Loading memories...",
+        loadError: "Could not load memories",
+        retry: "Retry",
+        empty: "No saved memories in this scope.",
+        deleted: "Memory deleted",
+        deleting: "Deleting...",
+        deleteError: "Could not delete memory",
+        clearTitle: "Clear saved memories",
+        clearDescription: "Chat history is kept when memories are cleared.",
+        clearAction: "Clear memories",
+        clearConfirmTitle: "Clear saved memories?",
+        clearConfirmDescription:
+          'This permanently deletes all {count} memories from "{scope}". Chat history is not changed.',
+        clearing: "Clearing...",
+        cleared: "Memories cleared",
+        clearError: "Could not clear memories",
+      },
     },
     appearance: {
       title: "Appearance",
@@ -630,7 +688,8 @@ export const en = {
       clearOneChatTitle: "Clear 1 chat?",
       clearChatsTitle: "Clear {count} chats?",
       clearChatsConfirmDescription:
-        "Permanently deletes every chat on this device. This cannot be undone.",
+        "Permanently deletes every chat on this device. Saved memories are retained. This cannot be undone.",
+      manageMemories: "Manage memories",
       clearingAction: "Clearing...",
       clearOneChatAction: "Clear 1 chat",
       clearChatCountAction: "Clear {count} chats",
@@ -834,6 +893,26 @@ export const en = {
       },
     },
   },
+  chat: {
+    memory: {
+      remember: "Remember",
+      dialogTitle: "Remember this message",
+      dialogDescription:
+        "Save an editable note for future chats. Saved memory may be sent to your selected model or provider.",
+      content: "Memory",
+      characterCount: "{count}/300 characters",
+      scope: "Scope",
+      global: "Global",
+      currentProject: "Current project",
+      projectUnavailable:
+        "Choose a project in Chat before saving a project memory.",
+      saved: "Memory saved",
+      duplicate: "That memory is already saved",
+      threadUnavailable: "This message is no longer available in this chat.",
+      saveError: "Could not save memory",
+    },
+  },
+
   studio: {
     routeTitle: "Train",
     title: "Fine-tuning Studio",

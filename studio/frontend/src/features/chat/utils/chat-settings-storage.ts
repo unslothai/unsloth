@@ -226,6 +226,9 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
+
+  const referenceMemories = sanitizeBool(value.referenceMemories);
+  const autoSaveMemories = sanitizeBool(value.autoSaveMemories);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
@@ -254,6 +257,9 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
+
+  if (referenceMemories !== undefined) settings.referenceMemories = referenceMemories;
+  if (autoSaveMemories !== undefined) settings.autoSaveMemories = autoSaveMemories;
 
   return settings;
 }
@@ -312,7 +318,9 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
-    settings.toolCallTimeout === undefined
+    settings.toolCallTimeout === undefined &&
+    settings.referenceMemories === undefined &&
+    settings.autoSaveMemories === undefined
   );
 }
 
