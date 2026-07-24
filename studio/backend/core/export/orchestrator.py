@@ -598,6 +598,7 @@ class ExportOrchestrator:
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
+        adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -610,6 +611,7 @@ class ExportOrchestrator:
                 "private": private,
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
+                "adapter_format": adapter_format,
             },
         )
 

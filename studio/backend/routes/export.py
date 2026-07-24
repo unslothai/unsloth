@@ -457,6 +457,7 @@ async def export_lora_adapter(
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
+            adapter_format = request.adapter_format,
         )
 
         if not success:

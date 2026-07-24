@@ -2645,6 +2645,8 @@ def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
     """The filesystem half of scan_loras, so it can run in a worker thread."""
+    from utils.models.checkpoints import parse_adapter_features
+
     lora_list: List[LoRAInfo] = []
 
     trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
@@ -2658,6 +2660,7 @@ def _scan_loras_sync(
                 source = "training",
                 export_type = model_type,
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -2672,6 +2675,7 @@ def _scan_loras_sync(
                 source = "exported",
                 export_type = export_type,
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
