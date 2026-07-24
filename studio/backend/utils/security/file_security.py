@@ -114,6 +114,24 @@ def _file_suffix(path: str) -> str:
     return "." + base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
+def _hf_cache_snapshot_repo_id(local_path: str) -> Optional[str]:
+    """Hub repo id encoded in an HF-cache snapshot path, else None. An inactive Studio
+    cache loads by its snapshot path but keeps the ``models--org--repo/snapshots/<rev>``
+    layout, so the gate recovers its provenance and scans it instead of exempting it."""
+    try:
+        path = Path(local_path).resolve(strict = False)
+    except (OSError, ValueError):
+        return None
+    for parent in path.parents:
+        if parent.name != "snapshots":
+            continue
+        encoded = parent.parent.name
+        if not encoded.startswith("models--"):
+            return None
+        return encoded.removeprefix("models--").replace("--", "/") or None
+    return None
+
+
 def _load_relative_path(norm: str, load_subdirs) -> str:
     """``norm`` relative to a ``from_pretrained`` load root. Some loads read from a
     snapshot SUBDIRECTORY (Spark-TTS / BiCodec load ``<snapshot>/LLM``), where a file
@@ -485,12 +503,16 @@ def evaluate_file_security(
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.
     model_name, load_subdirs = _load_scan_target(model_name, tuple(load_subdirs))
 
-    # Local paths (including a local .gguf) have no Hub scan. A remote ref is scanned
-    # even if named "*.gguf", so a repo cannot dodge the scan via its name.
+    # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path
+    # encodes a repo id: scan that so an inactive-cache load can't dodge the gate. A
+    # remote ref is scanned even if named "*.gguf", so a name cannot dodge it either.
     try:
         from utils.paths import is_local_path
         if is_local_path(model_name):
-            return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+            cached_repo_id = _hf_cache_snapshot_repo_id(model_name)
+            if cached_repo_id is None:
+                return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+            model_name = cached_repo_id
     except Exception:
         # Cannot classify the path -> do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")

@@ -165,6 +165,18 @@ def test_skips_local_path():
     assert "local" in d.reason
 
 
+def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
+    # An inactive HF cache loads by snapshot path; the gate must recover the repo id
+    # from the models--org--repo/snapshots/<rev> layout and scan it, not exempt it.
+    snapshot = tmp_path / "models--evil--repo" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
+    with _patch_status(status) as model_info:
+        d = evaluate_file_security(str(snapshot))
+    assert d.blocked is True
+    assert model_info.call_args.args[0] == "evil/repo"
+
+
 def test_remote_gguf_named_repo_is_still_scanned():
     # Only LOCAL paths skip the Hub scan, so a remote .gguf repo is still scanned and a
     # poisoned pickle smuggled into it is blocked.
