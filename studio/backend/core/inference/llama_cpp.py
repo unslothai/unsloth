@@ -6428,29 +6428,16 @@ class LlamaCppBackend:
                         hf_repo,
                     )
                     hf_repo = _resolved_repo
-                _cached_gguf = None
-                if hf_variant:
-                    try:
-                        from hub.utils.gguf import resolve_local_gguf_path
-                        _cached_gguf = resolve_local_gguf_path(hf_repo, hf_variant)
-                    except Exception:
-                        _cached_gguf = None
-                if _cached_gguf and Path(_cached_gguf).is_file():
-                    self._reject_vulkan_diffusion_gpu_ids_before_teardown(
-                        _cached_gguf,
-                        model_identifier,
+                with _hf_offline_if_dns_dead():
+                    _preflight_model_path = self._download_gguf(
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = hf_token,
                     )
-                else:
-                    with _hf_offline_if_dns_dead():
-                        _preflight_model_path = self._download_gguf(
-                            hf_repo = hf_repo,
-                            hf_variant = hf_variant,
-                            hf_token = hf_token,
-                        )
-                    self._reject_vulkan_diffusion_gpu_ids_before_teardown(
-                        _preflight_model_path,
-                        model_identifier,
-                    )
+                self._reject_vulkan_diffusion_gpu_ids_before_teardown(
+                    _preflight_model_path,
+                    model_identifier,
+                )
             elif is_vulkan_backend and gpu_ids and gguf_path and not hf_repo:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
