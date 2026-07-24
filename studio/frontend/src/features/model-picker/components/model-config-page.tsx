@@ -411,13 +411,13 @@ function LlamaExtraArgsSetting({
   }, [config.llamaExtraArgs]);
   const commit = () => {
     const parsed = parseLlamaExtraArgsInput(draft);
-    const next = parsed.length > 0 ? parsed : undefined;
+    const next = parsed.length > 0 ? parsed : [];
     const current = config.llamaExtraArgs;
     const same =
-      (current?.length ?? 0) === (next?.length ?? 0) &&
-      (current ?? []).every((token, index) => token === next?.[index]);
+      (current?.length ?? 0) === next.length &&
+      (current ?? []).every((token, index) => token === next[index]);
     if (!same) {
-      update({ llamaExtraArgs: next });
+      update({ llamaExtraArgs: next.length > 0 ? next : [] });
     }
   };
   return (
@@ -427,7 +427,7 @@ function LlamaExtraArgsSetting({
         <InfoHint>
           Extra flags passed to llama-server after Unsloth&apos;s defaults.
           Useful for large MoE models on consumer GPUs, e.g.{" "}
-          <code className="text-[11px]">--cpu-moe --no-mmap</code>. Unsloth-managed
+          <code className="text-ui-11">--cpu-moe --no-mmap</code>. Unsloth-managed
           flags (model path, port, parallel slots) are rejected.
         </InfoHint>
       </div>

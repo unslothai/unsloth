@@ -721,6 +721,9 @@ export function useChatModelRuntime() {
                 presetSource: loadActivePresetSource,
               }),
             );
+            const validateLlamaExtraArgs = resetsPerModelSettings
+              ? undefined
+              : llamaExtraArgsForLoad(loadLlamaExtraArgs ?? undefined);
             const validation = await validateModel({
               model_path: modelId,
               nativePathLease: validateNativePathLease,
@@ -730,7 +733,12 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
-              ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
+              ...(isGguf
+                ? {
+                    gpu_memory_mode: loadGpuMemoryMode,
+                    llama_extra_args: validateLlamaExtraArgs,
+                  }
+                : {}),
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
@@ -1147,6 +1155,8 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
+                  llamaExtraArgs: stateBeforeUnload.loadedLlamaExtraArgs,
+                  loadedLlamaExtraArgs: stateBeforeUnload.loadedLlamaExtraArgs,
                 });
                 await refresh();
               } catch {

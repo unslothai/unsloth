@@ -13,6 +13,11 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
   for (let i = 0; i < trimmed.length; i += 1) {
     const ch = trimmed[i];
     if (quote) {
+      if (ch === "\\" && i + 1 < trimmed.length) {
+        current += trimmed[i + 1];
+        i += 1;
+        continue;
+      }
       if (ch === quote) {
         quote = null;
       } else {
@@ -46,7 +51,12 @@ export function formatLlamaExtraArgs(
     return "";
   }
   return args
-    .map((token) => (/\s/.test(token) ? `"${token}"` : token))
+    .map((token) => {
+      if (!/\s/.test(token)) {
+        return token;
+      }
+      return `"${token.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    })
     .join(" ");
 }
 
@@ -67,14 +77,14 @@ export function normalizeLlamaExtraArgs(
     }
     out.push(token);
   }
-  return out.length > 0 ? out : undefined;
+  return out;
 }
 
-/** Omit empty lists so /load inherits; send only when the user configured flags. */
+/** undefined/null omits the field (inherit); [] clears inherited args on reload. */
 export function llamaExtraArgsForLoad(
   args: string[] | null | undefined,
 ): string[] | undefined {
-  if (!args?.length) {
+  if (args == null) {
     return undefined;
   }
   return args;

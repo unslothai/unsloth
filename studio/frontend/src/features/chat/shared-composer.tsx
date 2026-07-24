@@ -1058,7 +1058,7 @@ export function SharedComposer({
         const effectiveNCpuMoe =
           ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
         const effectiveLlamaExtraArgs = llamaExtraArgsForLoad(
-          ownConfig.llamaExtraArgs ?? compareLoadKnobs.llamaExtraArgs ?? undefined,
+          ownConfig.llamaExtraArgs,
         );
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
@@ -1108,6 +1108,7 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                llama_extra_args: effectiveLlamaExtraArgs,
               }
             : {}),
         });
@@ -1228,6 +1229,8 @@ export function SharedComposer({
           // plus loaded baselines) so the GPU controls round-trip. (gguf context,
           // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
+          llamaExtraArgs: ownConfig.llamaExtraArgs ?? null,
+          loadedLlamaExtraArgs: ownConfig.llamaExtraArgs ?? null,
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,

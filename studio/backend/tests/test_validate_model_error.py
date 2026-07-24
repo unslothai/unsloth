@@ -211,3 +211,36 @@ def test_validate_lora_flags_trc_from_base_only(monkeypatch):
 def test_validate_lora_clean_when_neither_needs_trc(monkeypatch):
     resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = False, base_needs_trc = False)
     assert resp.requires_trust_remote_code is False
+
+
+def test_validate_rejects_denied_llama_extra_args_on_gguf(monkeypatch):
+    from types import SimpleNamespace
+
+    import utils.models.model_config as mc
+
+    monkeypatch.setattr(
+        inf,
+        "_resolve_model_identifier_for_request",
+        lambda request, operation: ("org/gguf-repo", "org/gguf-repo", False),
+    )
+    config = SimpleNamespace(
+        identifier = "org/gguf-repo",
+        display_name = "org/gguf-repo",
+        is_gguf = True,
+        is_lora = False,
+        is_vision = False,
+        gguf_file = None,
+    )
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
+    monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
+    monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: False)
+    monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: False)
+
+    req = ValidateModelRequest(
+        model_path = "org/gguf-repo",
+        llama_extra_args = ["--port", "9999"],
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inf.validate_model(req, current_subject = "tester"))
+    assert excinfo.value.status_code == 400
+    assert "--port" in excinfo.value.detail

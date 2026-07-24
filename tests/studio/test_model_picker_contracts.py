@@ -467,3 +467,4 @@ def test_model_config_page_exposes_custom_llama_server_args():
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "LlamaExtraArgsSetting" in src
     assert "parseLlamaExtraArgsInput" in src
+    assert "text-[11px]" not in src

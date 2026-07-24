@@ -1697,6 +1697,8 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
+        llamaExtraArgs: config.llamaExtraArgs ?? null,
+        loadedLlamaExtraArgs: config.llamaExtraArgs ?? null,
         loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: effectiveChatTemplateOverride,
