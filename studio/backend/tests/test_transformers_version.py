@@ -616,7 +616,11 @@ class TestCheckConfigNeeds510:
         }
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        def _fake_read(model_name, filename, hf_token = None):
+        def _fake_read(
+            model_name,
+            filename,
+            hf_token = None,
+        ):
             if model_name == "other/tokenizer-repo" and filename == "tokenization_x.py":
                 return "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
             return None
