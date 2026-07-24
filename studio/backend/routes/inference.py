@@ -10230,7 +10230,15 @@ async def openai_chat_completions(
             provider_supports_local_tool_runtime(_ext_provider_type)
             and payload.stream
             and (_tools_on_ext or _mcp_allowed_ext)
-            and not payload.tools
+            and not payload.tools  # client-supplied tools stay on passthrough
+            # tool_choice="none" opts out, mirroring the local runtime gate below,
+            # so a request that will fall back to passthrough keeps the confirm 400.
+            and not (
+                payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload)
+            )
+            # A zero tool-call budget disables tools for this turn, so confirm cannot
+            # be honored and must still 400 instead of silently passing through.
+            and (payload.max_tool_calls_per_message is None or payload.max_tool_calls_per_message > 0)
         )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).

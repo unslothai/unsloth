@@ -596,6 +596,83 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
 
+    def test_confirm_tool_calls_rejected_for_oai_compat_zero_tool_budget(self, monkeypatch):
+        """max_tool_calls_per_message=0 disables the local runtime, so the request
+        falls back to passthrough where confirm cannot be honored; keep the 400."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        called = {"proxy": False}
+
+        async def _fake_proxy(payload, request, current_subject = None):
+            called["proxy"] = True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+                "max_tool_calls_per_message": 0,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert called["proxy"] is False
+
+    def test_confirm_tool_calls_allowed_for_oai_compat_positive_tool_budget(self, monkeypatch):
+        """A positive tool budget keeps the local runtime, so confirm is still allowed."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        seen = {"called": False}
+
+        async def _fake_proxy(payload, request, current_subject = None):
+            seen["called"] = True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+                "max_tool_calls_per_message": 3,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert seen["called"] is True
+
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
             is_loaded = False
