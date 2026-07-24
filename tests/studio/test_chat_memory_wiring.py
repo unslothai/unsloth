@@ -6,6 +6,10 @@ from pathlib import Path
 WORKSPACE = Path(__file__).resolve().parents[2]
 ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text()
 
+MEMORY_RUNTIME_SRC = (
+    WORKSPACE / "studio/frontend/src/features/chat/api/memory-runtime.ts"
+).read_text()
+
 
 def test_memory_scope_uses_remote_id_after_first_save():
     start = ADAPTER_SRC.index("await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId, null);")
@@ -25,3 +29,8 @@ def test_memory_capture_uses_persisted_memory_scope_thread_id():
 
     assert "threadId: memoryScope.thread_id" in schedule_block
     assert "threadId: resolvedThreadId" not in schedule_block
+
+
+def test_memory_capture_rejects_negative_remember_commands():
+    assert r"(?:do\s+not|don['’]t)\s+(?:remember|save)\b" in MEMORY_RUNTIME_SRC
+    assert "NEGATIVE_MEMORY_COMMAND_RE.test(source)" in MEMORY_RUNTIME_SRC

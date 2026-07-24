@@ -153,6 +153,11 @@ _FORGET_EVIDENCE_RE = re.compile(
     re.I,
 )
 _POLITE_COMMAND_PREFIX = r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?"
+
+_NEGATIVE_MEMORY_COMMAND_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:do\s+not|don['’]t)\s+(?:remember|save)\b[^\n]*$",
+    re.I,
+)
 _COMMAND_RE = re.compile(
     _POLITE_COMMAND_PREFIX
     + r"remember(?:\s+that)?\s+(?!(?:how|what|why|where|when|who|whom|whose|which|whether|if)\b)"
@@ -609,6 +614,9 @@ def _commit_automatic_operations(source_message_id: str, operations: list[dict])
 
 def apply_capture(*, thread_id: str, source_message_id: str, raw_output: str) -> list[dict]:
     thread, _, evidence = verify_source(thread_id, source_message_id)
+
+    if _NEGATIVE_MEMORY_COMMAND_RE.fullmatch(evidence):
+        return []
     project_id = thread.get("projectId")
     allowed = _capture_context(evidence, project_id)
     prepared: list[dict] = []
@@ -819,7 +827,11 @@ def recall_context(
 ) -> str | None:
     thread, _, text = verify_source(thread_id, source_message_id)
 
-    if _COMMAND_RE.fullmatch(text) or _is_forget_intent(text):
+    if (
+        _COMMAND_RE.fullmatch(text)
+        or _NEGATIVE_MEMORY_COMMAND_RE.fullmatch(text)
+        or _is_forget_intent(text)
+    ):
         return None
     rows = [
         row

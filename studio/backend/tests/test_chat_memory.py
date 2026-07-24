@@ -452,6 +452,40 @@ def test_remember_command_skips_recall(tmp_path, monkeypatch):
     assert memory.recall_context("thread", "message") is None
 
 
+@pytest.mark.parametrize(
+    "command",
+    (
+        "Don't remember that I prefer dark mode",
+        "Do not remember that I prefer dark mode",
+        "Please don't save that I prefer dark mode",
+        "Please do not save that I prefer dark mode",
+    ),
+)
+def test_negative_remember_commands_skip_recall_and_capture(tmp_path, monkeypatch, command):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "Use dark mode accessibility settings", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": command}],
+        },
+    )
+    output = (
+        '{"operations":[{"action":"add","scope":"global","memory_id":null,'
+        '"content":"I prefer dark mode"}]}'
+    )
+
+    assert memory.recall_context("thread", "message") is None
+    assert (
+        memory.apply_capture(thread_id = "thread", source_message_id = "message", raw_output = output)
+        == []
+    )
+    assert studio_db.list_chat_memories() == [saved]
+
+
 def test_model_forget_rejects_ambiguous_evidence(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
     saved = memory.create_memory(content = "I prefer dark mode", scope = "global")

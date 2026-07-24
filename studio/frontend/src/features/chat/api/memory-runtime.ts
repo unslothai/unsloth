@@ -10,6 +10,9 @@ const CODE_LINE_RE =
   /^\s*(?:import\s|export\s|const\s|let\s|var\s|def\s|class\s|function\s|\{|\}|\[|\]|#include\b)/;
 const EXPLICIT_COMMAND_RE =
   /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?(?:(?:remember|forget)\b|(?:remove|delete)\b[^\n]*\bmemor(?:y|ies)\b)/i;
+
+const NEGATIVE_MEMORY_COMMAND_RE =
+  /^(?:please\s+)?(?:do\s+not|don['’]t)\s+(?:remember|save)\b/i;
 const LINE_BREAK_RE = /\r?\n/;
 const FENCED_CODE_RE = /```[\s\S]*?```/g;
 const INTERROGATIVE_RE =
@@ -23,7 +26,10 @@ export function shouldCaptureMemoryCandidate(text: string): boolean {
   if (!source || source.length > MAX_CAPTURE_SOURCE_CHARS) {
     return false;
   }
-  if (EXPLICIT_COMMAND_RE.test(source)) {
+  if (
+    EXPLICIT_COMMAND_RE.test(source) ||
+    NEGATIVE_MEMORY_COMMAND_RE.test(source)
+  ) {
     return false;
   }
 
