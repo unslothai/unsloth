@@ -645,14 +645,21 @@ export function AppSidebar() {
 
   // Shared chat delete: same error toast and pin cleanup whether or not the
   // confirm dialog is used.
-  async function deleteChatWithCleanup(item: SidebarItem) {
+  async function deleteChatWithCleanup(
+    item: SidebarItem,
+    options?: { silent?: boolean },
+  ): Promise<boolean> {
     try {
       await handleDeleteThread(item);
       unpinChat(item.id);
+      return true;
     } catch (err) {
-      toast.error(translate("shell.toast.failedToDeleteChat"), {
-        description: err instanceof Error ? err.message : undefined,
-      });
+      if (!options?.silent) {
+        toast.error(translate("shell.toast.failedToDeleteChat"), {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+      return false;
     }
   }
 
@@ -823,14 +830,12 @@ export function AppSidebar() {
     if (target.kind === "chats-bulk") {
       let failed = 0;
       for (const item of target.items) {
-        try {
-          await deleteChatWithCleanup(item);
-        } catch {
-          failed += 1;
-        }
+        const ok = await deleteChatWithCleanup(item, { silent: true });
+        if (!ok) failed += 1;
       }
-      chatRecentsSelection.clearSelection();
-      if (failed > 0) {
+      if (failed === 0) {
+        chatRecentsSelection.clearSelection();
+      } else {
         toast.error(translate("shell.toast.failedToDeleteSomeChats"));
       }
       return;

@@ -19,6 +19,7 @@ type DragState = {
   pointerId: number;
   startX: number;
   startY: number;
+  lastClientY: number;
   dragging: boolean;
 };
 
@@ -55,13 +56,12 @@ export function useSidebarListSelection({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
-  const lastRangeRef = useRef<number[]>([]);
   const anchorIndexRef = useRef<number | null>(null);
+  const updateDragSelectionRef = useRef<(clientY: number) => void>(() => undefined);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
     anchorIndexRef.current = null;
-    lastRangeRef.current = [];
   }, []);
 
   // Drop stale selections when the visible list changes.
@@ -80,7 +80,6 @@ export function useSidebarListSelection({
   const applyRangeSelection = useCallback(
     (anchorIndex: number, currentIndex: number) => {
       const indices = rangeIndices(anchorIndex, currentIndex);
-      lastRangeRef.current = indices;
       setSelectedIds(() => {
         const next = new Set<string>();
         for (const index of indices) {
@@ -114,8 +113,10 @@ export function useSidebarListSelection({
       if (autoScrollRef.current != null) return;
       autoScrollRef.current = window.setInterval(() => {
         const container = scrollContainerRef.current;
-        if (!container) return;
+        const drag = dragRef.current;
+        if (!container || !drag) return;
         container.scrollTop += direction * AUTO_SCROLL_STEP_PX;
+        updateDragSelectionRef.current(drag.lastClientY);
       }, 16);
     },
     [scrollContainerRef],
@@ -154,6 +155,8 @@ export function useSidebarListSelection({
     ],
   );
 
+  updateDragSelectionRef.current = updateDragSelection;
+
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
@@ -166,6 +169,7 @@ export function useSidebarListSelection({
         drag.dragging = true;
       }
 
+      drag.lastClientY = event.clientY;
       event.preventDefault();
       updateDragSelection(event.clientY);
     };
@@ -218,9 +222,9 @@ export function useSidebarListSelection({
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
+        lastClientY: event.clientY,
         dragging: false,
       };
-      anchorIndexRef.current = index;
     },
     [],
   );
