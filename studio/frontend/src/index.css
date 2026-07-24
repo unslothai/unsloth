@@ -1018,6 +1018,12 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action {
 		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}
+	@media (pointer: coarse) {
+		/* Only chat rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
+		.sidebar-row-action.sidebar-touch-reveal {
+			@apply opacity-100 pointer-events-auto;
+		}
+	}
 	.sidebar-row-action[data-state="open"] {
 		@apply opacity-100 pointer-events-auto;
 	}

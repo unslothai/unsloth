@@ -39,7 +39,7 @@ export const zhCN = {
       returnToChat: "返回聊天",
       compare: "对比",
       search: "搜索",
-      hub: "模型",
+      hub: "模型中心",
       train: "训练",
       recipes: "配方",
       export: "导出",

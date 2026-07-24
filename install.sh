@@ -625,6 +625,36 @@ _is_pkg_installed() {
     esac
 }
 
+# ── Helper: human-readable apt distro label for the sudo package prompt (#6207) ──
+# Reads /etc/os-release so the Accept? prompt can say which distro we detected and
+# that packages come from that distro's official apt repos (not a tarball).
+_apt_distro_description() {
+    # Plain ( ... ) subshell — not $() — so case/;; stays bash-3.2-safe on macOS.
+    # Bash 3.2 misparses case arms inside command substitution and errors on `;;`.
+    (
+        if [ ! -r /etc/os-release ]; then
+            printf 'a debian-like system'
+            exit 0
+        fi
+        # shellcheck disable=SC1091
+        . /etc/os-release 2>/dev/null || true
+        if [ -n "${NAME:-}" ] && [ -n "${VERSION_ID:-}" ]; then
+            _ad_label="$NAME $VERSION_ID"
+        elif [ -n "${PRETTY_NAME:-}" ]; then
+            _ad_label="$PRETTY_NAME"
+        elif [ -n "${NAME:-}" ]; then
+            _ad_label="$NAME"
+        else
+            printf 'a debian-like system'
+            exit 0
+        fi
+        case " ${ID:-} ${ID_LIKE:-} " in
+            *" debian "*|*" ubuntu "*) _ad_label="${_ad_label} (debian-like)" ;;
+        esac
+        printf '%s' "$_ad_label"
+    )
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -655,11 +685,14 @@ _smart_apt_install() {
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
     if command -v sudo >/dev/null 2>&1; then
+        _ad_desc="$(_apt_distro_description)"
         echo ""
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo "    WARNING: We require sudo elevated permissions to install:"
         echo "    $_STILL_MISSING"
-        echo "    If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "    Detected ${_ad_desc}."
+        echo "    If you accept, we'll run sudo apt-get to install these packages"
+        echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
         printf "    Accept? [Y/n] "

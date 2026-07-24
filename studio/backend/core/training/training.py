@@ -30,7 +30,7 @@ from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
-from utils.hardware import prepare_gpu_selection
+from utils.hardware import get_device, prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
     run_without_native_path_secret,
@@ -219,6 +219,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             config[key] = values.get(key)
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
+    # The parent's detected backend: the worker's apply_gpu_ids() targets the
+    # right visibility env var from this, without probing torch pre-mask.
+    config["device_backend"] = get_device().value
     return config
 
 

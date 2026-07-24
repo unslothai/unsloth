@@ -39,7 +39,7 @@ export const hi = {
       returnToChat: "चैट पर लौटें",
       compare: "तुलना करें",
       search: "खोजें",
-      hub: "मॉडल",
+      hub: "मॉडल हब",
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
       export: "एक्सपोर्ट",

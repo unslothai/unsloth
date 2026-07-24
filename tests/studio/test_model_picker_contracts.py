@@ -151,6 +151,19 @@ def test_active_model_config_round_trips_gpu_fields():
     assert "export function gpuFieldsSignature" in shared
 
 
+def test_gpu_picker_round_trips_requested_pool_not_fitted_subset():
+    """A GGUF fit may narrow [0, 1] to [0], but load/status hydration must keep
+    [0, 1] as the editable pool so a later reload can grow back onto GPU 1."""
+    types = _read("features/chat/types/api.ts")
+    assert types.count("requested_gpu_ids?: number[] | null") >= 2
+
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "resp.requested_gpu_ids ?? resp.gpu_ids ?? null" in store
+
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert "status.requested_gpu_ids ?? status.gpu_ids ?? null" in status
+
+
 def test_compare_load_uses_each_models_gpu_config():
     src = _read("features/chat/shared-composer.tsx")
     assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src

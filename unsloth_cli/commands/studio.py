@@ -1661,6 +1661,7 @@ def _consume_legacy_short_aliases(
 _RUN_PANEL_MODEL = "Model"
 _RUN_PANEL_SERVER = "Server & network"
 _RUN_PANEL_TOOLS = "Tool calls"
+_RUN_PANEL_SAMPLING = "Sampling"
 _RUN_PANEL_ADVANCED = "Advanced"
 
 
@@ -1758,6 +1759,57 @@ def run(
             "Default: on. No effect on streaming requests or the server-side agentic loop."
         ),
     ),
+    temperature: Optional[float] = typer.Option(
+        None,
+        "--temperature",
+        min = 0.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = (
+            "Pin the sampling temperature for every request that omits it, overriding the "
+            "model's recommended value. Default: unset (use the per-model recommendation)."
+        ),
+    ),
+    top_p: Optional[float] = typer.Option(
+        None,
+        "--top-p",
+        min = 0.0,
+        max = 1.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin top-p (nucleus) sampling. Default: unset (per-model recommendation).",
+    ),
+    top_k: Optional[int] = typer.Option(
+        None,
+        "--top-k",
+        min = -1,
+        max = 100,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin top-k sampling. Default: unset (per-model recommendation).",
+    ),
+    min_p: Optional[float] = typer.Option(
+        None,
+        "--min-p",
+        min = 0.0,
+        max = 1.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin min-p sampling threshold. Default: unset (per-model recommendation).",
+    ),
+    repetition_penalty: Optional[float] = typer.Option(
+        None,
+        "--repetition-penalty",
+        min = 1.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin the repetition penalty. Default: unset (per-model recommendation).",
+    ),
+    presence_penalty: Optional[float] = typer.Option(
+        None,
+        "--presence-penalty",
+        min = 0.0,
+        max = 2.0,
+        rich_help_panel = _RUN_PANEL_SAMPLING,
+        help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -1841,7 +1893,7 @@ def run(
 
     Example:
         unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL
-        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --top-k 20 --seed 42 --parallel 8
+        unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --temperature 0.7 --seed 42 --parallel 8
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
@@ -1869,6 +1921,21 @@ def run(
         os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1" if tool_call_nudging else "0"
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in os.environ:
         os.environ["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
+
+    # Sampling overrides: the backend resolver reads UNSLOTH_SAMPLING_* to hard-pin a field
+    # (winning over both the client and the per-model recommendation). Only write a flag that
+    # was set explicitly so an omitted flag inherits any value the parent forwarded (e.g.
+    # `unsloth start`) and, when nothing is set, leaves the per-model recommendation in charge.
+    for _sampling_env, _sampling_value in (
+        ("UNSLOTH_SAMPLING_TEMPERATURE", temperature),
+        ("UNSLOTH_SAMPLING_TOP_P", top_p),
+        ("UNSLOTH_SAMPLING_TOP_K", top_k),
+        ("UNSLOTH_SAMPLING_MIN_P", min_p),
+        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", repetition_penalty),
+        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", presence_penalty),
+    ):
+        if _sampling_value is not None:
+            os.environ[_sampling_env] = str(_sampling_value)
 
     # Set before any re-exec so the in-venv server inherits it via the env.
     # `run --verbose` used to pass through to llama-server (its own -v); keep

@@ -2373,7 +2373,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"))
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
     model_name = config["model_name"]
 
