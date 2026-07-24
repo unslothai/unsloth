@@ -93,6 +93,73 @@ def neutralize_non_assistant_control_markup(text: str) -> str:
     return out
 
 
+def neutralize_control_markup_deep(value):
+    """Recursively neutralize control markers in every string *value* of a
+    nested dict/list structure (tool schemas / tool-call argument JSON).
+
+    Dict keys are left untouched (schema field names); only leaf strings are
+    rewritten. Returns the same object when nothing changed so callers keep
+    byte-identical payloads on the common path (#7066).
+    """
+    if isinstance(value, str):
+        return neutralize_non_assistant_control_markup(value)
+    if isinstance(value, dict):
+        changed = False
+        out = {}
+        for key, item in value.items():
+            new_item = neutralize_control_markup_deep(item)
+            if new_item is not item and new_item != item:
+                changed = True
+            out[key] = new_item
+        return out if changed else value
+    if isinstance(value, list):
+        changed = False
+        out = []
+        for item in value:
+            new_item = neutralize_control_markup_deep(item)
+            if new_item is not item and new_item != item:
+                changed = True
+            out.append(new_item)
+        return out if changed else value
+    return value
+
+
+def neutralize_tools_control_markup(tools):
+    """Neutralize think / ChatML control markers in client tool schemas (#7066).
+
+    Tool function descriptions, parameter text, and enum values are rendered
+    into the chat template as prompt text, so a schema containing ``</think>``
+    or ``<|im_start|>`` would otherwise bypass message-level neutralization.
+    """
+    if not tools:
+        return tools
+    return neutralize_control_markup_deep(tools)
+
+
+def neutralize_tool_call_arguments(tool_calls):
+    """Neutralize control markers inside assistant tool-call argument strings.
+
+    Assistant prose keeps its real ``<think>`` structure, but a replayed
+    ``tool_calls[].function.arguments`` string is user/model-derived data that
+    must not smuggle a literal ``</think>`` or ``<|im_start|>`` into the next
+    chat template (#7066). Returns the same list when nothing changed.
+    """
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return tool_calls
+    changed = False
+    out = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            fn = call.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                new_args = neutralize_non_assistant_control_markup(fn["arguments"])
+                if new_args != fn["arguments"]:
+                    call = {**call, "function": {**fn, "arguments": new_args}}
+                    changed = True
+        out.append(call)
+    return out if changed else tool_calls
+
+
 def neutralize_message_content_for_role(role: Optional[str], content):
     """Apply control-markup neutralization to non-assistant message content.
 
@@ -141,8 +208,20 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
             continue
         content = msg.get("content")
         new_content = neutralize_message_content_for_role(msg.get("role"), content)
-        if new_content is not content and new_content != content:
-            out.append({**msg, "content": new_content})
+        content_changed = new_content is not content and new_content != content
+        # Assistant tool-call arguments are user/model-derived data, not prose,
+        # so neutralize their control markers even though assistant content is
+        # preserved (#7066).
+        tool_calls = msg.get("tool_calls")
+        new_tool_calls = neutralize_tool_call_arguments(tool_calls)
+        tool_calls_changed = new_tool_calls is not tool_calls and new_tool_calls != tool_calls
+        if content_changed or tool_calls_changed:
+            new_msg = {**msg}
+            if content_changed:
+                new_msg["content"] = new_content
+            if tool_calls_changed:
+                new_msg["tool_calls"] = new_tool_calls
+            out.append(new_msg)
             changed = True
         else:
             out.append(msg)

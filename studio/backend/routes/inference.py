@@ -9545,6 +9545,12 @@ async def openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
+        if gen_kwargs.get("tools"):
+            # Local chat templates render tool schemas as prompt text; neutralize
+            # control markers so a schema carrying </think> / <|im_start|> cannot
+            # bypass the #7066 protection applied to messages above.
+            from core.inference.chat_template_helpers import neutralize_tools_control_markup
+            gen_kwargs["tools"] = neutralize_tools_control_markup(gen_kwargs["tools"])
 
     # The potential tool context above is needed before server/client routing is
     # known. This standard path now has the exact schemas that will be rendered,
@@ -10727,7 +10733,11 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
             if marker.startswith(suffix):
                 return size
             # A partial close tag may follow an opening quote (`echo "</thi`).
-            if suffix and suffix[0] in "\"'`" and marker.startswith(suffix[1:]):
+            # Require a NON-EMPTY marker prefix after the quote: a bare trailing
+            # quote is not marker context, and holding it would reorder visible
+            # text vs a following tool-call delta (``marker.startswith("")`` is
+            # always True, so the empty prefix must be excluded).
+            if len(suffix) > 1 and suffix[0] in "\"'`" and marker.startswith(suffix[1:]):
                 return size
     return 0
 
@@ -10831,6 +10841,24 @@ class _ResponsesReasoningExtractor:
         self._fence_state = (len(combined) - len(combined.rstrip("`"))) % 3
         self._span_last_char = chunk[-1]
 
+    def _fence_parity_odd(self, text: str) -> bool:
+        """Odd ``` fence count over consumed span + ``text`` (inside a fence)."""
+        combined = "`" * self._fence_state + text
+        return (self._fence_count + combined.count("```")) % 2 == 1
+
+    def _fence_unresolved_at_close(self, buffer: str, close_idx: int) -> bool:
+        """True when the close tag sits in a ``` fence still open at buffer end.
+
+        Distinguishes a ``</think>`` genuinely wrapped by a *closed* code fence
+        (a real literal, e.g. a fenced example) from one after which no fence
+        close has arrived yet. In the latter case the fence decision must be
+        deferred mid-stream, and fall back to structural at EOF, so an unclosed
+        fence in the reasoning cannot swallow the whole visible answer (#7066).
+        """
+        if not self._fence_parity_odd(buffer[:close_idx]):
+            return False
+        return self._fence_parity_odd(buffer)
+
     def _think_close_is_literal(self, buffer: str, close_idx: int) -> bool:
         """Literal-close check over consumed span + ``buffer[:close_idx]``.
 
@@ -10841,8 +10869,7 @@ class _ResponsesReasoningExtractor:
         """
         # Fenced-code parity: consumed fences plus any completed by the pending
         # carry meeting the live buffer, then fences fully inside the buffer.
-        combined = "`" * self._fence_state + buffer[:close_idx]
-        if (self._fence_count + combined.count("```")) % 2 == 1:
+        if self._fence_parity_odd(buffer[:close_idx]):
             return True
         end = close_idx + len(_RESPONSES_THINK_CLOSE)
         before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
@@ -10912,6 +10939,19 @@ class _ResponsesReasoningExtractor:
                     # Quoted / backticked / fenced </think> is content (user
                     # echo, script discussion), not the end of reasoning (#7066).
                     if self._think_close_is_literal(self._buffer, close_idx):
+                        if self._fence_unresolved_at_close(self._buffer, close_idx):
+                            # The close sits in a ``` fence that has not closed in
+                            # what we have so far. Defer the decision: emit the
+                            # reasoning up to the tag and keep the tag + rest
+                            # buffered. A later fence close makes it a real literal;
+                            # otherwise finish() falls back to structural so an
+                            # unclosed fence cannot hide the answer (#7066).
+                            reasoning_parts.append(
+                                self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
+                            )
+                            self._add_to_span(self._buffer[:close_idx])
+                            self._buffer = self._buffer[close_idx:]
+                            break
                         from core.inference.chat_template_helpers import (
                             neutralize_think_markup,
                         )
@@ -11009,7 +11049,14 @@ class _ResponsesReasoningExtractor:
                 if close_idx == -1:
                     reasoning_parts.append(buf.replace(_RESPONSES_THINK_OPEN, ""))
                     break
-                if self._think_close_is_literal(buf, close_idx):
+                literal = self._think_close_is_literal(buf, close_idx)
+                if literal and self._fence_unresolved_at_close(buf, close_idx):
+                    # EOF fence fallback: the close is inside a ``` fence that
+                    # never closed, so no more bytes can resolve it. Treat it as
+                    # the structural block end rather than swallowing the answer
+                    # as reasoning (#7066).
+                    literal = False
+                if literal:
                     from core.inference.chat_template_helpers import (
                         neutralize_think_markup,
                     )
@@ -14398,6 +14445,12 @@ def _build_openai_passthrough_body(
     tools = payload.tools
     if payload.tool_choice == "none" and not _has_openai_tool_history(payload.messages):
         tools = None
+    if tools:
+        # Client tool schemas are rendered into the llama-server chat template
+        # as prompt text, so neutralize control markers there too or a schema
+        # carrying </think> / <|im_start|> bypasses the #7066 protection.
+        from core.inference.chat_template_helpers import neutralize_tools_control_markup
+        tools = neutralize_tools_control_markup(tools)
     # Forward per-request reasoning fields (enable_thinking / reasoning_effort /
     # preserve_thinking) via chat_template_kwargs so the Jinja template renders
     # in the caller's mode, gated on the active template's capabilities exactly

@@ -17,15 +17,21 @@ from core.inference.chat_template_helpers import (
     neutralize_non_assistant_control_markup,
     neutralize_think_markup,
     neutralize_think_markup_streaming,
+    neutralize_tool_call_arguments,
+    neutralize_tools_control_markup,
     think_markup_holdback,
 )
+import json
 import random
 
 from routes.inference import (
+    _RESPONSES_THINK_CLOSE,
+    _RESPONSES_THINK_OPEN,
     _ResponsesReasoningExtractor,
     _build_openai_passthrough_body,
     _extract_responses_reasoning,
     _openai_messages_for_passthrough,
+    _responses_marker_holdback,
     _think_close_is_literal_in_span,
 )
 from models.inference import ChatCompletionRequest, ChatMessage
@@ -269,3 +275,164 @@ def test_literal_close_inside_fence_across_deltas_matches_oracle():
     assert "done thinking" in reasoning
     # Only the bare close after the fence ends the block.
     assert visible.strip() == "visible"
+
+
+# --- Codex follow-up on the O(1) span-parity perf fix (#7334) ---
+
+
+def test_marker_holdback_ignores_bare_trailing_quote():
+    """A standalone trailing quote is not marker context (#7334 item).
+
+    ``marker.startswith("")`` is always True, so the quote-prefix branch must
+    require a NON-EMPTY marker prefix after the quote or a bare ``"`` would be
+    held forever, reordering visible text vs a following tool-call delta.
+    """
+    markers = (_RESPONSES_THINK_CLOSE, _RESPONSES_THINK_OPEN)
+    assert _responses_marker_holdback('the answer is "', markers) == 0
+    assert _responses_marker_holdback("it's", markers) == 0
+    assert _responses_marker_holdback("code `", markers) == 0
+    # A real partial close after an opening quote is still held.
+    assert _responses_marker_holdback('echo "</thi', markers) == len("</thi") + 1
+    # A bare partial close (no quote) is still held.
+    assert _responses_marker_holdback("plan </thi", markers) == len("</thi")
+
+
+def test_trailing_quote_flushes_as_visible_immediately():
+    """Visible content ending in a quote must not be withheld (#7334 item)."""
+    ex = _ResponsesReasoningExtractor(parse_think_markers = True)
+    reasoning, visible = ex.feed('the answer is "')
+    assert reasoning == ""
+    assert visible == 'the answer is "'
+
+
+def test_unclosed_fence_falls_back_to_structural_at_eof():
+    """An unclosed ``` fence must not swallow the answer as reasoning (#7334)."""
+    reasoning, visible = _extract_responses_reasoning(
+        "let me try:\n```python\nprint('done')</think>The answer is 42.",
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert "The answer is 42." in visible
+    assert "print('done')" in reasoning
+    assert "</think>" not in visible
+
+
+def test_unclosed_fence_streaming_defers_then_structural():
+    """Deferred fence decision resolves to structural across streaming deltas."""
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    r1, v1 = ex.feed("code:\n```py\nprint()")
+    r2, v2 = ex.feed("</think>visible answer")
+    rf, vf = ex.finish()
+    reasoning = r1 + r2 + rf
+    visible = v1 + v2 + vf
+    assert "print()" in reasoning
+    assert "visible answer" in visible
+
+
+def test_closed_fence_literal_still_stays_reasoning():
+    """A ``</think>`` inside a *closed* fence remains literal reasoning (#7334)."""
+    reasoning, visible = _extract_responses_reasoning(
+        "example:\n```\n</think>\n```\ndone thinking</think>\nvisible",
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert "</think>" not in reasoning
+    assert "done thinking" in reasoning
+    assert visible.strip() == "visible"
+
+
+def test_neutralize_tools_control_markup_deep():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "run",
+                "description": "Explains </think> and <|im_start|> handling",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "description": "pass a </think> literal",
+                            "enum": ["<|im_end|>", "plain"],
+                        }
+                    },
+                },
+            },
+        }
+    ]
+    out = neutralize_tools_control_markup(tools)
+    dumped = json.dumps(out)
+    assert "</think>" not in dumped
+    assert "<|im_start|>" not in dumped
+    assert "<|im_end|>" not in dumped
+    # Field names and structure preserved.
+    assert out[0]["function"]["name"] == "run"
+    assert out[0]["function"]["parameters"]["properties"]["mode"]["type"] == "string"
+    # No-op path returns the same object.
+    clean = [{"type": "function", "function": {"name": "x", "description": "hi"}}]
+    assert neutralize_tools_control_markup(clean) is clean
+
+
+def test_passthrough_tools_are_neutralized():
+    req = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "hi")],
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "handles </think> and <|im_start|> in text",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "q": {"type": "string", "description": "a </think> value"}
+                        },
+                    },
+                },
+            }
+        ],
+    )
+    body = _build_openai_passthrough_body(req)
+    dumped = json.dumps(body["tools"])
+    assert "</think>" not in dumped
+    assert "<|im_start|>" not in dumped
+    assert "im_start" in dumped  # neutralized form retained, still human-readable
+
+
+def test_assistant_tool_call_arguments_are_neutralized():
+    messages = [
+        {"role": "user", "content": "search it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "arguments": '{"q": "write </think> then <|im_start|>"}',
+                    },
+                }
+            ],
+        },
+    ]
+    out = neutralize_control_markup_in_messages(messages)
+    assert out is not messages
+    args = out[1]["tool_calls"][0]["function"]["arguments"]
+    assert "</think>" not in args
+    assert "<|im_start|>" not in args
+    # Still valid JSON and assistant prose field untouched.
+    assert isinstance(json.loads(args), dict)
+    assert out[1]["content"] is None
+
+
+def test_tool_call_arguments_helper_noop_returns_same_object():
+    calls = [{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]
+    assert neutralize_tool_call_arguments(calls) is calls
+    assert neutralize_tool_call_arguments(None) is None
