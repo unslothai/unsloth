@@ -132,15 +132,17 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // Unpinnable configurations must hide every pick surface: XPU indices are
-  // torch-xpu ordinals no applicator speaks -- /load and /validate 400 picks,
-  // so the backend reports gpu.gguf_gpu_ids_supported and every gate keyed on
-  // physicalIndex (picker, persisted-pick reconcile) follows it. The device
-  // flavor lives on the TOP-LEVEL device_backend field; absent support info
-  // defaults to pinnable (older backend).
-  const pinnableBackend =
-    data?.device_backend !== "xpu" &&
-    data?.gpu?.gguf_gpu_ids_supported !== false;
+  // Unpinnable configurations must hide every pick surface: /load and /validate
+  // 400 picks the applicator can't place, so the backend reports
+  // gpu.gguf_gpu_ids_supported and every gate keyed on physicalIndex (picker,
+  // persisted-pick reconcile) follows it. Absent support info defaults to
+  // pinnable (older backend).
+  const picksAccepted = data?.gpu?.gguf_gpu_ids_supported !== false;
+  // The XPU ban is specific to torch-xpu PHYSICAL ordinals (no applicator speaks
+  // them). A Vulkan pick uses ggml ordinals (--device Vulkan<i>), which don't
+  // rely on torch-xpu, so a Vulkan build stays pinnable even on an XPU host --
+  // and the backend already reports gguf_gpu_ids_supported true there.
+  const pinnablePhysical = picksAccepted && data?.device_backend !== "xpu";
   // These devices exist to drive GGUF loads, so when the backend reports the
   // llama-server (Vulkan) inventory, that list is authoritative: it can see
   // cards torch can't, its indices are the ggml ordinals /load pins with
@@ -154,7 +156,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
         memoryFreeGb: d.vram_free_gb ?? 0,
-        physicalIndex: pinnableBackend && d.index_kind === "vulkan",
+        physicalIndex: picksAccepted && d.index_kind === "vulkan",
       }));
   }
   return (data?.gpu?.devices ?? [])
@@ -164,7 +166,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
       memoryFreeGb: d.vram_free_gb ?? 0,
-      physicalIndex: pinnableBackend && d.index_kind === "physical",
+      physicalIndex: pinnablePhysical && d.index_kind === "physical",
     }));
 }
 

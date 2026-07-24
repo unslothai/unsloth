@@ -74,7 +74,7 @@ class LoadRequest(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. For GGUF models the picked devices are pinned via CUDA/HIP_VISIBLE_DEVICES.",
+        description = "GPU placement pool, for example [0, 1]. Omit or pass [] to use automatic selection. CUDA/ROCm values are physical GPU indices and are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries; Vulkan values are ggml device ordinals. For GGUF models the fitter may pin the smallest subset of this pool that fits.",
     )
     speculative_type: Optional[str] = Field(
         None,
@@ -485,7 +485,14 @@ class LoadResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
 
 
@@ -649,7 +656,14 @@ class InferenceStatusResponse(BaseModel):
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+        description = "Effective GPU indices the model is using after fit-time narrowing, or None for automatic selection.",
+    )
+    requested_gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = (
+            "GPU placement pool requested by the user before fit-time narrowing, "
+            "or None for automatic selection."
+        ),
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

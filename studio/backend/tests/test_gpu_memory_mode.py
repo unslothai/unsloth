@@ -591,10 +591,23 @@ def test_load_request_accepts_gpu_ids():
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_gpu_ids(model_cls):
     if model_cls is LoadResponse:
-        obj = model_cls(status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1])
+        obj = model_cls(
+            status = "loaded",
+            model = "m",
+            display_name = "m",
+            inference = {},
+            gpu_ids = [1],
+            requested_gpu_ids = [1, 2],
+        )
     else:
-        obj = model_cls(gpu_ids = [1])
+        obj = model_cls(gpu_ids = [1], requested_gpu_ids = [1, 2])
     assert obj.model_dump()["gpu_ids"] == [1]
+    assert obj.model_dump()["requested_gpu_ids"] == [1, 2]
+
+
+def test_gguf_load_and_status_responses_include_requested_gpu_pool():
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    assert route_src.count("requested_gpu_ids = llama_backend.requested_gpu_ids") == 3
 
 
 def test_gpu_ids_property_default_and_reset():
@@ -625,11 +638,35 @@ def _target_state_gpu_ids(backend, gpu_ids):
 def test_gpu_ids_reload_detection_is_order_insensitive():
     backend = _loaded_backend("auto")
     backend._gpu_ids = [0, 1]
+    # A real non-narrowed load records the raw request too; the non-diffusion
+    # dedupe now compares that raw pin (#7239). Set it to match the effective pin
+    # (no narrowing) so this exercises the order-insensitive comparison.
+    backend._requested_gpu_ids = [0, 1]
     # Same set, different order -> no reload.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
     # Different set -> reload.
     assert _target_state_gpu_ids(backend, [0]) is False
     # Dropping the pick (auto) -> reload.
+    assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
+    backend = _loaded_backend("auto")
+    backend._requested_gpu_ids = [0, 1]
+    backend._gpu_ids = [0]
+    backend._last_load_kwargs = {"gpu_ids": [0, 1], "model_identifier": "owner/repo"}
+
+    # The original request still matches after the fitter narrows it.
+    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    assert backend.requested_gpu_ids == [0, 1]
+    # The status response echoes the effective pin, which must also round-trip.
+    # Treat the incoming subset as the latest intent so status and a future
+    # reload do not restore GPU 1 after the user removed it.
+    assert _target_state_gpu_ids(backend, [0]) is True
+    assert backend.requested_gpu_ids == [0]
+    assert backend._last_load_kwargs == {"gpu_ids": [0], "model_identifier": "owner/repo"}
+    # A genuinely different placement pool still reloads.
+    assert _target_state_gpu_ids(backend, [1]) is False
     assert _target_state_gpu_ids(backend, None) is False
 
 
@@ -642,11 +679,62 @@ def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
     backend._is_diffusion = True
     backend._gpu_ids = [1]  # loaded on the lowest of an earlier [3, 1] pick
     assert _target_state_gpu_ids(backend, [3, 1]) is True
+    assert backend.requested_gpu_ids == [1]
     assert _target_state_gpu_ids(backend, [1]) is True
     # Lowest device changes (2, not 1) -> reload.
     assert _target_state_gpu_ids(backend, [3, 2]) is False
     # Dropping the pick (auto) -> reload.
     assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
+    def _mark_diffusion(probe, path):
+        assert path == "/cache/model.gguf"
+        probe._is_diffusion = True
+
+    monkeypatch.setattr(LlamaCppBackend, "_read_gguf_metadata", _mark_diffusion)
+    assert LlamaCppBackend._gguf_path_is_diffusion("/cache/model.gguf", "owner/model") is True
+
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    preflight = src.index("_preflight_model_path = self._download_gguf(")
+    teardown = src.index("# ── Phase 1: kill old process")
+    assert preflight < teardown
+    assert "model_path = _preflight_model_path or self._download_gguf(" in src
+
+
+def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
+    backend = LlamaCppBackend()
+    killed = []
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+    monkeypatch.setattr(
+        backend,
+        "_download_gguf",
+        lambda **_kwargs: "/cache/diffusion.gguf",
+    )
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: killed.append(True))
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_resolve_repo_id_casing",
+        lambda repo: repo,
+    )
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_hf_offline_if_dns_dead",
+        lambda: __import__("contextlib").nullcontext(),
+    )
+
+    with pytest.raises(ValueError, match = "DiffusionGemma"):
+        backend.load_model(
+            hf_repo = "owner/model",
+            hf_variant = "Q4_K_M",
+            model_identifier = "owner/model",
+            gpu_ids = [0],
+        )
+
+    assert killed == []
 
 
 def test_start_diffusion_server_resets_tensor_parallel():
@@ -656,19 +744,19 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
+    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
 
 
 def test_vulkan_gpu_gate_allows_unclassified_gguf():
-    # The pre-download /load + /validate Vulkan gates must reject only a
-    # CONFIRMED-diffusion pick (`is True`). `None` -- the ordinary first-load
-    # case for an uncached Hub GGUF with no local header -- has to pass, or the
-    # GPU picker is unusable for first-time remote GGUF loads (Codex #7356).
+    # The shared GGUF gpu_ids validator must reject only a CONFIRMED-diffusion
+    # pick on Vulkan (`is True`). `None` -- the ordinary first-load case for an
+    # uncached Hub GGUF with no local header -- has to pass, or the GPU picker is
+    # unusable for first-time remote GGUF loads (Codex #7356).
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
-    # Both Vulkan validation sites (/load, /validate) gate on `is True`...
-    assert route_src.count("_classify_diffusion_gguf(config) is True") == 2
-    # ...and no diffusion *rejection* keys off the old over-broad `is not False`
-    # (which also caught the unclassifiable None). The training guard keeps its
-    # own conservative `diffusion_kind is not False` sizing -- a different name.
+    assert "if is_vulkan and _classify_diffusion_gguf(config) is True:" in route_src
+    # No diffusion *rejection* keys off the old over-broad `is not False` (which
+    # also caught the unclassifiable None). The training guard keeps its own
+    # conservative `diffusion_kind is not False` sizing -- a different name.
     assert "_classify_diffusion_gguf(config) is not False" not in route_src
 
 
@@ -685,16 +773,13 @@ def test_diffusion_vulkan_load_drops_unmappable_gpu_pin():
     assert guard < drop < spawn
 
 
-def test_route_matches_loaded_settings_collapses_diffusion_gpu_ids():
-    # The route-level reload dedupe mirrors the backend: for a loaded diffusion
-    # model it compares the request against the single recorded device, not the
-    # full requested list, or a same-device multi-GPU pick reloads needlessly.
+def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
+    # Route-level and backend race dedupe must share one normalization path so
+    # raw, effective, and diffusion pins cannot drift apart.
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
-    guard = match_impl.index("if llama_backend.is_diffusion:")
-    collapse = match_impl.index("[sorted(request.gpu_ids)[0]] if request.gpu_ids else None")
-    compare = match_impl.index("if _req_gpu_ids != llama_backend.gpu_ids:")
-    assert guard < collapse < compare
+    assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
+    assert "llama_backend._record_matching_gpu_request(request.gpu_ids)" in match_impl
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
