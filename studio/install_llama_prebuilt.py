@@ -6042,15 +6042,19 @@ def validate_prebuilt_attempts(
 
 
 def force_vulkan_requested() -> bool:
-    """Whether UNSLOTH_FORCE_VULKAN opts this host into the Vulkan llama.cpp
-    prebuilt instead of its detected CUDA/ROCm backend (e.g. so an AMD user can
-    run the Vulkan build for inference). Scoped to the llama.cpp backend; the
-    torch/training stack installs separately and still sees the real GPU.
+    """Whether the user selected the Vulkan llama.cpp backend.
+
+    ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` is the public backend selector.
+    ``UNSLOTH_FORCE_VULKAN`` remains a compatible legacy alias. Both are scoped
+    to llama.cpp, so the torch/training stack still sees the detected GPU.
     """
-    return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
+    backend = os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND", "").strip().lower()
+    legacy = os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower()
+    return backend == "vulkan" or legacy in (
         "1",
         "true",
         "yes",
+        "on",
     )
 
 
@@ -6071,6 +6075,18 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
     )
 
 
+def _vulkan_only_attempts(attempts: Iterable[AssetChoice]) -> list[AssetChoice]:
+    """Remove generic CPU fallbacks from an explicit Vulkan install."""
+    filtered = [
+        attempt
+        for attempt in attempts
+        if attempt.install_kind in ("linux-vulkan", "windows-vulkan")
+    ]
+    if not filtered:
+        raise PrebuiltFallback("no Vulkan prebuilt bundle attempts were available")
+    return filtered
+
+
 def _route_to_vulkan_prebuilt(
     host: HostInfo, published_repo: str, published_release_tag: str, *, force_cpu: bool
 ) -> tuple[HostInfo, str, str]:
@@ -6079,7 +6095,8 @@ def _route_to_vulkan_prebuilt(
     The unsloth published repo ships only CUDA/ROCm/CPU assets, so Vulkan comes
     from UPSTREAM_REPO. Two triggers route here, both suppressed when a CPU flag
     (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
-      * UNSLOTH_FORCE_VULKAN forces Vulkan over the detected CUDA/ROCm backend;
+      * UNSLOTH_LLAMA_CPP_BACKEND=vulkan, or its legacy
+        UNSLOTH_FORCE_VULKAN alias, forces Vulkan over CUDA/ROCm;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm -- the purpose
         of the has_intel_gpu probe, since the fork manifest ships no Vulkan asset.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the
@@ -6092,21 +6109,22 @@ def _route_to_vulkan_prebuilt(
     # NVIDIA+Intel host that hides NVIDIA with CUDA_VISIBLE_DEVICES=""/-1 keeps
     # has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan ignores
     # CUDA_VISIBLE_DEVICES, so auto-routing such a host would let it grab the
-    # reserved NVIDIA GPU. An explicit UNSLOTH_FORCE_VULKAN still overrides.
+    # reserved NVIDIA GPU. An explicit Vulkan backend choice still overrides.
     auto_intel = host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     if force_cpu or not (forced or auto_intel):
         return host, published_repo, published_release_tag
     if host.is_macos:
         if forced:
             log(
-                "UNSLOTH_FORCE_VULKAN is set but ignored on macOS "
+                "The Vulkan llama.cpp backend choice is ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
         return host, published_repo, published_release_tag
     if forced:
         log(
-            "UNSLOTH_FORCE_VULKAN is set; installing the upstream Vulkan "
-            "llama.cpp prebuilt instead of the detected GPU backend"
+            "Vulkan llama.cpp backend requested; installing the upstream Vulkan "
+            "llama.cpp prebuilt instead of the detected GPU backend. This affects "
+            "GGUF inference only; the PyTorch training backend is unchanged"
         )
         # Forcing may override a detected NVIDIA/ROCm host, so normalize it to
         # Vulkan-only; an auto-detected Intel host already is.
@@ -6170,6 +6188,7 @@ def install_prebuilt(
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,
     )
+    strict_vulkan = force_vulkan_requested() and not force_cpu and not host.is_macos
     host, published_repo, published_release_tag = _route_to_vulkan_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
@@ -6201,6 +6220,16 @@ def install_prebuilt(
                 published_repo,
                 published_release_tag,
             )
+            if strict_vulkan:
+                # Upstream plans append CPU as a generic fallback. An explicit
+                # Vulkan selection must fail instead of silently installing it.
+                release_plans = [
+                    dataclasses_replace(
+                        plan,
+                        attempts = _vulkan_only_attempts(plan.attempts),
+                    )
+                    for plan in release_plans
+                ]
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):

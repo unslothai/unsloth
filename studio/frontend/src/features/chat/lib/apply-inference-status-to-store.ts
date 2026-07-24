@@ -225,12 +225,16 @@ export function applyActiveModelStatusToStore(
   const incomingGpuIds = status.is_gguf
     ? (status.requested_gpu_ids ?? status.gpu_ids ?? null)
     : null;
+  const incomingMemoryMode = status.is_gguf
+    ? (status.gguf_memory_mode ?? null)
+    : null;
   const gpuStatusChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
     prevState.loadedGpuLayers !== incomingGpuLayers ||
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
     !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
     !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
+    prevState.activeMemoryMode !== incomingMemoryMode ||
     prevState.loadedCustomContextLength !== gpuPin;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
@@ -244,6 +248,8 @@ export function applyActiveModelStatusToStore(
     prevState.selectedGpuIds,
     prevState.loadedGpuIds,
   );
+  const memoryModeEditPending =
+    prevState.ggufMemoryMode !== prevState.activeMemoryMode;
   const incomingGpuFields = loadedGpuMemoryFields(status);
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
@@ -262,6 +268,8 @@ export function applyActiveModelStatusToStore(
       }),
     ...(preserveSameModelEdits &&
       gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
+    ...(preserveSameModelEdits &&
+      memoryModeEditPending && { ggufMemoryMode: prevState.ggufMemoryMode }),
   };
 
   useChatRuntimeStore.setState({
@@ -330,6 +338,11 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
+    // Always advance the loaded baseline. gpuStatusFields above updates the
+    // editable value too, while preserving a same-model local edit.
+    ...(seedLoadParams && {
+      activeMemoryMode: status.gguf_memory_mode ?? null,
+    }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

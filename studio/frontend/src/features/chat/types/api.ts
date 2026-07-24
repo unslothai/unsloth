@@ -77,6 +77,8 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked physical GPU indices (omit/empty = automatic). */
   gpu_ids?: number[];
+  /** GGUF host-only loading policy. It does not control GPU VRAM residency. */
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }
 
 export interface ValidateModelResponse {
@@ -192,6 +194,8 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** GGUF host-memory placement mode the load was invoked with. */
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }
 
 export interface UnloadModelRequest {
@@ -247,6 +251,8 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Active GGUF host-memory placement mode (from /status). */
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

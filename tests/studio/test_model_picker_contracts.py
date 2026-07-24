@@ -137,7 +137,13 @@ def test_active_model_config_round_trips_gpu_fields():
     a sidebar/hub-gear reload cannot silently reset manual GPU settings, and
     "Remember settings" cannot persist a GPU-less config over a saved one."""
     src = _read("features/model-picker/hooks/use-active-model-config.ts")
-    for field in ("gpuMemoryMode", "gpuLayers", "nCpuMoe", "selectedGpuIds"):
+    for field in (
+        "gpuMemoryMode",
+        "gpuLayers",
+        "nCpuMoe",
+        "selectedGpuIds",
+        "selectedGpuIndexKind",
+    ):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     for rel in (
@@ -170,7 +176,7 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds)" in src
+    assert "ownConfig.selectedGpuIndexKind ?? null" in src
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -423,6 +429,17 @@ def test_default_gpu_mode_clears_manual_knobs():
     assert "gpuLayers: undefined," in src
     assert "nCpuMoe: undefined," in src
     assert "selectedGpuIds: undefined," in src
+    assert "selectedGpuIndexKind: undefined," in src
+
+
+def test_requested_gpu_pick_survives_fit_narrowing_and_namespace_changes():
+    store = _read("features/chat/stores/chat-runtime-store.ts")
+    assert "resp.requested_gpu_ids ?? resp.gpu_ids ?? null" in store
+    assert "currentIndexKind !== savedIndexKind" in store
+    gpu_info = _read("hooks/use-gpu-info.ts")
+    assert "cachedPinnableGpuIndexKind" in gpu_info
+    config = _read("features/model-picker/model-config/per-model-config.ts")
+    assert '"selectedGpuIndexKind"' in config
 
 
 def test_legacy_migration_is_idempotent_and_non_destructive():

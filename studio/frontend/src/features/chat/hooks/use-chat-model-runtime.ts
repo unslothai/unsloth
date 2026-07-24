@@ -669,6 +669,7 @@ export function useChatModelRuntime() {
           let loadSelectedGpuIds = reconcilePersistedGpuIds(
             stateBeforeUnload.selectedGpuIds,
           );
+          let loadMemoryMode = stateBeforeUnload.ggufMemoryMode;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
@@ -729,6 +730,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
+              gguf_memory_mode: loadMemoryMode ?? null,
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
@@ -803,6 +805,7 @@ export function useChatModelRuntime() {
                 // Per-model GPU knobs must not follow onto a different model
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
+                ggufMemoryMode: null,
                 gpuLayers: GPU_LAYERS_AUTO,
                 nCpuMoe: 0,
                 splitRatio: null,
@@ -817,6 +820,7 @@ export function useChatModelRuntime() {
               // previous model's (gpuMemoryMode is standing, so left as captured).
               loadCustomContextLength = null;
               loadSelectedGpuIds = null;
+              loadMemoryMode = null;
               loadGpuLayers = GPU_LAYERS_AUTO;
               loadNCpuMoe = 0;
               loadSplitRatio = null;
@@ -879,6 +883,7 @@ export function useChatModelRuntime() {
               n_cpu_moe: loadNCpuMoe,
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
+              gguf_memory_mode: loadMemoryMode ?? null,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -1004,6 +1009,8 @@ export function useChatModelRuntime() {
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
+              // activeMemoryMode is committed by loadedGpuMemoryFields (spread
+              // above) so every load path resets it uniformly; see its note.
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -1108,6 +1115,8 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
+                  // Restore the previous model's host-memory residency too.
+                  gguf_memory_mode: stateBeforeUnload.activeMemoryMode ?? null,
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
                   rollbackResponse.speculative_type,

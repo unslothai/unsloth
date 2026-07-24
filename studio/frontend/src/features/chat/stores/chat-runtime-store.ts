@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndexKind,
+  cachedPinnableGpuIndices,
+  type GpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -585,8 +589,18 @@ export function rebalanceSplit(
 // unpopulated device cache leaves the pick alone (the backend still guards).
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
 ): number[] | null {
   if (ids == null) return ids;
+  if (arguments.length >= 2) {
+    const currentIndexKind = cachedPinnableGpuIndexKind();
+    if (
+      currentIndexKind !== undefined &&
+      currentIndexKind !== savedIndexKind
+    ) {
+      return null;
+    }
+  }
   const pinnable = cachedPinnableGpuIndices();
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));
@@ -606,6 +620,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -629,6 +644,8 @@ export function loadedGpuMemoryFields(resp: {
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
+      ggufMemoryMode: null,
+      activeMemoryMode: resp.gguf_memory_mode ?? null,
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
@@ -675,6 +692,13 @@ export function loadedGpuMemoryFields(resp: {
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
+    // Commit the residency the backend actually applied. Mirroring both the
+    // editable value and loaded baseline keeps every load path in sync.
+    ggufMemoryMode: resp.gguf_memory_mode ?? null,
+    // Otherwise, after a switch (compare/auto/rollback load) the store keeps
+    // the prior value, so an immediate same-model Apply could resend a stale
+    // mode. Non-GGUF and auto loads report null, resetting it.
+    activeMemoryMode: resp.gguf_memory_mode ?? null,
     ...manualKnobs,
   };
 }
@@ -900,6 +924,11 @@ type ChatRuntimeStore = {
   /** Picked physical GPU indices (null = use all / automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
+  /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
+  ggufMemoryMode: "auto" | "pinned" | "resident" | null;
+  /** Backend-reported GGUF host-memory loading mode, used as the loaded
+   *  baseline for status hydration and rollback. */
+  activeMemoryMode: "auto" | "pinned" | "resident" | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -1349,6 +1378,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   moeLayerCount: null,
   selectedGpuIds: null,
   loadedGpuIds: null,
+  ggufMemoryMode: null,
+  activeMemoryMode: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -1603,6 +1634,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       moeLayerCount: null,
       selectedGpuIds: null,
       loadedGpuIds: null,
+      ggufMemoryMode: null,
+      activeMemoryMode: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,

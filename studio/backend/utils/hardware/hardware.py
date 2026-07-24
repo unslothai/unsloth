@@ -626,6 +626,9 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
             total_bytes = props.total_memory
             used_bytes: Optional[int]
             # Prefer mem_get_info (system-wide) so auto-select sees other consumers.
+            # Inside the outer try/except: some XPU devices (Arc B580, Lunar Lake)
+            # raise RuntimeError "doesn't support querying free memory" here,
+            # dropping just that device rather than crashing.
             if hasattr(mod, "mem_get_info"):
                 try:
                     free_bytes, total_bytes = mod.mem_get_info(ordinal)
@@ -1790,7 +1793,6 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             "numeric_ids": roots_with_dupes,
             "supports_explicit_gpu_ids": True,
         }
-
     # ROCm uses HIP/ROCR_VISIBLE_DEVICES on top of CUDA_VISIBLE_DEVICES; check
     # them first. Explicit None checks (not `or`) so "" reads as "no visible GPUs".
     cuda_visible = None

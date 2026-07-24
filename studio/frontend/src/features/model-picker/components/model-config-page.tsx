@@ -82,7 +82,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
-    config.selectedGpuIds != null
+    config.selectedGpuIds != null ||
+    config.ggufMemoryMode != null
   );
 }
 
@@ -250,12 +251,20 @@ function GpuMemorySettings({
   const moeLayersMax = moeLayerCount ?? 0;
   const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
+  const gpuIndexKind =
+    gpuDevices.length > 0 &&
+    gpuDevices[0].indexKind !== null &&
+    gpuDevices.every((device) => device.indexKind === gpuDevices[0].indexKind)
+      ? gpuDevices[0].indexKind
+      : null;
   const singleGpuInUse =
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
   // Multi-GPU only, and only with physical indices (relative ordinals from a
   // CUDA_VISIBLE_DEVICES mask can't be mapped back to pin a device). null = all (auto).
   const showGpuPicker =
-    gpuDevices.length > 1 && gpuDevices.every((d) => d.physicalIndex);
+    gpuDevices.length > 1 &&
+    gpuIndexKind !== null &&
+    gpuDevices.every((d) => d.pinnable);
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
   const toggleGpu = (index: number) => {
@@ -265,7 +274,11 @@ function GpuMemorySettings({
       ? current.filter((i) => i !== index)
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
-    update({ selectedGpuIds: next.length === all.length ? null : next });
+    const selectsAll = next.length === all.length;
+    update({
+      selectedGpuIds: selectsAll ? null : next,
+      selectedGpuIndexKind: selectsAll ? null : gpuIndexKind,
+    });
   };
   return (
     <>
@@ -300,6 +313,7 @@ function GpuMemorySettings({
                     gpuLayers: undefined,
                     nCpuMoe: undefined,
                     selectedGpuIds: undefined,
+                    selectedGpuIndexKind: undefined,
                   },
             )
           }
@@ -387,6 +401,44 @@ function GpuMemorySettings({
           </div>
         </div>
       )}
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Host Memory</span>
+          <InfoHint>
+            Controls host RAM only, not whether a GPU driver keeps weights in VRAM.
+            Default preserves inherited llama.cpp settings. Auto uses normal
+            memory-mapped loading. Locked RAM prevents mapped host pages from being
+            swapped. RAM copy disables memory mapping, but newer llama.cpp builds
+            cannot also lock that copy.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.ggufMemoryMode ?? "default"}
+          onValueChange={(value) =>
+            update({
+              ggufMemoryMode:
+                value === "default"
+                  ? undefined
+                  : (value as "auto" | "pinned" | "resident"),
+            })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value="default">Default</SelectItem>
+            <SelectItem value="auto">Auto</SelectItem>
+            <SelectItem value="pinned">Locked RAM</SelectItem>
+            <SelectItem value="resident">RAM copy</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
     </>
   );
 }
