@@ -10,7 +10,7 @@ import {
   reconcilePersistedGpuIds,
   useChatRuntimeStore,
 } from "@/features/chat";
-import type { GpuIndexKind } from "@/hooks/use-gpu-info";
+import { type GpuIndexKind, currentGpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
@@ -103,8 +103,14 @@ export function currentRuntimePerModelConfig(
     selectedGpuIds: s.selectedGpuIds,
     // Carry the index space the live pick is in so a save/restore round-trip
     // (and a cancel-restore of this snapshot) can drop it after a backend swap.
+    // Fall back to the current kind when the store stamp is missing (a /status
+    // hydration before the GPU cache warmed leaves it null): a live/active pick
+    // is by definition in the current backend's space, so this is the right
+    // stamp and avoids persisting it as an unstamped (legacy physical) pick.
     selectedGpuIdsIndexKind:
-      s.selectedGpuIds == null ? undefined : (s.selectedGpuIdsKind ?? undefined),
+      s.selectedGpuIds == null
+        ? undefined
+        : ((s.selectedGpuIdsKind ?? currentGpuIndexKind()) ?? undefined),
   };
 }
 

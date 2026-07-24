@@ -4443,18 +4443,12 @@ async def _load_model_impl(
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
 
-            if get_device() == DeviceType.XPU:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
-            # A Vulkan-only build validates against ggml's own Vulkan ordinals
-            # instead: /api/system reports gguf_devices in that space, load_model
-            # pins the pick with --device Vulkan<i>, so probe, picker, and pin
-            # share one index space (physical ids are never involved).
+            # A Vulkan build validates against ggml's own Vulkan ordinals:
+            # /api/system reports gguf_devices in that space, load_model pins the
+            # pick with --device Vulkan<i>, so probe, picker, and pin share one
+            # index space (physical/torch ids are never involved). Check it
+            # BEFORE the XPU ban -- a Vulkan pick on an Intel/XPU host does not
+            # rely on torch-xpu ordinals, so the ban must not reject it.
             if LlamaCppBackend._is_vulkan_backend():
                 # Diffusion GGUFs bypass llama-server: the diffusion runner
                 # forwards gpu_ids[0] as a CUDA/DG_GPU device token, NOT
@@ -4474,10 +4468,24 @@ async def _load_model_impl(
                             "runner cannot map ggml Vulkan ordinals. Omit gpu_ids."
                         ),
                     )
+                # validate_vulkan_gpu_ids may spawn the Vulkan device probe
+                # (blocking subprocess.run). Run it off the event loop so a
+                # stalled driver/probe can't freeze status/progress/unload for
+                # up to the probe timeout.
                 try:
-                    LlamaCppBackend.validate_vulkan_gpu_ids(effective_gpu_ids)
+                    await asyncio.to_thread(
+                        LlamaCppBackend.validate_vulkan_gpu_ids, effective_gpu_ids
+                    )
                 except ValueError as exc:
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            elif get_device() == DeviceType.XPU:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
+                        "Omit gpu_ids to use all devices."
+                    ),
+                )
             else:
                 try:
                     resolve_requested_gpu_ids(effective_gpu_ids)
@@ -5082,21 +5090,15 @@ async def validate_model(
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
 
-            if get_device() == DeviceType.XPU:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
-                        "Omit gpu_ids to use all devices."
-                    ),
-                )
             # Mirror /load: a Vulkan build validates the pick in ggml's own
             # Vulkan ordinal space (the space the --device pin uses), and rejects
             # picks for CONFIRMED diffusion GGUFs (their runner takes a CUDA/DG_GPU
             # token, not --device Vulkan<i>, so an ordinal targets the wrong card).
             # `None` (uncached, unclassifiable) is allowed through so first-time
             # remote GGUF loads still work; the spawn-time backstop catches an
-            # uncached model that turns out to be diffusion after download.
+            # uncached model that turns out to be diffusion after download. Check
+            # the Vulkan path BEFORE the XPU ban: a Vulkan pick on an XPU host
+            # uses ggml ordinals, not torch-xpu ones, so the ban must not hide it.
             if LlamaCppBackend._is_vulkan_backend():
                 if _classify_diffusion_gguf(config) is True:
                     raise HTTPException(
@@ -5107,10 +5109,22 @@ async def validate_model(
                             "runner cannot map ggml Vulkan ordinals. Omit gpu_ids."
                         ),
                     )
+                # Off-loop: validate_vulkan_gpu_ids may spawn the blocking Vulkan
+                # probe subprocess (see /load).
                 try:
-                    LlamaCppBackend.validate_vulkan_gpu_ids(effective_gpu_ids)
+                    await asyncio.to_thread(
+                        LlamaCppBackend.validate_vulkan_gpu_ids, effective_gpu_ids
+                    )
                 except ValueError as exc:
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
+            elif get_device() == DeviceType.XPU:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "GPU selection (gpu_ids) is not supported on Intel XPU. "
+                        "Omit gpu_ids to use all devices."
+                    ),
+                )
             else:
                 try:
                     resolve_requested_gpu_ids(effective_gpu_ids)

@@ -206,6 +206,25 @@ export function useGpuDevices(): SystemGpuDevice[] {
   return devices;
 }
 
+/** Reactive currentGpuIndexKind(): re-renders when /api/system loads, so a
+ *  component reading a pick's index space (e.g. the active model's) updates
+ *  once the cache warms instead of being stuck at the cold-cache null. */
+export function useCurrentGpuIndexKind(): GpuIndexKind | null {
+  const [kind, setKind] = useState<GpuIndexKind | null>(() =>
+    systemGpuIndexKind(cachedSystem),
+  );
+  useEffect(() => {
+    let cancelled = false;
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setKind(systemGpuIndexKind(d));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return kind;
+}
+
 /**
  * Await the shared /api/system fetch so cachedPinnableGpuIndices (and the
  * store's reconcilePersistedGpuIds) can validate a persisted pick before a

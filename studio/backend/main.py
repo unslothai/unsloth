@@ -1241,10 +1241,15 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
-            if get_device() == DeviceType.XPU:
-                gpu_ids_supported = False
-            elif LlamaCppBackend._is_vulkan_backend():
+            # Check the Vulkan build first: its picks live in ggml's own ordinal
+            # space (--device Vulkan<i>) and don't rely on torch-xpu ordinals, so
+            # they're valid even on an Intel/XPU host. Only fall through to the
+            # XPU ban for a non-Vulkan build (where a pick would need torch-xpu
+            # ordinals no visibility mask can speak).
+            if LlamaCppBackend._is_vulkan_backend():
                 gpu_ids_supported = bool(gguf_devices)
+            elif get_device() == DeviceType.XPU:
+                gpu_ids_supported = False
             else:
                 gpu_ids_supported = True
         except Exception as e:
