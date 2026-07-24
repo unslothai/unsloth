@@ -346,6 +346,15 @@ except:
 
 
 def unsloth_base_fast_generate(self, *args, **kwargs):
+    # flash_attention_2 is incompatible with this fast-generation path: the forced
+    # cache_implementation="static" pre-allocates the full prompt+max_new_tokens KV
+    # buffer, and unlike SDPA, FA2 receives no attention mask covering the
+    # not-yet-filled slots, so decoding attends over uninitialized cache memory and
+    # produces incoherent output. Fall back to the original generate, which handles
+    # FA2 correctly (equivalent to UNSLOTH_DISABLE_FAST_GENERATION=1 for FA2 models).
+    if getattr(self.config, "_attn_implementation", None) == "flash_attention_2":
+        return self._old_generate(*args, **kwargs)
+
     if len(args) != 0:
         input_ids = args[0]
     elif "input_ids" in kwargs:
