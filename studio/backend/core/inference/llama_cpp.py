@@ -2601,8 +2601,12 @@ class LlamaCppBackend:
             )
 
     def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
-        """Adopt the caller's raw host-memory intent after a full match."""
-        self._requested_memory_mode = (memory_mode or "").strip().lower() or None
+        """Adopt a matching request unless the operator environment owns it."""
+        self._requested_memory_mode = (
+            None
+            if self._launched_with_inherited_mem_env
+            else (memory_mode or "").strip().lower() or None
+        )
         if self._last_load_kwargs is not None and "memory_mode" in self._last_load_kwargs:
             self._last_load_kwargs["memory_mode"] = self._requested_memory_mode
 
@@ -2613,7 +2617,7 @@ class LlamaCppBackend:
 
     @property
     def requested_memory_mode(self) -> Optional[str]:
-        """Raw mode for status responses, preserving explicit default."""
+        """Applied request mode for status, preserving explicit default."""
         return self._requested_memory_mode
 
     def matches_memory_mode(self, memory_mode: Optional[str]) -> bool:
@@ -6434,7 +6438,7 @@ class LlamaCppBackend:
             if supports_load_mode:
                 # Unified load modes cannot combine a RAM copy with mlock.
                 return ["--load-mode", "none"]
-            return ["--no-mmap", "--mlock"]
+            return ["--no-mmap"]
         return []
 
     @_with_gguf_load_marker
@@ -8825,10 +8829,15 @@ class LlamaCppBackend:
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
-                # Raw requested mode for the response echo, so an explicit "auto"
-                # round-trips instead of collapsing to null (#7188).
-                self._requested_memory_mode = (memory_mode or "").strip().lower() or None
                 self._launched_with_inherited_mem_env = _child_inherited_mem_env
+                # Report only a mode the child applied. Operator environment
+                # overrides suppress the request and remain intentionally opaque.
+                self._requested_memory_mode = (
+                    None
+                    if _child_inherited_mem_env
+                    else (memory_mode or "").strip().lower() or None
+                )
+                _pending_load_kwargs["memory_mode"] = self._requested_memory_mode
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_kwargs = _pending_load_kwargs

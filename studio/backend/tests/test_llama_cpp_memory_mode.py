@@ -155,8 +155,8 @@ def _loaded_backend(**overrides):
         ("DEFAULT", []),
         ("pinned", ["--mlock"]),
         ("PINNED", ["--mlock"]),
-        ("resident", ["--no-mmap", "--mlock"]),
-        ("RESIDENT", ["--no-mmap", "--mlock"]),
+        ("resident", ["--no-mmap"]),
+        ("RESIDENT", ["--no-mmap"]),
         ("", []),
     ],
 )
@@ -843,6 +843,16 @@ def test_requested_memory_mode_preserves_explicit_default(
     assert backend.memory_mode == expected_canonical
 
 
+def test_inherited_memory_env_hides_ignored_request():
+    backend = _loaded_backend(
+        _launched_with_inherited_mem_env = True,
+        _last_load_kwargs = {"memory_mode": "resident"},
+    )
+    backend._record_matching_memory_request("pinned")
+    assert backend.requested_memory_mode is None
+    assert backend._last_load_kwargs["memory_mode"] is None
+
+
 # ── LLAMA_ARG_* host-memory env is authoritative ─────────────────────────────
 
 
@@ -919,6 +929,8 @@ def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
     assert "--mmap" not in cmd
     assert "--no-mmap" not in cmd
     assert "--top-k" in cmd
+    assert backend.requested_memory_mode is None
+    assert backend._last_load_kwargs["memory_mode"] is None
 
 
 # ── diffusion GGUF placement ─────────────────────────────────────────────────
