@@ -118,6 +118,15 @@ windows = [
 base = [
     "unsloth[huggingface]",
 ]
+# Gefen-X optimizer (gefenx / gefenx_muon). Opt-in extra — gefen-x is a
+# CUDA-only, lazily-imported optional dependency, so a bare `pip install unsloth`
+# is untouched. The extra pulls in a normal Core (`base`) install so that
+# `pip install "unsloth[gefenx]"` is self-sufficient and `GefenXConfig` can be
+# imported through unsloth. See unsloth/optimizers/gefenx.py.
+gefenx = [
+    "unsloth[base]",
+    "gefen-x>=0.2.0",
+]
 cu118only = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp39-cp39-manylinux2014_x86_64.whl ; python_version=='3.9' and ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.22.post7%2Bcu118-cp310-cp310-manylinux2014_x86_64.whl ; python_version=='3.10' and ('linux' in sys_platform)",

@@ -52,6 +52,8 @@ __all__ = [
     "_patch_trl_trainer",
     "UnslothVisionDataCollator",
     "QGaloreConfig",
+    "GefenXConfig",
+    "GefenXMuonConfig",
     "check_dataset_for_missing_videos",
 ]
 
@@ -374,16 +376,106 @@ class QGaloreConfig:
     target_modules: Optional[List[str]] = None
 
 
+@dataclass
+class GefenXConfig:
+    """Configuration for the Gefen-X (``gefenx``) optimizer.
+
+    Wraps ``gefen.Gefen`` — an AdamW-family optimizer that keeps its optimizer
+    state at roughly 1 byte per parameter (8-bit quantized momentum + factored /
+    block-shared second moment). Pass an instance via
+    ``UnslothTrainingArguments(gefenx_config=...)`` to enable it. Fields map onto
+    ``gefen.Gefen`` keyword arguments; ``extra_kwargs`` forwards anything not
+    surfaced here. Requires the ``gefen-x`` package (``pip install gefen-x``).
+    """
+
+    fused: bool = True
+    factored_v_2d: bool = True
+    force_1d_period_one: bool = False
+    force_2d_period_one: bool = False
+    period_one_substrings: tuple = ()
+    codebook_refresh_every: int = 0
+    stochastic_round: bool = False
+    capturable: bool = False
+    # None → fall back to the trainer's adam_beta1/2 and adam_epsilon.
+    betas: Optional[tuple] = None
+    eps: Optional[float] = None
+    extra_kwargs: dict = field(default_factory = dict)
+
+
+@dataclass
+class GefenXMuonConfig:
+    """Configuration for the Gefen-X Muon hybrid (``gefenx_muon``) optimizer.
+
+    Wraps ``gefen.GefenMuonHybrid`` — Muon (Newton-Schulz orthogonalization) on
+    the 2D hidden weight matrices, plain Gefen on embeddings / heads / norms /
+    biases, at the same ≈1 byte/param footprint. Pass an instance via
+    ``UnslothTrainingArguments(gefenx_muon_config=...)``. Defaults encode the
+    Gefen-X recommended recipe (``backup_1d_period_one`` /
+    ``adjust_lr_fn="match_rms_adamw"`` / ``fused`` / ``backup_lr = 0.5 * lr``);
+    every field is overridable. Requires the ``gefen-x`` package.
+    """
+
+    fused: bool = True
+    adjust_lr_fn: str = "match_rms_adamw"
+    # backup_lr = backup_lr_scale * lr, unless backup_lr is set explicitly.
+    backup_lr_scale: Optional[float] = 0.5
+    backup_lr: Optional[float] = None
+    muon_lr: Optional[float] = None
+    muon_weight_decay: Optional[float] = None
+    backup_weight_decay: Optional[float] = None
+    backup_1d_period_one: bool = True
+    backup_2d_period_one: bool = False
+    momentum: float = 0.95
+    nesterov: bool = True
+    ns_steps: int = 5
+    ns_schedule: str = "tuned3"
+    sharded_mode: str = "exact"
+    fp8_ns: bool = False
+    stochastic_round: bool = False
+    normuon: bool = True
+    cautious: bool = False
+    capturable: bool = False
+    backup_substrings: Optional[List[str]] = None
+    # None → fall back to the trainer's adam_beta1/2 and adam_epsilon.
+    betas: Optional[tuple] = None
+    eps: Optional[float] = None
+    extra_kwargs: dict = field(default_factory = dict)
+
+
 class UnslothTrainingArguments(TrainingArguments):
     def __init__(
         self,
         embedding_learning_rate: float = None,
         q_galore_config: Optional[QGaloreConfig] = None,
+        gefenx_config: Optional[GefenXConfig] = None,
+        gefenx_muon_config: Optional[GefenXMuonConfig] = None,
         *args,
         **kwargs,
     ):
         self.q_galore_config = q_galore_config
+        self.gefenx_config = gefenx_config
+        self.gefenx_muon_config = gefenx_muon_config
         self.embedding_learning_rate = embedding_learning_rate
+
+        # q_galore_config, gefenx_config and gefenx_muon_config are mutually
+        # exclusive — create_optimizer dispatches to the first one set, so
+        # supplying more than one would silently ignore the rest. Fail loudly.
+        _optimizer_configs = [
+            name
+            for name, cfg in (
+                ("q_galore_config", q_galore_config),
+                ("gefenx_config", gefenx_config),
+                ("gefenx_muon_config", gefenx_muon_config),
+            )
+            if cfg is not None
+        ]
+        if len(_optimizer_configs) > 1:
+            raise ValueError(
+                f"Unsloth: only one optimizer config may be set, but got "
+                f"{_optimizer_configs}. q_galore_config, gefenx_config and "
+                f"gefenx_muon_config are mutually exclusive."
+            )
+
         super().__init__(*args, **kwargs)
         self.embedding_learning_rate = embedding_learning_rate
 
@@ -438,6 +530,15 @@ class UnslothTrainer(SFTTrainer):
         if q_galore_config is not None and self.optimizer is None:
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
             return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
+
+        # --- Gefen-X optimizers ---
+        gefenx_config = getattr(self.args, "gefenx_config", None)
+        if gefenx_config is not None and self.optimizer is None:
+            return self._create_gefenx_optimizer(gefenx_config)
+
+        gefenx_muon_config = getattr(self.args, "gefenx_muon_config", None)
+        if gefenx_muon_config is not None and self.optimizer is None:
+            return self._create_gefenx_muon_optimizer(gefenx_muon_config)
 
         # --- Embedding-LR optimizer ---
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
@@ -552,6 +653,50 @@ class UnslothTrainer(SFTTrainer):
             f"{n_other} standard params."
         )
 
+        return self.optimizer
+
+    def _create_gefenx_optimizer(self, config: "GefenXConfig"):
+        """Build the Gefen-X optimizer (``gefen.Gefen``) from a GefenXConfig."""
+        from unsloth.optimizers.gefenx import build_gefenx_optimizer
+
+        embedding_lr = getattr(self.args, "embedding_learning_rate", None)
+        self.optimizer = build_gefenx_optimizer(
+            self.model,
+            config,
+            lr = self.args.learning_rate,
+            weight_decay = self.args.weight_decay,
+            betas = (self.args.adam_beta1, self.args.adam_beta2),
+            eps = self.args.adam_epsilon,
+            embedding_lr = embedding_lr,
+        )
+        n_params = sum(p.numel() for g in self.optimizer.param_groups for p in g["params"])
+        print(
+            f"🦥 Unsloth: Gefen-X optimizer enabled — "
+            f"{n_params} trainable params at ≈1 byte/param optimizer state."
+        )
+        return self.optimizer
+
+    def _create_gefenx_muon_optimizer(self, config: "GefenXMuonConfig"):
+        """Build the Gefen-X Muon hybrid (``gefen.GefenMuonHybrid``) from a GefenXMuonConfig."""
+        from unsloth.optimizers.gefenx import build_gefenx_muon_optimizer
+
+        if getattr(self.args, "embedding_learning_rate", None) is not None:
+            print(
+                "Unsloth: embedding_learning_rate is ignored by gefenx_muon — the "
+                "hybrid already routes embeddings to its Gefen backup half."
+            )
+        self.optimizer = build_gefenx_muon_optimizer(
+            self.model,
+            config,
+            lr = self.args.learning_rate,
+            weight_decay = self.args.weight_decay,
+            betas = (self.args.adam_beta1, self.args.adam_beta2),
+            eps = self.args.adam_epsilon,
+        )
+        print(
+            "🦥 Unsloth: Gefen-X Muon hybrid enabled — Muon on 2D hidden weights, "
+            "Gefen on embeddings / heads / norms / biases (≈1 byte/param)."
+        )
         return self.optimizer
 
 
