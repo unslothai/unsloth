@@ -717,9 +717,7 @@ def test_cascade_retries_next_quant_after_load_failure():
     the retry loop terminates, and the attempt cap bounds total loads."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert (
-        "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in auto_load
-    )
+    assert "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in auto_load
     # The cascade catch records the failed quant, unlike the old generic flag.
     local_loop = auto_load.split(
         "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)", 1
