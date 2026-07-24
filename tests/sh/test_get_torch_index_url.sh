@@ -23,6 +23,23 @@ _FAKE_SMI_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    # ROCm gfx-arch probe helpers that get_torch_index_url / _has_amd_rocm_gpu
+    # now call. These MUST stay in sync with install.sh: if get_torch_index_url
+    # references a helper that is not extracted here, the ROCm branch hits an
+    # undefined function, silently falls through to the CPU wheel index, and the
+    # ROCm assertions below fail.
+    sed -n '/^_ensure_rocm_probe_env()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_probe_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_gpu_present_via_pci()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_infer_amd_gfx_arch_from_gpu_name()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_infer_linux_amd_gfx_arch()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_amd_arch_index_family_for_gfx()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
