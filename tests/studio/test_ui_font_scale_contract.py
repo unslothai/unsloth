@@ -98,6 +98,22 @@ def test_cn_knows_the_ui_typography_tokens():
     assert "/^ui-\\d+(p5)?$/.test(value)" in UTILS
 
 
+def test_icons_follow_the_ui_font_scale():
+    """Glyphs beside scaled labels track the preference: the shared
+    --icon-size token, the scoped menu/toast/chat svg overrides, and the
+    sonner toast text that is otherwise pinned at 13px."""
+    assert "--icon-size: calc(18px * var(--ui-font-scale, 1));" in INDEX_CSS
+    assert "& svg.size-4 { width: calc(1rem * var(--ui-font-scale, 1));" in INDEX_CSS
+    assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
+    for scope in (
+        "[data-slot='dropdown-menu-content']",
+        "[data-slot='select-content']",
+        "[data-sonner-toast]",
+        ".aui-root",
+    ):
+        assert scope in INDEX_CSS
+
+
 def test_no_raw_pixel_text_utilities():
     offenders = []
     for path in _frontend_sources():

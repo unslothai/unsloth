@@ -208,6 +208,13 @@ def main():
         # text-ui-12p5 at scale 0.75; 16px means twMerge dropped the token.
         if not near(tab_font, 12.5 * 12 / 16):
             fail(f"hub tab font did not scale (twMerge drop?): {tab_font}")
+        icon_w = page.evaluate(
+            "() => { const el = document.querySelector('.size-icon');"
+            " return el ? parseFloat(getComputedStyle(el).width) : null; }"
+        )
+        # --icon-size is 18px at the default and follows the scale.
+        if not near(icon_w, 18 * 12 / 16):
+            fail(f"size-icon did not scale with the preference: {icon_w}")
         page.goto(BASE, wait_until = "domcontentloaded")
         page.wait_for_timeout(1500)
         open_appearance(page)
