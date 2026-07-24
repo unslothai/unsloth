@@ -664,10 +664,7 @@ def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     # reload do not restore GPU 1 after the user removed it.
     assert _target_state_gpu_ids(backend, [0]) is True
     assert backend.requested_gpu_ids == [0]
-    assert backend._last_load_kwargs == {
-        "gpu_ids": [0],
-        "model_identifier": "owner/repo",
-    }
+    assert backend._last_load_kwargs == {"gpu_ids": [0], "model_identifier": "owner/repo"}
     # A genuinely different placement pool still reloads.
     assert _target_state_gpu_ids(backend, [1]) is False
     assert _target_state_gpu_ids(backend, None) is False
