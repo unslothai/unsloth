@@ -2770,6 +2770,34 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+def _sentence_transformer_transformer_dir(save_directory, transformer_path):
+    """Resolve the saved Transformer module without leaving the model directory."""
+    save_root = os.path.realpath(os.path.abspath(os.fspath(save_directory)))
+    if transformer_path is None or os.path.isabs(transformer_path):
+        raise ValueError("Unsloth: Invalid SentenceTransformer Transformer module path.")
+    transformer_dir = os.path.realpath(os.path.abspath(os.path.join(save_root, transformer_path)))
+    try:
+        inside_save_root = os.path.normcase(
+            os.path.commonpath([save_root, transformer_dir])
+        ) == os.path.normcase(save_root)
+    except ValueError:
+        inside_save_root = False
+    if not inside_save_root:
+        raise ValueError("Unsloth: Invalid SentenceTransformer Transformer module path.")
+    return transformer_dir
+
+
+def _gguf_source_directory(
+    save_directory,
+    original_path,
+    prefer_save_directory = False,
+):
+    """Choose the checkpoint consumed by GGUF conversion."""
+    if not prefer_save_directory and original_path and os.path.isdir(original_path):
+        return os.fspath(original_path)
+    return os.fspath(save_directory)
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -2792,6 +2820,7 @@ def unsloth_save_pretrained_gguf(
     maximum_memory_usage: float = 0.85,
     save_method: str = None,
     imatrix_file = None,
+    _prefer_save_directory: bool = False,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -2829,6 +2858,82 @@ def unsloth_save_pretrained_gguf(
     "iq3_xxs" : "3.06 bpw quantization",
     "q3_k_xs" : "3-bit extra small quantization",
     """
+    is_sentence_transformer = self.__class__.__name__ == "SentenceTransformer"
+    if is_sentence_transformer:
+        if push_to_hub:
+            raise ValueError(
+                "Unsloth: Please use .push_to_hub_gguf() instead of "
+                ".save_pretrained_gguf() with push_to_hub=True"
+            )
+        if not is_main_process:
+            return None
+
+        if tokenizer is None:
+            tokenizer = self.tokenizer
+
+        self.save_pretrained(save_directory)
+
+        inner_model = self[0].auto_model
+        if hasattr(inner_model, "_orig_mod"):
+            inner_model = inner_model._orig_mod
+
+        transformer_path = "0_Transformer"
+        modules_path = os.path.join(save_directory, "modules.json")
+        if os.path.exists(modules_path):
+            try:
+                import json
+                with open(modules_path, "r") as f:
+                    modules = json.load(f)
+                for m in modules:
+                    if m.get("type", "").endswith("Transformer"):
+                        transformer_path = m.get("path", "")
+                        break
+            except:
+                pass
+
+        transformer_dir = _sentence_transformer_transformer_dir(save_directory, transformer_path)
+
+        result = unsloth_save_pretrained_gguf(
+            inner_model,
+            save_directory = transformer_dir,
+            tokenizer = tokenizer,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            push_to_hub = False,
+            token = token,
+            private = private,
+            is_main_process = is_main_process,
+            state_dict = state_dict,
+            save_function = save_function,
+            max_shard_size = max_shard_size,
+            safe_serialization = safe_serialization,
+            variant = variant,
+            save_peft_format = save_peft_format,
+            tags = tags,
+            temporary_location = temporary_location,
+            maximum_memory_usage = maximum_memory_usage,
+            save_method = save_method,
+            imatrix_file = imatrix_file,
+            _prefer_save_directory = True,
+        )
+
+        if result is None:
+            return None
+
+        gguf_files = result.get("gguf_files", [])
+        new_gguf_locations = []
+        for gguf_file in gguf_files:
+            if not os.path.exists(gguf_file):
+                continue
+            filename = os.path.basename(gguf_file)
+            dest_path = os.path.join(save_directory, filename)
+            abs_gguf = os.path.abspath(gguf_file)
+            if os.path.abspath(dest_path) != abs_gguf:
+                shutil.move(gguf_file, dest_path)
+            new_gguf_locations.append(dest_path)
+        result["gguf_files"] = new_gguf_locations
+        return result
+
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
@@ -2916,6 +3021,8 @@ def unsloth_save_pretrained_gguf(
     del arguments["base_model_name"]
     del arguments["is_processor"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
+    del arguments["is_sentence_transformer"]
+    del arguments["_prefer_save_directory"]
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
@@ -2943,11 +3050,16 @@ def unsloth_save_pretrained_gguf(
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
         original_path = getattr(self.config, "_name_or_path", None)
-        if original_path and os.path.isdir(original_path):
+        gguf_source_directory = _gguf_source_directory(
+            save_directory,
+            original_path,
+            prefer_save_directory = _prefer_save_directory,
+        )
+        if gguf_source_directory != os.fspath(save_directory):
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
-            save_directory = original_path
+            save_directory = gguf_source_directory
             # Persist tokenizer fixes (e.g. BOS token stripping) to disk
             # so the GGUF converter picks up the corrected chat template.
             if tokenizer is not None:
@@ -3174,6 +3286,14 @@ def unsloth_push_to_hub_gguf(
     "q5_k_s"  : "Uses Q5_K for all tensors",
     "q6_k"    : "Uses Q8_K for all tensors",
     """
+    is_sentence_transformer = self.__class__.__name__ == "SentenceTransformer"
+    if is_sentence_transformer:
+        if tokenizer is None:
+            tokenizer = self.tokenizer
+        if tags is None:
+            tags = []
+        tags.append("sentence-transformers")
+
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if not is_main_process:
@@ -3341,12 +3461,13 @@ tags:
 - gguf
 - llama.cpp
 - unsloth
+{"- sentence-transformers" if is_sentence_transformer else ""}
 {"- vision-language-model" if is_vlm else ""}
 ---
 
 # {repo_id.split("/")[-1]} : GGUF
 
-This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+This {"sentence-transformers model" if is_sentence_transformer else "model"} was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
 
 **Example usage**:
 - For text only LLMs:    `llama-cli -hf {repo_id} --jinja`

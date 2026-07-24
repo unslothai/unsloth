@@ -618,7 +618,7 @@ class LoRA_W(torch.autograd.Function):
         W, W_quant, S = ctx.custom_saved_tensors
         A, B, X = ctx.saved_tensors
 
-        batch, seq_len, hd = X.shape
+        input_shape = X.shape
         dY = dY.reshape(-1, dY.shape[-1])  # Must be reshape
         X = X.reshape(-1, X.shape[-1])  # Must be reshape
         dtype = X.dtype
@@ -647,7 +647,7 @@ class LoRA_W(torch.autograd.Function):
         dX.addmm_(dY @ B.t(), A.t(), alpha = S)
 
         # W, W_quant, A, B, S
-        return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
+        return dX.view(input_shape), None, None, d_A.t(), d_B.t(), None
 
 
 def apply_lora_o(self, X):
@@ -661,8 +661,7 @@ IDENTITY_DROPOUT = torch.nn.Identity
 
 
 @torch._disable_dynamo
-def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-    raise NotImplementedError("Unsloth: Currently not supported yet - reshaping done incorrectly")
+def fast_lora_forward_st(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
     self._check_forward_args(x, *args, **kwargs)
     adapter_names = kwargs.pop("adapter_names", None)
 
@@ -682,12 +681,34 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 return self.base_layer(x, *args, **kwargs)
 
             dropout = self.lora_dropout[active_adapter]
-            if isinstance(dropout, IDENTITY_DROPOUT) and not self.use_dora[active_adapter]:
+            lora_bias = getattr(self, "lora_bias", None)
+            has_lora_bias = (
+                bool(lora_bias.get(active_adapter, False)) if hasattr(lora_bias, "get") else False
+            )
+            activation_fake_quantizer = getattr(
+                self.base_layer,
+                "activation_fake_quantizer",
+                None,
+            )
+            weight_fake_quantizers = (
+                getattr(self.base_layer, "weight_fake_quantizer", None),
+                getattr(self.lora_A[active_adapter], "weight_fake_quantizer", None),
+                getattr(self.lora_B[active_adapter], "weight_fake_quantizer", None),
+            )
+            if (
+                isinstance(dropout, IDENTITY_DROPOUT)
+                and not self.use_dora[active_adapter]
+                and not has_lora_bias
+                and activation_fake_quantizer is None
+                and not any(quantizer is not None for quantizer in weight_fake_quantizers)
+            ):
                 lora_A = self.lora_A[active_adapter].weight
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return LoRA_W.apply(x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                result = LoRA_W.apply(x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                bias = getattr(self.base_layer, "bias", None)
+                return result if bias is None else result + bias
             pass
         pass
 
@@ -730,3 +751,11 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 result = result.to(expected_dtype)
 
     return result
+
+
+@torch._disable_dynamo
+def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    # The generic Linear4bit patch remains disabled: its quantized/mixed-adapter
+    # surface needs separate coverage. SentenceTransformer installs the guarded
+    # ``fast_lora_forward_st`` path only on simple dense LoRA modules.
+    raise NotImplementedError("Unsloth: Generic fast LoRA forward is not supported yet")
