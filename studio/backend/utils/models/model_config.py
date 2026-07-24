@@ -1455,8 +1455,36 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
     unsloth names the drafter ``mtp-<model>.gguf`` where ``<model>`` prefixes
     the weight filename across all Gemma 4 repos (e.g.
     ``mtp-gemma-4-12B-it.gguf`` next to ``gemma-4-12B-it-qat-Q4_0.gguf``).
-    An unmatched drafter is skipped (fail-safe: no MTP).
+    If the root drafter is absent, also accept its precision copy under the
+    repository's ``MTP/`` directory. An unmatched drafter is skipped.
     """
+
+    def _pairing_stem(name: str) -> str:
+        stem = Path(name).stem.lower()
+        if stem.startswith("mtp-"):
+            stem = stem[len("mtp-") :]
+        if stem.endswith("-mtp"):
+            stem = stem[: -len("-mtp")]
+        return re.sub(r"-(?:q[0-9]+_[0-9]+|bf16|f16)$", "", stem)
+
+    def _matches_weight(candidate: Path) -> bool:
+        if weight_name is None:
+            return True
+        stem = _pairing_stem(candidate.name)
+        return bool(stem) and weight_name.startswith(stem)
+
+    def _precision_rank(candidate: Path) -> tuple[int, str]:
+        name = candidate.name.lower()
+        if "-q4_0" in name:
+            rank = 0
+        elif "-q8_0" in name:
+            rank = 1
+        elif "-bf16" in name or "-f16" in name:
+            rank = 2
+        else:
+            rank = 3
+        return rank, name
+
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
@@ -1472,14 +1500,38 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             name = f.name.lower()
             if not (name.startswith("mtp-") and name.endswith(".gguf")):
                 continue
-            stem = name[len("mtp-") : -len(".gguf")]
-            if not stem or (weight_name is not None and not weight_name.startswith(stem)):
+            if not _matches_weight(f):
                 continue
             try:
                 if f.is_file():
                     return str(f.resolve())
             except OSError:
                 continue
+
+    subdir_candidates: list[Path] = []
+    for d in dirs:
+        mtp_dir = d / "MTP"
+        try:
+            entries = sorted(mtp_dir.iterdir())
+        except OSError:
+            continue
+        for f in entries:
+            rel = f"MTP/{f.name}"
+            if not _is_mtp_drafter(rel) or not _matches_weight(f):
+                continue
+            try:
+                if f.is_file():
+                    subdir_candidates.append(f)
+            except OSError:
+                continue
+
+    for candidate in sorted(subdir_candidates, key = _precision_rank):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        logger.info(f"Detected MTP subdirectory drafter: {resolved}")
+        return str(resolved)
     return None
 
 

@@ -211,6 +211,53 @@ def test_detect_mtp_file_search_root(tmp_path):
     assert found is not None and found.endswith("mtp-gemma-4-12b-it.gguf")
 
 
+def test_detect_mtp_file_falls_back_to_new_scheme_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-gemma-4-E4B-it-BF16.gguf").write_bytes(b"x")
+    q4 = sub / "mtp-gemma-4-E4B-it-Q4_0.gguf"
+    q4.write_bytes(b"x")
+
+    found = detect_mtp_file(str(weight))
+    assert found == str(q4.resolve())
+
+
+def test_detect_mtp_file_falls_back_to_old_scheme_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    drafter = sub / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    drafter.write_bytes(b"x")
+
+    found = detect_mtp_file(str(weight))
+    assert found == str(drafter.resolve())
+
+
+def test_detect_mtp_file_root_still_wins_over_subdir(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    root = tmp_path / "mtp-gemma-4-E4B-it.gguf"
+    root.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-gemma-4-E4B-it-Q4_0.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) == str(root.resolve())
+
+
+def test_detect_mtp_file_subdir_skips_foreign_drafter(tmp_path):
+    weight = tmp_path / "gemma-4-E4B-it-qat-Q4_0.gguf"
+    weight.write_bytes(b"x")
+    sub = tmp_path / "MTP"
+    sub.mkdir()
+    (sub / "mtp-gemma-4-12b-it-Q4_0.gguf").write_bytes(b"x")
+
+    assert detect_mtp_file(str(weight)) is None
+
+
 # ── Reload dedup includes the drafter ────────────────────────────────
 
 
