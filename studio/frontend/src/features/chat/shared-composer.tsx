@@ -995,6 +995,7 @@ export function SharedComposer({
         gpuLayers: store.gpuLayers,
         nCpuMoe: store.nCpuMoe,
         splitRatio: store.splitRatio,
+        ggufMemoryMode: store.ggufMemoryMode,
         // Reconcile the pick against the GPUs present now, like the model-switch
         // path: an early remember-restore can hold a stale cross-host pick that
         // /load would reject (the device cache is populated by send time).
@@ -1002,7 +1003,6 @@ export function SharedComposer({
           store.selectedGpuIds,
           store.selectedGpuIndexKind,
         ),
-        customContextLength: store.customContextLength,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1065,7 +1065,8 @@ export function SharedComposer({
                 ownConfig.selectedGpuIndexKind,
               )
             : compareLoadKnobs.selectedGpuIds;
-        const effectiveMemoryMode = ownConfig.ggufMemoryMode ?? null;
+        const effectiveMemoryMode =
+          ownConfig.ggufMemoryMode ?? compareLoadKnobs.ggufMemoryMode;
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --
         // resolveFitMaxSeqLength would treat that as a pin and load this pane at
