@@ -63,6 +63,7 @@ import {
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
+  GgufMemoryMode,
   GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
@@ -1500,7 +1501,7 @@ async function autoLoadSmallestModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
-    gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
+    gguf_memory_mode?: GgufMemoryMode | null;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,

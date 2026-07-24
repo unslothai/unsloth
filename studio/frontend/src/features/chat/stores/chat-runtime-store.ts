@@ -23,6 +23,7 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import type { GgufMemoryMode } from "../types/api";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -621,7 +622,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
-  gguf_memory_mode?: "auto" | "pinned" | "resident" | null;
+  gguf_memory_mode?: GgufMemoryMode | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -922,14 +923,14 @@ type ChatRuntimeStore = {
   ggufLayerCount: number | null;
   /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
   moeLayerCount: number | null;
-  /** Picked physical GPU indices (null = use all / automatic). */
+  /** Picked IDs in the backend-declared GPU namespace (null = automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
   /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
-  ggufMemoryMode: "auto" | "pinned" | "resident" | null;
+  ggufMemoryMode: GgufMemoryMode | null;
   /** Backend-reported GGUF host-memory loading mode, used as the loaded
    *  baseline for status hydration and rollback. */
-  activeMemoryMode: "auto" | "pinned" | "resident" | null;
+  activeMemoryMode: GgufMemoryMode | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;

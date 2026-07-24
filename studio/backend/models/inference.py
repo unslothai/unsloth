@@ -20,6 +20,8 @@ from pydantic import (
 
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
+GgufMemoryMode = Literal["auto", "pinned", "resident"]
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -79,9 +81,10 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "GPU placement pool, for example [0, 1]. Omit or pass [] to use "
-            "automatic selection. CUDA/ROCm and Intel XPU values are physical "
-            "GPU indices; Vulkan values are ggml device ordinals. Explicit "
-            "physical IDs are unsupported when the parent visibility mask uses "
+            "automatic selection. CUDA/ROCm values are physical GPU indices; "
+            "Vulkan values are ggml device ordinals. Explicit selection is not "
+            "supported on XPU, and physical IDs are unsupported when the parent "
+            "visibility mask uses "
             "non-numeric or subdevice entries, including CUDA_VISIBLE_DEVICES "
             "with UUID/MIG entries and ZE_AFFINITY_MASK with subdevice tokens "
             "(for example '0.0,0.1') or FLAT-hierarchy tile handles. For GGUF "
@@ -182,17 +185,17 @@ class LoadRequest(BaseModel):
             raise ValueError("tensor_split must have a positive total")
         return value
 
-    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
         None,
         description = (
             "GGUF host-memory placement mode (llama.cpp --mlock/--no-mmap). These "
             "control system RAM residency and file mapping on the host, NOT GPU VRAM "
             "placement, so they do not by themselves keep offloaded weights pinned in "
-            "VRAM. 'auto' (default) uses llama.cpp's normal memory-mapped loading. "
-            "'pinned' locks memory-mapped host pages so the OS cannot page them out. "
-            "'resident' avoids file-backed mapping and loads the model into RAM. On "
-            "llama.cpp builds with unified load modes it cannot also be locked, so the "
-            "OS may still swap it. Ignored for non-GGUF models."
+            "VRAM. Omit the field to preserve inherited llama.cpp settings. 'auto' "
+            "explicitly restores normal memory-mapped loading. 'pinned' locks mapped "
+            "host pages so the OS cannot page them out. 'resident' loads a RAM copy "
+            "instead of mapping the file; on newer llama.cpp builds that copy cannot "
+            "also be locked and may still be swapped. Ignored for non-GGUF models."
         ),
     )
 
@@ -273,7 +276,7 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
-    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
         None,
         description = "Intended GGUF memory placement mode; mirrors /load so validate's sizing agrees with the follow-up load.",
     )
@@ -547,7 +550,7 @@ class LoadResponse(BaseModel):
             "or None for automatic selection."
         ),
     )
-    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
         None,
         description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
     )
@@ -726,7 +729,7 @@ class InferenceStatusResponse(BaseModel):
             "or None for automatic selection."
         ),
     )
-    gguf_memory_mode: Optional[Literal["auto", "pinned", "resident"]] = Field(
+    gguf_memory_mode: Optional[GgufMemoryMode] = Field(
         None,
         description = "Active GGUF memory placement mode. Only meaningful when is_gguf is True.",
     )

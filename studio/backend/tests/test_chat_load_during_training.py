@@ -540,6 +540,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         decision,
         gpu_memory_mode = "auto",
         requested_gpu_ids = None,
+        gpu_ids_are_vulkan_ordinals = False,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -553,6 +554,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 max_seq_length = 0,
                 requested_gpu_ids = requested_gpu_ids,
                 gpu_memory_mode = gpu_memory_mode,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
             )
 
     def test_noop_when_training_inactive(self):
@@ -701,11 +703,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         with (
             patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-            patch.object(
-                self.route,
-                "get_llama_cpp_backend",
-                return_value = SimpleNamespace(is_vulkan_build = lambda: True),
-            ),
         ):
             self._guard(
                 config = config,
@@ -713,6 +710,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 training_active = True,
                 decision = (True, {"mode": "gguf_vulkan"}),
                 requested_gpu_ids = [0, 1],
+                gpu_ids_are_vulkan_ordinals = True,
             )
         self.assertEqual(len(captured), 1)
         self.assertTrue(captured[0]["gpu_ids_are_vulkan_ordinals"])
@@ -726,11 +724,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         with (
             patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-            patch.object(
-                self.route,
-                "get_llama_cpp_backend",
-                return_value = SimpleNamespace(is_vulkan_build = lambda: False),
-            ),
             patch.object(self.route.LlamaCppBackend, "_diffusion_gpu_arg", return_value = "0"),
         ):
             self._guard(
@@ -1408,7 +1401,11 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         captured = []
         with (
             patch("utils.transformers_version.latest_tier_active_for", return_value = False),
-            patch.object(self.route, "validate_extra_args", return_value = None),
+            patch.object(
+                self.route,
+                "validate_extra_args",
+                side_effect = lambda args: list(args) if args else None,
+            ),
             patch.object(
                 self.route,
                 "_resolve_model_identifier_for_request",

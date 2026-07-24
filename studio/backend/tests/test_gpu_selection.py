@@ -1236,8 +1236,6 @@ class TestRouteErrors(unittest.TestCase):
         # validate gpu_ids through the CUDA physical-id resolver (the diffusion runner takes a
         # CUDA --gpu/DG_GPU id), NOT the Vulkan-ordinal branch, which would size the wrong
         # device namespace and reject a valid physical pick (#7188).
-        from unittest.mock import MagicMock
-
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1259,14 +1257,11 @@ class TestRouteErrors(unittest.TestCase):
             audio_type = None,
             has_audio_input = False,
         )
-        assert_resolvable = MagicMock()  # the Vulkan-ordinal validator; must NOT be called
         fake_backend = SimpleNamespace(
             is_loaded = False,
             model_identifier = None,
             is_vulkan_build = lambda: True,
             _backend_lacks_gpu_lib = lambda *a, **k: False,
-            has_gpu_backend = lambda *a, **k: True,
-            assert_requested_gpu_ids_resolvable = assert_resolvable,
         )
         with (
             patch.object(
@@ -1296,9 +1291,8 @@ class TestRouteErrors(unittest.TestCase):
                         current_subject = "test-user",
                     )
                 )
-        # Took the CUDA physical-id resolver, never the Vulkan-ordinal validator.
+        # Took the CUDA physical-id resolver rather than the Vulkan ordinal path.
         self.assertIn("CUDA_PATH_SENTINEL", exc_info.exception.detail)
-        assert_resolvable.assert_not_called()
 
     def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
         # A same-model Apply that omits gguf_memory_mode must NOT drop an inherited

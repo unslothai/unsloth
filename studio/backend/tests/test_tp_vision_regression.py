@@ -837,7 +837,7 @@ def _mem_loaded_backend(
     b._chat_template_override = None
     b._gguf_path = None
     b._gpu_ids = None
-    b._memory_mode = memory_mode
+    b._requested_memory_mode = memory_mode
     b._launched_with_inherited_mem_env = launched_with_inherited_mem_env
     return b
 

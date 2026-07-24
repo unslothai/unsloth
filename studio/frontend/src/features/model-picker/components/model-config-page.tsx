@@ -17,6 +17,7 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
+  type GgufMemoryMode,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useGpuDevices } from "@/hooks/use-gpu-info";
@@ -259,8 +260,7 @@ function GpuMemorySettings({
       : null;
   const singleGpuInUse =
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
-  // Multi-GPU only, and only with physical indices (relative ordinals from a
-  // CUDA_VISIBLE_DEVICES mask can't be mapped back to pin a device). null = all (auto).
+  // Multi-GPU only, with one backend-declared index namespace. null = all.
   const showGpuPicker =
     gpuDevices.length > 1 &&
     gpuIndexKind !== null &&
@@ -372,10 +372,9 @@ function GpuMemorySettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
-              Which GPUs this model may use. Unchecked GPUs are hidden from
-              llama.cpp (CUDA_VISIBLE_DEVICES, or HIP_VISIBLE_DEVICES on ROCm).
-              Leave all checked to use every GPU. At least one GPU must stay
-              selected.
+              Which GPUs this model may use. Unsloth applies the selection with
+              the active CUDA, ROCm, or Vulkan backend. Leave all checked to use
+              every GPU. At least one GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
@@ -419,7 +418,7 @@ function GpuMemorySettings({
               ggufMemoryMode:
                 value === "default"
                   ? undefined
-                  : (value as "auto" | "pinned" | "resident"),
+                  : (value as GgufMemoryMode),
             })
           }
         >

@@ -300,28 +300,10 @@ def can_load_chat_during_training(
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
-            # Vulkan ordinals enumerate independently of the CUDA index space free_by_index
-            # uses, so the target physical card is unknown. Budget the least-free
-            # possible subset and require each selected device to hold its shard.
-            free_vals = list(free_by_index.values())
-            if not free_vals:
-                return False, {"mode": "gguf_vulkan", "reason": "no_visible_gpus"}
-            needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
-            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
-            min_free_gb = min(free_vals)
-            n_pins = min(len(requested_gpu_ids), len(free_vals))
-            ranked = sorted(sorted(free_vals)[:n_pins], reverse = True)
-            usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
-            aggregate_fits = usable_gb >= needed_gb
-            per_gpu_fits = min_free_gb >= per_gpu_needed_gb
-            return per_gpu_fits and aggregate_fits, {
-                "mode": "gguf_vulkan",
-                "required_gb": round(required_gb, 3),
-                "needed_gb": round(needed_gb, 3),
-                "usable_gb": round(usable_gb, 3),
-                "per_gpu_needed_gb": round(per_gpu_needed_gb, 3),
-                "min_free_gb": round(min_free_gb, 3),
-            }
+            # Vulkan ordinals cannot be mapped to CUDA indices. The least-free
+            # N-device subset is the safe bound for an unknown mapping.
+            visible_free = sorted(free_by_index.values())
+            free_vals = visible_free[: min(len(requested_gpu_ids), len(visible_free))]
         elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
@@ -362,20 +344,28 @@ def can_load_chat_during_training(
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
-        # device_map="balanced" shards across GPUs: an even-share floor stops one
-        # near-full GPU hiding behind aggregate capacity. GGUF self-places, no floor.
+        # Explicit HF and Vulkan placement shard across a known number of GPUs.
+        # An even-share floor stops one near-full GPU hiding behind aggregate capacity.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
-        if mode == "explicit" and len(free_vals) > 1:
-            per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
+        per_gpu_needed_gb = None
+        if mode == "gguf_vulkan":
+            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
+        elif mode == "explicit" and len(free_vals) > 1:
+            per_gpu_needed_gb = needed_gb / len(free_vals)
+        if per_gpu_needed_gb is not None:
+            per_gpu_fits = min_free_gb >= per_gpu_needed_gb
 
-        return aggregate_fits and per_gpu_fits, {
+        info = {
             "mode": mode,
             "required_gb": round(required_gb, 3),
             "usable_gb": round(usable_gb, 3),
             "needed_gb": round(needed_gb, 3),
             "min_free_gb": round(min_free_gb, 3),
         }
+        if per_gpu_needed_gb is not None:
+            info["per_gpu_needed_gb"] = round(per_gpu_needed_gb, 3)
+        return aggregate_fits and per_gpu_fits, info
     except Exception as e:
         # Never let a sizing failure load a chat model into a training OOM.
         logger.warning("Chat-load coexistence probe failed; will refuse: %s", e)
