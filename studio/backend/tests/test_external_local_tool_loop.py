@@ -1021,3 +1021,184 @@ def test_merge_system_nudge_prepends_when_no_leading_system_message():
     out = _merge_system_nudge([{"role": "user", "content": "hi"}], "NUDGE")
     assert out[0] == {"role": "system", "content": "NUDGE"}
     assert out[1] == {"role": "user", "content": "hi"}
+
+
+TERMINAL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "terminal",
+        "description": "Run a shell command",
+        "parameters": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+    },
+}
+
+RENDER_HTML_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "render_html",
+        "description": "Render HTML",
+        "parameters": {
+            "type": "object",
+            "properties": {"code": {"type": "string"}},
+            "required": ["code"],
+        },
+    },
+}
+
+
+def test_stream_external_local_tool_loop_executes_with_healed_arguments(monkeypatch):
+    # A scalar/malformed function.arguments must run with the controller-healed
+    # shape (terminal -> {"command": raw}), not the empty {} lenient JSON yields.
+    tool_call_stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_term",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "ls -la"},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "done", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_call_stream, final_stream])
+
+    seen = {}
+
+    def fake_execute_tool(name, arguments, *args, **kwargs):
+        seen["name"] = name
+        seen["arguments"] = arguments
+        return "listing"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "list files"}],
+            model = "remote-model",
+            tools = [TERMINAL_TOOL],
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    events = _parse_events(asyncio.run(_run()))
+    assert seen["name"] == "terminal"
+    assert seen["arguments"] == {"command": "ls -la"}
+    start = next(e for e in events if e.get("type") == "tool_start")
+    assert start["arguments"] == {"command": "ls -la"}
+
+
+def test_stream_external_local_tool_loop_stops_tools_after_terminal_noop(monkeypatch):
+    # A repeated render_html (one-shot) declares the answer final; the loop must
+    # switch to the tools-free synthesis pass, so no other tool round runs.
+    render_call = lambda: [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_html",
+                    "type": "function",
+                    "function": {"name": "render_html", "arguments": '{"code":"<h1>hi</h1>"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "final answer", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([render_call(), render_call(), final_stream])
+
+    calls = {"count": 0}
+
+    def fake_execute_tool(name, arguments, *args, **kwargs):
+        calls["count"] += 1
+        return "<h1>hi</h1>"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "render"}],
+            model = "remote-model",
+            tools = [RENDER_HTML_TOOL],
+            confirm_tool_calls = False,
+            max_tool_iterations = 5,
+        ):
+            lines.append(line)
+        return lines
+
+    asyncio.run(_run())
+    # render_html ran once; the repeat was a controller no-op, not a second execution.
+    assert calls["count"] == 1
+    # Three remote calls: two tool rounds then the tools-free synthesis pass.
+    assert len(client.requests) == 3
+    assert client.requests[2]["tools"] is None
+    assert client.requests[2]["tool_choice"] == "none"
+
+
+def test_stream_external_local_tool_loop_unique_fallback_ids_across_rounds(monkeypatch):
+    # A server that omits tool-call ids must not restart at call_0 every round;
+    # duplicate ids collide in the transcript and the frontend tool-event map.
+    def round_stream(query):
+        return [
+            _sse_chunk(
+                tool_calls = [
+                    {
+                        "index": 0,
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": json.dumps({"query": query}),
+                        },
+                    }
+                ],
+                finish_reason = "tool_calls",
+            ),
+            "data: [DONE]",
+        ]
+    final_stream = [
+        _sse_chunk(content = "done", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([round_stream("a"), round_stream("b"), final_stream])
+
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda name, arguments, *a, **k: f"hits for {arguments.get('query')}",
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "search"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+            max_tool_iterations = 5,
+        ):
+            lines.append(line)
+        return lines
+
+    events = _parse_events(asyncio.run(_run()))
+    ids = [e["tool_call_id"] for e in events if e.get("type") == "tool_start"]
+    assert ids == ["call_0_0", "call_1_0"]
+    assert len(set(ids)) == len(ids)

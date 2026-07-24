@@ -198,6 +198,10 @@ async def stream_external_local_tool_loop(
     # duplicate/one-shot detection; the enabled-tool gate below already rejects disabled calls.
     tool_controller = ToolLoopController(tools = None)
 
+    # Set once a terminal no-op (a repeated one-shot/duplicate) means the next pass must be a
+    # tools-free synthesis, so the loop stops advertising tools and no other tool can execute.
+    forced_final = False
+
     for _iteration in range(max_tool_iterations):
         if cancel_event.is_set():
             break
@@ -343,7 +347,10 @@ async def stream_external_local_tool_loop(
         # Normalize ids for the conversation transcript.
         assistant_tool_calls = []
         for i, tc in enumerate(ordered_calls):
-            tc_id = tc.get("id") or f"call_{i}"
+            # Include the round index so a server that omits ids does not restart at
+            # call_0 every round; duplicate ids would collide in the transcript and the
+            # frontend tool-event map, overwriting an earlier call's card/result.
+            tc_id = tc.get("id") or f"call_{_iteration}_{i}"
             tc["id"] = tc_id
             assistant_tool_calls.append(
                 {
@@ -409,6 +416,12 @@ async def stream_external_local_tool_loop(
                     }
                 )
                 continue
+
+            # Execute with the controller-normalized (healed) arguments, not the empty {}
+            # that lenient JSON parsing yields on a malformed/scalar function.arguments. This
+            # is the shape the dedup key and the local loops use, so a terminal/python/search
+            # call the controller recovered runs with its real args instead of running empty.
+            arguments = dedup_decision.arguments
 
             needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
             if needs_confirm and permission_mode == "auto":
@@ -485,12 +498,21 @@ async def stream_external_local_tool_loop(
                 }
             )
 
+        # A terminal no-op (render_html repeat / duplicate limit) declares the answer
+        # final: break to the tools-free synthesis pass so a differently-named tool the
+        # remote model might pick next round can no longer execute (local-loop parity).
+        if tool_controller.force_final_answer:
+            forced_final = True
+            break
+
         continue
 
     # Budget exhausted after tool rounds: one final synthesis pass without tools.
     final_finish_reason = None
     if not cancel_event.is_set():
-        if max_tool_iterations > 0:
+        # A forced-final break is a terminal no-op, not budget exhaustion, so it skips the
+        # "you are out of tool budget" nudge; the model just writes its final answer.
+        if max_tool_iterations > 0 and not forced_final:
             from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
         final_gen = client.stream_chat_completion(

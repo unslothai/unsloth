@@ -10255,11 +10255,23 @@ async def openai_chat_completions(
                 payload.max_tool_calls_per_message is None or payload.max_tool_calls_per_message > 0
             )
         )
+        # Confirm intent for the external local runtime: an explicit confirm flag, or an
+        # ask/auto permission_mode. The request validator does NOT fold ask/auto into
+        # confirm_tool_calls for external providers, so a non-streaming ask/auto request
+        # would otherwise slip past the explicit-flag check and pass through unprompted
+        # instead of returning the same stream-required error as the local runtime. The
+        # unset-mode streaming default of _permission_mode_confirm is deliberately omitted
+        # so a hosted passthrough with tools and the default mode still routes verbatim.
+        _ext_confirm_intent = (
+            bool(payload.confirm_tool_calls)
+            if payload.confirm_tool_calls is not None
+            else getattr(payload, "permission_mode", None) in ("ask", "auto")
+        )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).
         # Local-runtime remotes support confirm on stream=true (same as GGUF).
         if (
-            payload.confirm_tool_calls
+            _ext_confirm_intent
             and not payload.bypass_permissions
             and (
                 payload.enable_tools is True
