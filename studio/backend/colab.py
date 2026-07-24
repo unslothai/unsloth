@@ -574,7 +574,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
-            colab_login = _finalize_colab_admin_password()
+            colab_login = _finalize_colab_admin_password() if use_cloudflare else None
             cf_url = start_cloudflare_tunnel(port) if use_cloudflare else None
             _publish_cloudflare_url(cf_url)
             _show_and_embed(
@@ -645,7 +645,7 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
 
     # Server healthy: finalize Colab auth, open the tunnel, publish URL, tear down on interrupt.
     try:
-        colab_login = _finalize_colab_admin_password()
+        colab_login = _finalize_colab_admin_password() if use_cloudflare else None
         cf_url = start_cloudflare_tunnel(actual_port) if use_cloudflare else None
         _publish_cloudflare_url(cf_url)
         _show_and_embed(

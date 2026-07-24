@@ -233,6 +233,28 @@ def test_finalize_colab_admin_password_clears_bootstrap_gate(monkeypatch):
     assert stored == [("unsloth", "alpha-beta-gamma")]
 
 
+def test_start_skips_finalize_when_cloudflare_disabled(monkeypatch):
+    import time
+
+    finalize_calls: list[str] = []
+    monkeypatch.setattr(colab, "_is_studio_healthy", lambda port: True)
+    monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
+    monkeypatch.setattr(
+        colab,
+        "_finalize_colab_admin_password",
+        lambda: finalize_calls.append("finalize") or ("unsloth", "secret"),
+    )
+    monkeypatch.setattr(colab, "start_cloudflare_tunnel", lambda port: "https://share.trycloudflare.com")
+    monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda url: None)
+    monkeypatch.setattr(colab, "_show_and_embed", lambda port, **kwargs: None)
+    monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: None)
+    monkeypatch.setattr(time, "sleep", lambda _: (_ for _ in ()).throw(KeyboardInterrupt))
+
+    colab.start(cloudflare = False)
+
+    assert finalize_calls == []
+
+
 def test_finalize_colab_admin_password_redisplay_on_rerun(monkeypatch):
     monkeypatch.setattr(colab, "_is_colab_runtime", lambda: True)
     monkeypatch.setattr(
