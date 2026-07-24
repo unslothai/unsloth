@@ -1523,6 +1523,7 @@ function localRowToCandidate(
 async function resolveLocalRowCandidate(
   row: LocalModelInfo,
   rememberedVariant: string | null = null,
+  isSkippedCandidate?: (candidate: AutoLoadCandidate) => boolean,
 ): Promise<AutoLoadCandidate | null> {
   const isGguf = row.model_format === "gguf";
   if (row.capabilities?.requires_variant === true) {
@@ -1544,8 +1545,14 @@ async function resolveLocalRowCandidate(
             entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry),
         )
         .sort((a, b) => a.size_bytes - b.size_bytes);
-      if (downloaded.length === 0) return null;
-      return localRowToCandidate(row, downloaded[0].quant);
+      // Smallest first, skipping quants that already failed or were
+      // blocked, so one bad file cannot sink a folder with other quants.
+      for (const entry of downloaded) {
+        const candidate = localRowToCandidate(row, entry.quant);
+        if (isSkippedCandidate?.(candidate)) continue;
+        return candidate;
+      }
+      return null;
     }
   }
   return localRowToCandidate(row, isGguf ? rememberedVariant : null);
@@ -1944,8 +1951,10 @@ export async function autoLoadOnDeviceModel(): Promise<{
   const ggufRepos = allGgufRepos.filter(isAutoLoadableCachedRepo);
   const modelRepos = allModelRepos.filter(isAutoLoadableCachedRepo);
   const localRows = allLocalRows.filter(isAutoLoadableLocalRow);
-  // Dedupe candidates that appear in both the cached and the local
-  // inventory (e.g. a custom scan folder pointing into an HF cache).
+  // Dedupe candidates that resolve to the SAME load target (e.g. a custom
+  // scan folder pointing into an HF cache). Keyed on load targets and
+  // on-disk paths only: a shared model_id does not mean the same files, and
+  // a distinct local copy must stay available when the cached copy fails.
   const seenLoadTargets = new Set<string>();
   const markSeen = (...values: (string | null | undefined)[]): void => {
     for (const value of values) {
@@ -1997,7 +2006,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
       } else if (lastLoaded.kind === "gguf") {
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
-          markSeen(repo.repo_id, repo.load_id, repo.cache_path);
+          markSeen(repo.load_id || repo.repo_id, repo.cache_path);
           try {
             const variants = await listGgufVariants(repo.repo_id, undefined, {
               preferLocalCache: true,
@@ -2042,7 +2051,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
       } else {
         const repo = findCachedRepo(modelRepos, lastLoaded.id);
         if (repo) {
-          markSeen(repo.repo_id, repo.load_id, repo.cache_path);
+          markSeen(repo.load_id || repo.repo_id, repo.cache_path);
           try {
             toast("Loading last used model…", {
               id: toastId,
@@ -2130,7 +2139,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
       if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
       if (candidate.type === "cached-gguf") {
         const repo = candidate.repo;
-        markSeen(repo.repo_id, repo.load_id, repo.cache_path);
+        markSeen(repo.load_id || repo.repo_id, repo.cache_path);
         try {
           const variants = await listGgufVariants(repo.repo_id, undefined, {
             preferLocalCache: true,
@@ -2172,7 +2181,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
       }
       if (candidate.type === "cached-model") {
         const repo = candidate.repo;
-        markSeen(repo.repo_id, repo.load_id, repo.cache_path);
+        markSeen(repo.load_id || repo.repo_id, repo.cache_path);
         if (
           skippedAutoLoadCandidates.has(
             autoLoadCandidateKey("model", repo.repo_id),
@@ -2201,12 +2210,16 @@ export async function autoLoadOnDeviceModel(): Promise<{
         continue;
       }
       const row = candidate.row;
-      if (isSeen(row.load_id, row.id, row.path, row.model_id)) {
+      if (isSeen(row.load_id, row.id, row.path)) {
         continue;
       }
-      markSeen(row.load_id, row.id, row.path, row.model_id);
+      markSeen(row.load_id, row.id, row.path);
       try {
-        const localCandidate = await resolveLocalRowCandidate(row);
+        const localCandidate = await resolveLocalRowCandidate(row, null, (c) =>
+          skippedAutoLoadCandidates.has(
+            autoLoadCandidateKey(c.kind, c.id, c.ggufVariant),
+          ),
+        );
         if (!localCandidate) {
           continue;
         }

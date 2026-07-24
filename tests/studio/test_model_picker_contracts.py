@@ -565,13 +565,32 @@ def test_autoload_remembers_last_model_across_all_sources():
 
 
 def test_autoload_deduplicates_cached_and_local_candidates():
-    """A model visible in both the cached lists and the local inventory
-    (e.g. a custom scan folder pointing into an HF cache) must not be tried
-    twice."""
+    """Candidates resolving to the same load target (e.g. a custom scan
+    folder pointing into an HF cache) must not be tried twice, but the
+    dedupe must key on actual load targets/paths only: a local copy that
+    merely shares a repo model_id is a distinct set of files and must stay
+    available when the cached copy fails or has no usable quant."""
     auto_load = _autoload_section()
     assert "const seenLoadTargets = new Set<string>()" in auto_load
-    assert "markSeen(repo.repo_id, repo.load_id, repo.cache_path)" in auto_load
-    assert "isSeen(row.load_id, row.id, row.path, row.model_id)" in auto_load
+    assert "markSeen(repo.load_id || repo.repo_id, repo.cache_path)" in auto_load
+    assert "isSeen(row.load_id, row.id, row.path)" in auto_load
+    # The repo-id-based dedupe that shadowed distinct local copies is gone.
+    assert "isSeen(row.load_id, row.id, row.path, row.model_id)" not in auto_load
+    assert "markSeen(repo.repo_id," not in auto_load
+
+
+def test_local_quant_resolution_skips_failed_quants():
+    """When a folder's smallest quant already failed or was blocked, the
+    resolver must return the next complete quant instead of abandoning the
+    whole folder (which made Send falsely report no model)."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
+    resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
+    assert "for (const entry of downloaded)" in resolve_fn
+    assert "if (isSkippedCandidate?.(candidate)) continue;" in resolve_fn
+    # The fallback loop feeds the skip set into resolution.
+    auto_load = _autoload_section()
+    assert "await resolveLocalRowCandidate(row, null, (c) =>" in auto_load
 
 
 def test_autoload_trust_guard_still_blocks_background_loads():
@@ -652,7 +671,7 @@ def test_directory_gguf_rows_resolve_variant_like_picker():
     # The cascade must keep directory GGUF rows as candidates.
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert 'row.model_format === "gguf" ||' in auto_load
-    assert "await resolveLocalRowCandidate(row)" in auto_load
+    assert "await resolveLocalRowCandidate(row, null, (c) =>" in auto_load
 
 
 def test_remembered_local_failure_does_not_block_folder_fallback():
