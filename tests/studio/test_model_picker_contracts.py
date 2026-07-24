@@ -364,8 +364,9 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     Reset) so isDefaultConfig can clear a remembered override; the concrete
     fallback is substituted only into the load request, not the saved record."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    # Load-only substitution of the resolved value.
-    assert "maxSeqLength: maxSeqLengthValue" in src
+    # Load-only substitution of the resolved value (recomputed from any committed
+    # same-click Max Seq Length draft, so it is never dropped).
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -407,7 +408,35 @@ def test_initial_load_uses_staged_config_payload():
     )
     # handleRun only promotes commit() when non-null.
     assert "committedContext != null" in page
-    assert "customContextLength: committedContext" in page
+    assert "pendingPatch.customContextLength = committedContext;" in page
+
+
+def test_same_click_commit_covers_all_numeric_inputs():
+    """The same-click blur bridge must flush every NumericValueInput-backed
+    setting, not just Context Length. Max Seq Length (non-GGUF), GPU Layers and
+    MoE Layers (GGUF) also stage their draft only on blur, so handleRun must
+    imperatively commit each and fold the value into the staged load config;
+    otherwise a value the user typed right before clicking Load/Reload is lost."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Each numeric input owns an imperative handle that handleRun commits, and the
+    # handle is forwarded down to the actual NumericValueInput.
+    for ref in ("maxSeqLengthInputRef", "gpuLayersInputRef", "moeLayersInputRef"):
+        assert f"const {ref} = useRef<NumericValueInputHandle>(null);" in page
+        assert f"{ref}.current?.commit()" in page
+        assert f"inputRef={{{ref}}}" in page
+    # The leaf sub-components accept and forward the handle as a ref.
+    assert page.count("inputRef?: Ref<NumericValueInputHandle>;") >= 2
+    assert "ref={inputRef}" in page
+    # Committed drafts are folded into the staged config, gated on non-null so an
+    # untouched field never fabricates an override.
+    assert "committedMaxSeqLength != null" in page
+    assert "committedGpuLayers != null" in page
+    assert "committedMoeLayers != null" in page
+    assert "pendingPatch.gpuLayers = committedGpuLayers;" in page
+    assert "pendingPatch.nCpuMoe = committedMoeLayers;" in page
+    # The non-GGUF load path substitutes the committed Max Seq Length draft.
+    assert "const effectiveMaxSeqLengthValue =" in page
+    assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
 
 
 def test_context_commit_rechecks_persistence_only_shortcut():
