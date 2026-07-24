@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -439,20 +440,10 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
     studio_mod = _load_run_command()
     captured = {}
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return b'{"model": "owner/model-GGUF"}'
-
     def urlopen(request, timeout):
         captured["request"] = request
         captured["timeout"] = timeout
-        return Response()
+        return BytesIO(b'{"model": "owner/model-GGUF"}')
 
     monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
     result = studio_mod._load_model_via_http(
