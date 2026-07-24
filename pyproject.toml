@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==80.9.0", "setuptools-scm==9.2.0"]
+requires = ["setuptools==83.0.0", "setuptools-scm==10.2.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -83,26 +83,26 @@ huggingfacenotorch = [
     "tyro",
     "protobuf",
     "sentencepiece>=0.2.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "datasets>=4.0,<5.1",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
     "diffusers",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.14.1",
+    "trl>=0.18.2,!=0.19.0,<=1.8.0",
     "sentence-transformers",
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
 audio-torch210 = [
-    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10'",
+    "torchcodec>=0.10.0,<0.16.0 ; python_version >= '3.10'",
 ]
 audio-torch290 = [
-    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10'",
+    "torchcodec>=0.8.0,<0.16.0 ; python_version >= '3.10'",
 ]
 audio-torch280 = [
-    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9'",
+    "torchcodec>=0.6.0,<0.16.0 ; python_version >= '3.9'",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
@@ -361,22 +361,22 @@ cu121 = [
 ]
 cu118-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu118onlytorch211]",
 ]
 cu121-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu121onlytorch211]",
 ]
 cu118-torch212 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu118onlytorch212]",
 ]
 cu121-torch212 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu121onlytorch212]",
 ]
 cu118-torch220 = [
@@ -569,12 +569,12 @@ conda = [
 ]
 colab-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu121onlytorch211]",
 ]
 colab-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu121onlytorch211]",
     "packaging",
     "ninja",
@@ -597,8 +597,8 @@ colab-new = [
     "unsloth_zoo>=2026.7.6",
     "packaging",
     "tyro",
-    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
-    "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
+    "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.14.1",
+    "datasets>=4.0,<5.1",
     "sentencepiece>=0.2.0",
     "tqdm",
     "psutil",
@@ -613,7 +613,7 @@ colab-new = [
 ]
 colab-no-deps = [
     "accelerate>=0.34.1",
-    "trl>=0.18.2,!=0.19.0,<=0.24.0",
+    "trl>=0.18.2,!=0.19.0,<=1.8.0",
     "peft>=0.18.0",
     "xformers ; ('linux' in sys_platform or sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
@@ -645,13 +645,13 @@ cu121-ampere = [
 ]
 cu118-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu118onlytorch211]",
     "unsloth[flashattention]",
 ]
 cu121-ampere-torch211 = [
     "unsloth[huggingface]",
-    "bitsandbytes==0.45.5",
+    "bitsandbytes==0.49.2",
     "unsloth[cu121onlytorch211]",
     "unsloth[flashattention]",
 ]
