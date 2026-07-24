@@ -669,22 +669,6 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
-def _bootstrap_deadline_active() -> bool:
-    """Whether the backend's bootstrap shutdown deadline will arm.
-
-    Mirror of studio/backend/auth/bootstrap_timeout.py bootstrap_timeout_seconds:
-    unset/blank/malformed UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT falls back to the 1h
-    default (a typo must not remove protection); 0 or negative disables it.
-    """
-    raw = os.environ.get("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "").strip()
-    if not raw:
-        return True
-    try:
-        return int(raw) > 0
-    except ValueError:
-        return True
-
-
 def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
@@ -736,6 +720,25 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
                     "after a reset.",
                     err = True,
                 )
+
+
+def _echo_auto_generated_credentials(username: str, password: str) -> None:
+    """Surface an auto-generated admin credential once, on the parent's stderr.
+
+    Mirrors run.py's ``_print_auto_generated_credentials``. Never logged elsewhere
+    and never persisted; the re-exec'd child then sees must_change=0 and no-ops.
+    """
+    line = "=" * 70
+    typer.echo(
+        f"\n{line}\n"
+        "  Unsloth Studio admin login (auto-generated for this public launch)\n"
+        f"    Username: {username}\n"
+        f"    Password: {password}\n"
+        "  Save this now: it is shown once, not written to disk, and not in the\n"
+        "  process list. Rotate later with `unsloth studio reset-password`.\n"
+        f"{line}",
+        err = True,
+    )
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
@@ -1069,46 +1072,14 @@ def _enforce_password_change_before_exposure(
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
-            # Only proceed headless if the bootstrap shutdown deadline will protect
-            # the launch: it never arms for api-only, and TIMEOUT=0 disables it.
-            if api_only or not _bootstrap_deadline_active():
-                typer.echo(
-                    "Error: refusing to publish Unsloth on a public Cloudflare "
-                    "URL: the default admin password was never changed, no "
-                    "terminal is attached to change it here, and the bootstrap "
-                    "shutdown deadline does not apply to this launch (api-only, "
-                    "or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the "
-                    "password first (run `unsloth studio` locally and log in, "
-                    "or re-run with a terminal attached), then retry.",
-                    err = True,
-                )
-                raise typer.Exit(1)
-            if child_self_suppresses:
-                # The child is this install's own backend, whose pre-bind gate sets
-                # app.state.suppress_bootstrap_injection, so the seeded credential
-                # is never served publicly even with the file on disk. Skip the
-                # strip: unnecessary here, and it would lock the user out if the
-                # tunnel never comes up (e.g. a --secure loopback whose tunnel
-                # fails). Keep the file for LOCAL recovery; must_change stays set
-                # and the deadline arms.
-                typer.echo(
-                    "Warning: Unsloth is being exposed publicly while the admin "
-                    "account still uses its auto-generated bootstrap password. The "
-                    "login page forces a change and the credential is never served "
-                    "on the public page. Set a new password by running `unsloth "
-                    "studio` locally with a terminal attached, or `unsloth studio "
-                    "reset-password`; Unsloth shuts down after ~1h if the password "
-                    "stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
-                    err = True,
-                )
-                return
-            # The strip permanently removes the only plaintext recovery credential.
-            # On --secure the bind is loopback, so the tunnel is the ONLY public
+            # No terminal for the interactive change and no --password supplied
+            # (that path clears must_change and returns above).
+            #
+            # On --secure the loopback bind means the tunnel is the ONLY public
             # exposure: if cloudflared is provably unavailable no public URL can
-            # start, so stripping would just lock the user out. Refuse with the
-            # credential preserved. (A wildcard --cloudflare bind is public
-            # regardless of the tunnel, so it still strips below, as does any
-            # uncertainty.)
+            # ever come up, so refuse rather than rotate the recovery credential
+            # for a launch that will not start. (A wildcard --cloudflare bind is
+            # public regardless of the tunnel, so it still proceeds below.)
             if secure and _tunnel_binary_confirmed_unavailable():
                 typer.echo(
                     "Error: refusing to expose Unsloth: the Cloudflare tunnel binary "
@@ -1120,22 +1091,18 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
-            # Mixed-version safety: an OLD studio-venv child (predating this gate)
-            # has no pre-bind suppression and would read the seeded credential back
-            # from disk and inject it into the public HTML until the deadline.
-            # Delete the file here, in the parent, so a fresh child of ANY version
-            # reads None. must_change_password stays set, so the login page still
-            # forces a change and the timer still arms; only the on-disk copy goes.
-            _strip_seeded_bootstrap_password_or_exit(context = "no terminal to change it")
-            typer.echo(
-                "Warning: Unsloth is being exposed publicly while the admin account "
-                "still uses its auto-generated bootstrap password. The seeded password "
-                "file has been removed so it is not served on the public page. Set a new "
-                "password by running `unsloth studio` locally with a terminal attached, "
-                "or `unsloth studio reset-password`; Unsloth shuts down after ~1h if the "
-                "password stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
-                err = True,
-            )
+            # Auto-generate a strong admin password and commit it via the normal
+            # update path (clears must_change_password so the public child launches
+            # cleanly, rotates the JWT secret, revokes refresh tokens, and deletes
+            # the seeded bootstrap file). Mirrors run.py's headless gate. A child of
+            # ANY version then reads must_change=0 with no seeded file, so it serves
+            # a normal login page requiring the new password and never injects a
+            # default credential. Surface it once here, before any re-exec, so the
+            # secret never crosses to the child argv. child_self_suppresses is no
+            # longer consulted here: rotating a real password protects every child.
+            generated = secrets.token_urlsafe(24)
+            _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, generated)
+            _echo_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated)
             return
         password_salt, password_hash = row[0], row[1]
 

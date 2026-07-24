@@ -114,7 +114,21 @@ def test_gate_skips_when_password_already_changed(monkeypatch):
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, False)
 
 
-def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
+def _stub_update_password(monkeypatch) -> list:
+    """Record update_password calls so the auto-generate path can be asserted
+    without touching the real auth DB."""
+    calls = []
+    monkeypatch.setattr(
+        auth_storage, "update_password", lambda u, p, **kw: calls.append((u, p, kw))
+    )
+    return calls
+
+
+def test_gate_autogenerates_password_without_tty(monkeypatch):
+    # No terminal to run the interactive change and no supplied password: the gate
+    # auto-generates a strong admin password, commits it (clearing must_change so
+    # the tunnel proceeds headlessly), and surfaces it once. The public HTML must
+    # still not auto-fill any stale bootstrap credential (drop_bootstrap True).
     stderr = _patch_streams(monkeypatch, tty = False)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
@@ -123,47 +137,58 @@ def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
         "prompt_for_password_change",
         lambda **k: pytest.fail("prompt must not run without a tty"),
     )
-    # Proceeds, but the public HTML must not auto-fill the default credential.
+    calls = _stub_update_password(monkeypatch)
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    admin = auth_storage.DEFAULT_ADMIN_USERNAME
+    # Committed via the route-equivalent atomic update (refresh tokens revoked in
+    # the same transaction).
+    assert len(calls) == 1, calls
+    username, password, kwargs = calls[0]
+    assert username == admin
+    assert isinstance(password, str) and len(password) >= auth_storage.MIN_PASSWORD_LENGTH
+    assert kwargs == {"revoke_refresh_tokens": True}
     out = stderr.getvalue()
-    assert "default admin password is still active" in out
-    assert "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT" in out
-    # The seeded file may already be gone (the CLI parent deletes it before
-    # re-exec), so the warning must point at the reset-password recovery path
-    # instead of promising a file to read.
-    assert "reset-password" in out
-    assert ".bootstrap_password" not in out
+    assert "auto-generated" in out
+    assert admin in out
+    assert password in out  # the credential is printed exactly once
 
 
-def test_gate_fails_closed_without_tty_when_deadline_cannot_arm(monkeypatch):
-    # api-only launches never arm the bootstrap deadline, so a headless public
-    # launch with the default password has NO safeguard: refuse to start.
-    stderr = _patch_streams(monkeypatch, tty = False)
+def test_gate_autogenerates_even_when_deadline_cannot_arm(monkeypatch):
+    # api-only launches never armed the bootstrap deadline and used to fail closed;
+    # now a strong password is set instead, so the launch proceeds with real
+    # protection rather than being refused.
+    _patch_streams(monkeypatch, tty = False)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch)
     kwargs = dict(_GATE_KWARGS)
     kwargs["api_only"] = True
     kwargs["frontend_served"] = False
-    assert run._terminal_password_gate(tunnel_will_start = True, **kwargs) == (False, False)
-    assert "Refusing to publish" in stderr.getvalue()
+    assert run._terminal_password_gate(tunnel_will_start = True, **kwargs) == (True, True)
+    assert len(calls) == 1, calls
 
 
-def test_gate_fails_closed_without_tty_when_deadline_disabled(monkeypatch):
-    stderr = _patch_streams(monkeypatch, tty = False)
+def test_gate_autogenerates_when_deadline_disabled(monkeypatch):
+    # UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the deadline; the auto-generated
+    # password is the safeguard now, so the launch still proceeds.
+    _patch_streams(monkeypatch, tty = False)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "0")
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
-    assert "Refusing to publish" in stderr.getvalue()
+    calls = _stub_update_password(monkeypatch)
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    assert len(calls) == 1, calls
 
 
 def test_gate_treats_broken_streams_as_non_interactive(monkeypatch):
-    # A closed/None stdin must take the headless path, not blow up.
+    # A closed/None stdin must take the headless path (auto-generate), not blow up.
     stderr = _Stream(isatty = False)
     monkeypatch.setattr(sys, "stdin", _BrokenStream())
     monkeypatch.setattr(sys, "stderr", stderr)
     _patch_seeded_admin(monkeypatch, requires_change = True)
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch)
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+    assert len(calls) == 1, calls
 
 
 def test_gate_refusal_fails_closed(monkeypatch):

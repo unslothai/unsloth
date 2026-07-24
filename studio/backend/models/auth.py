@@ -29,6 +29,12 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., description = "Refresh token from a previous login or refresh")
 
 
+class LinkTokenRequest(BaseModel):
+    """One-time link-token exchange payload (opt-in Colab same-tab handoff)."""
+
+    link_token: str = Field(..., description = "One-time, short-lived link token to exchange")
+
+
 class AuthStatusResponse(BaseModel):
     """Indicate whether the seeded admin auth flow is ready."""
 

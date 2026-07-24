@@ -24,6 +24,7 @@ from models.auth import (
     CreateApiKeyRequest,
     CreateApiKeyResponse,
     DesktopLoginRequest,
+    LinkTokenRequest,
     RefreshTokenRequest,
 )
 from models.users import Token
@@ -31,6 +32,7 @@ from auth import storage, hashing
 from auth.authentication import (
     create_access_token,
     create_refresh_token,
+    exchange_link_token,
     get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
@@ -450,6 +452,29 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
         refresh_token = create_refresh_token(subject = username, desktop = True),
         token_type = "bearer",
         must_change_password = False,
+    )
+
+
+@router.post("/link-exchange", response_model = Token)
+async def link_exchange(payload: LinkTokenRequest) -> Token:
+    """Exchange a one-time, short-TTL link token for normal session tokens.
+
+    Powers the opt-in Colab same-tab handoff: the same-tab URL carries a
+    single-use ``?link_token=...`` the UI posts here to obtain the same JWT the
+    login form issues. The token is consumed here (a replay is rejected) and is
+    never logged. Unauthenticated by design -- the token itself is the credential.
+    """
+    username = exchange_link_token(payload.link_token)
+    if username is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid, expired, or already-used link token",
+        )
+    return Token(
+        access_token = create_access_token(subject = username),
+        refresh_token = create_refresh_token(subject = username),
+        token_type = "bearer",
+        must_change_password = storage.requires_password_change(username),
     )
 
 

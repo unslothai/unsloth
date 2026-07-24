@@ -206,6 +206,18 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    # One-time, short-TTL link tokens (opt-in Colab same-tab handoff). The row is
+    # the single-use nonce: a token is exchangeable only while its jti is present,
+    # and consuming it deletes the row so a replay finds nothing.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            jti        TEXT PRIMARY KEY,
+            username   TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -721,6 +733,59 @@ def revoke_user_refresh_tokens(username: str) -> None:
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# One-time link tokens (opt-in Colab same-tab handoff)
+# ---------------------------------------------------------------------------
+
+# Short window: the token only has to survive the same-tab redirect into the UI.
+LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
+
+
+def save_link_token(jti: str, username: str, expires_at: str) -> None:
+    """Record a minted one-time link token so it can be consumed exactly once.
+
+    Only the opaque jti (a random id) is stored; the token signature never
+    touches disk.
+    """
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+            (jti, username, expires_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def consume_link_token(jti: str, username: str) -> bool:
+    """Atomically validate-and-delete a one-time link token.
+
+    Returns True only when a row for (jti, username) existed and had not expired;
+    the row is deleted in the same statement. DELETE ... RETURNING fuses the check
+    and delete so two concurrent exchanges cannot both consume the same token.
+    ISO-8601 timestamps compare lexicographically, matching refresh_tokens.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        # Opportunistically reclaim expired rows so the table can't grow unbounded.
+        conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
+        cur = conn.execute(
+            """
+            DELETE FROM link_tokens
+            WHERE jti = ? AND username = ? AND expires_at >= ?
+            RETURNING jti
+            """,
+            (jti, username, now),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row is not None
     finally:
         conn.close()
 

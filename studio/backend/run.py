@@ -1076,6 +1076,45 @@ def _stream_isatty(stream) -> bool:
         return False
 
 
+def _auto_generate_admin_password(admin_username: str) -> str:
+    """Generate a strong random admin password and commit it for a headless
+    public launch that supplied none.
+
+    Uses the existing ``update_password`` path, so it clears
+    ``must_change_password`` (no interactive prompt is then needed), rotates the
+    JWT secret, revokes refresh tokens, and deletes the on-disk bootstrap
+    password. The value is returned once for display; it is NEVER written to disk
+    or placed on argv.
+    """
+    import secrets as _secrets
+
+    from auth import storage as _auth_storage
+
+    generated = _secrets.token_urlsafe(24)
+    _auth_storage.update_password(admin_username, generated, revoke_refresh_tokens = True)
+    return generated
+
+
+def _print_auto_generated_credentials(username: str, password: str, *, out) -> None:
+    """Surface an auto-generated admin credential once, in the startup banner.
+
+    Printed to the given stream (stderr for CLI launches); never logged elsewhere
+    and never persisted. Colab prints its own copy into the notebook cell.
+    """
+    line = "=" * 70
+    print(
+        f"\n{line}\n"
+        "  Unsloth Studio admin login (auto-generated for this public launch)\n"
+        f"    Username: {username}\n"
+        f"    Password: {password}\n"
+        "  Save this now: it is shown once, not written to disk, and not in the\n"
+        "  process list. Rotate later with `unsloth studio reset-password`.\n"
+        f"{line}\n",
+        file = out,
+        flush = True,
+    )
+
+
 def _terminal_password_gate(
     *,
     tunnel_will_start: bool,
@@ -1112,10 +1151,6 @@ def _terminal_password_gate(
 
     from auth import hashing as _auth_hashing
     from auth import storage as _auth_storage
-    from auth.bootstrap_timeout import (
-        bootstrap_timeout_seconds,
-        should_arm_bootstrap_timeout,
-    )
     from auth.terminal_prompt import (
         prompt_for_password_change,
         should_prompt_password_change,
@@ -1134,46 +1169,17 @@ def _terminal_password_gate(
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
-        # No terminal: only proceed if the bootstrap deadline will arm; api-only
-        # and TIMEOUT=0 never arm it, leaving the default credential public.
-        deadline_arms = should_arm_bootstrap_timeout(
-            host = host,
-            secure = secure,
-            api_only = api_only,
-            frontend_served = frontend_served,
-            is_colab = is_colab,
-            requires_change = True,
-            timeout_seconds = bootstrap_timeout_seconds(),
-        )
-        if not deadline_arms:
-            print(
-                "Refusing to publish Unsloth on a public Cloudflare URL: the "
-                "default admin password was never changed, no terminal is "
-                "attached to change it here, and the bootstrap shutdown "
-                "deadline does not apply to this launch (api-only, or "
-                "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the password "
-                "first (run `unsloth studio` locally and log in, or re-run "
-                "with a terminal attached), then retry.",
-                file = sys.stderr,
-                flush = True,
-            )
-            return False, False
-        # The public page won't auto-fill the bootstrap credential (suppressed
-        # below) and the seeded file may already be gone, so point recovery at a
-        # terminal-attached run / reset-password instead of reading it from disk.
-        print(
-            "  WARNING: the default admin password is still active while "
-            "Unsloth is about to be published on a public Cloudflare URL, and "
-            "no terminal is attached to change it here. The public page will "
-            "NOT auto-fill the bootstrap credential. Set a new password by "
-            "running `unsloth studio` locally with a terminal attached, or "
-            "`unsloth studio reset-password`. Unsloth shuts down after the "
-            "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
-            "unless the password is changed.",
-            file = sys.stderr,
-            flush = True,
-        )
-        # Never serve the default credential in HTML over a public URL.
+        # No terminal to run the interactive change and no password was supplied
+        # (--password / UNSLOTH_STUDIO_PASSWORD / stdin would have cleared
+        # must_change above). Rather than publish the default credential and lean
+        # on the bootstrap shutdown deadline, auto-generate a strong password,
+        # commit it (which clears must_change so the tunnel proceeds headlessly),
+        # and surface it once. This also protects the api-only / TIMEOUT=0 launches
+        # that the deadline never covered.
+        generated = _auto_generate_admin_password(_admin)
+        _print_auto_generated_credentials(_admin, generated, out = sys.stderr)
+        # Password is no longer the default; still suppress any HTML injection of a
+        # stale bootstrap credential over the public URL.
         return True, True
 
     def _is_current_password(candidate: str) -> bool:
