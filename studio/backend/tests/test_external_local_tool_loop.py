@@ -1203,3 +1203,178 @@ def test_stream_external_local_tool_loop_unique_fallback_ids_across_rounds(monke
     ids = [e["tool_call_id"] for e in events if e.get("type") == "tool_start"]
     assert ids == ["call_0_0", "call_1_0"]
     assert len(set(ids)) == len(ids)
+
+
+def test_stream_external_local_tool_loop_honors_disabled_healing(monkeypatch):
+    # auto_heal_tool_calls=False must leave a scalar/malformed function.arguments
+    # unhealed (terminal -> {"raw": ...}) instead of recovering {"command": ...} and
+    # executing it, so the caller's explicit opt-out is respected (GGUF parity).
+    tool_call_stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_term",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "ls -la"},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "done", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_call_stream, final_stream])
+
+    seen = {}
+
+    def fake_execute_tool(name, arguments, *args, **kwargs):
+        seen["name"] = name
+        seen["arguments"] = arguments
+        return "listing"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "list files"}],
+            model = "remote-model",
+            tools = [TERMINAL_TOOL],
+            confirm_tool_calls = False,
+            auto_heal_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    events = _parse_events(asyncio.run(_run()))
+    # Not healed to {"command": "ls -la"}: the opt-out keeps the raw scalar shape.
+    assert seen["arguments"] == {"raw": "ls -la"}
+    start = next(e for e in events if e.get("type") == "tool_start")
+    assert start["arguments"] == {"raw": "ls -la"}
+    assert start["provenance"].get("healed") in (None, False)
+
+
+def test_stream_external_local_tool_loop_budget_counts_only_executed(monkeypatch):
+    # A disabled/no-op call must not consume the caller's tool budget: only real
+    # executions count, so a later round can still run a genuine tool (GGUF parity).
+    round0 = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_dis",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": '{"code":"print(1)"}'},
+                },
+                {
+                    "index": 1,
+                    "id": "call_s1",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"q1"}'},
+                },
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    round1 = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_s2",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"q2"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "done", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([round0, round1, final_stream])
+
+    executed = []
+
+    def fake_execute_tool(name, arguments, *args, **kwargs):
+        executed.append((name, arguments.get("query")))
+        return f"hits for {arguments.get('query')}"
+
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", fake_execute_tool)
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "search"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],  # python is not enabled -> a no-op
+            confirm_tool_calls = False,
+            max_tool_iterations = 2,
+        ):
+            lines.append(line)
+        return lines
+
+    asyncio.run(_run())
+    # The disabled python no-op did not eat a budget slot, so both real searches ran.
+    assert executed == [("web_search", "q1"), ("web_search", "q2")]
+
+
+def test_stream_external_local_tool_loop_feeds_error_nudge(monkeypatch):
+    # A failed tool result must carry the shared retry nudge back to the model so it
+    # does not repeat the same bad call until the budget is exhausted (GGUF parity).
+    from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+
+    tool_call_stream = [
+        _sse_chunk(
+            tool_calls = [
+                {
+                    "index": 0,
+                    "id": "call_err",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"boom"}'},
+                }
+            ],
+            finish_reason = "tool_calls",
+        ),
+        "data: [DONE]",
+    ]
+    final_stream = [
+        _sse_chunk(content = "recovered", finish_reason = "stop"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_call_stream, final_stream])
+
+    monkeypatch.setattr(
+        "core.inference.external_agentic.execute_tool",
+        lambda name, arguments, *a, **k: "Error: search backend unavailable",
+    )
+
+    async def _run():
+        lines = []
+        async for line in stream_external_local_tool_loop(
+            client = client,
+            messages = [{"role": "user", "content": "search"}],
+            model = "remote-model",
+            tools = [WEB_SEARCH_TOOL],
+            confirm_tool_calls = False,
+        ):
+            lines.append(line)
+        return lines
+
+    asyncio.run(_run())
+    # The follow-up round's tool message must include the retry guidance.
+    second_msgs = client.requests[1]["messages"]
+    tool_msgs = [m for m in second_msgs if m.get("role") == "tool"]
+    assert tool_msgs
+    assert any(TOOL_ERROR_NUDGE in m["content"] for m in tool_msgs)
+    # The raw error text is still present for context.
+    assert any("search backend unavailable" in m["content"] for m in tool_msgs)

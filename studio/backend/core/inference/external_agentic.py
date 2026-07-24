@@ -159,6 +159,7 @@ async def stream_external_local_tool_loop(
     rag_scope: Optional[dict] = None,
     cancel_event: Optional[threading.Event] = None,
     completion_id: Optional[str] = None,
+    auto_heal_tool_calls: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Drive a local tool loop against an OpenAI-compatible remote model.
 
@@ -196,7 +197,10 @@ async def stream_external_local_tool_loop(
     # re-executing. Without this a looping remote model re-applies a terminal/MCP side
     # effect every round until the budget is exhausted (#7282). tools=None keeps this to
     # duplicate/one-shot detection; the enabled-tool gate below already rejects disabled calls.
-    tool_controller = ToolLoopController(tools = None)
+    # Thread the caller's auto_heal_tool_calls flag through (parity with the GGUF/safetensors
+    # loops) so an explicit opt-out leaves malformed/scalar function.arguments unhealed instead
+    # of silently recovering and executing them.
+    tool_controller = ToolLoopController(tools = None, auto_heal_tool_calls = auto_heal_tool_calls)
 
     # Set once a terminal no-op (a repeated one-shot/duplicate) means the next pass must be a
     # tools-free synthesis, so the loop stops advertising tools and no other tool can execute.
@@ -375,7 +379,6 @@ async def stream_external_local_tool_loop(
         for tc in assistant_tool_calls:
             if cancel_event.is_set():
                 break
-            calls_remaining -= 1
             name = tc["function"]["name"]
             raw_args = tc["function"].get("arguments") or "{}"
             arguments = _coerce_tool_arguments(raw_args)
@@ -484,19 +487,29 @@ async def stream_external_local_tool_loop(
                     abort_tool_decision(decision_slot, approval_id)
 
             model_result = result if isinstance(result, str) else str(result)
+            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': model_result, 'provenance': _prov}, ensure_ascii = False)}"
             if not denied:
+                # Only a real execution counts against the caller's tool budget; denied
+                # approvals (and the controller no-ops handled above) leave the slot for a
+                # later real call, matching the GGUF/safetensors _turn_executed_real_tool gate.
+                calls_remaining -= 1
                 # Ledger the executed result so a later identical call is deduped; a
                 # failed/errored result is not marked successful, so a retry still runs.
-                tool_controller.record_result(dedup_decision, model_result)
-            yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': name, 'tool_call_id': tool_call_id, 'result': model_result, 'provenance': _prov}, ensure_ascii = False)}"
-            conversation.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": name,
-                    "content": strip_result_for_model(model_result),
-                }
-            )
+                completion = tool_controller.record_result(dedup_decision, model_result)
+                # Reuse the controller's model message so a failed tool result carries the
+                # shared retry/alternate-approach nudge back to the model instead of bare error
+                # text, which otherwise lets the remote model repeat the same bad call until the
+                # budget is exhausted (GGUF/safetensors parity).
+                conversation.append(completion.tool_message())
+            else:
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": name,
+                        "content": strip_result_for_model(model_result),
+                    }
+                )
 
         # A terminal no-op (render_html repeat / duplicate limit) declares the answer
         # final: break to the tools-free synthesis pass so a differently-named tool the

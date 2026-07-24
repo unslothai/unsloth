@@ -9839,6 +9839,11 @@ async def _proxy_to_external_provider(
                 else 300,
                 rag_scope = payload.rag_scope,
                 cancel_event = cancel_event,
+                auto_heal_tool_calls = (
+                    payload.auto_heal_tool_calls
+                    if payload.auto_heal_tool_calls is not None
+                    else True
+                ),
             )
             try:
                 sent_done = False
