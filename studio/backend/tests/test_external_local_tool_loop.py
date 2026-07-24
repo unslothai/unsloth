@@ -848,9 +848,7 @@ def test_stop_during_final_synthesis_unblocks(monkeypatch):
                 await asyncio.sleep(0.05)
             yield ""  # pragma: no cover
 
-    monkeypatch.setattr(
-        "core.inference.external_agentic.execute_tool", lambda *a, **k: "hit"
-    )
+    monkeypatch.setattr("core.inference.external_agentic.execute_tool", lambda *a, **k: "hit")
     client = _SynthStallClient()
 
     async def _run():
