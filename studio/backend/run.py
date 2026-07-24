@@ -1123,7 +1123,6 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
     """
     try:
         from cloudflare_tunnel import ensure_cloudflared
-
         return ensure_cloudflared() is None
     except Exception:
         return False
