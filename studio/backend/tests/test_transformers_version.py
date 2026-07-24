@@ -1069,7 +1069,11 @@ class TestGetTransformersTier:
                 return {"modeling_custom.py"}, True
             return set(), False
 
-        def _fake_read(model_name, filename, hf_token = None):
+        def _fake_read(
+            model_name,
+            filename,
+            hf_token = None,
+        ):
             if model_name == "org/qwen3.5-custom-remote" and filename == "modeling_custom.py":
                 return "from transformers.modeling_layers import GradientCheckpointingLayer\n"
             return None
@@ -1099,7 +1103,13 @@ class TestGetTransformersTier:
         real_import = builtins.__import__
         blocked = {"huggingface_hub"}
 
-        def _guarded_import(name, globals = None, locals = None, fromlist = (), level = 0):
+        def _guarded_import(
+            name,
+            globals = None,
+            locals = None,
+            fromlist = (),
+            level = 0,
+        ):
             root = name.split(".", 1)[0]
             if root in blocked:
                 raise AssertionError(f"tier detection imported {name}")

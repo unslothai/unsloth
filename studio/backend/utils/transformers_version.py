@@ -647,7 +647,9 @@ def _list_hub_repo_py_files(repo_id: str, hf_token: str | None = None) -> tuple[
     return {
         item["path"]
         for item in data
-        if isinstance(item, dict) and item.get("type") == "file" and str(item.get("path", "")).endswith(".py")
+        if isinstance(item, dict)
+        and item.get("type") == "file"
+        and str(item.get("path", "")).endswith(".py")
     }, True
 
 
@@ -759,7 +761,9 @@ def _load_repo_json_file(
         return None
 
 
-def _remote_auto_map_py_contents(model_name: str, hf_token: str | None = None) -> tuple[list[str], bool]:
+def _remote_auto_map_py_contents(
+    model_name: str, hf_token: str | None = None
+) -> tuple[list[str], bool]:
     """Executable remote-code sources transformers may load (own, helper, external).
 
     Stdlib-only (urllib + HF REST API) so tier detection never imports ``huggingface_hub``
@@ -810,10 +814,7 @@ def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) ->
     return any(any(marker in src for marker in markers) for src in sources)
 
 
-def _remote_auto_map_scan_result(
-    model_name: str,
-    hf_token: str | None = None,
-) -> tuple[bool, bool]:
+def _remote_auto_map_scan_result(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
     """Return ``(needs_510, scan_was_definitive)`` for auto_map remote code."""
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _remote_auto_map_needs_510_cache:
