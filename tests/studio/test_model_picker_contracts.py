@@ -366,11 +366,57 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     src = _read("features/model-picker/components/model-config-page.tsx")
     # Load-only substitution of the resolved value.
     assert "maxSeqLength: maxSeqLengthValue" in src
-    assert "const loadConfig" in src
-    # The persisted record is loaded via onRun(loadConfig), and save uses the
-    # untouched runtimeConfig (so a reset/default config stays default).
-    assert "onRun(loadConfig)" in src
+    assert "const effectiveLoadConfig" in src
+    # The persisted record is saved from effectiveRuntimeConfig; the load request
+    # carries effectiveLoadConfig (with any committed context input).
+    assert "onRun(effectiveLoadConfig)" in src
     assert "savePerModelConfig(" in src
+
+
+def test_initial_load_uses_staged_config_payload():
+    """Run-settings Load must pass the staged config through to /load even when
+    React has not flushed NumericValueInput blur commits into the store yet."""
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "const pendingLoadConfig =" in runtime
+    assert "pendingLoadConfig?.kvCacheDtype" in runtime
+    assert "pendingLoadConfig?.customContextLength" in runtime
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "contextInputRef" in page
+    assert "contextInputRef.current?.commit()" in page
+    numeric = _read("features/model-picker/components/numeric-value-input.tsx")
+    assert "export type NumericValueInputHandle" in numeric
+    assert "commit:" in numeric
+    # P1: commit returns null unless the user actually edited the field,
+    # so Load/Save with untouched Auto does not pin native context.
+    assert "dirtyRef.current" in numeric
+    assert "return null;" in numeric
+    # P2: blur clears dirtyRef after commit so Reset/slider cannot be
+    # overwritten by a stale draft on a later Load.
+    assert "dirtyRef.current = false;" in numeric
+    assert "draftRef.current = String(final);" in numeric
+    # Same-click Load after blur still sees the committed draft.
+    assert "lastBlurCommittedRef" in numeric
+    # Invalid drafts must not turn Auto into an explicit pin.
+    assert "const commitDraft = (raw: string): number | null" in numeric
+    assert re.search(r"if \(!Number\.isFinite\(parsed\)\) \{\s*return null;", numeric)
+    assert re.search(
+        r"if \(final == null\) \{\s*"
+        r"draftRef\.current = String\(value\);\s*"
+        r"lastBlurCommittedRef\.current = null;",
+        numeric,
+    )
+    # handleRun only promotes commit() when non-null.
+    assert "committedContext != null" in page
+    assert "customContextLength: committedContext" in page
+
+
+def test_context_commit_rechecks_persistence_only_shortcut():
+    """Committed context changes must bypass persistence-only saves."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const effectiveConfig =" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "const effectivePersistenceOnly =" in src
+    assert "if (effectivePersistenceOnly)" in src
 
 
 def test_reset_enabled_for_explicit_context_pin_at_native():
