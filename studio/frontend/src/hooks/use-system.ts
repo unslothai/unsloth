@@ -49,7 +49,6 @@ export interface SystemInfoResponse {
     devices: GpuDevice[];
     /** GGUF placement devices, using Vulkan ordinals when applicable. */
     gguf_devices?: GpuDevice[];
-    gguf_backend?: string;
   };
   ml_packages: {
     torch?: string;

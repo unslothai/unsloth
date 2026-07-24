@@ -60,20 +60,21 @@ def _device_metadata(base, lib, count: int) -> tuple[list[bool], list[str]]:
             dev = base.ggml_backend_reg_dev_get(reg, i)
         except Exception:
             continue
-        if dev:
+        if not dev:
+            continue
+        try:
+            flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
+        except Exception:
+            pass
+        for function in name_functions:
             try:
-                flags[i] = base.ggml_backend_dev_type(dev) == _GGML_BACKEND_DEVICE_TYPE_IGPU
+                raw_name = function(dev)
             except Exception:
-                pass
-            for function in name_functions:
-                try:
-                    raw_name = function(dev)
-                except Exception:
-                    continue
-                if raw_name:
-                    name = raw_name.decode("utf-8", errors = "replace")
-                    names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
-                    break
+                continue
+            if raw_name:
+                name = raw_name.decode("utf-8", errors = "replace")
+                names[i] = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+                break
     return flags, names
 
 

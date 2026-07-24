@@ -1198,7 +1198,6 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
         # CUDA_VISIBLE_DEVICES. Keep torch's view global and expose the ggml
         # records separately for the GGUF picker.
         gguf_devices = enriched_devices
-        gguf_backend = visibility_info.get("backend")
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
@@ -1206,7 +1205,6 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             is_vulkan = LlamaCppBackend._is_vulkan_backend()
             if is_vulkan:
                 gguf_devices = LlamaCppBackend._get_vulkan_gpu_info()
-                gguf_backend = "vulkan"
                 gpu_ids_supported = bool(gguf_devices)
             else:
                 # XPU indices cannot yet be applied safely across Level Zero's
@@ -1223,7 +1221,6 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
             "gguf_devices": gguf_devices,
-            "gguf_backend": gguf_backend,
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
         _system_gpu_cache = (time.monotonic(), gpu_info)
