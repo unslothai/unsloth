@@ -338,8 +338,7 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
-    // Always advance the loaded baseline. gpuStatusFields above updates the
-    // editable value too, while preserving a same-model local edit.
+    // Advance the loaded baseline without overwriting same-model edits.
     ...(seedLoadParams && {
       activeMemoryMode: status.gguf_memory_mode ?? null,
     }),

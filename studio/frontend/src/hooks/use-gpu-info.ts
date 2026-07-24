@@ -20,11 +20,9 @@ export interface SystemGpuDevice {
   indexKind: GpuIndexKind | null;
   name: string;
   memoryTotalGb: number;
-  /** Free VRAM at fetch time. Degrades to the total when the utilization
-   * probe had no usage data; 0 only when the total is unknown too. */
+  /** Free VRAM at fetch time, or total VRAM when usage is unavailable. */
   memoryFreeGb: number;
-  /** True when `index` is safe to send as gpu_ids. This covers CUDA/HIP
-   *  physical IDs and ggml Vulkan ordinals, but not unresolved relative IDs. */
+  /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
 }
 
@@ -84,10 +82,7 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 }
 
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
-  // The backend owns the index contract. CUDA/HIP expose stable physical IDs,
-  // while Vulkan exposes compact ggml ordinals. XPU and unresolved relative
-  // masks report support=false. Missing support info preserves compatibility
-  // with older backends.
+  // The backend declares whether its device indices are pinnable.
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
   return (data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
@@ -144,38 +139,19 @@ export function useGpuDevices(): SystemGpuDevice[] {
   return devices;
 }
 
-/**
- * Await the shared /api/system fetch so cachedPinnableGpuIndices (and the
- * store's reconcilePersistedGpuIds) can validate a persisted pick before a
- * load path sends it -- on a cold cache the reconcile passes ids through
- * unvalidated, and a stale cross-host pick then fails /load with the picker
- * hidden. Resolves immediately once the module cache is warm; a failed fetch
- * keeps the cache cold, preserving the "can't validate, backend guards"
- * degradation.
- */
+/** Warm the shared system cache before validating persisted GPU IDs. */
 export async function ensureGpuDeviceCache(): Promise<void> {
   await fetchSystemOnce();
 }
 
-/**
- * Pinnable physical GPU indices from the already-fetched /api/system cache, for
- * non-React code (the store) that needs to validate a persisted `gpu_ids` pick
- * without triggering a fetch. Returns:
- *  - `null` when the cache isn't populated yet (caller can't validate, so keep
- *    the pick and let the backend guard reject a truly bad one);
- *  - `[]` when the host has no pinnable multi-GPU set (single GPU, or relative/
- *    UUID-masked indices) -- the picker is hidden, so any saved pick is stale;
- *  - the physical indices otherwise.
- */
+/** Cached pinnable IDs, null before fetch, or [] when pinning is unavailable. */
 export function cachedPinnableGpuIndices(): number[] | null {
   if (!cachedSystem) return null;
   const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
-  // Mirrors the sheet's showGpuPicker gate: only a 2+ pinnable-GPU host can pin.
   return pinnable.length > 1 ? pinnable.map((d) => d.index) : [];
 }
 
-/** Index namespace for persisted gpu_ids. Undefined means the cache is cold;
- * null means the current host has no single pinnable namespace. */
+/** Cached index namespace, undefined before fetch and null when unavailable. */
 export function cachedPinnableGpuIndexKind():
   | GpuIndexKind
   | null

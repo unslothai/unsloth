@@ -300,8 +300,7 @@ def can_load_chat_during_training(
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if requested_gpu_ids and gpu_ids_are_vulkan_ordinals:
-            # Vulkan ordinals cannot be mapped to CUDA indices. The least-free
-            # N-device subset is the safe bound for an unknown mapping.
+            # Use the safest N-device bound because Vulkan and CUDA IDs do not map.
             visible_free = sorted(free_by_index.values())
             free_vals = visible_free[: min(len(requested_gpu_ids), len(visible_free))]
         elif single_device_gpu is not None:

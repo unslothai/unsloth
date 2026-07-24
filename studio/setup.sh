@@ -1401,10 +1401,7 @@ else
         # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
-    # The backend override is case-insensitive and trimmed. cpu maps to the
-    # persisted --force-cpu choice. vulkan is consumed directly by
-    # install_llama_prebuilt.py and remains scoped to llama.cpp, so it does not
-    # change the torch backend used for training.
+    # The normalized override affects llama.cpp only, not the training backend.
     _llama_backend="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
     _legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
     _explicit_vulkan_backend=false

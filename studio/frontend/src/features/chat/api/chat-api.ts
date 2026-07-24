@@ -154,8 +154,7 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
-      // GGUF host-memory loading policy. This is independent from GPU VRAM placement.
-      // Sent so validate's preflight matches the follow-up /load.
+      // Keep validate and load on the same host-memory policy.
       gguf_memory_mode: payload.gguf_memory_mode ?? null,
     }),
   });

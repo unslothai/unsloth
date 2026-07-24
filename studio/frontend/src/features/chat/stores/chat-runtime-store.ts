@@ -694,12 +694,8 @@ export function loadedGpuMemoryFields(resp: {
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
-    // Commit the residency the backend actually applied. Mirroring both the
-    // editable value and loaded baseline keeps every load path in sync.
+    // Reset both editable and loaded state to the applied backend mode.
     ggufMemoryMode: resp.gguf_memory_mode ?? null,
-    // Otherwise, after a switch (compare/auto/rollback load) the store keeps
-    // the prior value, so an immediate same-model Apply could resend a stale
-    // mode. Non-GGUF and auto loads report null, resetting it.
     activeMemoryMode: resp.gguf_memory_mode ?? null,
     ...manualKnobs,
   };
@@ -928,8 +924,7 @@ type ChatRuntimeStore = {
   loadedGpuIds: number[] | null;
   /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
   ggufMemoryMode: GgufMemoryMode | null;
-  /** Backend-reported GGUF host-memory loading mode, used as the loaded
-   *  baseline for status hydration and rollback. */
+  /** Loaded GGUF host-memory mode used for hydration and rollback. */
   activeMemoryMode: GgufMemoryMode | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */

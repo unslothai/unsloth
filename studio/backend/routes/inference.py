@@ -3209,9 +3209,7 @@ def _request_matches_loaded_settings(
     # stored extras stripped the way the reload strips them, so an extras-driven
     # tensor load isn't seen as a mismatch that needlessly reloads the server.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
-    # Strip inherited --mlock/--no-mmap/--mmap only for a real memory mode. Pydantic marks
-    # the field "set" even for an explicit null, but null == "no opinion" (placement left
-    # alone), so stripping then would needlessly reload. Gate on the value (#7188).
+    # Explicit null means no opinion, so only a real value owns memory flags.
     _strip_mem = request.gguf_memory_mode is not None
     effective_extra = (
         request.llama_extra_args
@@ -3253,13 +3251,11 @@ def _request_matches_loaded_settings(
     # its single-device normalization.
     if not llama_backend.matches_gpu_ids(request.gpu_ids):
         return False
-    # GGUF host-memory placement mode is first-class; any change must reload (#7164).
     if LlamaCppBackend._canonical_memory_mode(
         request.gguf_memory_mode
     ) != llama_backend.memory_mode:
         return False
-    # An explicit memory_mode, including "auto", over a child with inherited
-    # LLAMA_ARG_* flags must reload so the scrub runs.
+    # Explicit auto must reload a child that inherited placement env vars.
     if request.gguf_memory_mode is not None and llama_backend.launched_with_inherited_mem_env:
         return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above
@@ -3321,16 +3317,8 @@ def _request_matches_loaded_settings(
         ):
             return False
     else:
-        # Strip memory-placement flags request-side only for a real mode (mirrors the
-        # reload's strip of explicit extras), so a request repeating a --mlock/--mmap/--no-mmap
-        # the loaded server already dropped still hits this fast path instead of the guard.
-        # The backend side is NOT stripped: a server loaded with no memory_mode keeps a
-        # pass-through --mlock/--no-mmap and is still mlocked; keeping it forces a reload so
-        # the auto scrub runs (#7164). Explicit gpu_ids drop a user --device from the launched
-        # and stored extras, so strip it request-side too or an identical reload would miss
-        # this fast path and force a needless reload / training 409 (#7188). Gate on an
-        # EFFECTIVE pin: the load path normalizes gpu_ids=[] to None and keeps its --device,
-        # so an empty list must NOT strip here or the two sides diverge.
+        # Compare against the managed flags that load_model actually persisted.
+        # Keep backend memory flags so explicit auto can detect inherited placement.
         _strip_dev = bool(request.gpu_ids)
         _request_extra = (
             strip_shadowing_flags(
@@ -3931,25 +3919,13 @@ def _estimate_gguf_required_gb(
 
 
 def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
-    """Classify a GGUF as diffusion, normal, or unknown before it is loaded.
-
-    ``None`` is important here: a remote GGUF whose header is not cached can
-    still be routed to the single-GPU diffusion runner after download. Default
-    placement keeps that unknown case guarded until the header is available.
-    """
+    """Classify a GGUF as diffusion, normal, or unknown before loading."""
     identity = " ".join(
         str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
-    # Name-only hint, used ONLY as a pre-download fallback, scoped to the
-    # DiffusionGemma runner family: a bare "diffusion" substring is common in
-    # ordinary text-model names/paths (e.g. "stable-diffusion-prompt"), and treating
-    # those as diffusion falsely rejects a valid Vulkan+gpu_ids GGUF (#7239). Normalize
-    # non-alphanumerics so "DiffusionGemma"/"diffusion-gemma" collapse to one token.
-    # The local header below stays authoritative.
+    # Only use the specific DiffusionGemma family name as a header fallback.
     name_says_diffusion = "diffusiongemma" in _re.sub(r"[^a-z0-9]+", "", identity)
 
-    # The local header is authoritative. The name is only a fallback when no
-    # local header is readable, such as an uncached remote GGUF.
     try:
         main = getattr(config, "gguf_file", None)
         if not (main and Path(main).is_file()):
@@ -3959,31 +3935,19 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
                 from hub.utils.gguf import resolve_local_gguf_path
                 main = resolve_local_gguf_path(repo, variant)
         if main and Path(main).is_file():
-            # The local GGUF header is authoritative (same probe the loader uses), so
-            # it can't be fooled by a "diffusion"-flavored name/path.
             probe = LlamaCppBackend()
             probe._read_gguf_metadata(str(main))
             if probe.is_diffusion:
                 return True
-            # A decoded architecture proves a normal llama-server GGUF; no architecture
-            # means the probe was inconclusive, so fall through to the name hint below.
             if getattr(probe, "_architecture", None):
                 return False
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
-    # Header unavailable (remote uncached) or inconclusive: True only for the
-    # DiffusionGemma name family; otherwise None keeps an unknown remote GGUF guarded.
     return True if name_says_diffusion else None
 
 
 def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str]) -> None:
-    """Raise 400 if a DiffusionGemma GGUF was given an explicit gguf_memory_mode.
-
-    The diffusion runner is single-GPU (DG_GPU) with no --mlock/--no-mmap plumbing.
-    Called by both /validate and /load before either tears down the active model,
-    so the endpoints agree before any unload (#7188).
-    gpu_ids for diffusion is handled by the runner (collapsed to a single device), so
-    only the host-memory mode is rejected here."""
+    """Reject host-memory modes unsupported by the diffusion runner."""
     if not config.is_gguf:
         return
     if LlamaCppBackend._canonical_memory_mode(memory_mode) is None:
@@ -4020,13 +3984,7 @@ def _reject_draft_device_with_gpu_ids(
 async def _resolve_gguf_gpu_ids_for_request(
     config: ModelConfig, gpu_ids: Optional[List[int]]
 ) -> tuple[Optional[List[int]], bool]:
-    """Resolve and fully validate an explicit GGUF GPU placement pool.
-
-    CUDA and ROCm use physical IDs. Vulkan uses ggml ordinals, so its device
-    existence check comes from the same ggml probe used by the loader. Both
-    /load and /validate call this before their training guard or any teardown.
-    The boolean result records whether the resolved IDs are Vulkan ordinals.
-    """
+    """Validate GGUF GPU IDs and report whether they are Vulkan ordinals."""
     if not gpu_ids:
         return None, False
 
@@ -4255,9 +4213,7 @@ def _resolve_inherited_extra_args(
                 or effective_chat_template_override is not None
             ),
             strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # A real gguf_memory_mode owns --mlock/--mmap/--no-mmap, so strip an
-            # inherited one; a request that omits the field keeps the pass-through flag
-            # (opt-in, mirrors the fast-path _strip_mem). null == "no opinion" (#7188).
+            # A non-null mode owns inherited memory flags.
             strip_memory_mode = getattr(request, "gguf_memory_mode", None) is not None,
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
@@ -4585,12 +4541,9 @@ async def _load_model_impl(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # DiffusionGemma rejects an explicit host-memory mode before any teardown
-        # (shared with /validate); its runner has no --mlock/--no-mmap plumbing.
         _reject_diffusion_memory_mode(config, request.gguf_memory_mode)
 
-        # Apply a same-model request's inherited extras once, before every
-        # preflight that depends on the effective llama.cpp command.
+        # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
             request,
             config,
@@ -4603,9 +4556,7 @@ async def _load_model_impl(
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
         gpu_ids_are_vulkan_ordinals = False
 
-        # Validate the full GGUF placement pool before the training guard so an
-        # invalid physical ID or Vulkan ordinal is a clean 400, not a masked VRAM
-        # 409. The same helper is used by /validate.
+        # Invalid GPU IDs must fail before the training coexistence guard.
         gguf_gpu_ids: Optional[List[int]] = None
         if config.is_gguf:
             (
@@ -5195,7 +5146,6 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # Reject DiffusionGemma host-memory placement here too, matching /load (#7188).
         _reject_diffusion_memory_mode(config, request.gguf_memory_mode)
 
         effective_extra_args = _resolve_inherited_extra_args(
