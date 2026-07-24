@@ -608,6 +608,12 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return _adapter_base_from_hf_cache(model_name)
 
 
+def _hf_raw_file_url(model_name: str, filename: str) -> str:
+    """Raw Hub file URL honoring ``HF_ENDPOINT`` (mirrors ``_remote_lora_base``)."""
+    endpoint = (os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
+    return f"{endpoint}/{model_name}/raw/main/{filename}"
+
+
 def _read_repo_text_file(
     model_name: str,
     filename: str,
@@ -628,7 +634,7 @@ def _read_repo_text_file(
 
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/{filename}"
+    url = _hf_raw_file_url(model_name, filename)
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -664,7 +670,7 @@ def _load_repo_json_file(
 
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/{filename}"
+    url = _hf_raw_file_url(model_name, filename)
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -703,6 +709,11 @@ def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = Non
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _remote_auto_map_needs_510_cache:
         return _remote_auto_map_needs_510_cache[cache_key]
+
+    # Offline Hub ids cannot be scanned here; do not cache the assumed negative so a
+    # later online read re-fetches (mirrors _check_tokenizer_config_needs_v5).
+    if _env_offline() and not _safe_is_dir(Path(model_name)):
+        return False
 
     sources = _own_repo_auto_map_py_contents(model_name, hf_token)
     result = _remote_auto_map_py_matches(_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, sources)
@@ -1705,6 +1716,14 @@ def get_transformers_tier(
                 )
                 if tier != "default":
                     return tier
+            if _check_remote_auto_map_needs_510(model_name, hf_token):
+                tier = _raise_tier_for_nested(cfg, "510")
+                logger.info(
+                    "Transformers tier %s selected for %s (local auto_map needs 5.10.x)",
+                    tier,
+                    model_name,
+                )
+                return tier
             logger.info(
                 "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
                 model_name,

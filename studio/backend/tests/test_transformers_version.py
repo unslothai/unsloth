@@ -566,6 +566,45 @@ class TestCheckConfigNeeds510:
         assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
         assert _check_config_needs_510(str(tmp_path)) is True
 
+    def test_offline_hub_remote_auto_map_not_cached(self, monkeypatch):
+        """Offline Hub scan negatives must not poison a later online read."""
+        import utils.transformers_version as tv
+
+        _remote_auto_map_needs_510_cache.clear()
+        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+        assert _check_remote_auto_map_needs_510("org/custom-remote") is False
+        assert ("org/custom-remote", None) not in _remote_auto_map_needs_510_cache
+
+    def test_hf_endpoint_used_for_remote_auto_map_fetch(self, monkeypatch):
+        """Remote auto_map fetches must honor HF_ENDPOINT mirrors."""
+        from utils.transformers_version import _read_repo_text_file
+
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+        monkeypatch.setattr(
+            "utils.transformers_version._env_offline",
+            lambda: False,
+        )
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return b"from transformers.modeling_layers import X\n"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        text = _read_repo_text_file("org/custom-remote", "modeling_custom.py")
+        assert "modeling_layers" in text
+        assert seen["url"].startswith("https://hf-mirror.example/org/custom-remote/raw/main/")
+
     def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
         """Older Gemma 4 config should stay on the 550 tier."""
         cfg = {
@@ -880,6 +919,19 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_astral.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_local_custom_remote_auto_map_returns_510(self, tmp_path: Path):
+        """Local unknown model_types must scan auto_map before default (#7353 Codex)."""
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
             "from transformers.modeling_layers import GradientCheckpointingLayer\n"
         )
 
