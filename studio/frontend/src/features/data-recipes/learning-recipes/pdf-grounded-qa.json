@@ -43,11 +43,7 @@
         "output_format": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "question",
-            "answer",
-            "evidence_quote"
-          ],
+          "required": ["question", "answer", "evidence_quote"],
           "properties": {
             "question": {
               "type": "string"
@@ -87,19 +83,14 @@
       {
         "processor_type": "drop_columns",
         "name": "drop_seed_columns",
-        "column_names": [
-          "chunk_text",
-          "source_file"
-        ]
+        "column_names": ["chunk_text", "source_file"]
       }
     ]
   },
   "run": {
     "rows": 5,
     "preview": true,
-    "output_formats": [
-      "jsonl"
-    ]
+    "output_formats": ["jsonl"]
   },
   "ui": {
     "nodes": [
