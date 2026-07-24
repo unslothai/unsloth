@@ -5040,6 +5040,13 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        if config.is_gguf and request.llama_extra_args is not None:
+            from core.inference.llama_server_args import validate_extra_args
+            try:
+                validate_extra_args(request.llama_extra_args)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
         # Apply the same training coexistence policy as /load before the frontend
         # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None

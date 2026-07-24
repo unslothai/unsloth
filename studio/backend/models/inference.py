@@ -249,6 +249,13 @@ class ValidateModelRequest(BaseModel):
         "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Intended GGUF llama-server pass-through args for the follow-up load; "
+            "validated here so denied flags fail before /load unloads the active model."
+        ),
+    )
 
 
 class TransformersUpgradeInfo(BaseModel):

@@ -154,6 +154,7 @@ export async function validateModel(
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      llama_extra_args: payload.llama_extra_args,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

@@ -81,6 +81,7 @@ import {
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
+  llamaExtraArgsForLoad,
 } from "@/features/model-picker";
 import {
   confirmTransformersUpgradeIfNeeded,
@@ -1000,6 +1001,7 @@ export function SharedComposer({
         // /load would reject (the device cache is populated by send time).
         selectedGpuIds: reconcilePersistedGpuIds(store.selectedGpuIds),
         customContextLength: store.customContextLength,
+        llamaExtraArgs: store.llamaExtraArgs,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1055,6 +1057,9 @@ export function SharedComposer({
           ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers;
         const effectiveNCpuMoe =
           ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe;
+        const effectiveLlamaExtraArgs = llamaExtraArgsForLoad(
+          ownConfig.llamaExtraArgs,
+        );
         const effectiveSelectedGpuIds =
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(ownConfig.selectedGpuIds)
@@ -1103,6 +1108,7 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                llama_extra_args: effectiveLlamaExtraArgs,
               }
             : {}),
         });
@@ -1171,6 +1177,7 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                llama_extra_args: effectiveLlamaExtraArgs,
               }
             : {}),
         });
@@ -1222,6 +1229,8 @@ export function SharedComposer({
           // plus loaded baselines) so the GPU controls round-trip. (gguf context,
           // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
+          llamaExtraArgs: ownConfig.llamaExtraArgs ?? null,
+          loadedLlamaExtraArgs: ownConfig.llamaExtraArgs ?? null,
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,

@@ -15,6 +15,7 @@ import {
   type PerModelConfig,
   normalizeMaxSeqLength,
 } from "./per-model-config";
+import { llamaExtraArgsForLoad } from "./llama-extra-args";
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
@@ -54,6 +55,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(config.selectedGpuIds)
         : null,
+    llamaExtraArgs: config.llamaExtraArgs ?? null,
   });
 }
 
@@ -86,6 +88,7 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
+    llamaExtraArgs: s.llamaExtraArgs ?? undefined,
   };
 }
 
@@ -104,7 +107,19 @@ export function perModelConfigsEqual(
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&
+    llamaExtraArgsEqual(a.llamaExtraArgs, b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
+  );
+}
+
+function llamaExtraArgsEqual(
+  a: string[] | undefined,
+  b: string[] | undefined,
+): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return (
+    left.length === right.length && left.every((token, i) => token === right[i])
   );
 }
 
@@ -119,8 +134,11 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.selectedGpuIds == null
       ? "all"
       : [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
+    (config.llamaExtraArgs ?? []).join("\u0001"),
   ].join("|");
 }
+
+export { llamaExtraArgsForLoad };
 
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {
   return gpuFieldsSignature(a) === gpuFieldsSignature(b);
