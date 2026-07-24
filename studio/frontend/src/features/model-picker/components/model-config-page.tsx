@@ -426,16 +426,17 @@ function GpuMemorySettings({
           <InfoHint>
             <div className="flex flex-col gap-1.5">
               <div>
-                <span className="font-medium">Default:</span> uses llama.cpp's
-                default host RAM behavior.
+                <span className="font-medium">Default:</span> uses llama.cpp
+                defaults; the operating system manages model pages.
               </div>
               <div>
                 <span className="font-medium">Mapped + locked:</span>{" "}
-                memory-maps the model and locks its pages in RAM.
+                uses <code>--mlock</code>; mapped model pages remain in RAM.
               </div>
               <div>
-                <span className="font-medium">No memory map:</span> reads the
-                model data into allocated RAM.
+                <span className="font-medium">No memory map:</span> uses{" "}
+                <code>--no-mmap</code>; loads into ordinary RAM and may still be
+                swapped.
               </div>
             </div>
           </InfoHint>
