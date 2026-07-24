@@ -157,7 +157,11 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
-    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds)" in src
+    # A per-model config pick is a persisted restore, so it must reconcile with
+    # fromPersisted: true (drops a pick saved under the other llama.cpp backend's
+    # GPU index space after a Vulkan/ROCm swap).
+    assert "reconcilePersistedGpuIds(ownConfig.selectedGpuIds, {" in src
+    assert "fromPersisted: true" in src
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
