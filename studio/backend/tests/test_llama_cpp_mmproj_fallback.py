@@ -250,6 +250,79 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "-fa"]) == ["llama-server", "-fa=off"]
 
 
+class TestFlashAttnOffQuantizedKvCache:
+    """A quantized KV cache requires flash attention in llama.cpp (init aborts
+    with "V cache quantization requires flash_attn"). Studio launches FA on, so
+    a quantized --cache-type-k/-v is legal at launch but would make the FA-off
+    crash-recovery retry crash on init. The fallback must reset a quantized cache
+    type to f16 while leaving non-quantized (f16/bf16/f32) types unchanged."""
+
+    _QUANTIZED = ["q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl"]
+    _NON_QUANTIZED = ["f16", "bf16", "f32"]
+
+    @pytest.mark.parametrize("qtype", _QUANTIZED)
+    def test_quantized_cache_reset_to_f16(self, qtype):
+        cmd = [
+            "llama-server",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            qtype,
+            "--cache-type-v",
+            qtype,
+        ]
+        out = _flash_off(cmd)
+        assert out is not None
+        # FA flipped off AND both cache axes reset to f16.
+        assert out[out.index("--flash-attn") + 1] == "off"
+        assert out[out.index("--cache-type-k") + 1] == "f16"
+        assert out[out.index("--cache-type-v") + 1] == "f16"
+        assert len(out) == len(cmd)
+
+    @pytest.mark.parametrize("ntype", _NON_QUANTIZED)
+    def test_nonquantized_cache_left_unchanged(self, ntype):
+        cmd = [
+            "llama-server",
+            "--flash-attn",
+            "on",
+            "--cache-type-k",
+            ntype,
+            "--cache-type-v",
+            ntype,
+        ]
+        out = _flash_off(cmd)
+        assert out is not None
+        # Only FA flips; the non-quantized cache type is preserved verbatim.
+        assert out[out.index("--flash-attn") + 1] == "off"
+        assert out[out.index("--cache-type-k") + 1] == ntype
+        assert out[out.index("--cache-type-v") + 1] == ntype
+
+    def test_equals_form_quantized_reset(self):
+        out = _flash_off(["llama-server", "--flash-attn=on", "--cache-type-k=q8_0"])
+        assert out == ["llama-server", "--flash-attn=off", "--cache-type-k=f16"]
+
+    def test_short_alias_quantized_reset(self):
+        out = _flash_off(["llama-server", "-fa", "on", "-ctk", "q4_0", "-ctv", "q4_0"])
+        assert out == ["llama-server", "-fa", "off", "-ctk", "f16", "-ctv", "f16"]
+
+    def test_asymmetric_cache_only_quantized_axis_reset(self):
+        # Quantized K, non-quantized V: reset K, keep V.
+        out = _flash_off(
+            ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
+        )
+        assert out[out.index("--cache-type-k") + 1] == "f16"
+        assert out[out.index("--cache-type-v") + 1] == "f16"
+
+    def test_no_cache_flags_still_flips_fa(self):
+        out = _flash_off(["llama-server", "--flash-attn", "on", "-c", "4096"])
+        assert out == ["llama-server", "--flash-attn", "off", "-c", "4096"]
+
+    def test_input_not_mutated(self):
+        cmd = ["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"]
+        _flash_off(cmd)
+        assert cmd[-1] == "q8_0"
+
+
 class TestNonProjectorDiagnostic:
     """_output_has_nonprojector_diagnostic gates the signal-only text-only retry:
     a hard crash that already names OOM / a bad arch / a TP limit must surface
