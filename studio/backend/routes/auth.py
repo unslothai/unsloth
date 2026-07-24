@@ -456,16 +456,35 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
 
 
 @router.post("/link-exchange", response_model = Token)
-async def link_exchange(payload: LinkTokenRequest) -> Token:
+async def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     """Exchange a one-time, short-TTL link token for normal session tokens.
 
     Powers the opt-in Colab same-tab handoff: the same-tab URL carries a
     single-use ``?link_token=...`` the UI posts here to obtain the same JWT the
     login form issues. The token is consumed here (a replay is rejected) and is
     never logged. Unauthenticated by design -- the token itself is the credential.
+
+    Per-IP failure rate-limited like /login. This endpoint is unauthenticated and
+    each attempt performs a SQLite lookup plus HMAC/base64 processing, so without a
+    limiter an attacker could spray invalid tokens and pin the async event loop on
+    that work. There is no username here (the token is the credential), so failures
+    fold into the per-IP aggregate bucket; the bound is checked BEFORE any storage
+    work, and a successful exchange clears the bucket (mirrors /login).
     """
+    ip_key = _unknown_user_key(request)
+    blocked_for = _login_blocked(ip_key)
+    if blocked_for > 0:
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            # IP not interpolated into the body; behind a proxy/NAT it's
+            # misleading or an info leak.
+            detail = (f"Too many failed link-token exchanges. Try again in {blocked_for} seconds."),
+            headers = {"Retry-After": str(blocked_for)},
+        )
+
     exchanged = exchange_link_token_with_secret(payload.link_token)
     if exchanged is None:
+        _record_login_failure(ip_key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid, expired, or already-used link token",
@@ -490,6 +509,9 @@ async def link_exchange(payload: LinkTokenRequest) -> Token:
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid, expired, or already-used link token",
         )
+    # A valid single-use token proves legitimacy: reset this IP's failure throttle,
+    # exactly as a successful /login does.
+    _clear_login_bucket(ip_key)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,

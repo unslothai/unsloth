@@ -683,22 +683,32 @@ def _prompt_streams_interactive() -> bool:
 
 
 def _one_time_secret_console_stream():
-    """Return a usable console stream to surface a one-time secret, or None.
+    """Return an interactive-terminal stream to surface a one-time secret, or None.
 
     Mirrors run.py's ``_one_time_secret_stream`` fail-closed contract for the CLI
-    parent: the auto-generated admin password must reach the operator's console
+    parent: the auto-generated admin password must reach the operator's terminal
     BEFORE we rotate away the seeded bootstrap credential. Prefers stderr, then
-    stdout. Returns None when neither is usable -- e.g. a Windows pythonw/service
-    wrapper (both absent) or a closed stream -- in which case ``typer.echo`` would
-    silently no-op and the only new credential would be lost after the bootstrap
-    password was already deleted, locking the operator out. The CLI parent has no
-    session-log tee, so no _TeeStream unwrapping is needed here.
+    stdout, and requires a real TTY. A writable non-tty stream -- a ``> file``
+    redirect, nohup.out, a systemd-journald pipe -- is NOT an ephemeral console:
+    surfacing the credential there PERSISTS the plaintext where log consumers can
+    read it (CWE-532), so it is skipped. Returns None when neither stream is a
+    usable TTY -- a Windows pythonw/service wrapper (both absent), a closed stream,
+    or a headless (nohup/systemd) launch with redirected output -- in which case
+    the caller fails closed rather than rotate away and lose (or leak) the only
+    credential. The CLI parent has no session-log tee, so no _TeeStream unwrapping
+    is needed here.
     """
     for candidate in (sys.stderr, sys.stdout):
         try:
             if candidate is None or getattr(candidate, "closed", False):
                 continue
             if not callable(getattr(candidate, "write", None)):
+                continue
+            # A writable non-tty stream is a redirected file/journal/pipe that would
+            # persist the one-time credential (CWE-532); only a real terminal is an
+            # ephemeral surface. isatty() may be absent/raise on a wrapper stream ->
+            # treated as non-interactive by the except below.
+            if not candidate.isatty():
                 continue
         except (AttributeError, ValueError):
             continue

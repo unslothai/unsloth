@@ -1092,19 +1092,28 @@ def _console_only_stream(stream):
 
 
 def _one_time_secret_stream():
-    """Return a real console stream to surface a one-time secret, or None.
+    """Return an interactive-terminal stream to surface a one-time secret, or None.
 
     Prefers sys.stderr, then sys.stdout, unwrapping the _TeeStream session-log
     wrapper (see _console_only_stream) so the secret bypasses the retained
     logs/server/server-*.log (CWE-532: never write credentials to log files).
-    Returns None when neither yields a usable raw stream -- e.g. a Windows
-    pythonw/service wrapper where sys.stderr and sys.stdout are both None, OR a
-    headless launch where the inherited stderr/stdout is a closed or non-writable
-    stream. The caller MUST then fail closed: with no real console, print(file=None)
-    would fall back to the tee'd sys.stdout and persist the credential to disk, and
-    printing to a closed stream raises ValueError -- AFTER the seeded credential was
-    already rotated -- so it must never be treated as usable. Mirrors the CLI's
-    _one_time_secret_console_stream closed/writable preflight so the direct
+
+    Requires the underlying stream to be a real TTY. A writable non-tty stream --
+    a `> file` shell redirect, nohup.out, a systemd-journald socket, a Docker
+    logging pipe -- is NOT an ephemeral console: writing the one-time credential
+    there PERSISTS the plaintext to a file/journal/pipe that log consumers can
+    read (CWE-532), which breaks the banner's "shown once, not written to disk"
+    promise. Only a TTY is a transient surface, so a non-tty stream is skipped and
+    the caller MUST fail closed (refuse to rotate the only recovery credential).
+
+    Returns None when neither stream is a usable TTY -- e.g. a Windows
+    pythonw/service wrapper (both None), a closed/non-writable inherited stream, or
+    a fully headless (nohup/systemd) launch whose stderr/stdout is redirected. The
+    caller then fails closed: print(file=None) would fall back to the tee'd
+    sys.stdout and persist the credential, and printing to a redirected stream
+    persists it just the same -- AFTER the seeded credential was already rotated --
+    so neither may be treated as usable. Mirrors the CLI's
+    _one_time_secret_console_stream tty/closed/writable preflight so the direct
     `python run.py` path makes the same fail-closed decision before rotating.
     """
     for candidate in (sys.stderr, sys.stdout):
@@ -1117,6 +1126,11 @@ def _one_time_secret_stream():
             if not callable(getattr(raw, "write", None)):
                 continue
         except (AttributeError, ValueError):
+            continue
+        # A writable non-tty stream is a redirected file/journal/pipe that would
+        # persist the one-time credential (CWE-532); only a real terminal is an
+        # ephemeral surface. Skip it so the caller fails closed rather than leak.
+        if not _stream_isatty(raw):
             continue
         return raw
     return None
@@ -1243,11 +1257,15 @@ def _terminal_password_gate(
         # that the deadline never covered.
         #
         # Resolve the console stream BEFORE generating/committing the credential:
-        # the one-time password must reach a real console but never the tee'd
-        # session log. With no real console (stderr and stdout both absent, e.g. a
-        # Windows pythonw/service wrapper) print(file=None) would fall back to the
-        # tee'd sys.stdout and persist the password to disk (CWE-532), so fail
-        # closed WITHOUT rotating the only recovery credential.
+        # the one-time password must reach an interactive terminal but never the
+        # tee'd session log NOR a redirected/persisted stream. With no usable TTY
+        # (stderr and stdout both absent, e.g. a Windows pythonw/service wrapper, OR
+        # a headless nohup/systemd launch whose stderr/stdout is redirected to a
+        # file/journal) surfacing the password would persist the plaintext to disk
+        # (CWE-532) -- print(file=None) would fall back to the tee'd sys.stdout, and
+        # a redirected stream retains it just the same -- so fail closed WITHOUT
+        # rotating the only recovery credential. A headless operator supplies
+        # --password / UNSLOTH_STUDIO_PASSWORD / stdin instead.
         out = _one_time_secret_stream()
         if out is None:
             return False, False

@@ -136,6 +136,13 @@ def _install_prompt_env(
     # proceeds without a real download; the unavailable-tunnel guard has its own
     # dedicated test that overrides this.
     monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
+    # The one-time-secret selector now requires a real tty (a redirected/persisted
+    # stream would leak the credential -- see _one_time_secret_console_stream and
+    # test_one_time_secret_console_stream_requires_tty). CliRunner's captured stderr
+    # is not a tty, so provide a usable console here: these tests exercise the
+    # rotation/re-exec logic given a surface, not the tty preflight. Tests for the
+    # no-console fail-closed path override this back to None afterwards.
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda: sys.stderr)
 
     def fake_prompt(verify_current, out = None):
         events.append(("prompt", verify_current))
@@ -304,11 +311,20 @@ def test_one_time_secret_console_stream_prefers_stderr_then_stdout(monkeypatch):
     studio_mod = _studio()
 
     class _Stream:
-        def __init__(self, *, closed = False):
+        def __init__(
+            self,
+            *,
+            closed = False,
+            tty = True,
+        ):
             self.closed = closed
+            self._tty = tty
 
         def write(self, *_a, **_k):
             pass
+
+        def isatty(self):
+            return self._tty
 
     real_err, real_out = _Stream(), _Stream()
 
@@ -326,6 +342,38 @@ def test_one_time_secret_console_stream_prefers_stderr_then_stdout(monkeypatch):
     monkeypatch.setattr(sys, "stderr", None)
     monkeypatch.setattr(sys, "stdout", None)
     assert studio_mod._one_time_secret_console_stream() is None  # pythonw wrapper
+
+
+def test_one_time_secret_console_stream_requires_tty(monkeypatch):
+    # Regression (Codex 3644671925, P1): a headless CLI launch (nohup / systemd /
+    # `> log 2>&1`) inherits a stderr/stdout that is open and writable but NOT a
+    # tty. Surfacing the auto-generated password there PERSISTS the plaintext to
+    # the file/journal (CWE-532), so the selector must skip a non-tty stream and
+    # fall back to a real terminal, returning None when neither is a tty.
+    studio_mod = _studio()
+
+    class _Stream:
+        def __init__(self, *, tty):
+            self.closed = False
+            self._tty = tty
+
+        def write(self, *_a, **_k):
+            pass
+
+        def isatty(self):
+            return self._tty
+
+    redirected_err, tty_out = _Stream(tty = False), _Stream(tty = True)
+    monkeypatch.setattr(sys, "stderr", redirected_err)
+    monkeypatch.setattr(sys, "stdout", tty_out)
+    # Redirected stderr is skipped; falls back to the tty stdout.
+    assert studio_mod._one_time_secret_console_stream() is tty_out
+
+    # Both redirected (fully headless) -> None, so the caller fails closed rather
+    # than write the credential into a retained file/journal.
+    monkeypatch.setattr(sys, "stderr", _Stream(tty = False))
+    monkeypatch.setattr(sys, "stdout", _Stream(tty = False))
+    assert studio_mod._one_time_secret_console_stream() is None
 
 
 def test_studio_default_non_tty_no_console_preserves_bootstrap(monkeypatch, tmp_path):

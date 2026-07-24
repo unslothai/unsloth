@@ -278,6 +278,62 @@ def test_link_exchange_rejects_when_password_rotates_mid_issuance(monkeypatch):
     assert storage.consume_refresh_token(minted[0]) is None
 
 
+# ── rate-limiting failed exchanges ───────────────────────────────────
+
+
+def test_link_exchange_rate_limits_repeated_failures():
+    # Regression (Codex 3644647557, P2): /api/auth/link-exchange is unauthenticated
+    # and each attempt performs a SQLite lookup + HMAC/base64 processing. Without a
+    # limiter an attacker sprays invalid tokens and pins the event loop. Apply the
+    # same per-IP failure bound as /login, checked BEFORE any storage work.
+    admin = _seed_admin()
+    auth_route = _load_auth_route()
+    app = FastAPI()
+    app.include_router(auth_route.router, prefix = "/api/auth")
+    client = TestClient(app)
+
+    threshold = auth_route._LOGIN_MAX_FAILS
+    for _ in range(threshold):
+        resp = client.post("/api/auth/link-exchange", json = {"link_token": "not-a-token"})
+        assert resp.status_code == 401, resp.text
+
+    # Now blocked: a VALID token is rejected with 429 too, proving the limiter runs
+    # BEFORE exchange_link_token_with_secret rather than after the storage work.
+    valid = authentication.create_link_token(admin)
+    blocked = client.post("/api/auth/link-exchange", json = {"link_token": valid})
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.headers.get("Retry-After")
+    # The valid token was NOT consumed while blocked (the gate short-circuited before
+    # the exchange), so it still works once the throttle is cleared below.
+
+
+def test_link_exchange_success_clears_rate_limit_bucket():
+    # A successful exchange resets the IP's failure throttle, exactly as a successful
+    # /login does, so a legitimate click after a few earlier failures is not blocked.
+    admin = _seed_admin()
+    auth_route = _load_auth_route()
+    app = FastAPI()
+    app.include_router(auth_route.router, prefix = "/api/auth")
+    client = TestClient(app)
+
+    threshold = auth_route._LOGIN_MAX_FAILS
+    for _ in range(threshold - 1):
+        resp = client.post("/api/auth/link-exchange", json = {"link_token": "not-a-token"})
+        assert resp.status_code == 401, resp.text
+
+    ok = client.post(
+        "/api/auth/link-exchange",
+        json = {"link_token": authentication.create_link_token(admin)},
+    )
+    assert ok.status_code == 200, ok.text  # clears the bucket
+
+    # Prior failures were reset: another full batch below the threshold stays 401,
+    # never 429 (without the clear, the accumulated count would trip the limit).
+    for _ in range(threshold - 1):
+        resp = client.post("/api/auth/link-exchange", json = {"link_token": "not-a-token"})
+        assert resp.status_code == 401, resp.text
+
+
 # ── oversized-token DoS hardening ────────────────────────────────────
 
 
