@@ -1568,8 +1568,12 @@ async function resolveLocalRowCandidate(
       return null;
     }
   }
+  const candidate = localRowToCandidate(row, isGguf ? rememberedVariant : null);
+  // Single-candidate rows resolve to null once their candidate is skipped,
+  // so the retry loop in the fallback terminates instead of re-attempting.
+  if (isSkippedCandidate?.(candidate)) return null;
   return {
-    candidate: localRowToCandidate(row, isGguf ? rememberedVariant : null),
+    candidate,
     sizeBytes: sizeOrUnknownBytes(row.size_bytes),
   };
 }
@@ -2262,20 +2266,42 @@ export async function autoLoadOnDeviceModel(): Promise<{
         continue;
       }
       const row = candidate.row;
-      const localCandidate = candidate.candidate;
+      let localCandidate: AutoLoadCandidate | null = candidate.candidate;
       if (isSeen(localCandidate.kind, row.load_id, row.id, row.path)) {
         continue;
       }
       markSeen(localCandidate.kind, row.load_id, row.id, row.path);
-      if (isSkippedAutoLoadCandidate(localCandidate)) {
-        continue;
-      }
-      try {
-        if (await loadAutoLoadCandidate(localCandidate)) {
-          return { loaded: true, blockedByTrustRemoteCode: false };
+      // Try the row's quants smallest-first: a failed LOAD (not just a
+      // blocked validation) marks that quant skipped and the folder's next
+      // complete quant is resolved and tried, so one corrupt file cannot
+      // abandon a folder that still holds a loadable quant. The attempt cap
+      // still bounds total /load calls; single-candidate rows resolve to
+      // null once skipped, terminating the loop.
+      while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+        if (!isSkippedAutoLoadCandidate(localCandidate)) {
+          try {
+            if (await loadAutoLoadCandidate(localCandidate)) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey(
+                localCandidate.kind,
+                localCandidate.id,
+                localCandidate.ggufVariant,
+              ),
+            );
+          }
         }
-      } catch {
-        hadNonTrustFailure = true;
+        try {
+          localCandidate =
+            (await resolveLocalRowCandidate(row, null, isSkippedAutoLoadCandidate))
+              ?.candidate ?? null;
+        } catch {
+          hadNonTrustFailure = true;
+          break;
+        }
       }
     }
 

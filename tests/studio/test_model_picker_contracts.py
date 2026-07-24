@@ -708,3 +708,24 @@ def test_local_fallback_orders_by_resolved_quant_size():
         "const ggufGroup: FallbackCandidate[]"
     )
     assert "sizeBytes: resolved.sizeBytes" in auto_load
+
+
+def test_cascade_retries_next_quant_after_load_failure():
+    """A failed /api/inference/load (not just a blocked validation) must mark
+    that quant skipped and try the folder's next complete quant before the
+    row is abandoned; single-candidate rows resolve to null once skipped so
+    the retry loop terminates, and the attempt cap bounds total loads."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
+    assert (
+        "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in auto_load
+    )
+    # The cascade catch records the failed quant, unlike the old generic flag.
+    local_loop = auto_load.split(
+        "while (localCandidate && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)", 1
+    )[1].split("\n    }", 1)[0]
+    assert "skippedAutoLoadCandidates.add(" in local_loop
+    # Termination guard: a skipped single candidate resolves to null.
+    resolve_fn = src.split("async function resolveLocalRowCandidate", 1)[1]
+    resolve_fn = resolve_fn.split("\nfunction ", 1)[0]
+    assert "if (isSkippedCandidate?.(candidate)) return null;" in resolve_fn
