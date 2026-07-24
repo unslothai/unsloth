@@ -829,7 +829,8 @@ def import_legacy_assets(
                 execution_results.append(_legacy_result(raw_id, "rejected", reason = error.code))
         conn.commit()
     except Exception:
-        conn.rollback()
+        if conn.in_transaction:
+            conn.rollback()
         raise
     finally:
         conn.close()

@@ -128,7 +128,13 @@ function reportRejectedItems(
   rejected: LegacyImportItemResult[],
 ): void {
   if (rejected.length === 0) return;
-  console.error(`Legacy ${kind} exceeded the import batch limit.`, rejected);
+  console.error(`Legacy ${kind} import rejected items.`, rejected);
+}
+
+function rejectedItems(
+  results: LegacyImportItemResult[],
+): LegacyImportItemResult[] {
+  return results.filter((item) => item.outcome === "rejected");
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -167,7 +173,7 @@ async function importRecipePages(
     reportRejectedItems("recipes", plan.rejected);
     rejectedCount += plan.rejected.length;
     for (const recipeBatch of plan.batches) {
-      await importLegacyUserAssets(
+      const result = await importLegacyUserAssets(
         {
           source: SOURCE,
           confirmSubject: bootstrap.subject,
@@ -176,6 +182,9 @@ async function importRecipePages(
         },
         { signal, expectedSubjectKey },
       );
+      const rejected = rejectedItems(result.recipes);
+      reportRejectedItems("recipes", rejected);
+      rejectedCount += rejected.length;
       onProgress?.();
     }
     if (cursor !== null && page.nextCursor === cursor) {
@@ -227,9 +236,12 @@ async function importExecutionPages(
         { signal, expectedSubjectKey },
       );
       onProgress?.();
+      const rejected = rejectedItems(result.executions);
+      reportRejectedItems("executions", rejected);
+      rejectedCount += rejected.length;
       const retryIds = effectiveRetryIds(result.executions);
       if (retryIds.size > 0) {
-        await importLegacyUserAssets(
+        const retryResult = await importLegacyUserAssets(
           {
             source: SOURCE,
             confirmSubject: bootstrap.subject,
@@ -238,6 +250,9 @@ async function importExecutionPages(
           },
           { signal, expectedSubjectKey },
         );
+        const retryRejected = rejectedItems(retryResult.executions);
+        reportRejectedItems("executions", retryRejected);
+        rejectedCount += retryRejected.length;
         onProgress?.();
       }
     }
@@ -285,7 +300,7 @@ export async function importLegacyUserAssetsFromIndexedDb({
   const rejectedCount = rejectedRecipes + rejectedExecutions;
   if (rejectedCount > 0) {
     throw new Error(
-      `${rejectedCount} browser-saved item${rejectedCount === 1 ? " was" : "s were"} too large to import. Remove large embedded data from those items, then retry.`,
+      `${rejectedCount} browser-saved item${rejectedCount === 1 ? " could" : "s could"} not be imported. Correct or remove those items, then retry.`,
     );
   }
 }

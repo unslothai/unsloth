@@ -3,7 +3,19 @@
 
 import pytest
 
-from core.user_assets_validation import UserAssetValidationError, validate_recipe_payload
+from core.user_assets_validation import (
+    MAX_TIMESTAMP_MS,
+    UserAssetValidationError,
+    validate_recipe_payload,
+    validate_timestamp,
+)
+
+
+def test_timestamp_rejects_values_outside_the_javascript_date_range():
+    assert validate_timestamp(MAX_TIMESTAMP_MS, "createdAt") == MAX_TIMESTAMP_MS
+    for value in (-1, MAX_TIMESTAMP_MS + 1, 2**63, True, 1.5):
+        with pytest.raises(UserAssetValidationError, match = "valid Date range"):
+            validate_timestamp(value, "createdAt")
 
 
 def test_proxy_authorization_is_rejected_and_redacted_by_the_same_policy():

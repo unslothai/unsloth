@@ -103,8 +103,12 @@ class Subscription:
         return self._closed.is_set()
 
     def close(self) -> None:
-        """Close this stream before another generation emits."""
+        """Wake and close this stream before another generation emits."""
         self._closed.set()
+        try:
+            self._q.put_nowait(None)
+        except queue.Full:
+            pass
 
     def put_event(self, event: dict) -> bool:
         if self.closed:

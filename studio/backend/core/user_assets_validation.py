@@ -26,6 +26,9 @@ MAX_COMPLETED_COLUMNS = 1000
 MAX_LEGACY_RECIPES = 100
 MAX_LEGACY_EXECUTIONS = 500
 MAX_LEGACY_BATCH_JSON_BYTES = int(_PERSISTENCE_POLICY["maxLegacyBatchJsonBytes"])
+# JavaScript Date's inclusive bound is SQLite-safe and leaves ample room for
+# monotonic updated_at increments.
+MAX_TIMESTAMP_MS = 8_640_000_000_000_000
 
 EXECUTION_METADATA_FIELDS = frozenset(
     {
@@ -353,10 +356,15 @@ def validate_name(value: Any, field_name: str = "name") -> str:
 
 
 def validate_timestamp(value: Any, field_name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > MAX_TIMESTAMP_MS
+    ):
         raise UserAssetValidationError(
             "invalid_timestamp",
-            f"{field_name} must be a non-negative Unix epoch millisecond integer",
+            f"{field_name} must be a Unix epoch millisecond integer within the valid Date range",
         )
     return value
 

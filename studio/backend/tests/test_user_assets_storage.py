@@ -149,6 +149,27 @@ def test_legacy_recipe_updated_at_is_validated_preserved_and_ordered():
     ]
 
 
+def test_legacy_timestamp_overflow_rejects_only_the_invalid_item():
+    imported = user_assets_db.import_legacy_assets(
+        "owner",
+        "recipe-indexeddb-v1",
+        [
+            {**recipe("overflow"), "createdAt": 2**63},
+            {**recipe("valid"), "createdAt": 100},
+        ],
+        [],
+    )
+
+    assert imported["recipes"][0] == {
+        "id": "overflow",
+        "outcome": "rejected",
+        "reason": "invalid_timestamp",
+    }
+    assert imported["recipes"][1]["outcome"] == "imported"
+    assert user_assets_db.get_recipe("owner", "overflow") is None
+    assert user_assets_db.get_recipe("owner", "valid") is not None
+
+
 def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):
     source = "recipe-indexeddb-v1"
     rejected = user_assets_db.import_legacy_assets(

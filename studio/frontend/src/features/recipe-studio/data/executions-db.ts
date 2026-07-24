@@ -282,13 +282,16 @@ function persistedMetadata(
   return metadata;
 }
 
-function mergeSameTerminalSnapshot(
+function mergeTerminalSnapshots(
   incoming: RecipeExecutionMetadata,
   current: PersistedRecipeExecution,
+  useIncomingState: boolean,
 ): RecipeExecutionMetadata | null {
   const currentMetadata = persistedMetadata(current);
   const merged: RecipeExecutionMetadata = {
     ...currentMetadata,
+    status: useIncomingState ? incoming.status : current.status,
+    lastEventId: useIncomingState ? incoming.lastEventId : current.lastEventId,
     jobId: preferString(current.jobId, incoming.jobId),
     run_name: preferString(current.run_name, incoming.run_name),
     rows: Math.max(current.rows, incoming.rows),
@@ -313,10 +316,7 @@ function mergeSameTerminalSnapshot(
       current.source_progress,
       incoming.source_progress,
     ),
-    model_usage: mergeOptionalObject(
-      current.model_usage,
-      incoming.model_usage,
-    ),
+    model_usage: mergeOptionalObject(current.model_usage, incoming.model_usage),
     datasetTotal: Math.max(current.datasetTotal, incoming.datasetTotal),
     analysis: mergeOptionalObject(current.analysis, incoming.analysis),
     error: preferString(current.error, incoming.error),
@@ -343,15 +343,12 @@ function reconcileIncoming(
   const incomingTerminal = TERMINAL.has(incoming.status);
   const currentTerminal = TERMINAL.has(current.status);
   if (currentTerminal) {
-    // Terminal state rejects stale nonterminal updates; only newer terminal events advance.
+    // Terminal state rejects stale nonterminal updates and preserves enrichment.
     if (!incomingTerminal) return null;
-    if (incomingEvent !== currentEvent) {
-      return incomingEvent > currentEvent ? incoming : null;
-    }
-    if (incoming.status !== current.status) return null;
-
-    // Same-event terminal writers merge enrichment without dropping stored fields.
-    return mergeSameTerminalSnapshot(incoming, current);
+    if (incomingEvent < currentEvent) return null;
+    const useIncomingState = incomingEvent > currentEvent;
+    if (!useIncomingState && incoming.status !== current.status) return null;
+    return mergeTerminalSnapshots(incoming, current, useIncomingState);
   }
   return incomingTerminal || incomingEvent > currentEvent ? incoming : null;
 }
