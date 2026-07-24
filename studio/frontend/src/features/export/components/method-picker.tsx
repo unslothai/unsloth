@@ -123,7 +123,7 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
                   {m.badge && (
                     <Badge
                       variant="secondary"
-                      className="text-[10px] px-1.5 py-0"
+                      className="text-ui-10 px-1.5 py-0"
                     >
                       {m.badge}
                     </Badge>

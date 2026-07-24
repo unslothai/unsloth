@@ -922,3 +922,413 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         "<think>vision</think>",
         "<think>vision</think> answer",
     ]
+
+
+class _FakeLRUPromptCache:
+    def __init__(
+        self,
+        max_size = 10,
+        max_bytes = 1 << 63,
+    ):
+        self.max_size = max_size
+        self.max_bytes = max_bytes
+        self.entries = {}
+
+    def fetch_nearest_cache(self, key, tokens):
+        import copy
+
+        stored = self.entries.get(key, {})
+        exact = stored.get(tuple(tokens))
+        if exact is not None:
+            return copy.deepcopy(exact), []
+        best = None
+        for candidate, cache in stored.items():
+            if len(candidate) < len(tokens) and tuple(tokens[: len(candidate)]) == candidate:
+                if best is None or len(candidate) > len(best[0]):
+                    best = (candidate, cache)
+        if best is not None:
+            return copy.deepcopy(best[1]), list(tokens[len(best[0]) :])
+        return None, list(tokens)
+
+    def insert_cache(
+        self,
+        key,
+        tokens,
+        prompt_cache,
+        *,
+        cache_type = "assistant",
+    ):
+        import copy
+        self.entries.setdefault(key, {})[tuple(tokens)] = copy.deepcopy(prompt_cache)
+
+
+class _FakeCacheEntry:
+    def __init__(
+        self,
+        offset = 0,
+        nbytes = 1,
+    ):
+        self.offset = offset
+        self.nbytes = nbytes
+
+
+def _install_fake_prompt_cache_api(monkeypatch, trimmable = True):
+    from core.inference import mlx_inference
+
+    def _make_prompt_cache(_model):
+        return [_FakeCacheEntry()]
+
+    def _can_trim_prompt_cache(_cache):
+        return trimmable
+
+    def _trim_prompt_cache(cache, num):
+        cache[0].offset = max(cache[0].offset - num, 0)
+        return num
+
+    monkeypatch.setattr(
+        mlx_inference,
+        "_mlx_prompt_cache_api",
+        lambda: (
+            _FakeLRUPromptCache,
+            _make_prompt_cache,
+            _can_trim_prompt_cache,
+            _trim_prompt_cache,
+        ),
+    )
+
+
+def test_mlx_prompt_cache_max_bytes_budget(monkeypatch):
+    from core.inference.mlx_inference import (
+        PROMPT_CACHE_FALLBACK_BYTES,
+        PROMPT_CACHE_MEMORY_FRACTION,
+        _prompt_cache_max_bytes,
+    )
+
+    monkeypatch.delenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", raising = False)
+    assert _prompt_cache_max_bytes(None) == PROMPT_CACHE_FALLBACK_BYTES
+    assert _prompt_cache_max_bytes(20.0) == int(20.0 * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
+
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "4096")
+    assert _prompt_cache_max_bytes(20.0) == 4096
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "0")
+    assert _prompt_cache_max_bytes(20.0) == 0
+    monkeypatch.setenv("UNSLOTH_MLX_PROMPT_CACHE_BYTES", "not-a-number")
+    assert _prompt_cache_max_bytes(20.0) == int(20.0 * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
+
+
+def test_mlx_prompt_cache_never_returns_empty_remainder(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    history = _MLXPromptCacheHistory(6, 1 << 30)
+    tokens = list(range(10))
+    cache, rest = history.fetch(object(), "key", tokens)
+    assert len(rest) == 10
+    cache[0].offset = len(tokens)
+    history.insert("key", tokens, cache)
+
+    _cache, rest = history.fetch(object(), "key", tokens)
+    assert rest == tokens[-1:]
+
+    longer = tokens + [99, 100]
+    _cache, rest = history.fetch(object(), "key", longer)
+    assert rest == [99, 100]
+
+    _install_fake_prompt_cache_api(monkeypatch, trimmable = False)
+    history = _MLXPromptCacheHistory(6, 1 << 30)
+    cache, _rest = history.fetch(object(), "key", tokens)
+    cache[0].offset = len(tokens)
+    history.insert("key", tokens, cache)
+    _cache, rest = history.fetch(object(), "key", tokens)
+    assert rest == tokens, "untrimmable entry must not be reused"
+
+
+def test_mlx_prompt_cache_key_isolates_adapter_state(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    class _Tok:
+        bos_token = None
+
+        def encode(
+            self,
+            text,
+            add_special_tokens = True,
+        ):
+            return [ord(c) for c in text]
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tok()
+    backend.active_model_name = "model-a"
+
+    prompt = "shared prefix"
+    _rest, cache, key, tokens, cached = backend._prepare_prompt_cache(prompt, True)
+    assert cached == 0
+    cache[0].offset = len(tokens)
+    backend._prompt_cache_history.insert(key, tokens, cache)
+
+    _rest, _cache, _key, _tokens, cached_same = backend._prepare_prompt_cache(prompt, True)
+    assert cached_same > 0
+    _rest, _cache, _key, _tokens, cached_flipped = backend._prepare_prompt_cache(prompt, False)
+    assert cached_flipped == 0
+
+
+def _install_fake_text_stack(
+    monkeypatch,
+    token_map,
+    captured,
+    markers = None,
+):
+    import types as _types
+
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_temporary_mlx_adapter_state",
+        lambda _model, _state: __import__("contextlib").nullcontext(),
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _tok, messages, **_kw: messages[-1]["content"],
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kw: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = markers,
+        ),
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill",
+        lambda *_a, **_kw: "",
+    )
+
+    class _Resp:
+        def __init__(self, token, processed):
+            self.token = token
+            self.text = f"<{token}>"
+            self.prompt_tokens = processed
+            self.prompt_tps = 10.0
+            self.generation_tokens = 1
+            self.generation_tps = 5.0
+
+    def _stream_generate(_model, _tokenizer, **kwargs):
+        captured.append(kwargs)
+        processed = len(kwargs["prompt"])
+        cache = kwargs.get("prompt_cache")
+        if cache is not None:
+            cache[0].offset += processed
+        for token in token_map["generated"]:
+            if cache is not None:
+                cache[0].offset += 1
+            yield _Resp(token, processed)
+
+    mlx_lm_pkg = _types.ModuleType("mlx_lm")
+    mlx_lm_pkg.stream_generate = _stream_generate
+    mlx_lm_sample = _types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: []
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _Tok:
+        bos_token = None
+        chat_template = "x"
+
+        def encode(
+            self,
+            text,
+            add_special_tokens = True,
+        ):
+            return list(token_map[text])
+
+        def decode(
+            self,
+            ids,
+            skip_special_tokens = False,
+        ):
+            return "".join(str(i) for i in ids)
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _Tok()
+    backend._is_vlm = False
+    backend.active_model_name = "model-a"
+    return backend
+
+
+def _run_turn(backend, prompt):
+    list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": prompt}],
+            max_new_tokens = 4,
+        )
+    )
+
+
+def test_mlx_text_reuses_prompt_cache_on_the_next_turn(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    token_map = {
+        "P1": [1, 2, 3],
+        "P2": [1, 2, 3, 7, 8, 9, 10],
+        "generated": [7, 8],
+    }
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+
+    _run_turn(backend, "P1")
+    assert captured[0]["prompt"] == [1, 2, 3]
+    assert "prompt_cache" in captured[0]
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+
+    _run_turn(backend, "P2")
+    assert captured[1]["prompt"] == [9, 10], "turn two should prefill only the new tail"
+
+    stats = backend.last_generation_stats
+    assert stats["timings"]["cache_n"] == 5
+    assert stats["timings"]["prompt_n"] == 2
+    assert stats["usage"]["prompt_tokens"] == 7
+
+
+def test_mlx_text_without_lru_prompt_cache_prefills_the_full_prompt(monkeypatch):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(mlx_inference, "_mlx_prompt_cache_api", lambda: None)
+    captured = []
+    token_map = {"P1": [1, 2, 3], "generated": [7]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured)
+
+    _run_turn(backend, "P1")
+    assert captured[0]["prompt"] == "P1"
+    assert "prompt_cache" not in captured[0]
+    assert backend.last_generation_stats["timings"]["cache_n"] == 0
+
+
+def test_mlx_text_tracks_tokens_on_the_native_reasoning_path(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    token_map = {"P1": [1, 2, 3], "P2": [1, 2, 3, 7, 8, 9], "generated": [7, 8]}
+    backend = _install_fake_text_stack(monkeypatch, token_map, captured, markers = ("<a>", "</a>"))
+
+    _run_turn(backend, "P1")
+    _run_turn(backend, "P2")
+    assert captured[1]["prompt"] == [9]
+
+
+def test_mlx_presence_penalty_latches_the_first_decode_step():
+    mx = pytest.importorskip("mlx.core")
+    import numpy as np
+
+    from core.inference.mlx_inference import _make_mlx_presence_penalty_processor
+
+    processor = _make_mlx_presence_penalty_processor(2.0)
+    logits = mx.zeros((1, 5))
+    out = processor(mx.array([3]), logits)
+    assert np.array_equal(np.array(out), np.zeros((1, 5))), "prompt must not be penalized"
+    out = processor(mx.array([3, 1]), mx.zeros((1, 5)))
+    penalized = np.array(out)[0]
+    assert penalized[1] == -2.0
+    assert penalized[3] == 0.0
+
+
+def test_mlx_prompt_cache_survives_reset_but_not_unload(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    _install_fake_mlx(monkeypatch)
+    sys.modules["mlx.core"].clear_cache = lambda: None
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend.active_model_name = "model-a"
+    history = backend._prompt_cache()
+    assert history is not None
+
+    backend.reset_generation_state()
+    assert backend._prompt_cache_history is history
+
+    backend.unload_model("model-a")
+    assert backend._prompt_cache_history is None
+
+
+def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    history.insert("key", [1, 2, 3], [_FakeCacheEntry(offset = 3, nbytes = 400)])
+    assert len(history._lru.entries.get("key", {})) == 1
+
+    history.insert("key", list(range(50)), [_FakeCacheEntry(offset = 50, nbytes = 5000)])
+    stored = history._lru.entries.get("key", {})
+    assert tuple([1, 2, 3]) in stored
+    assert tuple(range(50)) not in stored
+
+
+def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    class _Entry:
+        def __init__(
+            self,
+            offset,
+            nbytes = 1,
+        ):
+            self.offset = offset
+            self.nbytes = nbytes
+
+    history = _MLXPromptCacheHistory(6, 1 << 30)
+
+    history.insert("key", list(range(10)), [_Entry(offset = 8)])
+    assert tuple(range(8)) in history._lru.entries["key"]
+    assert tuple(range(10)) not in history._lru.entries["key"]
+
+    history.insert("other", list(range(4)), [_Entry(offset = 9)])
+    assert "other" not in history._lru.entries
+
+
+def test_mlx_prompt_cache_only_stores_verifiable_prefix_coverage(monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+    from mlx_lm.models.cache import CacheList, ChunkedKVCache, KVCache, RotatingKVCache
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    from core.inference.mlx_inference import _kv_prefix_coverage, _MLXPromptCacheHistory
+
+    def feed(entry, n):
+        for _ in range(n):
+            block = mx.zeros((1, 2, 1, 4), dtype = mx.float16)
+            entry.update_and_fetch(block, block)
+        mx.eval(entry.state)
+        return entry
+
+    plain = feed(KVCache(), 30)
+    unwrapped = feed(RotatingKVCache(max_size = 100, keep = 2), 30)
+    wrapped = feed(RotatingKVCache(max_size = 10, keep = 2), 30)
+    chunked = feed(ChunkedKVCache(chunk_size = 8), 30)
+    slid = feed(ChunkedKVCache(chunk_size = 8), 30)
+    slid.maybe_trim_front()
+
+    assert _kv_prefix_coverage([plain]) == 30
+    assert _kv_prefix_coverage([unwrapped]) == 30
+    assert _kv_prefix_coverage([chunked]) == 30
+    assert wrapped.offset == 30 and wrapped.state[0].shape[2] == 10
+    assert _kv_prefix_coverage([wrapped]) is None
+    assert slid.start_position > 0
+    assert _kv_prefix_coverage([slid]) is None
+    assert _kv_prefix_coverage([CacheList(feed(KVCache(), 30), feed(KVCache(), 30))]) == 30
+    assert _kv_prefix_coverage([CacheList(feed(KVCache(), 30), wrapped)]) is None
+    assert _kv_prefix_coverage([feed(KVCache(), 30), feed(KVCache(), 29)]) is None
+    assert _kv_prefix_coverage([]) is None
+
+    history = _MLXPromptCacheHistory(6, 1 << 40)
+    for unsafe in (wrapped, slid):
+        history.insert("key", list(range(30)), [unsafe])
+    assert "key" not in history._lru.entries
+
+    history.insert("key", list(range(30)), [plain])
+    assert tuple(range(30)) in history._lru.entries["key"]

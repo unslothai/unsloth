@@ -53,7 +53,7 @@ function SettingsSection({
     <div className="border-t border-border/50 pb-5 pt-5 first:border-t-0 first:pt-0">
       <div
         className={cn(
-          "pb-4 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground",
+          "pb-4 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground",
           labelClassName,
         )}
       >
@@ -80,7 +80,7 @@ function ToggleRow({
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="text-[13px] font-medium text-nav-fg">{label}</span>
+        <span className="text-ui-13 font-medium text-nav-fg">{label}</span>
         {info && <InfoHint>{info}</InfoHint>}
       </div>
       <Switch
@@ -251,7 +251,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
                 }
                 placeholder="Instructions sent before every conversation."
                 aria-label="System prompt"
-                className="min-h-[84px] resize-y text-[13px]"
+                className="min-h-[84px] resize-y text-ui-13"
               />
             </SettingsSection>
 
@@ -264,7 +264,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
               />
               {reasoningEffortLevels.length > 0 && (
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-[13px] font-medium text-nav-fg">
+                  <span className="text-ui-13 font-medium text-nav-fg">
                     Reasoning effort
                   </span>
                   <HubOptionMenu
@@ -276,7 +276,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
                     onValueChange={setReasoningEffort}
                     ariaLabel="Reasoning effort"
                     align="end"
-                    className="h-8 text-[11.5px]"
+                    className="h-8 text-ui-11p5"
                   />
                 </div>
               )}

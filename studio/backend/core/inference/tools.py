@@ -18,6 +18,7 @@ import queue
 import random
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import sys
@@ -328,6 +329,7 @@ def _find_blocked_commands(command: str) -> set[str]:
 # Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
 # path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
+
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
 # and hard blocks (blocklist, rlimits) still apply at run time; this gate only
@@ -2491,15 +2493,124 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     return True
 
 
+def _canon_win_path(p: str) -> str:
+    """Canonical form for trust comparison: realpath (expands 8.3 aliases and
+    resolves junctions/symlinks) + normcase/normpath."""
+    return os.path.normcase(os.path.normpath(os.path.realpath(p)))
+
+
+def _augment_native_program_roots(roots: list[str]) -> list[str]:
+    """Add the native Program Files sibling for any x86 root by stripping the
+    `` (x86)`` suffix, so a 32-bit process (whose known-folder ids map only to
+    the x86 root) still trusts a 64-bit Git install."""
+    out = list(roots)
+    for root in roots:
+        base = root.rstrip("\\/")
+        if base.lower().endswith(" (x86)"):
+            native = base[: -len(" (x86)")]
+            if native and native not in out:
+                out.append(native)
+    return out
+
+
+def _windows_program_roots() -> list[str]:
+    """Program Files install roots, resolved ONLY from the Windows known-folder
+    API (SHGetKnownFolderPath). Fails closed (returns ``[]``) if the API is
+    unavailable: env vars (%ProgramFiles%, even %SystemDrive%) are caller-
+    overrideable and could relocate the trust boundary, so we never derive a
+    trusted root from them. On any real Windows host shell32 is present, so
+    this only returns empty in a broken/non-Windows environment where the
+    sandbox git-PATH feature is not needed anyway (#7317).
+    """
+    roots: list[str] = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # FOLDERID_ProgramFiles, _ProgramFilesX86, _ProgramFilesX64. The X64
+        # id (Win10 1703+) yields the native root even from a 32-bit process,
+        # where the first two both map to Program Files (x86).
+        folder_ids = (
+            "{905e63b6-c1bf-494e-b29c-65b732d3d21a}",
+            "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}",
+            "{6D809377-6AF0-444b-8957-A3773F02200E}",
+        )
+        _SHGet = ctypes.windll.shell32.SHGetKnownFolderPath
+        _CoTaskMemFree = ctypes.windll.ole32.CoTaskMemFree
+        for fid in folder_ids:
+            guid = ctypes.create_string_buffer(16)
+            ctypes.windll.ole32.CLSIDFromString(wintypes.LPCWSTR(fid), ctypes.byref(guid))
+            ptr = ctypes.c_wchar_p()
+            if _SHGet(ctypes.byref(guid), 0, None, ctypes.byref(ptr)) == 0:
+                if ptr.value:
+                    roots.append(ptr.value)
+                _CoTaskMemFree(ptr)
+    except Exception:
+        return []
+    return _augment_native_program_roots(roots)
+
+
+def _resolve_trusted_windows_git() -> tuple[str, str]:
+    """Find a git launcher in a TRUSTED Program Files dir. Returns
+    ``(canonical_dir, ext)`` or ``("", "")``.
+
+    ``shutil.which`` returns only the first PATH match, which may be an
+    untrusted user shim; scan the remaining PATH entries for a later trusted
+    Git so bare ``git`` still resolves (#7317).
+    """
+    exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
+    candidates: list[str] = []
+    primary = shutil.which("git")
+    if primary:
+        candidates.append(primary)
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        for ext in exts:
+            cand = os.path.join(entry, "git" + ext)
+            if os.path.isfile(cand):
+                candidates.append(cand)
+    for git_exe in candidates:
+        git_dir = os.path.dirname(git_exe)
+        if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
+            return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
+    return "", ""
+
+
+def _is_trusted_windows_program_dir(path: str) -> bool:
+    """True when ``path`` sits under a system-managed Program Files root.
+
+    Only the Program Files roots are trusted (admin-writable only), resolved
+    via the known-folder API so an overridden env var cannot relocate them,
+    never ``%SystemRoot%`` (Git does not install there and it holds
+    world-writable subdirs like ``Windows\\Temp``). Per-user managers
+    (Scoop/Choco shims under the profile) are refused. Paths are canonicalized
+    so 8.3 aliases and junctions still resolve to their real root (#7317).
+    """
+    norm = _canon_win_path(path)
+    for root in _windows_program_roots():
+        root_norm = _canon_win_path(root)
+        if norm == root_norm or norm.startswith(root_norm + os.sep):
+            return True
+    return False
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
     TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
-    SystemRoot) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.)
-    are absent. HOME points at the sandbox workdir so SDKs can't read the
+    SystemRoot and a minimal PATHEXT) reach the child; all credential vars
+    (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
     operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
     shim directory.
+
+    PATH starts with the Studio interpreter / venv and OS system dirs so
+    ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
+    dirs from the host PATH are appended so bare ``git`` resolves (#7317).
+    User-writable host PATH entries (venv, ``node_modules/.bin``, etc.) are
+    never inherited — they could shadow auto-safe terminal commands.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Unsloth server runs in.
@@ -2518,6 +2629,20 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
+
+    # Windows Git installs live outside System32; inherit the dir of the git
+    # the HOST shell resolves, but ONLY when it sits under a system install
+    # root (Program Files, windir). A user-writable dir (Scoop/Choco shims)
+    # is refused: it would let an attacker drop rg.exe/jq.exe beside git and
+    # have an auto-approved bare command execute it (#7317).
+    git_ext = ""
+    if sys.platform == "win32":
+        # Append the CANONICAL (realpath) trusted git dir, scanning past any
+        # untrusted user shim that sorts first on PATH; the canonical path
+        # cannot be retargeted via a junction after the trust check.
+        _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if _trusted_git_dir:
+            path_entries.append(_trusted_git_dir)
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
@@ -2538,6 +2663,15 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+        # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
+        pathext = ".EXE;.COM"
+        if git_ext and git_ext not in (".EXE", ".COM"):
+            # Keep the host git launcher (e.g. a .CMD shim) resolvable.
+            pathext += ";" + git_ext
+        env["PATHEXT"] = pathext
+        # cmd/CreateProcess search cwd before PATH for bare names; disable so
+        # a workdir rg.exe/git.exe cannot shadow auto-approved commands.
+        env["NoDefaultCurrentDirectoryInExePath"] = "1"
     return env
 
 

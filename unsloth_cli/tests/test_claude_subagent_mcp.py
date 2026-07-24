@@ -43,6 +43,41 @@ def test_protocol_lists_and_calls_local_agent():
     }
 
 
+def test_protocol_exposes_read_only_agent_for_claude_plan_mode():
+    listed = bridge._response(
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        run_read_only_agent = lambda task: task,
+        read_only_tool_name = "unsloth_plan_agent",
+    )
+    tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+    assert tools["unsloth_agent"]["annotations"]["readOnlyHint"] is False
+    assert tools["unsloth_plan_agent"]["annotations"] == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+
+    called = bridge._response(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "unsloth_plan_agent",
+                "arguments": {"task": " inspect this "},
+            },
+        },
+        run_agent = lambda task: f"write: {task}",
+        run_read_only_agent = lambda task: f"plan: {task}",
+        read_only_tool_name = "unsloth_plan_agent",
+    )
+    assert called["result"] == {
+        "content": [{"type": "text", "text": "plan: inspect this"}],
+        "isError": False,
+    }
+
+
 def test_protocol_returns_tool_errors_to_parent():
     response = bridge._response(
         {
@@ -210,6 +245,38 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert child_env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "90"
     assert "ANTHROPIC_API_KEY" not in child_env
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in child_env
+
+
+def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BASE_URL", "http://127.0.0.1:8888")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_API_KEY", "sk-unsloth-test")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_MODEL", "unsloth/model-GGUF:Q4_K_M")
+    monkeypatch.setenv("UNSLOTH_CLAUDE_SUBAGENT_BYPASS_PERMISSIONS", "1")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(bridge.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(bridge, "_claude_flags", lambda model: [])
+
+    class Process:
+        pid = 1234
+        returncode = 0
+
+        def communicate(self, timeout):
+            return json.dumps({"is_error": False, "result": "PLAN_OK"}), ""
+
+        def poll(self):
+            return self.returncode
+
+    def popen(command, **kwargs):
+        captured["command"] = command
+        return Process()
+
+    monkeypatch.setattr(bridge.subprocess, "Popen", popen)
+    assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
+    command = captured["command"]
+    assert command[command.index("--permission-mode") + 1] == "plan"
+    prompt = command[command.index("--append-system-prompt") + 1]
+    assert "read-only local coding subagent" in prompt
 
 
 def test_local_child_process_is_stopped_on_cancellation(monkeypatch, tmp_path):

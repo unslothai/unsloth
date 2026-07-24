@@ -131,6 +131,29 @@ def linux_run_media_mount_roots(
     return roots
 
 
+def macos_volume_roots(base: Path | str = "/Volumes") -> list[Path]:
+    """Readable mounted volumes for the macOS folder browser."""
+
+    if platform.system() != "Darwin":
+        return []
+    base_path = Path(base)
+    try:
+        entries = list(base_path.iterdir())
+    except OSError:
+        return []
+    roots: list[Path] = []
+    for entry in entries:
+        if is_sensitive_path_component(entry.name):
+            continue
+        try:
+            resolved = entry.resolve()
+            if resolved.is_dir() and os.access(resolved, os.R_OK | os.X_OK):
+                roots.append(resolved)
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return roots
+
+
 def _active_windows_drive_bitmask() -> int:
     """Active-logical-drive bitmask from ``GetLogicalDrives`` (bit 0 = ``A:``), or ``0`` when unavailable.
 

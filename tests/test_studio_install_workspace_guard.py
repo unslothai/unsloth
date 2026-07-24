@@ -254,6 +254,14 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
     ), "Assert-StudioOwnedOrAbsent must precede the install_llama_prebuilt.py call"
 
 
+def test_setup_ps1_adopts_existing_whisper_prebuilt_marker():
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    helper_start = text.index("function Test-StudioOwnedAdoptable")
+    helper_end = text.index("function Assert-StudioOwnedOrAbsent", helper_start)
+    helper = text[helper_start:helper_end]
+    assert "UNSLOTH_WHISPER_PREBUILT_INFO.json" in helper
+
+
 def test_env_mode_passes_when_venv_marker_present(tmp_path):
     """install.sh env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     studio_home = tmp_path / "ws"

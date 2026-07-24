@@ -30,7 +30,7 @@ from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
-from utils.hardware import prepare_gpu_selection
+from utils.hardware import get_device, prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
     run_without_native_path_secret,
@@ -219,6 +219,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             config[key] = values.get(key)
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
+    # The parent's detected backend: the worker's apply_gpu_ids() targets the
+    # right visibility env var from this, without probing torch pre-mask.
+    config["device_backend"] = get_device().value
     return config
 
 
@@ -754,6 +757,9 @@ class TrainingBackend:
     def __init__(self):
         # Subprocess state
         self._proc: Optional[mp.Process] = None
+        # True from the sidecar-swap handshake until the worker is recorded, so
+        # installs and STT loads treat the startup window as active.
+        self._spawn_in_progress: bool = False
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
@@ -929,16 +935,21 @@ class TrainingBackend:
                 config["resolved_gpu_ids"] = resolved_gpu_ids
                 config["gpu_selection"] = gpu_selection
 
-            from .worker import run_training_process
+            from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
+
+            cache_env = get_hf_cache_paths().child_env({})
 
             try:
-                with native_path_secret_removed_for_child_start():
+                with (
+                    child_environment_for_spawn(cache_env),
+                    native_path_secret_removed_for_child_start(),
+                ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
 
                     proc = _CTX.Process(
                         target = run_without_native_path_secret,
-                        args = (run_training_process,),
+                        args = ("core.training.worker", "run_training_process", cache_env),
                         kwargs = {
                             "event_queue": event_queue,
                             "stop_queue": stop_queue,
@@ -991,6 +1002,7 @@ class TrainingBackend:
             self._db_started_at = datetime.now(timezone.utc).isoformat()
             # Start each job Xet-first; keep config so a stall can respawn over HTTP.
             self._last_full_config = config
+            self._last_hf_cache_env = cache_env
             self._in_model_load = False
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
@@ -1400,7 +1412,11 @@ class TrainingBackend:
         self._last_full_config = config
         logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
 
-        from .worker import run_training_process
+        cache_env = getattr(self, "_last_hf_cache_env", None)
+        if not cache_env:
+            from utils.hf_cache_settings import get_hf_cache_paths
+            cache_env = get_hf_cache_paths().child_env({})
+        from utils.hf_cache_settings import child_environment_for_spawn
 
         # This run is active, so an install request 409s rather than proceeds: a reservation seen here
         # is transient (an aborting install or short lazy repair). Wait it out instead of stranding the
@@ -1432,12 +1448,15 @@ class TrainingBackend:
         # crashed respawn cannot wedge is_training_active until restart.
         try:
             try:
-                with native_path_secret_removed_for_child_start():
+                with (
+                    child_environment_for_spawn(cache_env),
+                    native_path_secret_removed_for_child_start(),
+                ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
                     new_proc = _CTX.Process(
                         target = run_without_native_path_secret,
-                        args = (run_training_process,),
+                        args = ("core.training.worker", "run_training_process", cache_env),
                         kwargs = {
                             "event_queue": event_queue,
                             "stop_queue": stop_queue,

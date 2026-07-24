@@ -39,7 +39,7 @@ export const ar = {
       returnToChat: "العودة إلى المحادثة",
       compare: "مقارنة",
       search: "بحث",
-      hub: "Hub",
+      hub: "مركز النماذج",
       train: "تدريب",
       recipes: "الوصفات",
       export: "تصدير",

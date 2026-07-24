@@ -36,6 +36,7 @@ import {
   CONTEXT_LENGTHS,
   CPT_TARGET_MODULES,
   LR_SCHEDULER_OPTIONS,
+  MLX_OPTIMIZER_OPTIONS,
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
@@ -204,6 +205,34 @@ export function ParamsSection(): ReactElement {
     setCtxInput(String(store.contextLength));
   }, [store.contextLength]);
 
+  // Apple Silicon (MLX) supports a different optimizer set than the CUDA list.
+  const isMac = platformDeviceType === "mac";
+  const optimizerOptions = isMac ? MLX_OPTIMIZER_OPTIONS : OPTIMIZER_OPTIONS;
+
+  // On Mac the MLX backend remaps CUDA optimizers to AdamW, so label those as
+  // AdamW; other values (MLX or imported) show as-is. Non-Mac unchanged.
+  const isCudaAliasOptimizer = OPTIMIZER_OPTIONS.some(
+    (o) => o.value === store.optimizerType,
+  );
+  const selectedOptimizer =
+    isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
+
+  // LoftQ is unsupported on MLX; clear a stale selection to lora on Apple Silicon.
+  const setLoraVariant = store.setLoraVariant;
+  useEffect(() => {
+    if (isMac && store.loraVariant === "loftq") {
+      setLoraVariant("lora");
+    }
+  }, [isMac, store.loraVariant, setLoraVariant]);
+
+  // Packing is unsupported on MLX; clear it on Apple Silicon (checkbox disabled).
+  const setPacking = store.setPacking;
+  useEffect(() => {
+    if (isMac && store.packing) {
+      setPacking(false);
+    }
+  }, [isMac, store.packing, setPacking]);
+
   const trySetContextLength = (input: string): number | null => {
     const n = Number(input);
     if (Number.isInteger(n) && n > 0) {
@@ -238,7 +267,7 @@ export function ParamsSection(): ReactElement {
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.params.projectName")}
-              <span className="text-[10px] font-normal text-muted-foreground/70">
+              <span className="text-ui-10 font-normal text-muted-foreground/70">
                 {t("studio.params.optional")}
               </span>
             </span>
@@ -248,7 +277,7 @@ export function ParamsSection(): ReactElement {
               placeholder="customer-support-lora"
               maxLength={80}
             />
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-ui-10 text-muted-foreground">
               {t("studio.params.projectNameDescription")}
             </p>
           </div>
@@ -337,7 +366,7 @@ export function ParamsSection(): ReactElement {
                 max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                 step={1}
               />
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-ui-10 text-muted-foreground">
                 {useEpochs
                   ? t("studio.params.epochsDescription")
                   : t("studio.params.maxStepsDescription")}
@@ -425,7 +454,7 @@ export function ParamsSection(): ReactElement {
                 </ComboboxContent>
               </Combobox>
             </div>
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-ui-10 text-muted-foreground">
               {t("studio.params.contextLengthDescription")}
             </p>
           </div>
@@ -466,7 +495,7 @@ export function ParamsSection(): ReactElement {
               onChange={(e) => store.setLearningRate(Number(e.target.value))}
               className="w-full font-mono"
             />
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-ui-10 text-muted-foreground">
               {t("studio.params.learningRateDescription")}
             </p>
           </div>
@@ -511,7 +540,7 @@ export function ParamsSection(): ReactElement {
                 }}
                 className="w-full font-mono"
               />
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-ui-10 text-muted-foreground">
                 {t("studio.params.embeddingLearningRateDescription")}
               </p>
             </div>
@@ -667,7 +696,7 @@ export function ParamsSection(): ReactElement {
                                       : [...store.targetModules, mod],
                                   );
                                 }}
-                                className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-[11px] font-mono transition-colors ${
+                                className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${
                                   active
                                     ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
                                     : "text-muted-foreground hover:bg-muted/50"
@@ -706,16 +735,19 @@ export function ParamsSection(): ReactElement {
                       <button
                         key={opt.value}
                         type="button"
+                        disabled={isMac && opt.value === "loftq"}
                         onClick={() => store.setLoraVariant(opt.value)}
-                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
                           store.loraVariant === opt.value
                             ? "border-ring-strong bg-primary/5"
                             : "border-border hover:border-foreground/20"
                         }`}
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
-                        <p className="text-[10px] text-muted-foreground">
-                          {opt.desc}
+                        <p className="text-ui-10 text-muted-foreground">
+                          {isMac && opt.value === "loftq"
+                            ? "Not supported on Apple Silicon"
+                            : opt.desc}
                         </p>
                       </button>
                     ))}
@@ -765,7 +797,11 @@ export function ParamsSection(): ReactElement {
                     label={t("studio.params.optimizer")}
                     tooltip={
                       <>
-                        {t("studio.params.optimizerTooltip")}{" "}
+                        {t(
+                          isMac
+                            ? "studio.params.optimizerTooltipMlx"
+                            : "studio.params.optimizerTooltip",
+                        )}{" "}
                         <a
                           href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
                           target="_blank"
@@ -778,14 +814,14 @@ export function ParamsSection(): ReactElement {
                     }
                   >
                     <Select
-                      value={store.optimizerType}
+                      value={selectedOptimizer}
                       onValueChange={(v) => store.setOptimizerType(v)}
                     >
                       <SelectTrigger className="w-48">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {OPTIMIZER_OPTIONS.map((opt) => (
+                        {optimizerOptions.map((opt) => (
                           <SelectItem key={opt.value} value={opt.value}>
                             {formatOptimizerLabel(opt.value, opt.label, t)}
                           </SelectItem>
@@ -1105,14 +1141,37 @@ export function ParamsSection(): ReactElement {
                       <Checkbox
                         id="packing"
                         checked={store.packing}
+                        disabled={isMac}
                         onCheckedChange={(v) => store.setPacking(!!v)}
                       />
                       <label
                         htmlFor="packing"
-                        className="text-xs cursor-pointer text-muted-foreground"
+                        className={`text-xs text-muted-foreground ${
+                          isMac
+                            ? "cursor-not-allowed opacity-60"
+                            : "cursor-pointer"
+                        }`}
                       >
                         {t("studio.params.enablePacking")}
                       </label>
+                      {isMac && (
+                        <Tooltip>
+                          <TooltipTrigger asChild={true}>
+                            <button
+                              type="button"
+                              className="text-foreground/70 hover:text-foreground"
+                            >
+                              <HugeiconsIcon
+                                icon={InformationCircleIcon}
+                                className="size-3"
+                              />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Packing is not supported on Apple Silicon (MLX).
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </div>
                   )}
                   {!store.isEmbeddingModel && !isCpt && !isRawText && (
