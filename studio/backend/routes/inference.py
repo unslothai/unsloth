@@ -13459,9 +13459,7 @@ async def anthropic_messages(
 
     openai_client_tools = [
         tool
-        for tool in neutralize_tools_control_markup(
-            anthropic_tools_to_openai(payload.tools or [])
-        )
+        for tool in neutralize_tools_control_markup(anthropic_tools_to_openai(payload.tools or []))
         if tool.get("function", {}).get("name") not in requested_studio_tools
     ]
 
