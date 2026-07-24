@@ -10238,7 +10238,9 @@ async def openai_chat_completions(
             )
             # A zero tool-call budget disables tools for this turn, so confirm cannot
             # be honored and must still 400 instead of silently passing through.
-            and (payload.max_tool_calls_per_message is None or payload.max_tool_calls_per_message > 0)
+            and (
+                payload.max_tool_calls_per_message is None or payload.max_tool_calls_per_message > 0
+            )
         )
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).

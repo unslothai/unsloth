@@ -606,7 +606,11 @@ class TestChatCompletionRequestToolFields:
 
         called = {"proxy": False}
 
-        async def _fake_proxy(payload, request, current_subject = None):
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
             called["proxy"] = True
             from fastapi.responses import StreamingResponse
 
@@ -645,7 +649,11 @@ class TestChatCompletionRequestToolFields:
 
         seen = {"called": False}
 
-        async def _fake_proxy(payload, request, current_subject = None):
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
             seen["called"] = True
             from fastapi.responses import StreamingResponse
 
