@@ -260,7 +260,10 @@ def test_studio_default_prompt_rejects_current_password(monkeypatch, tmp_path):
     assert verify_current("something-else-entirely") is False
 
 
-def test_studio_default_non_tty_warns_and_proceeds(monkeypatch, tmp_path):
+def test_studio_default_non_tty_autogenerates_and_proceeds(monkeypatch, tmp_path):
+    # No terminal + seeded default password: auto-generate a strong admin
+    # password, commit it (clears must_change so the child launches cleanly), and
+    # print it once before re-exec.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     _seed_auth(studio_mod)
@@ -270,16 +273,16 @@ def test_studio_default_non_tty_warns_and_proceeds(monkeypatch, tmp_path):
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "bootstrap password" in combined
-    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert "auto-generated" in combined.lower()
+    state = _auth_state(studio_mod)
+    assert state["must_change_password"] == 0
+    assert state["n_refresh"] == 0  # refresh tokens revoked in the same transaction
 
 
 def test_studio_default_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
-    # Mixed-version safety: a headless public launch must delete the seeded
-    # plaintext credential before re-exec so a fresh child of ANY version reads
-    # None from disk and never injects it into the public HTML. The launch still
-    # proceeds (re-exec captured), and the DB flag stays set so the login page
-    # still forces a change and the bootstrap shutdown timer still arms.
+    # Auto-generation commits a new password and deletes the seeded plaintext
+    # credential before re-exec, so a fresh child of ANY version reads None from
+    # disk and never injects it into the public HTML. The launch still proceeds.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     _seed_auth(studio_mod)
@@ -291,17 +294,13 @@ def test_studio_default_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp
     assert not bootstrap_file.exists()
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
-    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
-def test_studio_default_reexec_outer_runpy_keeps_bootstrap_for_local_recovery(
-    monkeypatch, tmp_path
-):
-    # Regression (Codex 3572165931): when the re-exec target is THIS install's own
-    # run.py, the child's pre-bind gate sets suppress_bootstrap_injection and never
-    # serves the seeded credential publicly, so the parent strip is unnecessary.
-    # Skipping it means a --secure launch whose tunnel later fails to connect does
-    # not lock the user out, and .bootstrap_password stays for local recovery.
+def test_studio_default_reexec_outer_runpy_autogenerates(monkeypatch, tmp_path):
+    # Even when the re-exec target is THIS install's own run.py (self-suppressing),
+    # the parent auto-generates and commits a strong password so it is surfaced
+    # once here and the child sees must_change=0 and no-ops.
     import typer as _typer
 
     studio_mod = _studio()
@@ -311,7 +310,6 @@ def test_studio_default_reexec_outer_runpy_keeps_bootstrap_for_local_recovery(
     assert bootstrap_file.exists()
 
     _install_studio_default_reexec(monkeypatch, events)
-    # Re-exec target IS this install's outer run.py -> child self-suppresses.
     outer_run_py = studio_mod._PACKAGE_ROOT / "studio" / "backend" / "run.py"
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: outer_run_py)
 
@@ -319,36 +317,32 @@ def test_studio_default_reexec_outer_runpy_keeps_bootstrap_for_local_recovery(
     app.command()(studio_mod.studio_default)
     result = CliRunner().invoke(app, ["--secure"], catch_exceptions = True)
 
-    # Strip skipped: file preserved, must_change still set, launch still re-execs.
-    assert bootstrap_file.exists(), result.output
-    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert not bootstrap_file.exists(), result.output
+    assert _auth_state(studio_mod)["must_change_password"] == 0
     assert "exec" in [k for k, _ in events], events
 
 
 def test_studio_default_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):
     # Fresh STUDIO_HOME (no pre-seed): the gate's own _ensure_cli_default_admin
-    # does the INSERT. It must COMMIT that seed before re-exec, or conn.close()
-    # rolls it back and an OLD child would find no admin, regenerate a fresh
-    # bootstrap password + file, and inject THAT -- defeating the file deletion.
+    # does the INSERT, then auto-generation commits a strong password over it. The
+    # committed change persists (must_change=0) and the launch re-execs.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     # Deliberately NO _seed_auth(): exercise the gate seeding a fresh DB itself.
 
     _invoke_studio_default(monkeypatch, events, ["--secure"])
 
-    # The seeded admin persists (committed) so an old child sees it and does not
-    # regenerate; the bootstrap file stays deleted; the launch still re-execs.
     state = _auth_state(studio_mod)
-    assert state["must_change_password"] == 1
+    assert state["must_change_password"] == 0
     assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
 
 
-def test_studio_default_non_tty_fails_closed_when_bootstrap_removal_fails(monkeypatch, tmp_path):
-    # Removing .bootstrap_password IS the protection on this path. If unlink
-    # fails (locked file / read-only auth dir) the credential is still on disk
-    # for an old child to inject, so the launch must fail closed, not publish.
+def test_studio_default_non_tty_autogen_survives_locked_bootstrap_file(monkeypatch, tmp_path):
+    # The new password is already committed before the seeded file is removed, so a
+    # locked/undeletable .bootstrap_password (Windows AV / read-only dir) must NOT
+    # fail the launch: it is truncated instead and the launch proceeds.
     import pathlib
 
     studio_mod = _studio()
@@ -369,13 +363,12 @@ def test_studio_default_non_tty_fails_closed_when_bootstrap_removal_fails(monkey
     result = _invoke_studio_default(monkeypatch, events, ["--secure"])
 
     kinds = [kind for kind, _ in events]
-    assert "exec" not in kinds, events
-    assert result.exit_code == 1, result.output
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
-    # The file remains (removal failed) and the DB flag is untouched.
-    assert bootstrap_file.exists()
-    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert kinds == ["exec"], events
+    assert result.exit_code == 0, result.output
+    # Password rotated (must_change cleared); the locked file is truncated so its
+    # stale plaintext cannot be reused.
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+    assert bootstrap_file.read_text() == ""
 
 
 class _FailingSelectConn:
@@ -624,8 +617,13 @@ def test_studio_default_in_venv_broken_backend_exits_before_stripping_bootstrap(
     bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
     assert bootstrap_file.exists()
 
-    # Pretend we are already inside the studio venv, with a broken backend.
+    # Pretend we are already inside the studio venv, with a broken backend. The
+    # servable-frontend guard runs first (and would otherwise exit on the missing
+    # dist), so stub it satisfied to isolate the backend-load guard under test.
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "unsloth_studio"))
+    monkeypatch.setattr(
+        studio_mod, "_require_servable_frontend_or_exit", lambda **_kw: tmp_path / "dist"
+    )
 
     def _boom():
         raise ImportError("cannot import backend run.py")
@@ -852,7 +850,7 @@ def test_run_secure_prompts_and_updates_before_reexec(monkeypatch, tmp_path):
     assert after["n_refresh"] == 0
 
 
-def test_run_non_tty_warns_and_proceeds(monkeypatch, tmp_path):
+def test_run_non_tty_autogenerates_and_proceeds(monkeypatch, tmp_path):
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     _seed_auth(studio_mod)
@@ -862,13 +860,14 @@ def test_run_non_tty_warns_and_proceeds(monkeypatch, tmp_path):
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "bootstrap password" in combined
+    assert "auto-generated" in combined.lower()
+    assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
 def test_run_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
-    # Same mixed-version safety for the `unsloth studio run` re-exec path (which
-    # cannot fail-close an old child via a CLI flag): the seeded credential file
-    # is deleted before re-exec, the launch still proceeds, and the DB flag holds.
+    # Auto-generation on the `unsloth studio run` re-exec path commits a new
+    # password and deletes the seeded credential file before re-exec, so a fresh
+    # child of ANY version reads None from disk. The launch still proceeds.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     _seed_auth(studio_mod)
@@ -880,7 +879,7 @@ def test_run_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
     assert not bootstrap_file.exists()
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
-    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
 def test_run_missing_frontend_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
@@ -961,25 +960,24 @@ def test_run_reexec_forwards_resolved_frontend_on_public_launch(monkeypatch, tmp
 
 
 def test_run_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):
-    # Fresh STUDIO_HOME on the `run` re-exec path: the seeded admin must be
-    # committed before re-exec so an old console-script child does not regenerate
-    # and inject a fresh bootstrap credential.
+    # Fresh STUDIO_HOME on the `run` re-exec path: the gate seeds the admin, then
+    # auto-generation commits a strong password over it (must_change=0) before
+    # re-exec, so no old console-script child ever serves a default credential.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
 
     _invoke_run(monkeypatch, events, _BASE + ["--secure"])
 
     state = _auth_state(studio_mod)
-    assert state["must_change_password"] == 1
+    assert state["must_change_password"] == 0
     assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
 
 
-def test_run_non_tty_api_only_fails_closed(monkeypatch, tmp_path):
-    # api-only serving never arms the bootstrap shutdown deadline, so a
-    # headless public launch with the default password has no safeguard at
-    # all: the CLI must refuse rather than promise a shutdown that never comes.
+def test_run_non_tty_api_only_autogenerates(monkeypatch, tmp_path):
+    # api-only headless public serving used to fail closed for lack of a deadline;
+    # now a strong password is auto-generated instead, so the launch proceeds.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     _seed_auth(studio_mod)
@@ -987,16 +985,16 @@ def test_run_non_tty_api_only_fails_closed(monkeypatch, tmp_path):
     result = _invoke_run(monkeypatch, events, _BASE + ["--secure", "--api-only"])
 
     kinds = [kind for kind, _ in events]
-    assert "exec" not in kinds, events
-    assert result.exit_code == 1, result.output
+    assert kinds == ["exec"], events
+    assert result.exit_code == 0, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
-    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert "auto-generated" in combined.lower()
+    assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
-def test_studio_default_non_tty_disabled_deadline_fails_closed(monkeypatch, tmp_path):
-    # UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the deadline; headless +
-    # default password + public tunnel then has no protection -> refuse.
+def test_studio_default_non_tty_disabled_deadline_autogenerates(monkeypatch, tmp_path):
+    # UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables the deadline; the auto-generated
+    # password is the safeguard now, so the launch still proceeds.
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
     _seed_auth(studio_mod)
@@ -1005,31 +1003,10 @@ def test_studio_default_non_tty_disabled_deadline_fails_closed(monkeypatch, tmp_
     result = _invoke_studio_default(monkeypatch, events, ["--secure"])
 
     kinds = [kind for kind, _ in events]
-    assert "exec" not in kinds, events
-    assert result.exit_code == 1, result.output
+    assert kinds == ["exec"], events
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "refusing to publish" in combined.lower()
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        (None, True),  # unset -> default 1h
-        ("", True),
-        ("garbage", True),  # malformed must not remove protection
-        ("3600", True),
-        ("1", True),
-        ("0", False),
-        ("-5", False),
-    ],
-)
-def test_bootstrap_deadline_active_mirrors_backend_parsing(monkeypatch, raw, expected):
-    studio_mod = _studio()
-    if raw is None:
-        monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
-    else:
-        monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raw)
-    assert studio_mod._bootstrap_deadline_active() is expected
+    assert "auto-generated" in combined.lower()
+    assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
 def test_reset_password_truncates_locked_bootstrap_after_db_delete(monkeypatch, tmp_path):
@@ -1101,6 +1078,33 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert _auth_state(studio_mod)["must_change_password"] == 0
     assert bootstrap_file.exists()
     assert bootstrap_file.read_text() == ""
+
+
+def test_cli_update_password_revokes_link_tokens(monkeypatch, tmp_path):
+    # Mirror backend storage.update_password: a link token is signed with a key
+    # derived from the JWT secret rotated in this transaction, so the CLI password
+    # change must delete outstanding link_tokens in the SAME transaction. A
+    # leftover row would let a concurrent exchange that read the pre-rotation key
+    # still consume its jti and mint a session under the new secret.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    conn = studio_mod._connect_auth_db()
+    # The CLI never mints these, but shares the auth.db with the backend that does;
+    # _connect_auth_db must create the table so the revoke DELETE never errors.
+    conn.execute(
+        "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+        ("jti-live", studio_mod.DEFAULT_ADMIN_USERNAME, "2099-01-01T00:00:00"),
+    )
+    conn.commit()
+
+    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123")
+    remaining = conn.execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0]
+    conn.close()
+
+    assert remaining == 0
+    assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
 def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):

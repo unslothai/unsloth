@@ -206,6 +206,23 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
+    # One-time, short-TTL link tokens (opt-in Colab same-tab handoff). The row is
+    # the single-use nonce: a token is exchangeable only while its jti is present,
+    # and consuming it deletes the row so a replay finds nothing.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            jti        TEXT PRIMARY KEY,
+            username   TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """
+    )
+    # Expiry-ordered purges (on mint and on consume) scan by expires_at; index it
+    # so reclaiming stale rows stays cheap as tokens are minted.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_tokens_expires_at ON link_tokens (expires_at)"
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
         conn.execute(
@@ -593,6 +610,14 @@ def update_password(
     ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
     transaction: a separate delete could fail after the password commit and
     leave a pre-change token still able to mint access tokens.
+
+    Outstanding one-time link tokens are ALSO deleted in this same transaction,
+    unconditionally. Their signing key is derived from the JWT secret we rotate
+    here, so a leftover token would fail its signature check afterwards; deleting
+    the rows atomically closes the narrow race where an in-flight exchange read
+    the old key before this rotation and could otherwise still consume its jti
+    against a now-stale token. A separate post-commit delete could fail and leave
+    a pre-change link token consumable.
     """
     from .hashing import hash_password
 
@@ -608,8 +633,10 @@ def update_password(
             """,
             (salt, pwd_hash, jwt_secret, username),
         )
-        if revoke_refresh_tokens and cursor.rowcount > 0:
-            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        if cursor.rowcount > 0:
+            conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
+            if revoke_refresh_tokens:
+                conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
@@ -721,6 +748,70 @@ def revoke_user_refresh_tokens(username: str) -> None:
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# One-time link tokens (opt-in Colab same-tab handoff)
+# ---------------------------------------------------------------------------
+
+# Short window: the token only has to survive the same-tab redirect into the UI.
+LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
+
+
+def save_link_token(jti: str, username: str, expires_at: str) -> None:
+    """Record a minted one-time link token so it can be consumed exactly once.
+
+    Only the opaque jti (a random id) is stored; the token signature never
+    touches disk.
+
+    Purges expired rows in the same transaction as the insert. The frontend is
+    not yet wired to exchange these tokens, so consume_link_token (the other purge
+    site) may never run; without a purge on mint the table would grow without
+    bound across reruns. Reclaiming stale rows here keeps it bounded regardless.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
+        conn.execute(
+            "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+            (jti, username, expires_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def consume_link_token(jti: str, username: str) -> bool:
+    """Atomically validate-and-delete a one-time link token.
+
+    Returns True only when a row for (jti, username) existed and had not expired;
+    the matching row is deleted in the same conditional DELETE. SQLite serializes
+    writers (a single database-level write lock, bounded by busy_timeout), so of
+    two concurrent exchanges only one DELETE removes the row (rowcount == 1) and
+    the other matches nothing (rowcount == 0); the token cannot be consumed twice.
+    A WHERE-qualified DELETE reports an exact rowcount, so this avoids the
+    DELETE ... RETURNING syntax that needs SQLite >= 3.35 while keeping the same
+    single-use guarantee. ISO-8601 timestamps compare lexicographically, matching
+    refresh_tokens.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        # Opportunistically reclaim expired rows so the table can't grow unbounded.
+        conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
+        cur = conn.execute(
+            """
+            DELETE FROM link_tokens
+            WHERE jti = ? AND username = ? AND expires_at >= ?
+            """,
+            (jti, username, now),
+        )
+        consumed = cur.rowcount == 1
+        conn.commit()
+        return consumed
     finally:
         conn.close()
 
