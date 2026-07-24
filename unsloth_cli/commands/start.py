@@ -84,8 +84,33 @@ _SUBAGENT_INSTRUCTIONS = (
     "use the available tools when useful, verify your work, and return a concise result to the "
     "parent agent."
 )
+_SUBAGENT_PLAN_DESCRIPTION = (
+    "Read-only local coding subagent powered by Unsloth for planning and codebase research. "
+    "Use this local agent when Claude is in plan mode."
+)
+_SUBAGENT_PLAN_INSTRUCTIONS = (
+    "You are a read-only local coding subagent powered by Unsloth. Investigate the assigned "
+    "task with read-only tools, produce a concrete plan or answer, and return a concise result "
+    "to the parent agent. Do not modify files."
+)
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
+_CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
+_CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
+_CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
+_CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
+_CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
+_CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
+_CODEX_SUBAGENT_TOOL_DESCRIPTION = (
+    f"{_SUBAGENT_DESCRIPTION} Use this tool instead of the built-in spawn_agent tool for those "
+    "requests. Other subagent requests may use the built-in tools normally."
+)
+_CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
+    "When the user asks to spawn an Unsloth agent or local agent, you must call the "
+    "spawn_local_agent MCP tool once with the complete task. Do not answer, simulate the "
+    "result, call wait, or use a built-in subagent before calling the tool. Use built-in "
+    "subagents for other delegation requests."
+)
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
@@ -113,6 +138,7 @@ class _PassthroughCommand(TyperCommand):
 
 
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
+_CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 # Help is grouped into rich panels so `--help` reads as Model / Server / Session
@@ -1093,6 +1119,13 @@ def _write_private_json(path: Path, data: dict) -> None:
         handle.write(json.dumps(data, indent = 2) + "\n")
 
 
+def _write_private_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(text)
+
+
 def _read_json_object(path: Path) -> Optional[dict]:
     # {} when missing, None when it can't be parsed as an object (so the caller
     # leaves a user-managed file untouched rather than clobbering it).
@@ -1599,60 +1632,212 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         typer.echo(f"Updated {profile}")
 
 
-def write_codex_subagent_config(base: str, key: str, model: dict, home: Path) -> Path:
-    """Write a session-scoped Codex custom agent without replacing the main model."""
-    home.mkdir(parents = True, exist_ok = True)
-    model_id = model["id"]
-    window = model.get("context_length") or model.get("max_context_length")
-    catalog_name = "unsloth-model-catalog.json"
-    text = (
-        f"name = {json.dumps(_SUBAGENT_NAME)}\n"
-        f"description = {json.dumps(_SUBAGENT_DESCRIPTION)}\n"
-        f"developer_instructions = {json.dumps(_SUBAGENT_INSTRUCTIONS)}\n"
-        f"model_provider = {json.dumps(_CODEX_PROFILE)}\n"
-        f"model = {json.dumps(model_id)}\n"
+def write_codex_subagent_bridge(
+    base: str, key: str, model: dict, home: Path, *, yolo: bool
+) -> Path:
+    """Write private config for an explicit local Codex child launched through MCP."""
+    child_home = home / "child"
+    write_codex_config(base, model, child_home)
+    path = home / "subagent.json"
+    _write_private_json(
+        path,
+        {
+            "api_key": key,
+            "codex_home": str(child_home),
+            "bypass_permissions": yolo,
+        },
     )
-    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
-        catalog = home / catalog_name
-        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
-        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
-            catalog.write_text(catalog_text, encoding = "utf-8")
-            typer.echo(f"Updated {catalog}")
-        text += f"model_catalog_json = {json.dumps(catalog_name)}\n"
-    if window:
-        text += f"model_context_window = {int(window)}\n"
-    credential = home / "unsloth-auth.json"
-    _write_private_json(credential, {"token": key})
-    auth_command = sys.executable
-    auth_args = [
-        "-c",
-        "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8'))['token'])",
-        str(credential),
-    ]
-    if _wsl_windows_executable(["codex"]):
-        auth_command = "wsl.exe"
-        auth_args = [
-            "-d",
-            os.environ["WSL_DISTRO_NAME"],
-            "--",
-            sys.executable,
-            *auth_args,
-        ]
-    text += (
-        f"\n{_PROVIDER_HEADER}\n"
-        'name = "Unsloth Studio"\n'
-        f"base_url = {json.dumps(base + '/v1')}\n"
-        'wire_api = "responses"\n'
-        f"\n{_PROVIDER_HEADER[:-1]}.auth]\n"
-        f"command = {json.dumps(auth_command)}\n"
-        f"args = {json.dumps(auth_args)}\n"
-        "timeout_ms = 5000\n"
-    )
-    path = home / f"{_SUBAGENT_NAME}.toml"
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.write_text(text, encoding = "utf-8")
-        typer.echo(f"Updated {path}")
     return path
+
+
+def _wsl_windows_user_profile(executable: str) -> Path:
+    """Return the Windows user profile as a path accessible from WSL."""
+    profile = os.environ.get("USERPROFILE", "").strip()
+    if not profile:
+        try:
+            profile = subprocess.check_output(
+                ["cmd.exe", "/d", "/c", "echo %USERPROFILE%"],
+                text = True,
+                stderr = subprocess.DEVNULL,
+                cwd = str(Path(executable).parent),
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+    if not profile or profile == "%USERPROFILE%":
+        _fail("Could not find the Windows user profile for Codex.")
+    if profile.startswith("/"):
+        return Path(profile)
+    try:
+        translated = subprocess.check_output(
+            ["wslpath", "-u", profile],
+            text = True,
+            stderr = subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        _fail(f"Could not translate Windows user profile {profile}: {exc}")
+    if not translated:
+        _fail(f"Could not translate Windows user profile {profile}.")
+    return Path(translated)
+
+
+def _codex_source_home(*, ignore_configured: bool = False) -> Path:
+    configured = None if ignore_configured else os.environ.get("CODEX_HOME")
+    if configured:
+        if _wsl_windows_executable(["codex"]) and _looks_like_path(configured):
+            if not configured.startswith("/"):
+                try:
+                    configured = subprocess.check_output(
+                        ["wslpath", "-u", configured],
+                        text = True,
+                        stderr = subprocess.DEVNULL,
+                    ).strip()
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    _fail(f"Could not translate Windows CODEX_HOME {configured}: {exc}")
+                if not configured:
+                    _fail("Could not translate Windows CODEX_HOME.")
+        return Path(configured).expanduser()
+    executable = _wsl_windows_executable(["codex"])
+    if executable:
+        return _wsl_windows_user_profile(executable) / ".codex"
+    return Path.home() / ".codex"
+
+
+def _remove_overlay_entry(path: Path) -> None:
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction and is_junction():
+        path.rmdir()
+    elif path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _create_directory_junction(source: Path, target: Path) -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(target), str(source)],
+            capture_output = True,
+            text = True,
+            timeout = 30,
+            check = False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def write_codex_parent_overlay(overlay: Path) -> Path:
+    """Add local-agent routing without replacing the cloud parent's configuration."""
+    overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
+
+    manifest_path = overlay / _CODEX_PARENT_OVERLAY_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        manifest = None
+    source_home = _codex_source_home()
+    overlay_key = str(overlay.resolve(strict = False))
+    source_key = str(source_home.resolve(strict = False))
+    if source_key == overlay_key:
+        previous_source = manifest.get("source_home") if isinstance(manifest, dict) else None
+        if isinstance(previous_source, str) and previous_source:
+            candidate = Path(previous_source).expanduser()
+            if str(candidate.resolve(strict = False)) != overlay_key:
+                source_home = candidate
+            else:
+                source_home = _codex_source_home(ignore_configured = True)
+        else:
+            source_home = _codex_source_home(ignore_configured = True)
+        source_key = str(source_home.resolve(strict = False))
+    same_source = isinstance(manifest, dict) and manifest.get("source_home") == source_key
+    if same_source:
+        managed_entries = manifest.get("entries", [])
+        if not isinstance(managed_entries, list):
+            managed_entries = []
+        for name in managed_entries:
+            if isinstance(name, str) and name not in {"", ".", ".."} and Path(name).name == name:
+                _remove_overlay_entry(overlay / name)
+    else:
+        # A reused overlay must never mix credentials, config, or plugins from two
+        # different Codex homes. Legacy overlays have no manifest, so rebuild them once.
+        for target in list(overlay.iterdir()):
+            _remove_overlay_entry(target)
+
+    # Keep the user's auth, config, plugins, agents, skills, rules, and session state visible.
+    # Symlinks make this an overlay rather than a stale copy. If Windows denies them,
+    # use directory junctions so large runtime state remains shared without a bulk copy.
+    # Copy the configuration surfaces and sessions only if both link forms are unavailable.
+    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces", "sessions"}
+    entries = []
+    if source_home.is_dir():
+        for source in source_home.iterdir():
+            if source.name in {
+                "AGENTS.md",
+                "AGENTS.override.md",
+                _CODEX_PARENT_OVERLAY_MANIFEST,
+            }:
+                continue
+            target = overlay / source.name
+            _remove_overlay_entry(target)
+            try:
+                target.symlink_to(source, target_is_directory = source.is_dir())
+                entries.append(source.name)
+            except OSError:
+                if source.is_file():
+                    shutil.copy2(source, target)
+                    entries.append(source.name)
+                elif source.is_dir():
+                    if _create_directory_junction(source, target):
+                        entries.append(source.name)
+                    elif source.name in fallback_dirs:
+                        shutil.copytree(source, target)
+                        entries.append(source.name)
+
+    _write_private_json(
+        manifest_path,
+        {"source_home": source_key, "entries": sorted(entries)},
+    )
+
+    inherited = ""
+    instruction_name = "AGENTS.md"
+    for candidate in (source_home / "AGENTS.override.md", source_home / "AGENTS.md"):
+        try:
+            text = candidate.read_text(encoding = "utf-8")
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            _fail(f"Could not preserve Codex instructions from {candidate}: {exc}")
+        if text.strip():
+            inherited = text.rstrip()
+            instruction_name = candidate.name
+            break
+
+    other_name = "AGENTS.md" if instruction_name == "AGENTS.override.md" else "AGENTS.override.md"
+    other = overlay / other_name
+    if other.is_file() or other.is_symlink():
+        other.unlink()
+    routing = _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS
+    combined = f"{inherited}\n\n{routing}\n" if inherited else f"{routing}\n"
+    _write_private_text(overlay / instruction_name, combined)
+    return overlay
+
+
+@contextlib.contextmanager
+def _codex_parent_overlay(session_home: Path, *, launch: bool, persist: bool):
+    if launch and not persist:
+        temp_root = _agents_config_root() / ".tmp"
+        temp_root.mkdir(parents = True, exist_ok = True, mode = 0o700)
+        overlay = Path(tempfile.mkdtemp(prefix = "codex-parent-", dir = temp_root))
+        try:
+            yield write_codex_parent_overlay(overlay)
+        finally:
+            shutil.rmtree(overlay, ignore_errors = True)
+    else:
+        yield write_codex_parent_overlay(session_home / "parent")
 
 
 def _agent_config_path(path: Path, command: list) -> str:
@@ -1778,25 +1963,42 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
         "description: Delegate a task to the local agent powered by Unsloth. Use when the "
         "user asks to spawn an Unsloth agent or local agent.\n"
         "---\n\n"
-        "Call the Unsloth local agent tool once with the complete task. Return its result "
-        "to the user without claiming that the cloud parent completed the local work.\n",
+        "Call the Unsloth local agent tool once with the complete task. In plan mode, call "
+        "the read-only Unsloth plan agent instead. Return its result to the user without "
+        "claiming that the cloud parent completed the local work.\n",
         encoding = "utf-8",
     )
     return plugin
 
 
 def _codex_subagent_flags(path: Path) -> list[str]:
-    config_path = _agent_config_path(path, ["codex"])
-    return [
-        "--enable",
-        "multi_agent",
-        "-c",
-        "agents.max_depth=1",
-        "-c",
-        f"agents.{_SUBAGENT_NAME}.description={json.dumps(_SUBAGENT_DESCRIPTION)}",
-        "-c",
-        f"agents.{_SUBAGENT_NAME}.config_file={json.dumps(config_path)}",
-    ]
+    command = sys.executable
+    package_root = str(Path(__file__).resolve().parents[2])
+    bootstrap = (
+        f"import sys;sys.path.insert(0,{json.dumps(package_root)});"
+        f"from {_CODEX_SUBAGENT_MCP_MODULE} import main;main()"
+    )
+    args = ["-c", bootstrap, str(path)]
+    if _wsl_windows_executable(["codex"]):
+        command = "wsl.exe"
+        args = [
+            "-d",
+            os.environ["WSL_DISTRO_NAME"],
+            "--",
+            sys.executable,
+            "-c",
+            bootstrap,
+            str(path),
+        ]
+    server = (
+        "{ "
+        f"command = {json.dumps(command)}, "
+        f"args = {json.dumps(args)}, "
+        f"required = true, enabled_tools = [{json.dumps(_CODEX_SUBAGENT_MCP_TOOL)}], "
+        'default_tools_approval_mode = "approve", '
+        "startup_timeout_sec = 15, tool_timeout_sec = 3600 }"
+    )
+    return ["-c", f"mcp_servers.{_CODEX_SUBAGENT_MCP_SERVER}={server}"]
 
 
 def _wsl_windows_executable(command: list) -> Optional[str]:
@@ -2647,7 +2849,7 @@ def claude(
                 _agent_config_path(plugin, ["claude"]),
                 # Before ctx.args: a forwarded `--` would turn later flags positional.
                 "--allowedTools",
-                _CLAUDE_SUBAGENT_TOOL,
+                f"{_CLAUDE_SUBAGENT_TOOL},{_CLAUDE_SUBAGENT_PLAN_TOOL}",
                 *_yolo_command_flags("claude", yolo),
                 *ctx.args,
             ]
@@ -2734,25 +2936,32 @@ def codex(
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
         with _session_config("codex-subagent", launch, persist = persist) as home:
-            agent_config = write_codex_subagent_config(base, key, subagent_model, home)
-            command = [
-                "codex",
-                *_codex_subagent_flags(agent_config),
-                *_yolo_command_flags("codex", yolo),
-                *ctx.args,
-            ]
-            typer.echo(
-                "Unsloth is available as the `unsloth` local agent. "
-                "Ask Codex to spawn an Unsloth or local agent."
-            )
-            _run(
+            bridge_config = write_codex_subagent_bridge(
                 base,
+                key,
                 subagent_model,
-                {},
-                command,
-                launch = launch,
-                install_hint = "npm install -g @openai/codex",
+                home,
+                yolo = yolo,
             )
+            with _codex_parent_overlay(home, launch = launch, persist = persist) as parent_home:
+                command = [
+                    "codex",
+                    *_codex_subagent_flags(bridge_config),
+                    *_yolo_command_flags("codex", yolo),
+                    *ctx.args,
+                ]
+                typer.echo(
+                    "Unsloth is available as a local agent. "
+                    "Ask Codex to spawn an Unsloth or local agent."
+                )
+                _run(
+                    base,
+                    subagent_model,
+                    {"CODEX_HOME": str(parent_home)},
+                    command,
+                    launch = launch,
+                    install_hint = "npm install -g @openai/codex",
+                )
         return
     command = [
         "codex",
