@@ -281,6 +281,27 @@ _is_gfx906_bnb_skip() {
     return 1
 }
 
+# `pip install unsloth` resolves its unconditional bitsandbytes dep to a generic
+# CUDA wheel (no gfx906 kernels) once we skip the prebuilt one. Snapshot bnb before
+# the unsloth install, then drop a freshly pulled wheel afterwards while leaving a
+# pre-existing source build in place.
+_gfx906_bnb_installed() {
+    "$_VENV_PY" -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('bitsandbytes') else 1)" >/dev/null 2>&1
+}
+_gfx906_bnb_snapshot() {
+    _gfx906_bnb_absent_before=false
+    _is_gfx906_bnb_skip || return 0
+    _gfx906_bnb_installed || _gfx906_bnb_absent_before=true
+}
+_gfx906_bnb_prune() {
+    _is_gfx906_bnb_skip || return 0
+    [ "${_gfx906_bnb_absent_before:-false}" = true ] || return 0
+    _gfx906_bnb_installed || return 0
+    substep "gfx906: removing generic bitsandbytes pulled in as a dependency (no gfx906 kernels; build from source for 4-bit QLoRA)" "$C_WARN"
+    uv pip uninstall --python "$_VENV_PY" bitsandbytes >/dev/null 2>&1 \
+        || "$_VENV_PY" -m pip uninstall -y bitsandbytes >/dev/null 2>&1 || true
+}
+
 # Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
 # wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
 # NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
@@ -3548,6 +3569,7 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
     # existing torch/CUDA unless the ROCm repair below fires.
+    _gfx906_bnb_snapshot
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
@@ -3600,6 +3622,7 @@ if [ "$_MIGRATED" = true ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
             _install_torch_default_index --force-reinstall
         fi
+        _gfx906_bnb_prune
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
@@ -3796,6 +3819,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
         fi
     fi
+    _gfx906_bnb_snapshot
     # Fresh: Step 2 - install unsloth, preserving the torch Step 1 installed
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
@@ -3846,6 +3870,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             substep "repairing ROCm torch (overwritten by dependency resolution)..."
             _install_torch_default_index --force-reinstall
         fi
+        _gfx906_bnb_prune
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch

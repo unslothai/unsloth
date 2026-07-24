@@ -971,6 +971,34 @@ def _detect_bnb_rocm_dll_ver() -> str | None:
     return max(all_vers, key = lambda v: int(v)) if all_vers else None
 
 
+# Set right before the base unsloth install (which resolves its unconditional
+# bitsandbytes dependency); read by _ensure_rocm_torch to drop a freshly pulled
+# generic wheel on gfx906 while leaving a pre-existing source build untouched.
+_GFX906_BNB_ABSENT_BEFORE_BASE = False
+
+
+def _bitsandbytes_installed() -> bool:
+    """True if bitsandbytes is importable in the target venv. Runs a fresh
+    subprocess so a package installed earlier this run is seen; only checks the
+    spec (does NOT import bitsandbytes)."""
+    try:
+        return (
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import importlib.util, sys; "
+                    "sys.exit(0 if importlib.util.find_spec('bitsandbytes') else 1)",
+                ],
+                capture_output = True,
+                timeout = 60,
+            ).returncode
+            == 0
+        )
+    except Exception:
+        return False
+
+
 _BNB_ROCM_SITECUSTOMIZE_BEGIN = "# BEGIN Unsloth BNB_ROCM_VERSION"
 _BNB_ROCM_SITECUSTOMIZE_END = "# END Unsloth BNB_ROCM_VERSION"
 _BNB_ROCM_VERSION_SOURCE_ENV = "UNSLOTH_BNB_ROCM_VERSION_SOURCE"
@@ -2109,6 +2137,16 @@ def _ensure_rocm_torch() -> None:
                 "see docs.unsloth.ai/get-started/install-and-update/amd."
             )
         )
+        # The base install resolves unsloth's unconditional bitsandbytes dep to a
+        # generic CUDA wheel with no gfx906 kernels ("invalid device function" at
+        # 4-bit use). Drop it if this run pulled it in; a pre-existing source build
+        # (present before the base install) is left untouched.
+        if _GFX906_BNB_ABSENT_BEFORE_BASE and _bitsandbytes_installed():
+            print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
+            subprocess.run(
+                [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
+                capture_output = True,
+            )
     # Install bitsandbytes only when torch links against ROCm. Prefers the
     # continuous-release_main wheel (bnb PR #1887 4-bit GEMV fix), falling back
     # to PyPI when the pre-release wheel won't install. Use pip for the
@@ -2873,6 +2911,13 @@ def install_python_stack() -> int:
             f"mlx-lm{MLX_LM_BAD_VERSION_EXCLUSION}",
             "mlx-vlm",
         )
+
+    # gfx906: the base install below resolves unsloth's unconditional bitsandbytes
+    # dep to a generic CUDA wheel (no gfx906 kernels). Record bnb's presence now so
+    # _ensure_rocm_torch can drop a freshly pulled wheel while keeping a source build.
+    global _GFX906_BNB_ABSENT_BEFORE_BASE
+    if not skip_base:
+        _GFX906_BNB_ABSENT_BEFORE_BASE = not _bitsandbytes_installed()
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
