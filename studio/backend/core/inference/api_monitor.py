@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -17,6 +18,17 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+
+# Opt-in kill switch for the in-memory API monitor. Users who run Studio purely
+# as an inference API and handle logging/telemetry elsewhere can set this to turn
+# the monitor into a no-op (nothing is recorded and the Monitor view stays empty).
+# Off by default, so existing behaviour is unchanged.
+_DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _api_monitor_disabled() -> bool:
+    return os.environ.get(_DISABLE_ENV, "").strip().lower() in _TRUE_VALUES
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -93,10 +105,16 @@ class ApiMonitorEntry:
 
 
 class ApiMonitor:
-    def __init__(self, max_entries: int = _MAX_ENTRIES):
+    def __init__(
+        self,
+        max_entries: int = _MAX_ENTRIES,
+        *,
+        enabled: bool = True,
+    ):
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
+        self._enabled = enabled
 
     def start(
         self,
@@ -108,6 +126,11 @@ class ApiMonitor:
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
     ) -> str:
+        # Disabled monitor is a no-op: return a falsy id so every downstream
+        # mutator (append_reply/set_reply/set_usage/finish/fail) short-circuits
+        # on its `if not entry_id` guard and no entry is ever recorded.
+        if not self._enabled:
+            return ""
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apireq_{uuid.uuid4().hex[:12]}",
@@ -292,4 +315,4 @@ class ApiMonitor:
         self._entries = kept
 
 
-api_monitor = ApiMonitor()
+api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())

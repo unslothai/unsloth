@@ -258,3 +258,61 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     monitor.append_reply(entry_id, "y")
     reply = monitor.snapshot()[0]["reply"]
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
+
+
+def test_api_monitor_enabled_by_default_records():
+    # Guard against accidentally flipping the default to disabled.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    assert entry_id
+    assert len(monitor.snapshot()) == 1
+
+
+def test_api_monitor_disabled_is_noop():
+    monitor = ApiMonitor(max_entries = 3, enabled = False)
+
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+        context_length = 100,
+    )
+    # A disabled monitor returns a falsy id and records nothing.
+    assert entry_id == ""
+
+    # Every mutator must be a safe no-op on the falsy id.
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_reply(entry_id, "hi")
+    monitor.set_usage(entry_id, prompt_tokens = 4, completion_tokens = 6)
+    monitor.finish(entry_id)
+    monitor.fail(entry_id, "boom")
+
+    assert monitor.snapshot() == []
+    assert monitor.active_count() == 0
+    assert monitor.get(entry_id) is None
+
+
+def test_api_monitor_disable_env_var_truthy(monkeypatch):
+    import core.inference.api_monitor as m
+    for value in ("1", "true", "yes", "on", "TRUE", "On", " yes "):
+        monkeypatch.setenv(m._DISABLE_ENV, value)
+        assert m._api_monitor_disabled() is True, value
+
+
+def test_api_monitor_disable_env_var_falsy(monkeypatch):
+    import core.inference.api_monitor as m
+    for value in ("", "0", "false", "no", "off", "disabled"):
+        monkeypatch.setenv(m._DISABLE_ENV, value)
+        assert m._api_monitor_disabled() is False, value
+
+
+def test_api_monitor_disable_env_var_unset(monkeypatch):
+    import core.inference.api_monitor as m
+    monkeypatch.delenv(m._DISABLE_ENV, raising = False)
+    assert m._api_monitor_disabled() is False
