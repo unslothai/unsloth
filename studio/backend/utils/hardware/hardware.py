@@ -2210,12 +2210,13 @@ def auto_select_gpu_ids(
             metadata["selection_mode"] = "auto"
             metadata["selected_gpu_ids"] = selected
             logger.debug(
-                "Selected GPUs automatically",
-                model_name = model_name,
-                selected_gpu_ids = selected,
-                usable_gb = metadata["usable_gb"],
-                required_gb = metadata.get("required_gb"),
-                multi_gpu_overhead = multi_gpu_overhead,
+                "Selected GPUs automatically: model=%s selected=%s usable_gb=%s "
+                "required_gb=%s multi_gpu_overhead=%s",
+                model_name,
+                selected,
+                metadata["usable_gb"],
+                metadata.get("required_gb"),
+                multi_gpu_overhead,
             )
             return selected, metadata
 
@@ -2231,12 +2232,13 @@ def auto_select_gpu_ids(
     metadata["usable_gb"] = round(fallback_usable, 3)
     metadata["selected_gpu_ids"] = fallback_all
     logger.warning(
-        "Falling back to all visible GPUs -- model may not fit",
-        model_name = model_name,
-        selected_gpu_ids = fallback_all,
-        usable_gb = metadata["usable_gb"],
-        required_gb = metadata.get("required_gb"),
-        multi_gpu_overhead = multi_gpu_overhead,
+        "Falling back to all visible GPUs; model may not fit: model=%s "
+        "selected=%s usable_gb=%s required_gb=%s multi_gpu_overhead=%s",
+        model_name,
+        fallback_all,
+        metadata["usable_gb"],
+        metadata.get("required_gb"),
+        multi_gpu_overhead,
     )
     return fallback_all, metadata
 
