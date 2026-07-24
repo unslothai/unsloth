@@ -244,7 +244,9 @@ def test_start_skips_finalize_when_cloudflare_disabled(monkeypatch):
         "_finalize_colab_admin_password",
         lambda: finalize_calls.append("finalize") or ("unsloth", "secret"),
     )
-    monkeypatch.setattr(colab, "start_cloudflare_tunnel", lambda port: "https://share.trycloudflare.com")
+    monkeypatch.setattr(
+        colab, "start_cloudflare_tunnel", lambda port: "https://share.trycloudflare.com"
+    )
     monkeypatch.setattr(colab, "_publish_cloudflare_url", lambda url: None)
     monkeypatch.setattr(colab, "_show_and_embed", lambda port, **kwargs: None)
     monkeypatch.setattr(colab, "_stop_cloudflare_tunnel", lambda: None)
