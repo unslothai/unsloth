@@ -344,6 +344,38 @@ def test_closed_fence_literal_still_stays_reasoning():
     assert visible.strip() == "visible"
 
 
+def test_closed_fence_literal_before_later_unclosed_fence():
+    """A closed-fence literal must stay reasoning even when a *separate* later
+    unclosed fence makes the global fence parity odd (#7334)."""
+    reasoning, visible = _extract_responses_reasoning(
+        "example:\n```\n</think>\n```\nnow ```\ncode\n</think>answer",
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    # The first close is wrapped by a closed fence -> literal, still reasoning.
+    assert "</think>" not in visible
+    assert "code" in reasoning and "now" in reasoning
+    # Only the text after the real (unclosed-fence) close is visible.
+    assert visible.strip() == "answer"
+
+
+def test_closed_fence_literal_before_later_unclosed_fence_streaming():
+    """The closed-fence literal stays reasoning across streaming deltas even
+    when a later unclosed fence follows (#7334)."""
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    r1, v1 = ex.feed("example:\n```\n</think>\n```\n")
+    r2, v2 = ex.feed("now ```\ncode\n</think>answer")
+    rf, vf = ex.finish()
+    reasoning = r1 + r2 + rf
+    visible = v1 + v2 + vf
+    assert "</think>" not in visible
+    assert "code" in reasoning
+    assert visible.strip() == "answer"
+
+
 def test_neutralize_tools_control_markup_deep():
     tools = [
         {

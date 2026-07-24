@@ -109,9 +109,13 @@ function isLiteralThinkClose(
   // backend Responses extractor's EOF fallback (_fence_unresolved_at_close, #7334).
   const fencesBefore = countFences(raw, spanStart, closeIndex);
   if (fencesBefore % 2 === 1) {
-    // Odd total fence count over the whole span means the enclosing fence never
-    // closes, so this close tag is a genuine structural close, not fenced text.
-    if (countFences(raw, spanStart, raw.length) % 2 === 1) return false;
+    // The close sits inside an open ``` fence. That fence is resolved (a real
+    // fenced example) iff a closing ``` appears after this tag; the next fence
+    // marker closes it. Global parity over the rest of the span is wrong, since
+    // a separate later unclosed fence would then misflag an earlier close whose
+    // own fence already closed (#7334). No further ``` means the enclosing
+    // fence never closes, so treat this tag as a genuine structural close.
+    if (raw.indexOf("```", closeIndex) === -1) return false;
     return true;
   }
   const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
@@ -178,6 +182,16 @@ export function parseAssistantContent(raw: string): ContentPart[] {
   return parts;
 }
 
+/**
+ * True once the reasoning block has *structurally* closed. Uses the same
+ * quoted/fenced-literal classification as `parseAssistantContent`, so a literal
+ * `</think>` inside reasoning (a quote or fenced example) does not count as the
+ * end of thinking. A raw substring check would latch the reasoning-duration
+ * timer on that literal tag and never correct it when the real close arrives,
+ * underreporting the thought time (#7334).
+ */
 export function hasClosedThinkTag(raw: string): boolean {
-  return raw.includes(THINK_CLOSE_TAG);
+  const openIndex = raw.indexOf(THINK_OPEN_TAG);
+  const spanStart = openIndex === -1 ? 0 : openIndex + THINK_OPEN_TAG.length;
+  return findStructuralThinkClose(raw, spanStart, spanStart) !== -1;
 }

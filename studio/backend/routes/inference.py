@@ -11304,10 +11304,17 @@ class _ResponsesReasoningExtractor:
         close has arrived yet. In the latter case the fence decision must be
         deferred mid-stream, and fall back to structural at EOF, so an unclosed
         fence in the reasoning cannot swallow the whole visible answer (#7066).
+
+        The fence enclosing *this* close is resolved iff a closing ``` appears
+        after the tag: that next fence marker closes the fence the tag sits in.
+        Global parity over the whole buffer is wrong here, because a *separate*
+        later unclosed fence (odd total) would then misflag an earlier close
+        that its own fence already closed (#7334).
         """
         if not self._fence_parity_odd(buffer[:close_idx]):
             return False
-        return self._fence_parity_odd(buffer)
+        # No further ``` after the tag means the enclosing fence never closes.
+        return "```" not in buffer[close_idx:]
 
     def _think_close_is_literal(self, buffer: str, close_idx: int) -> bool:
         """Literal-close check over consumed span + ``buffer[:close_idx]``.
