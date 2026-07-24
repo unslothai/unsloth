@@ -19,9 +19,7 @@ import ast
 import os
 from collections import Counter
 
-MAPPER_PATH = os.path.join(
-    os.path.dirname(__file__), os.pardir, "unsloth", "models", "mapper.py"
-)
+MAPPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models", "mapper.py")
 
 
 def _duplicate_int_to_float_keys():
@@ -44,9 +42,7 @@ def _duplicate_int_to_float_keys():
                 ]
                 counts = Counter(keys)
                 return {key: n for key, n in counts.items() if n > 1}
-    raise AssertionError(
-        "Could not find the __INT_TO_FLOAT_MAPPER dict literal in mapper.py"
-    )
+    raise AssertionError("Could not find the __INT_TO_FLOAT_MAPPER dict literal in mapper.py")
 
 
 def test_int_to_float_mapper_has_no_duplicate_keys():
