@@ -1151,7 +1151,16 @@ class InferenceBackend:
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")
             # Fall back to manual formatting
-            formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_non_assistant_control_markup,
+            )
+
+            safe_messages = neutralize_control_markup_in_messages(messages)
+            safe_system = (
+                neutralize_non_assistant_control_markup(system_prompt) if system_prompt else None
+            )
+            formatted_prompt = self.format_chat_prompt(safe_messages, safe_system)
             reasoning_channel_markers = None
             reasoning_channel_markers_resolved = True
 
@@ -1193,11 +1202,21 @@ class InferenceBackend:
         # for some models. Safe unwrap for tokenize-only ops.
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        # Extract user message
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+            neutralize_non_assistant_control_markup,
+        )
+
+        safe_messages = neutralize_control_markup_in_messages(messages)
+        safe_system = (
+            neutralize_non_assistant_control_markup(system_prompt) if system_prompt else None
+        )
+
+        # Extract user message (after neutralization so literal control markup is safe).
         user_message = ""
-        if messages and messages[-1]["role"] == "user":
+        if safe_messages and safe_messages[-1]["role"] == "user":
             import re
-            user_message = content_to_text(messages[-1]["content"])
+            user_message = content_to_text(safe_messages[-1]["content"])
             user_message = re.sub(r"<img[^>]*>", "", user_message).strip()
 
         if not user_message:
@@ -1212,11 +1231,11 @@ class InferenceBackend:
                     {"type": "text", "text": user_message},
                 ],
             }
-            if system_prompt:
+            if safe_system:
                 vision_messages = [
                     {
                         "role": "system",
-                        "content": [{"type": "text", "text": system_prompt}],
+                        "content": [{"type": "text", "text": safe_system}],
                     },
                     user_msg,
                 ]
@@ -1248,7 +1267,7 @@ class InferenceBackend:
             prompt_text = input_text
         else:
             # Text-only path for a vision model
-            formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+            formatted_prompt = self.format_chat_prompt(safe_messages, safe_system)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
             prompt_text = formatted_prompt
 
@@ -1425,6 +1444,15 @@ class InferenceBackend:
         # ASR-specific default system prompt if none set
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
+
+        # Literal think/ChatML markers in request text must not reach the
+        # template as control tokens (#7066), same as the VLM paths.
+        from core.inference.chat_template_helpers import (
+            neutralize_non_assistant_control_markup,
+        )
+
+        user_text = neutralize_non_assistant_control_markup(user_text)
+        system_prompt = neutralize_non_assistant_control_markup(system_prompt)
 
         # Gemma 3n format — audio goes INTO apply_chat_template
         audio_messages = [
@@ -2059,6 +2087,15 @@ class InferenceBackend:
         messages: list,
         system_prompt: str = None,
     ) -> str:
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+            neutralize_non_assistant_control_markup,
+        )
+
+        messages = neutralize_control_markup_in_messages(messages)
+        if system_prompt:
+            system_prompt = neutralize_non_assistant_control_markup(system_prompt)
+
         if not self.active_model_name or self.active_model_name not in self.models:
             logger.error("No active model available")
             return ""

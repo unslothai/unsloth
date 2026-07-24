@@ -101,6 +101,12 @@ def _render_registered_vlm_prompt(processor, model, messages, num_images):
     """Render through mlx-vlm when it declares a formatter for this model."""
     from mlx_vlm import prompt_utils
 
+    from core.inference.chat_template_helpers import (
+        neutralize_control_markup_in_messages,
+    )
+
+    messages = neutralize_control_markup_in_messages(messages)
+
     config, model_type = _mlx_vlm_model_config(model)
     if config is None:
         return None

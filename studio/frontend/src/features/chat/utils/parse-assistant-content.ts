@@ -7,6 +7,8 @@ type ContentPart = NonNullable<ChatModelRunResult["content"]>[number];
 
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
+/** Invisible joiner so literal think tags in reasoning text do not close the panel (#7066). */
+const THINK_NEUTRAL_ZW = "\u200b";
 
 // ContentPart from @assistant-ui/react has readonly fields, so coalescing via
 // `last.text += text` fails (TS2540). Instead replace the last element with a
@@ -32,9 +34,117 @@ function appendReasoningPart(parts: ContentPart[], text: string): void {
   parts.push({ type: "reasoning", text });
 }
 
-export function parseAssistantContent(
+/**
+ * Neutralize structural `<think>` / `</think>` markers inside free text so a
+ * literal close tag in reasoning (or a user quote) cannot prematurely end the
+ * thinking block (#7066).
+ */
+export function neutralizeThinkMarkup(text: string): string {
+  if (!text) return text;
+  if (!text.includes(THINK_OPEN_TAG) && !text.includes(THINK_CLOSE_TAG)) {
+    return text;
+  }
+  return text
+    .replaceAll(THINK_CLOSE_TAG, `</${THINK_NEUTRAL_ZW}think>`)
+    .replaceAll(THINK_OPEN_TAG, `<${THINK_NEUTRAL_ZW}think>`);
+}
+
+/** Trailing chars that may be a prefix of a think marker (split-chunk safe). */
+export function thinkMarkupHoldback(text: string): number {
+  const markers = [THINK_CLOSE_TAG, THINK_OPEN_TAG];
+  const maxLen = Math.max(...markers.map((marker) => marker.length));
+  for (let size = Math.min(text.length, maxLen - 1); size > 0; size -= 1) {
+    const suffix = text.slice(-size);
+    if (markers.some((marker) => marker.startsWith(suffix))) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+/** Neutralize complete think markers in a streaming buffer (#7066). */
+export function drainThinkMarkupBuffer(
+  buffer: string,
+  options?: { finalize?: boolean },
+): { emit: string; buffer: string } {
+  if (!buffer) return { emit: "", buffer: "" };
+  if (options?.finalize) {
+    return { emit: neutralizeThinkMarkup(buffer), buffer: "" };
+  }
+  const keep = thinkMarkupHoldback(buffer);
+  if (keep === buffer.length) return { emit: "", buffer };
+  const rawEmit = keep ? buffer.slice(0, -keep) : buffer;
+  return {
+    emit: neutralizeThinkMarkup(rawEmit),
+    buffer: keep ? buffer.slice(-keep) : "",
+  };
+}
+
+/** Non-overlapping ``` fence count in `raw[from, to)` (matches Python str.count). */
+function countFences(raw: string, from: number, to: number): number {
+  let fences = 0;
+  let f = raw.indexOf("```", from);
+  while (f !== -1 && f < to) {
+    fences++;
+    f = raw.indexOf("```", f + 3);
+  }
+  return fences;
+}
+
+/**
+ * True when a close tag looks like quoted/code content rather than a block
+ * end (#7066): flanked by quote chars, with the leading quote OPENING a span
+ * (odd count of that quote char since the reasoning start).
+ */
+function isLiteralThinkClose(
   raw: string,
-): ContentPart[] {
+  spanStart: number,
+  closeIndex: number,
+): boolean {
+  // Inside an open ``` fence, a close tag is sample text, not a block end --
+  // but only when that fence actually closes. An unclosed fence in the
+  // reasoning (e.g. `<think>...```python\n...</think>answer`) must not make the
+  // real </think> look literal and swallow the whole visible answer, so fall
+  // back to structural when the fence never closes by end of text. Mirrors the
+  // backend Responses extractor's EOF fallback (_fence_unresolved_at_close, #7334).
+  const fencesBefore = countFences(raw, spanStart, closeIndex);
+  if (fencesBefore % 2 === 1) {
+    // Odd total fence count over the whole span means the enclosing fence never
+    // closes, so this close tag is a genuine structural close, not fenced text.
+    if (countFences(raw, spanStart, raw.length) % 2 === 1) return false;
+    return true;
+  }
+  const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
+  const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
+  if (!before || !after) return false;
+  if (!`"'\``.includes(before) || !`"'\``.includes(after)) return false;
+  let count = 0;
+  for (let i = spanStart; i < closeIndex; i++) {
+    if (raw[i] === before) count++;
+  }
+  return count % 2 === 1;
+}
+
+/** First structural (non-quoted) close tag at or after `from`. */
+function findStructuralThinkClose(
+  raw: string,
+  spanStart: number,
+  from: number,
+): number {
+  let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
+  while (
+    closeIndex !== -1 &&
+    isLiteralThinkClose(raw, spanStart, closeIndex)
+  ) {
+    closeIndex = raw.indexOf(
+      THINK_CLOSE_TAG,
+      closeIndex + THINK_CLOSE_TAG.length,
+    );
+  }
+  return closeIndex;
+}
+
+export function parseAssistantContent(raw: string): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
     return parts;
@@ -51,7 +161,11 @@ export function parseAssistantContent(
     appendTextPart(parts, raw.slice(cursor, openIndex));
 
     const reasoningStart = openIndex + THINK_OPEN_TAG.length;
-    const closeIndex = raw.indexOf(THINK_CLOSE_TAG, reasoningStart);
+    const closeIndex = findStructuralThinkClose(
+      raw,
+      reasoningStart,
+      reasoningStart,
+    );
     if (closeIndex === -1) {
       appendReasoningPart(parts, raw.slice(reasoningStart));
       break;

@@ -83,7 +83,9 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  drainThinkMarkupBuffer,
   hasClosedThinkTag,
+  neutralizeThinkMarkup,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
@@ -658,7 +660,9 @@ function extractDeltaText(delta: unknown): string {
       else if (typeof obj.content === "string") out += obj.content;
     } else if (obj.type === "thinking" || obj.type === "reasoning") {
       const thinking = extractReasoningText(obj);
-      if (thinking) out += `<think>${thinking}</think>`;
+      // Neutralize literal </think> inside provider thinking parts so the
+      // synthetic wrapper cannot close early (#7066).
+      if (thinking) out += `<think>${neutralizeThinkMarkup(thinking)}</think>`;
     }
   }
   return out;
@@ -2593,6 +2597,7 @@ export function createOpenAIStreamAdapter(
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
+      let reasoningMarkupBuffer = "";
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -2728,6 +2733,20 @@ export function createOpenAIStreamAdapter(
         return merged;
       };
       const closeReasoningContent = () => {
+        if (reasoningMarkupBuffer) {
+          const { emit } = drainThinkMarkupBuffer(reasoningMarkupBuffer, {
+            finalize: true,
+          });
+          reasoningMarkupBuffer = "";
+          if (emit) {
+            if (!reasoningContentOpen) {
+              cumulativeText += `<think>${emit}`;
+              reasoningContentOpen = true;
+            } else {
+              cumulativeText += emit;
+            }
+          }
+        }
         if (!reasoningContentOpen) return;
         cumulativeText += "</think>";
         reasoningContentOpen = false;
@@ -3921,11 +3940,20 @@ export function createOpenAIStreamAdapter(
               }
 
               if (reasoning) {
-                if (!reasoningContentOpen) {
-                  cumulativeText += `<think>${reasoning}`;
-                  reasoningContentOpen = true;
-                } else {
-                  cumulativeText += reasoning;
+                // Neutralize literal think markers inside reasoning_content so
+                // a mid-thought "</think>" (e.g. echoing the user) cannot close
+                // the synthetic <think> wrapper early (#7066).
+                reasoningMarkupBuffer += reasoning;
+                const drained = drainThinkMarkupBuffer(reasoningMarkupBuffer);
+                reasoningMarkupBuffer = drained.buffer;
+                const safeReasoning = drained.emit;
+                if (safeReasoning) {
+                  if (!reasoningContentOpen) {
+                    cumulativeText += `<think>${safeReasoning}`;
+                    reasoningContentOpen = true;
+                  } else {
+                    cumulativeText += safeReasoning;
+                  }
                 }
               }
               if (delta) {
