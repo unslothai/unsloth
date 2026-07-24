@@ -166,10 +166,13 @@ def test_operator_override_top_k_int_and_range(monkeypatch):
 @pytest.mark.parametrize(
     "field, val",
     [
-        ("top_k", 10 ** 400),       # oversized int on an int field: int() ok, but math.isfinite raises
-        ("top_k", float("nan")),    # NaN reaching an int field: int(nan) raises ValueError
-        ("top_k", float("inf")),    # inf reaching an int field: int(inf) raises OverflowError
-        ("temperature", 10 ** 400), # oversized int on a float field: float(huge_int) raises OverflowError
+        ("top_k", 10**400),  # oversized int on an int field: int() ok, but math.isfinite raises
+        ("top_k", float("nan")),  # NaN reaching an int field: int(nan) raises ValueError
+        ("top_k", float("inf")),  # inf reaching an int field: int(inf) raises OverflowError
+        (
+            "temperature",
+            10**400,
+        ),  # oversized int on a float field: float(huge_int) raises OverflowError
     ],
 )
 def test_clean_sampling_value_rejects_unrepresentable(field, val):
@@ -192,7 +195,7 @@ def test_oversized_operator_override_ignored(monkeypatch):
 def test_oversized_recommendation_ignored(monkeypatch):
     # A malformed per-model recommendation carrying an oversized int must not raise while
     # resolving either; the field simply falls back to the schema default.
-    _set_recommended(monkeypatch, {"temperature": 10 ** 400, "top_k": 64})
+    _set_recommended(monkeypatch, {"temperature": 10**400, "top_k": 64})
     eff = resolve_effective_sampling("some/model", _all_omitted())
     assert eff["temperature"] == 0.6  # oversized -> dropped -> schema default
     assert eff["top_k"] == 64  # a valid recommendation is still applied

@@ -7429,9 +7429,7 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     """
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
-    explicit = {
-        f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES
-    }
+    explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
     effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
     for field, value in effective.items():
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
@@ -10708,9 +10706,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # Apply per-model recommended sampling and any operator UNSLOTH_SAMPLING_* pin to the raw
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
-    _fill_recommended_sampling_completions(
-        body, getattr(llama_backend, "model_identifier", None)
-    )
+    _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
