@@ -152,11 +152,13 @@ _TRANSFORMERS_510_ARCHITECTURES: set[str] = {
     "Gemma4UnifiedForConditionalGeneration",
     "Gemma4AssistantForCausalLM",
     "Gemma4UnifiedAssistantForCausalLM",
+    "AstralForCausalLM",
 }
 _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
     "gemma4_unified",
     "gemma4_assistant",
     "gemma4_unified_assistant",
+    "astral",
 }
 
 # Architecture classes / model_type values that require transformers 5.5.0.
@@ -198,6 +200,18 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
 }
 
+# Import strings in auto_map remote .py that only exist in transformers>=5.x.
+_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
+    "tokenization_utils_tokenizers",
+)
+
+# Import strings in auto_map remote modeling code that require transformers>=5.10.
+_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
+    "modeling_layers",
+    "utils.output_capturing",
+    "use_kernel_forward_from_hub",
+)
+
 # Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
 # gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
 # Offline negatives are NOT written (see the _env_offline branches) so they cannot poison a
@@ -207,6 +221,7 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_530_cache: dict[tuple[str, str | None], bool] = {}
+_remote_auto_map_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 
 # AutoConfig-probe tier cache for the process lifetime (cleared on restart), keyed by
 # model_name plus a local config.json signature (see _probe_cache_key) so an overwritten
@@ -595,6 +610,120 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return _adapter_base_from_hf_cache(model_name)
 
 
+def _read_repo_text_file(model_name: str, filename: str, hf_token: str | None = None) -> str | None:
+    """Return a repo-relative text file's contents; local first, else HuggingFace raw fetch."""
+    local_path = Path(model_name) / filename
+    if _safe_is_file(local_path):
+        try:
+            return local_path.read_text(encoding = "utf-8")
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", local_path, exc)
+            return None
+    if _safe_is_dir(Path(model_name)):
+        return None
+    if _env_offline() or not _looks_like_hf_id(model_name):
+        return None
+
+    import urllib.request
+
+    url = f"https://huggingface.co/{model_name}/raw/main/{filename}"
+    headers = {"User-Agent": "unsloth-studio"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+    try:
+        req = urllib.request.Request(url, headers = headers)
+        with urllib.request.urlopen(req, timeout = 10) as resp:
+            return resp.read().decode()
+    except Exception as exc:
+        logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
+        return None
+
+
+def _load_repo_json_file(model_name: str, filename: str, hf_token: str | None = None) -> dict | None:
+    """Parsed JSON from a repo-relative file; local first, else HuggingFace raw fetch."""
+    if filename == "config.json":
+        return _load_config_json(model_name, hf_token)
+    local_path = Path(model_name) / filename
+    if _safe_is_file(local_path):
+        try:
+            with open(local_path) as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.debug("Could not read %s: %s", local_path, exc)
+            return None
+    if _safe_is_dir(Path(model_name)):
+        return None
+    if _env_offline() or not _looks_like_hf_id(model_name):
+        return None
+
+    import urllib.request
+
+    url = f"https://huggingface.co/{model_name}/raw/main/{filename}"
+    headers = {"User-Agent": "unsloth-studio"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
+    try:
+        req = urllib.request.Request(url, headers = headers)
+        with urllib.request.urlopen(req, timeout = 10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
+        return None
+
+
+def _own_repo_auto_map_py_contents(model_name: str, hf_token: str | None = None) -> list[str]:
+    """Contents of every own-repo ``.py`` referenced by any remote-code config file."""
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES, _auto_map_refs
+
+    filenames: set[str] = set()
+    for cfg_name in REMOTE_CODE_CONFIG_FILES:
+        cfg = _load_repo_json_file(model_name, cfg_name, hf_token)
+        if isinstance(cfg, dict):
+            filenames.update(fn for repo, fn in _auto_map_refs(cfg) if repo is None)
+    contents: list[str] = []
+    for fn in sorted(filenames):
+        text = _read_repo_text_file(model_name, fn, hf_token)
+        if text is not None:
+            contents.append(text)
+    return contents
+
+
+def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) -> bool:
+    return any(any(marker in src for marker in markers) for src in sources)
+
+
+def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = None) -> bool:
+    """True when auto_map remote code imports transformers>=5.10-only symbols."""
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _remote_auto_map_needs_510_cache:
+        return _remote_auto_map_needs_510_cache[cache_key]
+
+    sources = _own_repo_auto_map_py_contents(model_name, hf_token)
+    result = _remote_auto_map_py_matches(_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, sources)
+    if result:
+        logger.info("Remote auto_map check: %s needs transformers 5.10.x", model_name)
+    _remote_auto_map_needs_510_cache[cache_key] = result
+    return result
+
+
+def _tokenizer_auto_map_needs_v5(data: dict, model_name: str, hf_token: str | None) -> bool:
+    """True when a tokenizer_config auto_map target imports transformers-5.x-only symbols."""
+    from utils.security.remote_code_scan import _auto_map_refs
+
+    for repo, fn in _auto_map_refs(data):
+        if repo is not None:
+            continue
+        text = _read_repo_text_file(model_name, fn, hf_token)
+        if text and _remote_auto_map_py_matches(_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, [text]):
+            logger.info(
+                "Remote tokenizer auto_map check: %s/%s requires transformers 5.x",
+                model_name,
+                fn,
+            )
+            return True
+    return False
+
+
 def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = None) -> bool:
     """True if the model's tokenizer_class requires transformers 5.x.
 
@@ -617,6 +746,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
                 data = json.load(f)
             tokenizer_class = data.get("tokenizer_class", "")
             result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
+            if not result:
+                result = _tokenizer_auto_map_needs_v5(data, model_name, hf_token)
             if result:
                 logger.info(
                     "Local check: %s uses tokenizer_class=%s (requires transformers 5.x)",
@@ -651,6 +782,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
+        if not result:
+            result = _tokenizer_auto_map_needs_v5(data, model_name, hf_token)
         if result:
             logger.info(
                 "Dynamic check: %s uses tokenizer_class=%s (requires transformers 5.x)",
@@ -894,7 +1027,9 @@ def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> boo
         return _config_needs_510_cache[cache_key]
 
     cfg = _load_config_json(model_name, hf_token)
-    result = bool(cfg) and _config_needs_510(cfg)
+    result = bool(cfg) and (
+        _config_needs_510(cfg) or _check_remote_auto_map_needs_510(model_name, hf_token)
+    )
     if result:
         logger.info(
             "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",

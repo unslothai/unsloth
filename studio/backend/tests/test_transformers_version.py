@@ -36,6 +36,7 @@ from utils.transformers_version import (
     _remote_lora_base,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
+    _check_remote_auto_map_needs_510,
     _check_config_needs_530,
     _check_config_needs_550,
     _config_needs_510,
@@ -50,6 +51,7 @@ from utils.transformers_version import (
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
+    _remote_auto_map_needs_510_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
     _probe_tier_cache,
@@ -301,6 +303,19 @@ class TestCheckTokenizerConfigNeedsV5:
         result = _check_tokenizer_config_needs_v5(str(tmp_path))
         assert result is False
 
+    def test_tokenizer_auto_map_remote_import_needs_v5(self, tmp_path: Path):
+        """Remote tokenizer code importing TokenizersBackend should require 5.x (#7353)."""
+        tc = {
+            "tokenizer_class": "AstralTokenizer",
+            "auto_map": {"AutoTokenizer": ["tokenization_astral.AstralTokenizer", None]},
+        }
+        (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
+        (tmp_path / "tokenization_astral.py").write_text(
+            "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+        )
+
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
     def test_local_file_skips_network(self, tmp_path: Path):
         """When local file exists, no network request should be made."""
         tc = {"tokenizer_class": "LlamaTokenizerFast"}
@@ -470,6 +485,7 @@ class TestCheckConfigNeeds510:
     def setup_method(self):
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
 
     def test_gemma4_unified_architecture(self, tmp_path: Path):
         """config.json with Gemma4UnifiedForConditionalGeneration should return True."""
@@ -520,6 +536,34 @@ class TestCheckConfigNeeds510:
         cfg = {"model_type": "gemma4_assistant"}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_astral_architecture(self, tmp_path: Path):
+        """Astral custom-code configs should route to the 5.10 sidecar (#7353)."""
+        cfg = {
+            "architectures": ["AstralForCausalLM"],
+            "model_type": "astral",
+            "auto_map": {
+                "AutoModelForCausalLM": "modeling_astral.AstralForCausalLM",
+            },
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+        assert _check_config_needs_510(str(tmp_path)) is True
+
+    def test_remote_modeling_auto_map_needs_510(self, tmp_path: Path):
+        """Unknown architectures with 5.10-only remote imports should return True."""
+        _remote_auto_map_needs_510_cache.clear()
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
         assert _check_config_needs_510(str(tmp_path)) is True
 
     def test_gemma4_non_unified_returns_false(self, tmp_path: Path):
@@ -825,6 +869,21 @@ class TestGetTransformersTier:
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_astral_local_checkpoint_returns_510(self, tmp_path: Path):
+        """Astral custom-code checkpoints should use the 5.10 sidecar (#7353)."""
+        cfg = {
+            "architectures": ["AstralForCausalLM"],
+            "model_type": "astral",
+            "auto_map": {"AutoModelForCausalLM": "modeling_astral.AstralForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_astral.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "510"
 
     def test_gemma4_substring_returns_550(self):
         assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
