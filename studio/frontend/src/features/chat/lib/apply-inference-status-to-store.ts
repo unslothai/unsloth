@@ -13,6 +13,7 @@ import {
   type ReasoningStyle,
   loadOptionalBool,
   loadedGpuMemoryFields,
+  requestedGpuIdsFromResponse,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -223,7 +224,7 @@ export function applyActiveModelStatusToStore(
   const incomingSplit =
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
   const incomingGpuIds = status.is_gguf
-    ? (status.requested_gpu_ids ?? status.gpu_ids ?? null)
+    ? requestedGpuIdsFromResponse(status)
     : null;
   const incomingMemoryMode = status.is_gguf
     ? (status.gguf_memory_mode ?? null)

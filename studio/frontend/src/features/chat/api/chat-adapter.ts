@@ -1566,7 +1566,7 @@ async function autoLoadSmallestModel(): Promise<{
       config.selectedGpuIds !== undefined
         ? reconcilePersistedGpuIds(
             config.selectedGpuIds,
-            config.selectedGpuIndexKind ?? null,
+            config.selectedGpuIndexKind,
           )
         : null;
     const effectiveMemoryMode = config.ggufMemoryMode ?? null;

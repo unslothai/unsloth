@@ -2575,6 +2575,12 @@ class LlamaCppBackend:
                 list(self._requested_gpu_ids) if self._requested_gpu_ids else None
             )
 
+    def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
+        """Adopt the caller's raw host-memory intent after a full match."""
+        self._requested_memory_mode = (memory_mode or "").strip().lower() or None
+        if self._last_load_kwargs is not None and "memory_mode" in self._last_load_kwargs:
+            self._last_load_kwargs["memory_mode"] = self._requested_memory_mode
+
     @property
     def memory_mode(self) -> Optional[str]:
         """Canonical active GGUF memory mode; auto is None."""
@@ -9333,6 +9339,7 @@ class LlamaCppBackend:
             if candidate != current:
                 return False
         self._record_matching_gpu_request(gpu_ids)
+        self._record_matching_memory_request(memory_mode)
         return True
 
     def _classify_gpu_offload(

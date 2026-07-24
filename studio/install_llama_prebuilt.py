@@ -6077,11 +6077,20 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
 
 def _vulkan_only_attempts(attempts: Iterable[AssetChoice]) -> list[AssetChoice]:
     """Remove generic CPU fallbacks from an explicit Vulkan install."""
-    filtered = [
+    return [
         attempt
         for attempt in attempts
         if attempt.install_kind in ("linux-vulkan", "windows-vulkan")
     ]
+
+
+def _vulkan_only_release_plans(plans: Iterable[InstallReleasePlan]) -> list[InstallReleasePlan]:
+    """Keep release plans that contain an explicit Vulkan bundle."""
+    filtered = []
+    for plan in plans:
+        attempts = _vulkan_only_attempts(plan.attempts)
+        if attempts:
+            filtered.append(dataclasses_replace(plan, attempts = attempts))
     if not filtered:
         raise PrebuiltFallback("no Vulkan prebuilt bundle attempts were available")
     return filtered
@@ -6223,13 +6232,7 @@ def install_prebuilt(
             if strict_vulkan:
                 # Upstream plans append CPU as a generic fallback. An explicit
                 # Vulkan selection must fail instead of silently installing it.
-                release_plans = [
-                    dataclasses_replace(
-                        plan,
-                        attempts = _vulkan_only_attempts(plan.attempts),
-                    )
-                    for plan in release_plans
-                ]
+                release_plans = _vulkan_only_release_plans(release_plans)
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
@@ -6569,6 +6572,8 @@ def main() -> int:
             _requested, plans = resolve_simple_install_release_plans(
                 args.resolve_prebuilt, host, repo, release_tag
             )
+            if force_vulkan_requested() and not _cpu_mechanism and not host.is_macos:
+                plans = _vulkan_only_release_plans(plans)
             choice = plans[0].attempts[0] if plans and plans[0].attempts else None
             if choice is None:
                 payload = {"prebuilt_available": False, "repo": repo}

@@ -699,6 +699,9 @@ export function useChatModelRuntime() {
             const validateGpuIds = resetsPerModelSettings
               ? null
               : loadSelectedGpuIds;
+            const validateMemoryMode = resetsPerModelSettings
+              ? null
+              : loadMemoryMode;
             // The reset below re-baselines gpuLayers to Auto; mirror it here.
             const validateGpuLayers = resetsPerModelSettings
               ? GPU_LAYERS_AUTO
@@ -730,7 +733,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
-              gguf_memory_mode: loadMemoryMode ?? null,
+              gguf_memory_mode: validateMemoryMode,
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {

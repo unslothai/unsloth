@@ -1270,6 +1270,32 @@ class TestRouteErrors(unittest.TestCase):
                 )
         self.assertIn("CUDA_PATH_SENTINEL", exc_info.exception.detail)
 
+    def test_diffusion_gguf_gpu_ids_require_cuda(self):
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_diffusion_non_cuda_test",
+            "routes/inference.py",
+        )
+        config = SimpleNamespace(is_gguf = True)
+        fake_backend = SimpleNamespace(is_vulkan_build = lambda: True)
+        with (
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = True),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CPU),
+            patch.object(
+                _hw_module,
+                "resolve_requested_gpu_ids",
+                side_effect = AssertionError("non-CUDA diffusion must reject before resolving"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(inference_route._resolve_gguf_gpu_ids_for_request(config, [0]))
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("requires CUDA", exc_info.exception.detail)
+
     def test_inherited_extras_preserve_memory_flags_when_mode_omitted(self):
         # Omission preserves memory flags while explicit context still owns -c.
         inference_route = _load_route_module(

@@ -1059,7 +1059,7 @@ export function SharedComposer({
           ownConfig.selectedGpuIds !== undefined
             ? reconcilePersistedGpuIds(
                 ownConfig.selectedGpuIds,
-                ownConfig.selectedGpuIndexKind ?? null,
+                ownConfig.selectedGpuIndexKind,
               )
             : compareLoadKnobs.selectedGpuIds;
         const effectiveMemoryMode = ownConfig.ggufMemoryMode ?? null;
