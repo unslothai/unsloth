@@ -424,11 +424,10 @@ function GpuMemorySettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Host RAM</span>
           <InfoHint>
-            Controls host RAM only, not whether a GPU driver keeps weights in VRAM.
-            llama.cpp default leaves the loading policy to the installed llama.cpp
-            version. Locked RAM prevents mapped host pages from being swapped. RAM
-            copy disables memory mapping, but newer llama.cpp builds cannot also lock
-            that copy.
+            Controls system RAM, not GPU VRAM. Default lets llama.cpp and the
+            operating system manage model pages. Mapped + locked keeps mapped model
+            pages in RAM. No memory map loads the model without mapping its file, but
+            does not guarantee that it stays in RAM.
           </InfoHint>
         </div>
         <Select
@@ -443,14 +442,14 @@ function GpuMemorySettings({
             animateRadius={false}
             icon={ChevronDownStandardIcon}
             iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            className={`w-[148px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
           >
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
             <SelectItem value="default">Default</SelectItem>
-            <SelectItem value="pinned">Locked RAM</SelectItem>
-            <SelectItem value="resident">RAM copy</SelectItem>
+            <SelectItem value="pinned">Mapped + locked</SelectItem>
+            <SelectItem value="resident">No memory map</SelectItem>
           </SelectContent>
         </Select>
       </div>

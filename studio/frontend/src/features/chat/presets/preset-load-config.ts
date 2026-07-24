@@ -257,9 +257,9 @@ export function formatPresetLoadConfigSummary(
     parts.push("TP");
   }
   if (config.hostMemoryMode === "pinned") {
-    parts.push("Host RAM locked");
+    parts.push("Mapped + locked");
   } else if (config.hostMemoryMode === "resident") {
-    parts.push("RAM copy");
+    parts.push("No memory map");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }
