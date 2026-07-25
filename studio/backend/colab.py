@@ -453,10 +453,12 @@ def _shareable_link_html(
     login_block = ""
     if password:
         login_block = f"""
-        <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
-            Password: <code style="background:#f3f3f3;padding:2px 6px;border-radius:4px;">{password}</code>
+        <p style="color: #000000; margin: 16px 0 0 0; font-size: 20px; font-weight: 800;">
+            Password:
+            <code style="font-size: 24px; font-weight: 800; text-decoration: underline;
+                         background: #f3f3f3; padding: 4px 10px; border-radius: 6px;">{password}</code>
         </p>
-        <p style="color: #666666; margin: 4px 0 0 0; font-size: 12px;">
+        <p style="color: #666666; margin: 6px 0 0 0; font-size: 12px;">
             Log in as <code>{username}</code> with this password. Shown only in your
             notebook session, and never included in the shared link.
         </p>"""
@@ -477,10 +479,11 @@ def _shareable_link_html(
             Open Unsloth Studio
         </a>
         <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
-            This Cloudflare HTTPS link works from any device — share it with anyone.
+            This Cloudflare HTTPS link works from any device, so you can share it with anyone.
         </p>
         <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
-            🔗 {cloudflare_url}
+            🔗 <a href="{cloudflare_url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
+                  style="color: #000000; text-decoration: underline; cursor: pointer;">{cloudflare_url}</a>
         </p>{login_block}
     </div>
     """

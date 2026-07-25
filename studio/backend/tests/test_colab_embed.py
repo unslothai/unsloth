@@ -352,6 +352,24 @@ def test_shareable_link_html_embeds_password_under_the_link():
     assert html.index("share.trycloudflare.com") < html.index("secret-pass")
 
 
+def test_shareable_link_html_renders_the_url_as_a_link():
+    """The printed URL is an anchor, using the popup-safe open the button uses."""
+    html = colab._shareable_link_html("https://share.trycloudflare.com")
+    assert '<a href="https://share.trycloudflare.com"' in html
+    assert ">https://share.trycloudflare.com</a>" in html
+    assert html.count("window.open(this.href,'_blank')") == 2
+
+
+def test_shareable_link_html_emphasises_the_password():
+    """The password is the one thing to copy, so it is enlarged and underlined."""
+    html = colab._shareable_link_html(
+        "https://share.trycloudflare.com", "secret-pass", "unsloth"
+    )
+    pw_tag = html[html.index("Password:") : html.index("secret-pass")]
+    assert "font-size: 24px" in pw_tag
+    assert "text-decoration: underline" in pw_tag
+
+
 def test_shareable_link_html_omits_login_block_without_password():
     html = colab._shareable_link_html("https://share.trycloudflare.com")
     assert "Password:" not in html
