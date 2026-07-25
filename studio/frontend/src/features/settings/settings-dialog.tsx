@@ -15,6 +15,7 @@ import {
   Cancel01Icon,
   CloudIcon,
   CpuIcon,
+  DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
   Message01Icon,
@@ -43,6 +44,7 @@ import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
 import { ConnectionsTab } from "./tabs/connections-tab";
+import { DataTab } from "./tabs/data-tab";
 import { GeneralTab } from "./tabs/general-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
@@ -93,6 +95,12 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
     badgeKey: "common.new",
   },
+  {
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+    badgeKey: "common.new",
+  },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
@@ -112,6 +120,8 @@ function renderTab(tab: SettingsTab) {
       return <VoiceTab />;
     case "connections":
       return <ConnectionsTab />;
+    case "data":
+      return <DataTab />;
     case "api-keys":
       return <ApiKeysTab />;
     case "about":
@@ -210,6 +220,7 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    data: null,
     "api-keys": null,
     about: null,
   });
@@ -298,7 +309,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[13.5px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -316,7 +327,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-[14px] text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -328,7 +339,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "pl-4 pt-3 pb-2.5 text-[13px] font-medium text-muted-foreground max-sm:hidden",
+                  "pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -351,7 +362,7 @@ export function SettingsDialog() {
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
-                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-[14.5px] leading-[19px] tracking-nav font-medium transition-colors",
+                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
                         "max-sm:shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
@@ -390,7 +401,7 @@ export function SettingsDialog() {
                         {t(tab.labelKey)}
                       </span>
                       {tab.badgeKey ? (
-                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
+                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                           {t(tab.badgeKey)}
                         </span>
                       ) : null}

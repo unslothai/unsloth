@@ -5,7 +5,7 @@
 
 When a model's ``model_type`` is absent from every installed transformers overlay
 (base 4.57.x plus the .venv_t5_530/550/510 sidecars and, if provisioned, .venv_t5_latest),
-Studio cannot load it today. This module answers, without authentication, code execution,
+Unsloth cannot load it today. This module answers, without authentication, code execution,
 or trust_remote_code:
 
   1. Does the LATEST transformers release on PyPI ship this ``model_type``?
@@ -387,7 +387,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
 # Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}
-# CLI-only; never imported at runtime in Studio's workers.
+# CLI-only; never imported at runtime in Unsloth's workers.
 _IGNORED_DEPS = frozenset({"typer"})
 
 
@@ -538,7 +538,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
         return {
             "success": False,
             "version": version,
-            "message": "Cannot install: Studio is in offline mode.",
+            "message": "Cannot install: Unsloth is in offline mode.",
         }
     # Re-verify against a LIVE snapshot (a release may land inside the cache TTL);
     # fall back to the cached one on fetch failure.
@@ -573,13 +573,13 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": "Cannot install transformers "
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
-            "A Studio update is required first.",
+            "An Unsloth update is required first.",
         }
     if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
         return {
             "success": False,
             "version": version,
-            "message": f"Installing transformers {version} failed; see the Studio logs.",
+            "message": f"Installing transformers {version} failed; see the Unsloth logs.",
         }
     _invalidate_capability_caches()
     return {

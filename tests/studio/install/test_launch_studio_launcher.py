@@ -1,4 +1,4 @@
-"""Guard install.ps1's Studio launcher against the AV-heuristic shape (Kaspersky
+"""Guard install.ps1's Unsloth launcher against the AV-heuristic shape (Kaspersky
 HEUR:Trojan.VBS.Agent.gen): a WScript .vbs spawning a hidden ExecutionPolicy-Bypass PowerShell.
 The shortcut must stay windowless via powershell.exe -WindowStyle Hidden over launch-studio.ps1,
 never a .vbs/WScript.Shell.Run wrapper, and any pre-existing .vbs must be deleted on upgrade."""

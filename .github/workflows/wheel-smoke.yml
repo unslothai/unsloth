@@ -3,7 +3,7 @@
 
 # Builds the PyPI wheel from the PR branch, then verifies the built wheel
 # actually contains what we expect to ship and does NOT contain the broken
-# Studio bundle that 2026.5.1 published. This is the single workflow that
+# Unsloth bundle that 2026.5.1 published. This is the single workflow that
 # would have blocked the 2026.5.1 release before twine upload.
 #
 # Verified locally end-to-end against this branch:
@@ -12,7 +12,7 @@
 #       lockfile shipped, frontend dist shipped,
 #       no node_modules in wheel, no bun.lock in wheel,
 #       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
-#   - Studio backend imports cleanly from the installed wheel with the
+#   - Unsloth backend imports cleanly from the installed wheel with the
 #     lightweight dep set below.
 
 name: Wheel CI
@@ -101,7 +101,7 @@ jobs:
               hits = data.count("unstable_Provider:")
               print(f"main bundle: {js[0]}")
               print(f"unstable_Provider hits: {hits} (>=4 indicates 2026.5.1 regression)")
-              checks["bundle has no Studio unstable_Provider call site"] = (hits < 4)
+              checks["bundle has no Unsloth unstable_Provider call site"] = (hits < 4)
 
               print()
               for k, v in checks.items():
@@ -109,7 +109,7 @@ jobs:
               sys.exit(0 if all(checks.values()) else 1)
           PY
 
-      - name: Studio backend import smoke
+      - name: Unsloth backend import smoke
         # Imports `studio.backend.main:app` from the freshly-installed wheel in
         # a clean venv. This catches the class of bug that 2026.5.1 shipped with:
         # frontend dist missing, package-lock.json missing, or the wheel's Python
@@ -125,7 +125,7 @@ jobs:
           /tmp/v/bin/pip install --no-deps dist/unsloth-*.whl
           # Run from /tmp so Python imports the installed package, not the source tree.
           cd /tmp
-          /tmp/v/bin/python -c "from studio.backend.main import app; print('Studio backend OK:', app.title)"
+          /tmp/v/bin/python -c "from studio.backend.main import app; print('Unsloth backend OK:', app.title)"
 
       - name: Upload wheel on failure
         if: failure()

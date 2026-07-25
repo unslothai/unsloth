@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Studio API & Auth Tests -- HTTP-level integration tests for the
+# Unsloth API & Auth Tests -- HTTP-level integration tests for the
 # FastAPI surface. No Playwright, no model UI; tests/studio/test_studio_api_smoke.py
 # runs ~30 s and asserts:
 #   - CORS hardening (no wildcard + credentials, no bootstrap leak)
@@ -15,7 +15,7 @@
 # Reuses the GGUF cache key from studio-ui-smoke.yml so the model
 # download is one cache-hit on the second job.
 
-name: Studio API CI
+name: Unsloth API CI
 
 on:
   pull_request:
@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   api-smoke:
-    name: Studio API & Auth Tests
+    name: Unsloth API & Auth Tests
     runs-on: ubuntu-latest
     timeout-minutes: 12
     env:
@@ -98,7 +98,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -111,7 +111,7 @@ jobs:
       - name: Install pyjwt for the JWT-expiry forge test
         run: pip install 'pyjwt>=2.6'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
           unsloth studio reset-password
           mkdir -p logs
@@ -144,7 +144,7 @@ jobs:
           echo "STUDIO_NEW_PW=$NEW"  >> "$GITHUB_ENV"
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
-      - name: Run Studio API & Auth tests
+      - name: Run Unsloth API & Auth tests
         # The script is named WITHOUT a `test_` prefix so it isn't
         # auto-collected by pytest in Backend CI's `tests/` walk
         # (which doesn't set BASE_URL and would crash at import).
@@ -153,7 +153,7 @@ jobs:
           STUDIO_AUTH_DIR: /home/runner/.unsloth/studio/auth
         run: python tests/studio/studio_api_smoke.py
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true

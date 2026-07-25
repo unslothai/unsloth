@@ -47,6 +47,14 @@ class ProviderCreate(BaseModel):
         None,
         description = "Custom base URL (overrides registry default). Omit to use the default.",
     )
+    models: list[str] = Field(
+        default_factory = list,
+        description = "Enabled model IDs for this connection",
+    )
+    available_models: list[str] = Field(
+        default_factory = list,
+        description = "Discovered catalog model IDs last fetched for this connection",
+    )
 
 
 class ProviderUpdate(BaseModel):
@@ -55,6 +63,11 @@ class ProviderUpdate(BaseModel):
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
     is_enabled: Optional[bool] = Field(None, description = "Enable or disable this provider")
+    models: Optional[list[str]] = Field(None, description = "Enabled model IDs for this connection")
+    available_models: Optional[list[str]] = Field(
+        None,
+        description = "Discovered catalog model IDs last fetched for this connection",
+    )
 
 
 class ProviderResponse(BaseModel):
@@ -65,6 +78,14 @@ class ProviderResponse(BaseModel):
     display_name: str = Field(..., description = "User-chosen label")
     base_url: str = Field(..., description = "API base URL")
     is_enabled: bool = Field(True, description = "Whether this provider is enabled")
+    models: list[str] = Field(
+        default_factory = list,
+        description = "Enabled model IDs for this connection",
+    )
+    available_models: list[str] = Field(
+        default_factory = list,
+        description = "Discovered catalog model IDs last fetched for this connection",
+    )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
 

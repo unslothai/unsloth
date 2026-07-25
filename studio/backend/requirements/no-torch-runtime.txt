@@ -7,7 +7,7 @@
 # (current PyPI metadata still declares torch as a hard dep).
 
 # unsloth direct deps (from pyproject.toml [project].dependencies)
-typer
+typer>=0.12.0
 # typer's full runtime dep tree. Required explicitly because this
 # file is installed with --no-deps. On Linux/Mac CI runners these
 # are often cached transitively; on a fresh windows-latest venv they
@@ -70,7 +70,7 @@ cut_cross_entropy
 pillow
 
 # RAG store + document parsing, mirroring studio.txt. Pinned here because
-# this file installs --no-deps; without them Studio runs with RAG disabled.
+# this file installs --no-deps; without them Unsloth runs with RAG disabled.
 sqlite-vec==0.1.9
 pymupdf==1.27.2.3
 # 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the

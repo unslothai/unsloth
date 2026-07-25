@@ -12,6 +12,7 @@ export {
   getTrainingRunDisplayTitle,
   getTrainingRunModelSubtitle,
 } from "./lib/run-display";
+export { parseBackendTrainingMethod } from "./lib/training-methods";
 export { useTrainingHistorySidebarItems } from "./hooks/use-training-history-sidebar";
 export { useTrainingRuntimeLifecycle } from "./hooks/use-training-runtime-lifecycle";
 export { useTrainingCompletionWatch } from "./hooks/use-training-completion-watch";
@@ -24,8 +25,8 @@ export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-sp
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export { listLocalDatasets, uploadTrainingDataset } from "./api/datasets-api";
 export type { LocalDatasetInfo } from "./types/datasets";
-export { listLocalModels } from "./api/models-api";
-export type { LocalModelInfo } from "./api/models-api";
+export { getModelConfig, listLocalModels } from "./api/models-api";
+export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
 export type {
   TrainingPhase,
   TrainingViewData,

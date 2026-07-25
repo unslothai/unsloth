@@ -127,7 +127,7 @@ function MonitorEntry({
               {compactEndpoint(entry.endpoint)}
             </span>
           </div>
-          <div className="mt-1 truncate text-[11px] text-muted-foreground">
+          <div className="mt-1 truncate text-ui-11 text-muted-foreground">
             {entry.model}
           </div>
           <div className="mt-2 line-clamp-2 whitespace-pre-wrap break-words text-xs text-muted-foreground">
@@ -137,7 +137,7 @@ function MonitorEntry({
               (entry.status === "running" ? "Waiting..." : "No preview")}
           </div>
         </div>
-        <div className="flex shrink-0 items-start gap-2 text-right text-[11px] text-muted-foreground">
+        <div className="flex shrink-0 items-start gap-2 text-right text-ui-11 text-muted-foreground">
           <div>
             <div>{formatTime(entry.started_at)}</div>
             <div>{formatDuration(entry.duration_ms)}</div>
@@ -155,7 +155,7 @@ function MonitorEntry({
         <div className="border-t border-border/60 p-3 pt-2">
           <div className="grid gap-2">
             <div>
-              <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase text-muted-foreground">
+              <div className="mb-1 flex items-center justify-between gap-2 text-ui-10 font-semibold uppercase text-muted-foreground">
                 <span>Prompt</span>
                 {entry.prompt_truncated && !detail ? <span>Preview</span> : null}
               </div>
@@ -164,7 +164,7 @@ function MonitorEntry({
               </pre>
             </div>
             <div>
-              <div className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase text-muted-foreground">
+              <div className="mb-1 flex items-center justify-between gap-2 text-ui-10 font-semibold uppercase text-muted-foreground">
                 <span>Reply</span>
                 {entry.reply_truncated && !detail ? <span>Preview</span> : null}
               </div>
@@ -174,7 +174,7 @@ function MonitorEntry({
             </div>
           </div>
 
-          <div className="mt-3 text-[11px] text-muted-foreground">
+          <div className="mt-3 text-ui-11 text-muted-foreground">
             {formatTokens(entry)}
             {entry.context_length ? (
               <> / {entry.context_length.toLocaleString()} context</>

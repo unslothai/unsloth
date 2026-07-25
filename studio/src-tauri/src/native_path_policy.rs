@@ -130,8 +130,8 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         .canonicalize()
         .map_err(|e| format!("Path could not be resolved: {e}"))?;
     reject_network_or_device_path(&canonical_path)?;
-    let canonical_symlink_metadata = fs::symlink_metadata(&canonical_path)
-        .map_err(|e| format!("Path is not available: {e}"))?;
+    let canonical_symlink_metadata =
+        fs::symlink_metadata(&canonical_path).map_err(|e| format!("Path is not available: {e}"))?;
     if canonical_symlink_metadata.file_type().is_symlink() {
         return Err("Symlink paths are not supported for native intake.".to_string());
     }
@@ -191,7 +191,7 @@ fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
         "\\pid",
     ] {
         if lowered.contains(needle) {
-            return Err("Sensitive Studio state cannot be registered as an artifact.".to_string());
+            return Err("Sensitive Unsloth state cannot be registered as an artifact.".to_string());
         }
     }
     if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {

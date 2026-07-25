@@ -228,7 +228,7 @@ def _loaded_via_remote_code(obj):
 
     Transformers loads auto_map code into the ``transformers_modules`` package, so a
     ``transformers_modules`` class proves the original load actually ran that remote code
-    (which the caller's / Studio's consent gate scans at load time). Export paths derive their
+    (which the caller's / Unsloth's consent gate scans at load time). Export paths derive their
     reload trust_remote_code from this - the already approved load decision - instead of from a
     checkpoint's static ``auto_map``: a model that loads with built-in classes must not have its
     unvetted remote code run when it is re-read during quantization export. Walks PEFT / wrapper
@@ -3143,6 +3143,7 @@ def unsloth_push_to_hub_gguf(
     datasets: Optional[List[str]] = None,
     save_method: str = None,
     imatrix_file = None,
+    is_main_process: bool = True,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -3175,11 +3176,11 @@ def unsloth_push_to_hub_gguf(
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+    if not is_main_process:
+        return None
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
-        if not is_main_process:
-            return None  # only the main rank converts and uploads, like the local lora branch
         _qm = quantization_method
         if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
             _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
@@ -3233,6 +3234,7 @@ def unsloth_push_to_hub_gguf(
             first_conversion = first_conversion,
             push_to_hub = False,  # Never push from here
             token = token,  # forwarded so imatrix_file=True can read a gated/private upstream
+            is_main_process = is_main_process,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
@@ -3856,7 +3858,7 @@ def _prewarm_base_model_hub_cache(
         from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen
-        # constants: a runtime cache redirect (read-only default, Studio) would else miss (#6890).
+        # constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             from unsloth_zoo.hf_cache import _active_caches
             _hub_cache = _active_caches()[1]

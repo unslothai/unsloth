@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Comprehensive Studio chat UI test, run locally + in CI."""
+"""Comprehensive Unsloth chat UI test, run locally + in CI."""
 
 import json
 import os
@@ -51,6 +51,14 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 
 # Wall-clock cap for the whole script (healthy run is 5-9 min).
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
+
+# Run only bootstrap plus permission controls for fast cross-browser checks.
+PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
+
+# Default stays Chromium for CI. Local runs can select firefox/webkit or a
+# Chromium channel such as chrome/msedge.
+PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
+PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
@@ -116,6 +124,126 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+def exercise_permission_mode_controls(page, shoot):
+    """Exercise labels, migration, persistence, confirmation, and focus."""
+    step("permission levels: labels, persistence, confirmation, and focus")
+    pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
+    expect(pill).to_be_visible()
+
+    def expect_mode(label):
+        expect(pill).to_have_attribute("data-pill-label", label)
+        expect(pill).to_contain_text(label)
+
+    def open_menu():
+        pill.click()
+        menu = page.get_by_role("menu").last
+        expect(menu).to_be_visible()
+        return menu
+
+    def choose(label):
+        menu = open_menu()
+        item = menu.get_by_role("menuitem").filter(has_text = label).first
+        expect(item).to_be_visible()
+        item.click()
+
+    # Fresh profiles default to Approve for me.
+    expect_mode("Approve for me")
+    menu = open_menu()
+    for label in (
+        "Ask for approval",
+        "Approve for me",
+        "Run automatically",
+        "Full access",
+    ):
+        expect(menu.get_by_role("menuitem").filter(has_text = label).first).to_be_visible()
+    if menu.get_by_text("Off", exact = True).count() != 0:
+        fail("legacy Off label is still visible")
+    if menu.locator('[role="menuitem"] button, [role="menuitem"] [role="button"]').count():
+        fail("permission menu contains nested interactive controls")
+    page.keyboard.press("Escape")
+    expect(pill).to_be_focused()
+
+    # The active row is a no-op and must not open the Full access dialog.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    expect(page.get_by_role("alertdialog")).to_have_count(0)
+
+    # Pointer and compact-layout coverage.
+    page.set_viewport_size({"width": 390, "height": 844})
+    expect(pill).to_be_visible()
+    box = pill.bounding_box()
+    if box is None or box["x"] < 0 or box["x"] + box["width"] > 390:
+        fail(f"permission pill is clipped in compact layout: {box!r}")
+    page.set_viewport_size({"width": 1280, "height": 900})
+
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto.
+    migration_cases = (
+        ("true", "Ask for approval"),
+        ("false", "Run automatically"),
+        (None, "Approve for me"),
+    )
+    for legacy_value, expected_label in migration_cases:
+        page.evaluate(
+            """(legacyValue) => {
+                localStorage.removeItem("unsloth_chat_permission_mode");
+                if (legacyValue === null) {
+                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+                } else {
+                    localStorage.setItem(
+                        "unsloth_chat_confirm_tool_calls",
+                        legacyValue,
+                    );
+                }
+            }""",
+            legacy_value,
+        )
+        page.reload(wait_until = "domcontentloaded")
+        expect(pill).to_be_visible()
+        expect_mode(expected_label)
+
+    choose("Run automatically")
+    expect_mode("Run automatically")
+    expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
+    expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
+    stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if stored != "off":
+        fail(f"Run automatically persisted {stored!r}, expected 'off'")
+
+    # Full access requires explicit consent and never overwrites persistence.
+    choose("Full access")
+    dialog = page.get_by_role("alertdialog")
+    expect(dialog).to_be_visible()
+    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
+    expect(dialog).to_contain_text("the code sandbox")
+    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog).to_be_hidden()
+    expect_mode("Run automatically")
+
+    choose("Full access")
+    expect(dialog).to_be_visible()
+    dialog.get_by_role("button", name = "I understand").click()
+    expect_mode("Full access")
+    expect(pill).to_have_attribute("data-variant", "danger")
+    active_icon = pill.locator(".composer-pill-glyph > :first-child")
+    pill.hover()
+    page.wait_for_timeout(200)
+    icon_opacity = float(active_icon.evaluate("el => getComputedStyle(el).opacity"))
+    if icon_opacity < 0.5:
+        fail(f"Full access icon disappeared on hover (opacity={icon_opacity})")
+    stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if stored != "off":
+        fail(f"Full access overwrote persisted mode with {stored!r}")
+
+    page.reload(wait_until = "domcontentloaded")
+    expect(pill).to_be_visible()
+    expect_mode("Run automatically")
+
+    # Leave the full chat smoke in the fresh-install default.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    shoot("04-permission-levels")
+
+
 def login_via_api(pw):
     req = urllib.request.Request(
         f"{BASE}/api/auth/login",
@@ -145,18 +273,24 @@ with sync_playwright() as p:
     # DB is still migrating; this 30s probe catches that gap before we
     # sink 60s into a change-password timeout. Diagnostic only.
     wait_for_health(BASE, timeout = 30.0, info = info)
-    # Chromium launch args: see `tests/studio/_playwright_robust.py`.
-    browser = p.chromium.launch(
-        headless = True,
-        args = chromium_launch_args(),
-    )
+    if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
+        fail(f"unsupported STUDIO_PLAYWRIGHT_BROWSER={PLAYWRIGHT_BROWSER!r}")
+    browser_type = getattr(p, PLAYWRIGHT_BROWSER)
+    launch_kwargs = {"headless": True}
+    if PLAYWRIGHT_BROWSER == "chromium":
+        launch_kwargs["args"] = chromium_launch_args()
+        if PLAYWRIGHT_CHANNEL:
+            launch_kwargs["channel"] = PLAYWRIGHT_CHANNEL
+    elif PLAYWRIGHT_CHANNEL:
+        fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
+    browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
         # Reduce motion so view-transition animations don't intercept
         # pointer events and break Playwright's actionability check.
         reduced_motion = "reduce",
     )
-    # Hard-disable CSS view-transitions: Studio's theme toggle + sidebar
+    # Hard-disable CSS view-transitions: Unsloth's theme toggle + sidebar
     # collapse run startViewTransition() which can leave <html> intercepting
     # pointer events for a beat after each route swap. See _playwright_robust.py.
     install_view_transition_killer(ctx)
@@ -364,6 +498,15 @@ with sync_playwright() as p:
         raise last_err
     shoot("03-chat-loaded")
 
+    exercise_permission_mode_controls(page, shoot)
+    if PERMISSION_ONLY:
+        info(
+            "permission-only run passed "
+            f"(browser={PLAYWRIGHT_BROWSER}, channel={PLAYWRIGHT_CHANNEL or 'bundled'})"
+        )
+        browser.close()
+        sys.exit(0)
+
     # /api/models/list and /api/inference/load need a bearer; the
     # frontend stores it under "unsloth_auth_token" (auth/session.ts).
     token = robust_evaluate(
@@ -477,7 +620,7 @@ with sync_playwright() as p:
         fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
-    # Studio caches model state in zustand; reload so the composer picks
+    # Unsloth caches model state in zustand; reload so the composer picks
     # up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
@@ -493,7 +636,7 @@ with sync_playwright() as p:
     # (app-sidebar.tsx) -- as stable as anything in the codebase.
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
     if picker_btn.count() == 0:
-        # Fall back to text-based locators for older Studio builds.
+        # Fall back to text-based locators for older Unsloth builds.
         picker_btn = page.locator(
             'button:has-text("gemma-3-270m"), '
             'button:has-text("Gemma 3"), '
@@ -678,10 +821,16 @@ with sync_playwright() as p:
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
     page.wait_for_timeout(400)
-    regen_btn = page.get_by_role(
-        "button",
-        name = re.compile(r"(reload|regenerate)", re.I),
-    ).first
+    # Exclude disabled controls: the picker's new disabled "Reload model"
+    # button also matches and sorts first, so .first would target it.
+    regen_btn = (
+        page.get_by_role(
+            "button",
+            name = re.compile(r"(reload|regenerate)", re.I),
+        )
+        .and_(page.locator("button:not([disabled])"))
+        .first
+    )
     if regen_btn.count() > 0:
         regen_btn.click()
         try:
@@ -787,6 +936,70 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
+    def read_chat_typography():
+        """Read message typography after a user-driven theme transition."""
+        return robust_evaluate(
+            page,
+            """() => {
+                const root = document.documentElement;
+                const assistant = Array.from(
+                    document.querySelectorAll('.aui-assistant-message-root')
+                );
+                const user = Array.from(
+                    document.querySelectorAll('.aui-user-message-root')
+                );
+                if (assistant.length === 0 || user.length === 0) {
+                    return { error: 'chat message roots are missing' };
+                }
+                const ua = navigator.userAgent.toLowerCase();
+                const role = (nodes) => {
+                    const styles = nodes.map((node) => getComputedStyle(node));
+                    return {
+                        fontWeight: [...new Set(styles.map((style) => style.fontWeight))],
+                        letterSpacing: [...new Set(styles.map((style) => style.letterSpacing))],
+                    };
+                };
+                return {
+                    actualRenderLinux: root.classList.contains('render-linux'),
+                    isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
+                    isDark: root.classList.contains('dark'),
+                    usesBaselineTypography: (
+                        root.classList.contains('no-font-smoothing') ||
+                        root.hasAttribute('data-chat-font') ||
+                        root.hasAttribute('data-ui-font')
+                    ),
+                    assistant: role(assistant),
+                    user: role(user),
+                };
+            }""",
+        )
+
+    def assert_chat_typography(label, typography):
+        if typography.get("error"):
+            fail(typography["error"])
+        if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
+            fail(f"desktop Linux detection mismatch: {typography!r}")
+        is_dark = typography["isDark"]
+        expected_spacing = "0.31px" if is_dark else "0.155px"
+        if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
+            expected_weight = "350" if is_dark else "390"
+            if is_dark:
+                expected_spacing = "0.3565px"
+        else:
+            expected_weight = "410"
+        for role in ("assistant", "user"):
+            actual = typography[role]
+            if actual["fontWeight"] != [expected_weight]:
+                fail(
+                    f"chat font weight {label}/{role}: expected {expected_weight}, "
+                    f"got {actual['fontWeight']!r}"
+                )
+            if actual["letterSpacing"] != [expected_spacing]:
+                fail(
+                    f"chat letter spacing {label}/{role}: expected {expected_spacing}, "
+                    f"got {actual['letterSpacing']!r}"
+                )
+
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check
     # (light is near-white >240; dark is near-black <40).
@@ -795,6 +1008,7 @@ with sync_playwright() as p:
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
         observed = []
+        typography_states = []
         for cycle in range(3):
             # Wait for any prior dropdown to fully detach: clicking while
             # the view-transition is still open no-ops silently. The
@@ -883,6 +1097,9 @@ with sync_playwright() as p:
             }""",
             )
             observed.append(bg)
+            typography = read_chat_typography()
+            assert_chat_typography(f"theme-cycle-{cycle + 1}", typography)
+            typography_states.append(typography)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
         # Across cycles we should see both a near-white (light) and a
@@ -893,7 +1110,7 @@ with sync_playwright() as p:
         if len(observed) < 3:
             soft_fail(f"theme toggle ran only {len(observed)} cycle(s), expected 3")
         # Don't strict-fail on both polarities: the runner's
-        # prefers-color-scheme + Studio's "system" default can collapse
+        # prefers-color-scheme + Unsloth's "system" default can collapse
         # to one polarity even when .dark toggles correctly. The 3-cycle
         # completion above is the real invariant.
         if light_seen and dark_seen:
@@ -904,6 +1121,20 @@ with sync_playwright() as p:
                 f"cycles: light_seen={light_seen}, dark_seen={dark_seen} "
                 "(toggle may not flip on this runner's color-scheme)"
             )
+
+        # These are user-driven theme transitions, not synthetic class
+        # changes. A completed three-cycle toggle must expose both typography
+        # states before we check the Linux selector.
+        if len(typography_states) != 3:
+            soft_fail(
+                f"chat typography observed {len(typography_states)} theme state(s), expected 3"
+            )
+        elif {state["isDark"] for state in typography_states} != {False, True}:
+            soft_fail(f"chat typography did not observe both themes: {typography_states!r}")
+        else:
+            info("OK chat typography platform and theme behavior")
+    else:
+        soft_fail("chat typography requires the account-menu theme control")
 
     # ─────────────────────────────────────────────────────
     # 10. Sidebar nav: New Chat, Compare, Search, Recipes.

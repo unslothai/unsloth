@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for Studio's early CPU thread-pool configuration."""
+"""Tests for Unsloth's early CPU thread-pool configuration."""
 
 import ast
 import os
@@ -30,7 +30,7 @@ def test_cpu_thread_cap_seeds_native_pool_limits():
     }
 
 
-# Explicit per-library values win over the Studio knob via setdefault.
+# Explicit per-library values win over the Unsloth knob via setdefault.
 def test_cpu_thread_cap_preserves_runtime_specific_override():
     env = {"UNSLOTH_CPU_THREADS": "4", "OMP_NUM_THREADS": "2"}
 
