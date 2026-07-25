@@ -328,9 +328,10 @@ class LlamaAdmissionQueue:
 
     The pool mirrors llama-server's own ``--parallel`` slots: ``capacity`` slot ids
     are each either free or held by exactly one caller. A caller that finds every
-    slot busy waits in arrival order and is handed the next slot to free, so the
-    backend never sees more concurrent generations than it has slots and no caller
-    can be starved. Waiting is unbounded in time by default (``queue_timeout_s``
+    slot busy waits in arrival order and is handed the next slot to free, so no
+    caller is starved. This bounds the callers that reserve, meaning the OpenAI
+    and Anthropic API surfaces; Studio's own chat endpoint does not reserve, so
+    it is not a global cap. Waiting is unbounded in time by default (``queue_timeout_s``
     None); the wait line itself is bounded, and only how many may line up before
     new arrivals are rejected. By default that is ``16 x slots`` floored at 64,
     not unlimited: an unbounded line takes ``max_queue`` or ``queue_per_slot``

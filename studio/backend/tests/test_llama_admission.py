@@ -29,8 +29,23 @@ from core.inference.llama_admission import (
 )
 
 
+_ADMISSION_ENV = (
+    ADMISSION_CONTROL_ENV,
+    ADMISSION_QUEUE_TIMEOUT_ENV,
+    ADMISSION_KEEPALIVE_INTERVAL_ENV,
+    ADMISSION_MAX_QUEUE_ENV,
+    ADMISSION_QUEUE_PER_SLOT_ENV,
+    *llama_admission._LEGACY_ENV.values(),
+)
+
+
 @pytest.fixture(autouse = True)
-def _reset_queues():
+def _reset_queues(monkeypatch):
+    # Clear ambient settings for every test, not just the ones that remember to:
+    # a canonical name set on the machine silently beats the legacy name a test
+    # is exercising, and the queue registry is process-global.
+    for name in _ADMISSION_ENV:
+        monkeypatch.delenv(name, raising = False)
     reset_llama_admission_queues()
     yield
     reset_llama_admission_queues()

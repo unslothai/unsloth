@@ -13,6 +13,7 @@ backend base_url) so generation stays fast and no thread has to block.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 import time
@@ -321,19 +322,68 @@ def test_streaming_disconnect_while_queued_frees_slot(monkeypatch):
 
 
 def test_shares_queue_with_openai_by_base_url(monkeypatch):
+    """The two API surfaces must land on one pool of the same llama-server slots.
+
+    Reserves through the OpenAI helper the /v1/chat/completions path uses, rather
+    than poking the queue directly, so this fails if either side ever derives a
+    different key.
+    """
     _install_backend(monkeypatch, slots = 1)
 
     async def _run():
-        # A generation admitted through the OpenAI helper occupies the same key,
-        # so an Anthropic request must queue behind it.
-        held = _occupy(_KEY, 1, 1)
+        openai_reservation, _ = inf_mod._openai_llama_admission_reserve(
+            request = _Request(), llama_backend = inf_mod.get_llama_cpp_backend()
+        )
+        openai_lease = openai_reservation.lease_nowait()
+        assert openai_lease is not None
+        assert _snapshot().active == 1  # same key the Anthropic side will use
+
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
         await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1
-        held[0].release()
+        assert _snapshot().queued == 1  # queued behind the OpenAI generation
+        openai_lease.release()
         assert (await asyncio.wait_for(task, timeout = 2)).status_code == 200
+
+    asyncio.run(_run())
+
+
+def test_non_streaming_client_gone_while_queued_returns_499(monkeypatch):
+    # The disconnect-while-queued branch; nothing else exercised 499.
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        with pytest.raises(HTTPException) as exc:
+            await anthropic_messages(
+                _payload(), request = _Request(disconnected = True), current_subject = "t"
+            )
+        assert exc.value.status_code == 499
+        assert _snapshot().queued == 0  # waiter cleaned up, not left parked
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())
+
+
+def test_streaming_timeout_emits_an_error_event_and_frees_the_slot(monkeypatch):
+    # Only the non-streaming 503 was covered; streaming reports in-band instead.
+    monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.15")
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)  # never released, so the waiter times out
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        body = await _consume(response)
+        assert "event: error" in body
+        assert "message_start" not in body  # never reached the model
+        for lease in held:
+            lease.release()
+        assert _snapshot().active == 0 and _snapshot().queued == 0
 
     asyncio.run(_run())
 
@@ -370,9 +420,10 @@ def test_uncontended_hot_path_is_fast(monkeypatch):
             resp = await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
             assert resp.status_code == 200
         elapsed = time.perf_counter() - start
-        # 50 admit+release round-trips with no contention must be well under a
-        # second; admission overhead per call is sub-millisecond.
-        assert elapsed < 1.0
+        # Generous ceiling on purpose: this guards against admission accidentally
+        # serialising or sleeping on the uncontended path, not against a slow
+        # runner, so it must not flake on a loaded CI box.
+        assert elapsed < 10.0, f"50 uncontended round-trips took {elapsed:.2f}s"
         assert _snapshot().active == 0 and _snapshot().queued == 0
 
     asyncio.run(_run())
@@ -524,7 +575,10 @@ def test_passthrough_stream_registers_a_pre_start_cleanup():
         if isinstance(n.value, ast.Call)
         and getattr(n.value.func, "id", "") == "_sse_streaming_response"
     )
-    assert "unstarted_cleanup" in {kw.arg for kw in call.keywords}
+    hook = next(kw.value for kw in call.keywords if kw.arg == "unstarted_cleanup")
+    # Not just present: a literal None passes the keyword check and still leaks.
+    assert isinstance(hook, ast.Call)
+    assert getattr(hook.func, "id", None) == "_tracked_cancel_unstarted_cleanup"
 
 
 def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
@@ -555,5 +609,66 @@ def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
         lease = again.lease_nowait()
         assert lease is not None
         lease.release()
+
+    asyncio.run(_run())
+
+
+_CLIENT_TOOLS = [
+    {"name": "get_time", "description": "t", "input_schema": {"type": "object", "properties": {}}}
+]
+
+
+def _passthrough_payload(**fields):
+    # server_tools off + declared tools + a passthrough-capable backend routes
+    # anthropic_messages down the client-tool passthrough dispatch site.
+    return _payload(tools = _CLIENT_TOOLS, enable_tools = False, **fields)
+
+
+def test_response_pre_start_cleanup_exits_the_passthrough_tracker(monkeypatch):
+    """A disconnect before the body starts must still exit the cancel tracker.
+
+    The wrapper replaces the response's own pre-start hook, so it has to chain to
+    it. Asserting through _CANCEL_REGISTRY rather than the wiring, because the
+    hook can be present and still be a no-op.
+    """
+    backend = _install_backend(monkeypatch, slots = 1)
+    backend.supports_tool_passthrough = True
+    monkeypatch.setattr(inf_mod, "_CANCEL_REGISTRY", {})
+
+    async def _run():
+        response = await anthropic_messages(
+            _passthrough_payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        assert inf_mod._CANCEL_REGISTRY, "passthrough should have registered a tracker"
+
+        cleanup = getattr(response, "_unstarted_cleanup", None)
+        assert cleanup is not None
+        await cleanup()  # what _SameTaskStreamingResponse runs on a pre-start disconnect
+
+        assert inf_mod._CANCEL_REGISTRY == {}
+        assert _snapshot().active == 0 and _snapshot().queued == 0
+
+    asyncio.run(_run())
+
+
+def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
+    # Behavioural cover for a dispatch site the other tests never reach.
+    backend = _install_backend(monkeypatch, slots = 1)
+    backend.supports_tool_passthrough = True
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        task = asyncio.create_task(
+            anthropic_messages(
+                _passthrough_payload(), request = _Request(), current_subject = "t"
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert _snapshot().queued == 1  # queued behind the busy slot, not bypassing
+        for lease in held:
+            lease.release()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(task, timeout = 2)  # upstream is not mocked
+        assert _snapshot().active == 0 and _snapshot().queued == 0
 
     asyncio.run(_run())
