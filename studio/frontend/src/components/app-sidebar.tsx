@@ -829,11 +829,11 @@ export function AppSidebar() {
     .filter((item) => !item.pinned)
     .map((item) => item.id);
   // A flyout wrapping a single row costs a click and earns nothing, so More only
-  // appears once it would hold two or more; a lone unpinned row renders inline,
-  // in its saved order position.
+  // appears once it would hold two or more. With exactly one row unpinned, both
+  // the menu and that row are dropped -- the page stays reachable by URL.
   const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
   const inlineNavIds = sidebarNav
-    .filter((item) => item.pinned || overflowNavIds.length === 0)
+    .filter((item) => item.pinned)
     .map((item) => item.id);
 
   const showSidebarBrand = !usesCustomTitlebar;

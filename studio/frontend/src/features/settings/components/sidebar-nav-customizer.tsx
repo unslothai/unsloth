@@ -6,11 +6,11 @@ import {
   DashboardCircleIcon,
   DownloadSquare01Icon,
   DragDropVerticalIcon,
-  Edit03Icon,
   FlimSlateIcon,
   Folder01Icon,
   Image03Icon,
   MoreHorizontalIcon,
+  PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
@@ -107,11 +107,11 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
 }
 
 /**
- * Pin and reorder the sidebar navigation rows. A row with its switch off moves
- * into the "More" flyout instead of disappearing, so every page stays reachable
- * -- unless it is the only unpinned row, which stays inline (a menu holding one
- * item earns nothing). New chat renders as a static row: it is an action pinned
- * to the top, not a destination.
+ * Pin and reorder the sidebar navigation rows. Rows with their switch off collect
+ * in the "More" flyout. A single unpinned row is hidden outright instead: More
+ * would be a menu of one, so neither it nor the row is drawn (the page stays
+ * reachable by URL). New chat renders as a static row: it is an action pinned to
+ * the top, not a destination.
  */
 export function SidebarNavCustomizer() {
   const t = useT();
@@ -120,7 +120,7 @@ export function SidebarNavCustomizer() {
   const unpinnedCount = sidebarNav.filter((item) => !item.pinned).length;
   return (
     <div className="flex flex-col rounded-xl border border-border/70 p-1.5">
-      <FixedRow icon={Edit03Icon} label={t("shell.navigation.newChat")} />
+      <FixedRow icon={PencilEdit02Icon} label={t("shell.navigation.newChat")} />
       <Reorder.Group
         axis="y"
         values={sidebarNav.map((item) => item.id)}
@@ -138,8 +138,8 @@ export function SidebarNavCustomizer() {
         ))}
       </Reorder.Group>
       {/* Only meaningful at two or more: with everything pinned there is no More
-          row, and a lone unpinned row renders inline rather than hiding behind
-          a menu built for one item. */}
+          row, and a single unpinned row is hidden rather than sitting behind a
+          menu built for one item. */}
       {unpinnedCount > 1 && (
         <>
           <div className="mx-2 my-1 border-t border-border/70" />

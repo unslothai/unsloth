@@ -735,8 +735,8 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 }
 
 # Navigable sidebar rows the user can pin/reorder; the boolean is each id's
-# default pin state, matching the shipped layout. An unpinned row moves into the
-# "More" flyout client-side, so it stays reachable.
+# default pin state, matching the shipped layout. Unpinned rows collect in the
+# "More" flyout client-side; a single unpinned row is hidden there instead.
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "projects": True,
     "hub": True,

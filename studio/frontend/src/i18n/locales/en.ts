@@ -519,15 +519,15 @@ export const en = {
       sidebarNav: {
         title: "Sidebar navigation",
         description:
-          "Pin and reorder the sidebar tabs. Anything unpinned moves into the More menu instead of being hidden, unless it is the only one left. New chat stays fixed.",
+          "Pin and reorder the sidebar tabs. Unpinned tabs collect in the More menu; a single unpinned tab is hidden instead of getting a menu of one. New chat stays fixed.",
         dragToReorder: "Drag to reorder",
         pinToSidebar: "Pin {name} to the sidebar",
         moreHolds: "More ({count})",
       },
       sidebarMenu: {
-        title: "Sidebar menu",
+        title: "Profile menu",
         description:
-          "Show, hide, and reorder items in the sidebar profile menu. Settings, Help, Log out, and Shutdown stay fixed.",
+          "Choose which shortcuts appear when you click your name at the bottom of the sidebar, and in what order. Settings, Help, Log out, and Shutdown always appear.",
         darkModeToggle: "Dark mode toggle",
         dragToReorder: "Drag to reorder",
       },
