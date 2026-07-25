@@ -68,14 +68,17 @@ const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
-// Desktop-only: a browser loopback URL may be an SSH/port forward to another host.
-function canUseLocalAgentDetection(base: string): boolean {
-  if (!isTauri) return false;
+function isLoopbackBase(base: string): boolean {
   try {
     return isLoopbackHost(normalizeHost(new URL(base).hostname));
   } catch {
     return false;
   }
+}
+
+// Desktop-only: a browser loopback URL may be an SSH/port forward to another host.
+function canUseLocalAgentDetection(base: string): boolean {
+  return isTauri && isLoopbackBase(base);
 }
 
 // One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
@@ -550,7 +553,6 @@ export function AgentsTab() {
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
   const deviceType = usePlatformStore((s) => s.deviceType);
-  const isWindowsHost = deviceType === "windows";
   // The remote snippet runs on the client, so use the client platform, not deviceType.
   // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
@@ -558,6 +560,16 @@ export function AgentsTab() {
     return p.startsWith("win") || p.includes("windows");
   });
   const origin = typeof window !== "undefined" ? window.location.origin : "";
+  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL
+  // the CLI cannot reach, so use the backend URL from /api/health (getApiBase until it
+  // lands). The command then runs wherever that CLI is: a loopback base is this Studio's
+  // own host, so deviceType decides, and it reports wsl where the browser would claim
+  // Windows; any other base is reached from the viewer's machine, so only the client
+  // platform describes that shell.
+  const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const isWindowsShell = isLoopbackBase(studioBase)
+    ? deviceType === "windows"
+    : isWindowsClient;
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
@@ -633,25 +645,18 @@ export function AgentsTab() {
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
-  const commandModelArg = quoteShellArg(commandModel, isWindowsHost);
+  const commandModelArg = quoteShellArg(commandModel, isWindowsShell);
   // A bare `unsloth start` attaches to whatever is loaded, which is the only way
   // to reach a native-grant GGUF: naming it would switch the server to another model.
   const attachOnly = selectedModel === attachOnlyModel;
   const modelArgs = attachOnly
     ? ""
     : selectedVariant && !suffixVariant
-      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsHost)}`
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsShell)}`
       : `--model ${commandModelArg}`;
-  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL the
-  // CLI cannot reach, so use the backend URL from /api/health (getApiBase until it lands).
-  // No key is passed: the CLI caches an explicit one per base, overwriting a working saved
-  // key. Omitting it replays the saved key; the remote section covers first-time setup.
-  const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  // The built command runs where the CLI is, i.e. this Studio's host, so quote and
-  // pick the shell from deviceType like the API usage panel does. The browser OS
-  // would say Windows for a WSL Studio viewed from Windows and emit PowerShell
-  // $env: syntax that WSL's bash rejects; any non-windows deviceType is POSIX.
-  const commandOs = isWindowsHost ? "windows" : "unix";
+  // No key is passed: the CLI caches an explicit one per base, overwriting a working
+  // saved key. Omitting it replays the saved key; the remote section covers first setup.
+  const commandOs = isWindowsShell ? "windows" : "unix";
   const commandBase = buildAgentCommand(
     studioBase,
     null,
