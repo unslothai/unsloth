@@ -42,6 +42,19 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     # (#7066). Neutralizing them everywhere is a no-op for other templates.
     (_GEMMA_CHANNEL_START, f"<|{_THINK_NEUTRAL_ZW}channel>"),
     (_GEMMA_THOUGHT_CLOSE, f"<{_THINK_NEUTRAL_ZW}channel|>"),
+    # The same vendored templates (assets/chat_templates/gemma-4*.jinja) delimit
+    # every turn, tool block and tool result with these, and quote schema strings
+    # with <|"|>, so a non-assistant turn carrying them raw could end its own
+    # block or forge a model / tool_response one (#7066).
+    ("<|turn>", f"<|{_THINK_NEUTRAL_ZW}turn>"),
+    ("<turn|>", f"<{_THINK_NEUTRAL_ZW}turn|>"),
+    ("<|tool_call>", f"<|{_THINK_NEUTRAL_ZW}tool_call>"),
+    ("<tool_call|>", f"<{_THINK_NEUTRAL_ZW}tool_call|>"),
+    ("<|tool_response>", f"<|{_THINK_NEUTRAL_ZW}tool_response>"),
+    ("<tool_response|>", f"<{_THINK_NEUTRAL_ZW}tool_response|>"),
+    ("<|tool>", f"<|{_THINK_NEUTRAL_ZW}tool>"),
+    ("<tool|>", f"<{_THINK_NEUTRAL_ZW}tool|>"),
+    ('<|"|>', f'<|{_THINK_NEUTRAL_ZW}"|>'),
     # Llama-3 family templates delimit every turn with these header/eot
     # sentinels (chat_eos.py / tool_call_parser.py already treat them as turn
     # ends). A non-assistant turn carrying them raw could close its own turn and
