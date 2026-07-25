@@ -12,31 +12,59 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import {
+  ProjectSourceDropzone,
+  type StagedSource,
+  uploadStagedSources,
+} from "@/features/rag/components/project-source-dropzone";
 import { toast } from "@/lib/toast";
+import { Folder02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import type { ProjectRecord } from "../types";
 
-// Create-project dialog usable from the composer + menu. Creating opens the new
-// project straight away rather than dropping the user on the projects list.
+// Create-project dialog for the composer, sidebar, and projects page. Creating
+// opens the new project; `onCreated` overrides that for callers with their own
+// follow-up (the sidebar's "move this chat to a new project").
 export function NewProjectDialog({
   open,
   onOpenChange,
+  title = "Create project",
+  submitLabel = "Create project",
+  onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  title?: string;
+  submitLabel?: string;
+  onCreated?: (project: ProjectRecord) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
+  const [staged, setStaged] = useState<StagedSource[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  function reset() {
+    setName("");
+    setStaged([]);
+  }
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed || busy) return;
+    setBusy(true);
     try {
       const project = await createChatProject(trimmed);
+      // Upload before closing so the Sources panel lists them on first fetch.
+      await uploadStagedSources(project.id, staged);
       onOpenChange(false);
-      setName("");
+      reset();
+      if (onCreated) {
+        await onCreated(project);
+        return;
+      }
       const runtime = useChatRuntimeStore.getState();
       runtime.setActiveThreadId(null);
       runtime.setActiveProjectId(project.id);
@@ -45,6 +73,8 @@ export function NewProjectDialog({
       toast.error("Failed to create project", {
         description: err instanceof Error ? err.message : undefined,
       });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -52,33 +82,52 @@ export function NewProjectDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) setName("");
+        if (busy) return;
+        if (!next) reset();
         onOpenChange(next);
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>New project</DialogTitle>
+          <DialogTitle className="text-ui-21">{title}</DialogTitle>
         </DialogHeader>
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void commitCreate();
-            }
-          }}
-          autoFocus={true}
-          maxLength={120}
-          placeholder="Project name"
-          aria-label="Project name"
-          className="focus-visible:border-input focus-visible:ring-0"
+        {/* Name field: folder glyph in its own cell, divided from the input. */}
+        <div className="flex items-stretch overflow-hidden rounded-[16px] border border-border bg-background transition-colors focus-within:border-ring has-[input:disabled]:opacity-50 dark:border-transparent dark:bg-white/[0.06]">
+          <span className="flex w-9 shrink-0 items-center justify-center text-muted-foreground">
+            <HugeiconsIcon
+              icon={Folder02Icon}
+              strokeWidth={1.75}
+              className="size-5"
+            />
+          </span>
+          <span aria-hidden="true" className="my-3 w-px bg-border" />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void commitCreate();
+              }
+            }}
+            autoFocus={true}
+            disabled={busy}
+            maxLength={120}
+            placeholder="Project name"
+            aria-label="Project name"
+            className="min-w-0 flex-1 bg-transparent py-4 pr-4 pl-2.5 text-base outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed"
+          />
+        </div>
+        <ProjectSourceDropzone
+          staged={staged}
+          onChange={setStaged}
+          disabled={busy}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button
             type="button"
             variant="ghost"
+            disabled={busy}
             onClick={() => onOpenChange(false)}
           >
             Cancel
@@ -86,9 +135,9 @@ export function NewProjectDialog({
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim()}
+            disabled={!name.trim() || busy}
           >
-            Create
+            {busy ? "Creating…" : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

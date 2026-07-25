@@ -1,0 +1,237 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import { File02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { XIcon } from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+import {
+  invalidateProjectSources,
+  uploadProjectDocument,
+} from "../api/rag-api";
+import { RAG_UPLOAD_ACCEPT } from "../types/rag";
+import { resolveVisionOverrides } from "./vision-overrides";
+
+/** A file picked before the project exists, held until create commits. */
+export interface StagedSource {
+  id: string;
+  file: File;
+}
+
+// Client-side dedup key; backend dedups authoritatively by content hash.
+function fileSignature(file: File): string {
+  return `${file.name}|${file.size}|${file.lastModified}`;
+}
+
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
+
+/** Merge a new selection into the staged list, skipping duplicates. */
+function addStagedSources(
+  staged: StagedSource[],
+  incoming: FileList | File[],
+): StagedSource[] {
+  const seen = new Set(staged.map((entry) => fileSignature(entry.file)));
+  const next = [...staged];
+  for (const file of Array.from(incoming)) {
+    const signature = fileSignature(file);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    next.push({
+      id: `staged_${Math.random().toString(36).slice(2)}`,
+      file,
+    });
+  }
+  return next;
+}
+
+// Projects created with staged files, so the landing can open on Sources.
+const projectsWithPendingSources = new Set<string>();
+
+function markProjectSourcesPending(projectId: string): void {
+  projectsWithPendingSources.add(projectId);
+}
+
+/** True once, for the project that was just created with staged sources. */
+export function consumeProjectSourcesPending(projectId: string): boolean {
+  return projectsWithPendingSources.delete(projectId);
+}
+
+/** Upload staged files to a new project. Indexing runs in the background; a
+ * per-file failure toasts and never blocks project creation. */
+export async function uploadStagedSources(
+  projectId: string,
+  staged: StagedSource[],
+): Promise<void> {
+  if (staged.length === 0) return;
+  invalidateProjectSources(projectId);
+  markProjectSourcesPending(projectId);
+  const { ocr, caption } = resolveVisionOverrides();
+  for (const { file } of staged) {
+    try {
+      await uploadProjectDocument(projectId, file, ocr, caption);
+    } catch (error) {
+      toast.error(`Couldn't upload ${file.name}`, {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  invalidateProjectSources(projectId);
+}
+
+/** Create-project drop area: stages files until the project exists. */
+export function ProjectSourceDropzone({
+  staged,
+  onChange,
+  disabled = false,
+}: {
+  staged: StagedSource[];
+  onChange: (next: StagedSource[]) => void;
+  disabled?: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Count enter/leave pairs: children fire dragleave on the parent.
+  const dragDepth = useRef(0);
+  const [dragging, setDragging] = useState(false);
+
+  const addFiles = useCallback(
+    (files: FileList | File[]) => {
+      const next = addStagedSources(staged, files);
+      if (next.length !== staged.length) onChange(next);
+    },
+    [staged, onChange],
+  );
+
+  const endDrag = useCallback(() => {
+    dragDepth.current = 0;
+    setDragging(false);
+  }, []);
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-ui-15 font-medium text-foreground">Sources</p>
+      {/* Panel is the drop target; the inner button owns the click so staged
+          rows can carry their own remove buttons. */}
+      <div
+        onDragEnter={(e) => {
+          if (disabled) return;
+          e.preventDefault();
+          dragDepth.current += 1;
+          setDragging(true);
+        }}
+        onDragOver={(e) => {
+          if (disabled) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={() => {
+          dragDepth.current = Math.max(0, dragDepth.current - 1);
+          if (dragDepth.current === 0) setDragging(false);
+        }}
+        onDrop={(e) => {
+          if (disabled) return;
+          e.preventDefault();
+          endDrag();
+          addFiles(Array.from(e.dataTransfer.files ?? []));
+        }}
+        className={cn(
+          "rounded-[22px] border border-border transition-colors dark:border-white/10",
+          dragging && "border-primary/60 bg-primary/5",
+          disabled && "pointer-events-none opacity-60",
+        )}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          multiple={true}
+          accept={RAG_UPLOAD_ACCEPT}
+          className="hidden"
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = "";
+            addFiles(files);
+          }}
+        />
+        {staged.length === 0 ? (
+          <button
+            type="button"
+            aria-label="Add sources"
+            disabled={disabled}
+            onClick={() => inputRef.current?.click()}
+            className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-[22px] px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <HugeiconsIcon
+              icon={FolderAddIcon}
+              strokeWidth={1.75}
+              className="size-6 text-muted-foreground"
+            />
+            <span className="text-sm text-muted-foreground">
+              Add files every chat in this project can read
+            </span>
+          </button>
+        ) : (
+          <div className="flex flex-col gap-1 p-2">
+            <ul className="max-h-52 space-y-0.5 overflow-y-auto">
+              {staged.map((entry) => (
+                <li
+                  key={entry.id}
+                  className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
+                >
+                  <HugeiconsIcon
+                    icon={File02Icon}
+                    strokeWidth={1.75}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span
+                    className="min-w-0 flex-1 truncate text-ui-14 text-foreground"
+                    title={entry.file.name}
+                  >
+                    {entry.file.name}
+                  </span>
+                  <span className="shrink-0 text-ui-11 text-muted-foreground">
+                    {formatSize(entry.file.size)}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${entry.file.name}`}
+                    disabled={disabled}
+                    onClick={() =>
+                      onChange(staged.filter((row) => row.id !== entry.id))
+                    }
+                    className="shrink-0 rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => inputRef.current?.click()}
+              className="flex items-center justify-center gap-2 rounded-[10px] py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <HugeiconsIcon
+                icon={FolderAddIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              Add files
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
