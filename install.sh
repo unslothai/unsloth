@@ -655,6 +655,24 @@ _apt_distro_description() {
     )
 }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r /dev/tty` only checks the device node's permission bits, and those
+# look fine inside containers and systemd units where open() then fails with
+# ENXIO. Probe with a real open instead. The subshell is required: in dash a
+# failed redirection on the special builtin `:` exits the whole script.
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
+# ── Helper: will sudo run this exact command without prompting? ──
+# `sudo -n -l -- cmd args...` asks the sudoers policy whether the command is
+# permitted, without running it, and fails instead of prompting. `sudo -n true`
+# only proves `true` is allowed, which says nothing under command-specific
+# NOPASSWD rules like `NOPASSWD: /usr/bin/apt-get`.
+_sudo_runs_unattended() {
+    sudo -n -l -- "$@" >/dev/null 2>&1
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -685,10 +703,12 @@ _smart_apt_install() {
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
     if command -v sudo >/dev/null 2>&1; then
-        # `sudo -n` succeeds only when no password is required. Without a
-        # terminal we cannot supply one, and every sudo call below closes stdin,
-        # so probe first rather than letting sudo die on its own prompt (#7307).
-        if sudo -n true >/dev/null 2>&1; then
+        # Probe the argument vectors we are actually going to elevate. Without a
+        # terminal we cannot supply a password, and every sudo call below closes
+        # stdin, so check first rather than letting sudo die on its own prompt
+        # (#7307).
+        if _sudo_runs_unattended apt-get update -y \
+            && _sudo_runs_unattended apt-get install -y $_STILL_MISSING; then
             _sudo_unattended=true
         else
             _sudo_unattended=false
@@ -697,7 +717,7 @@ _smart_apt_install() {
         # Nothing to prompt on and sudo wants a password: this cannot succeed.
         # Exit with the same actionable message as the no-sudo path instead of
         # assuming consent and failing inside sudo.
-        if [ ! -r /dev/tty ] && [ "$_sudo_unattended" != true ]; then
+        if ! _can_read_tty && [ "$_sudo_unattended" != true ]; then
             echo ""
             echo "    These packages are missing and need sudo to install:"
             echo "    $_STILL_MISSING"
@@ -719,7 +739,7 @@ _smart_apt_install() {
         echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        if [ -r /dev/tty ]; then
+        if _can_read_tty; then
             printf "    Accept? [Y/n] "
             read -r REPLY </dev/tty || REPLY="y"
         else

@@ -97,14 +97,28 @@ assert_contains "rejects tarball worry" "$_smart" "not a third-party tarball"
 # /etc/os-release above, so both TTY states are reachable hermetically.
 echo "=== _smart_apt_install no-TTY escalation ==="
 
-# $1 tty: "tty" | "notty"   $2 sudo: "nopasswd" | "needspasswd" | "absent"
+# A unix socket is the closest portable stand-in for the /dev/tty found inside
+# containers and systemd units: the mode bits satisfy `test -r`, but open()
+# fails with ENXIO. Callers must verify the shape before relying on it.
+make_unopenable() {
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' \
+        "$1" 2>/dev/null
+}
+
+# $1 tty:  "tty" | "notty" | "unopenable"
+# $2 sudo: "nopasswd" | "needspasswd" | "aptneedspasswd" | "absent"
 run_smart() {
     _tty_mode="$1"; _sudo_mode="$2"
     _d=$(mktemp -d -p "$_TMP_ROOT")
-    [ "$_tty_mode" = tty ] && printf 'y\n' > "$_d/tty"
+    case "$_tty_mode" in
+        tty)        printf 'y\n' > "$_d/tty" ;;
+        unopenable) make_unopenable "$_d/tty" ;;
+    esac
 
     _f=$(mktemp -p "$_TMP_ROOT")
-    sed -n '/^_smart_apt_install()/,/^}/p' "$INSTALL_SH" \
+    sed -n -e '/^_can_read_tty()/,/^}/p' \
+           -e '/^_sudo_runs_unattended()/,/^}/p' \
+           -e '/^_smart_apt_install()/,/^}/p' "$INSTALL_SH" \
         | sed -e "s#/dev/tty#$_d/tty#g" > "$_f"
 
     (
@@ -120,7 +134,18 @@ run_smart() {
         }
         sudo() {
             if [ "$1" = -n ]; then
-                [ "$_sudo_mode" = nopasswd ]; return $?
+                case "$_sudo_mode" in
+                    nopasswd) return 0 ;;
+                    # Trivial commands are NOPASSWD but apt-get is not, which is
+                    # exactly what a `sudo -n true` probe reads as unattended.
+                    aptneedspasswd)
+                        case " $* " in
+                            *" apt-get "*) return 1 ;;
+                            *) return 0 ;;
+                        esac
+                        ;;
+                    *) return 1 ;;
+                esac
             fi
             echo "SUDO_RAN: $*"
         }
@@ -161,6 +186,30 @@ assert_contains "tty present: accepts and installs" "$_out" "SUDO_RAN: apt-get i
 # No sudo at all keeps its own message.
 _out=$(run_smart notty absent)
 assert_contains "no sudo binary: unchanged message" "$_out" "sudo is not available on this system"
+
+# A /dev/tty that passes `test -r` but cannot be opened must count as no tty.
+# Only assert when this platform can actually produce that shape.
+_probe=$(mktemp -d -p "$_TMP_ROOT")
+if make_unopenable "$_probe/tty" && [ -r "$_probe/tty" ] && ! ( : <"$_probe/tty" ) 2>/dev/null; then
+    _out=$(run_smart unopenable needspasswd)
+    assert_contains "unopenable tty: treated as no tty" "$_out" "cannot be done unattended"
+    case "$_out" in
+        *"Accept? [Y/n]"*) echo "  FAIL: unopenable tty must not print a prompt"; FAIL=$((FAIL + 1)) ;;
+        *) echo "  PASS: unopenable tty prints no prompt"; PASS=$((PASS + 1)) ;;
+    esac
+else
+    echo "  SKIP: this platform cannot fake a readable-but-unopenable /dev/tty"
+fi
+
+# NOPASSWD on trivial commands but not on apt-get: the case `sudo -n true` got
+# wrong. Must fall back to the actionable message, not blind escalation.
+_out=$(run_smart notty aptneedspasswd)
+assert_contains "apt-get needs a password: says it cannot run unattended" \
+    "$_out" "cannot be done unattended"
+case "$_out" in
+    *SUDO_RAN*) echo "  FAIL: apt-get needing a password must not invoke sudo"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: apt-get needing a password does not invoke sudo"; PASS=$((PASS + 1)) ;;
+esac
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
