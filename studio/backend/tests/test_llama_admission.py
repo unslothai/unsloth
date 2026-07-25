@@ -618,13 +618,42 @@ def test_module_imports_on_python_39(monkeypatch):
         and isinstance(n.func, ast.Attribute)
         and n.func.attr == "bit_count"
     ]
-    # dataclass(slots = ...) (3.10+)
+    # dataclass(slots = ...) is 3.10+, so every dataclass must take it through
+    # the version gate instead of naming it. A new one that forgets the gate
+    # loses slots silently, so require the **_SLOTS unpack rather than allow it.
+    seen = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-        if name == "dataclass":
-            assert "slots" not in {kw.arg for kw in node.keywords}
+        if name != "dataclass":
+            continue
+        seen += 1
+        assert "slots" not in {kw.arg for kw in node.keywords}
+        assert [
+            kw for kw in node.keywords
+            if kw.arg is None and getattr(kw.value, "id", None) == "_SLOTS"
+        ], ast.dump(node)
+    assert seen
+
+
+def test_slots_gate_matches_the_running_interpreter():
+    """The gate is only worth having if it actually applies where it can."""
+    import sys
+
+    gated = (LlamaAdmissionConfig, llama_admission.LlamaAdmissionSnapshot, llama_admission._Waiter)
+    if sys.version_info >= (3, 10):
+        assert llama_admission._SLOTS == {"slots": True}
+        for cls in gated:
+            assert getattr(cls, "__slots__", None), cls
+    else:
+        assert llama_admission._SLOTS == {}
+
+    # Construct through the gate either way: slots=True rebuilds the class, so a
+    # field it cannot carry over would only show up on instantiation.
+    config = LlamaAdmissionConfig(max_queue = 7)
+    assert config.max_queue == 7 and config.queue_limit(4) == 7
+    assert llama_admission.LlamaAdmissionSnapshot("k", 1, 1, 0).capacity == 1
 
 
 def test_held_count_tracks_the_bitmask():

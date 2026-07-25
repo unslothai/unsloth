@@ -13,10 +13,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Optional
+
+
+# dataclass(slots = True) drops the per-instance __dict__, which is worth having
+# on types the gate allocates per request. It is 3.10+ and this package declares
+# >=3.9, so gate it rather than dropping it. Empty on 3.9 means plain dataclass.
+_SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
 ADMISSION_CONTROL_ENV = "UNSLOTH_LLAMA_ADMISSION_CONTROL"
@@ -50,7 +57,7 @@ DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
 DEFAULT_ADMISSION_MIN_QUEUE = 64
 
 
-@dataclass(frozen = True)
+@dataclass(frozen = True, **_SLOTS)
 class LlamaAdmissionConfig:
     enabled: bool = DEFAULT_ADMISSION_ENABLED
     queue_timeout_s: Optional[float] = DEFAULT_ADMISSION_QUEUE_TIMEOUT_S
@@ -77,7 +84,7 @@ class LlamaAdmissionConfig:
         return max(self.min_queue, scaled) if self.min_queue else scaled
 
 
-@dataclass(frozen = True)
+@dataclass(frozen = True, **_SLOTS)
 class LlamaAdmissionSnapshot:
     key: str
     capacity: int
@@ -206,7 +213,7 @@ def llama_admission_config_from_env() -> LlamaAdmissionConfig:
     )
 
 
-@dataclass
+@dataclass(**_SLOTS)
 class _Waiter:
     loop: asyncio.AbstractEventLoop
     future: asyncio.Future
