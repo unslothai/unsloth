@@ -3847,7 +3847,7 @@ class TestStrixRocm71Override:
             assert m._infer_linux_amd_gfx_arch() == "gfx1151"
 
     def test_install_sh_cpuinfo_inference_requires_pci_evidence(self):
-        """install.sh mirror of the VM/container guard: both cpuinfo greps must be
+        """install.sh mirror of the VM/container guard: every cpuinfo grep must be
         gated on _gpu_evidence (AMD PCI display device via _amd_gpu_present_via_pci,
         or the WSL librocdxg gate), and the gate must sit before the first grep."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
@@ -3858,8 +3858,9 @@ class TestStrixRocm71Override:
         assert pci >= 0 and infer >= 0
         assert pci < infer, "the PCI evidence check must run before the cpuinfo inference"
         assert (
-            body.count('[ -n "$_gpu_evidence" ] && grep -qiE') == 2
-        ), "both cpuinfo greps (gfx1151 and gfx1150) must be gated on _gpu_evidence"
+            body.count("grep -qiE")
+            == body.count('[ -n "$_gpu_evidence" ] && grep -qiE')
+        ), "every cpuinfo grep (gfx1151/gfx1150/gfx1152) must be gated on _gpu_evidence"
 
     def test_lspci_scan_covers_all_display_controllers(self):
         """The lspci fallback must scan every display-class line, not just the
@@ -4213,11 +4214,11 @@ class TestStrixRocm71Override:
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         # The 2.11 constraint block must switch on $_torch_index_leaf, not the full
         # $TORCH_INDEX_URL (a */gfx* match false-positives on a mirror base path). Only the
-        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150) are pushed to 2.11;
+        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150 / gfx1152) go to 2.11;
         # a bare gfx* would also floor gfx110X-all/gfx90a/gfx908, left bare on purpose.
-        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)' in source, (
+        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)' in source, (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
-            "it (rocm7.2|gfx120x-all|gfx1151|gfx1150), not a bare gfx* or the whole URL"
+            "it (rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152), not a bare gfx* or the URL"
         )
 
     def test_amd_rocm_mirror_env_var_respected(self):

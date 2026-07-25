@@ -296,6 +296,9 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Ryzen AI Max+ 395 w/ Radeon 8060S Graphics", "gfx1151"),
     ("AMD Radeon 890M Graphics", "gfx1150"),
     ("AMD Radeon 880M Graphics", "gfx1150"),
+    ("AMD Radeon 860M Graphics", "gfx1152"),
+    ("AMD Radeon 840M Graphics", "gfx1152"),
+    ("AMD Ryzen AI 7 350 w/ Radeon 860M", "gfx1152"),
     ("AMD Radeon RX 7900 XTX", "gfx110X-all"),
     ("AMD Radeon RX 7800 XT", "gfx110X-all"),
     ("AMD Radeon PRO W7900", "gfx110X-all"),
@@ -319,6 +322,10 @@ _GPU_NAME_LEAF_CASES = [
 # share an index leaf with the right one, which is exactly why it went unnoticed
 # through five copies of the table. The leaf assertions above cannot catch that
 # class of error; only an external source can.
+#
+# The APU rows were added after that: Krackan Point (860M / 840M) said gfx1150
+# but is gfx1152, and unlike the three above that one DID change the wheel,
+# since gfx1150 and gfx1152 are separate index leaves on repo.amd.com.
 _AMD_DOCUMENTED_ARCH = {
     # RDNA 4 -- Navi 48 is gfx1201, Navi 44 is gfx1200.
     "AMD Radeon RX 9070 XT": "gfx1201",
@@ -337,6 +344,13 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 7600 XT": "gfx1102",
     "AMD Radeon RX 7700S": "gfx1102",
     "AMD Radeon PRO W7600": "gfx1102",
+    # RDNA 3.5 APUs -- Strix Point is gfx1150, Krackan Point (860M/840M) is
+    # gfx1152, per AMD's own lemonade GPU table (src/cpp/server/system_info.cpp).
+    "AMD Radeon 8060S Graphics": "gfx1151",
+    "AMD Radeon 890M Graphics": "gfx1150",
+    "AMD Radeon 880M Graphics": "gfx1150",
+    "AMD Radeon 860M Graphics": "gfx1152",
+    "AMD Radeon 840M Graphics": "gfx1152",
 }
 
 
@@ -600,11 +614,11 @@ class TestNoUnregisteredArchTable:
 
 
 class TestTorch211PinAllowlistParity:
-    """gfx120X-all / gfx1151 / gfx1150 (and rocm7.2) ship the null _grouped_mm
-    kernel below torch 2.11, so all three installers must raise the same floor.
-    A leaf missing from one copy reintroduces the crash on that path."""
+    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 (and rocm7.2) ship the null
+    _grouped_mm kernel below torch 2.11, so all three installers must raise the
+    same floor. A leaf missing from one copy reintroduces the crash there."""
 
-    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150"}
+    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
 
     def test_install_sh_pins_the_same_leaves(self):
         source = _INSTALL_SH.read_text(encoding = "utf-8")
