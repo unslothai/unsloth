@@ -92,11 +92,16 @@ export function drainThinkMarkupBuffer(
  * with many literal `"</think>"` mentions. Restarting the quote scan at
  * `spanStart` per candidate was O(candidates x length), and this runs on the
  * cumulative string for every SSE delta (#7334).
+ *
+ * `streaming` marks a mid-stream parse, where `raw` can still grow: an
+ * enclosing ``` fence that has not closed yet may still close in a later
+ * delta, so the unclosed-fence fallback is deferred to the final parse.
  */
 function findStructuralThinkClose(
   raw: string,
   spanStart: number,
   from: number,
+  streaming = false,
 ): number {
   const FENCE = "```";
   let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
@@ -159,6 +164,13 @@ function findStructuralThinkClose(
         // fall back to the O(n) scan when the greedy cursor is exhausted, since
         // overlapping runs such as "````" can still hide a marker from it.
         literal = true;
+      } else if (streaming) {
+        // More deltas are coming, so "no closing ``` yet" is not "never". Defer
+        // like the backend extractor's hold: calling it structural now and
+        // reversing it when the fence closes would bounce text out of the
+        // thinking drawer and back, and latch reasoningDuration on a tag that
+        // was never the real close (#7334).
+        literal = true;
       } else {
         if (lastFence === undefined) lastFence = raw.lastIndexOf(FENCE);
         literal = lastFence >= closeIndex;
@@ -189,11 +201,22 @@ function findStructuralThinkClose(
   return -1;
 }
 
-export function parseAssistantContent(raw: string): ContentPart[] {
+/**
+ * Split raw assistant text into reasoning / text parts.
+ *
+ * Pass `{ streaming: true }` while the response is still arriving so an
+ * as-yet-unclosed ``` fence is not resolved early; the default (stream
+ * complete) applies the structural fallback (#7334).
+ */
+export function parseAssistantContent(
+  raw: string,
+  options?: { streaming?: boolean },
+): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
     return parts;
   }
+  const streaming = options?.streaming ?? false;
 
   let cursor = 0;
   while (cursor < raw.length) {
@@ -210,6 +233,7 @@ export function parseAssistantContent(raw: string): ContentPart[] {
       raw,
       reasoningStart,
       reasoningStart,
+      streaming,
     );
     if (closeIndex === -1) {
       appendReasoningPart(parts, raw.slice(reasoningStart));
@@ -230,9 +254,22 @@ export function parseAssistantContent(raw: string): ContentPart[] {
  * end of thinking. A raw substring check would latch the reasoning-duration
  * timer on that literal tag and never correct it when the real close arrives,
  * underreporting the thought time (#7334).
+ *
+ * Callers polling mid-stream must pass `{ streaming: true }` for the same
+ * reason: a tag inside a fence that has not closed *yet* is not a close.
  */
-export function hasClosedThinkTag(raw: string): boolean {
+export function hasClosedThinkTag(
+  raw: string,
+  options?: { streaming?: boolean },
+): boolean {
   const openIndex = raw.indexOf(THINK_OPEN_TAG);
   const spanStart = openIndex === -1 ? 0 : openIndex + THINK_OPEN_TAG.length;
-  return findStructuralThinkClose(raw, spanStart, spanStart) !== -1;
+  return (
+    findStructuralThinkClose(
+      raw,
+      spanStart,
+      spanStart,
+      options?.streaming ?? false,
+    ) !== -1
+  );
 }

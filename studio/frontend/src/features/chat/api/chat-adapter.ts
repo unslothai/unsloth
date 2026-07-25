@@ -2661,7 +2661,13 @@ export function createOpenAIStreamAdapter(
         }
         return parts;
       };
-      const buildAssistantContent = (rawText: string) => {
+      // `streaming` marks a mid-stream build: an unclosed ``` fence in the
+      // reasoning may still close in a later delta, so its close tags stay
+      // deferred until the final build (#7334).
+      const buildAssistantContent = (
+        rawText: string,
+        options?: { streaming?: boolean },
+      ) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
             const cursor = (part as PositionedToolCallPart).textCursor;
@@ -2685,7 +2691,10 @@ export function createOpenAIStreamAdapter(
         const appendTextThrough = (nextCursor: number) => {
           if (nextCursor <= textCursor) return;
           assembled.push(
-            ...parseAssistantContent(rawText.slice(textCursor, nextCursor)),
+            ...parseAssistantContent(
+              rawText.slice(textCursor, nextCursor),
+              options,
+            ),
           );
           textCursor = nextCursor;
         };
@@ -3437,7 +3446,9 @@ export function createOpenAIStreamAdapter(
                         argsText: partial.argsText,
                       };
                       yield {
-                        content: buildAssistantContent(cumulativeText),
+                        content: buildAssistantContent(cumulativeText, {
+                          streaming: true,
+                        }),
                         metadata: {
                           timing: buildTiming(
                             streamStartTime,
@@ -3724,7 +3735,9 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: buildAssistantContent(cumulativeText, {
+                    streaming: true,
+                  }),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -3917,7 +3930,9 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: buildAssistantContent(cumulativeText, {
+                    streaming: true,
+                  }),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -3968,7 +3983,9 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const textParts = parseAssistantContent(cumulativeText);
+              const textParts = parseAssistantContent(cumulativeText, {
+                streaming: true,
+              });
 
               // Fallback when no server-side reasoning_summary arrives.
               if (
@@ -3978,7 +3995,7 @@ export function createOpenAIStreamAdapter(
                 reasoningStartAt = Date.now();
               }
               if (
-                hasClosedThinkTag(cumulativeText) &&
+                hasClosedThinkTag(cumulativeText, { streaming: true }) &&
                 reasoningStartAt &&
                 !reasoningDuration
               ) {
@@ -3989,7 +4006,9 @@ export function createOpenAIStreamAdapter(
 
               if (textParts.length > 0 || toolCallParts.length > 0) {
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: buildAssistantContent(cumulativeText, {
+                    streaming: true,
+                  }),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,

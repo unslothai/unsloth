@@ -50,6 +50,37 @@ for (const [name, raw] of Object.entries(cases)) {
   closed[name] = hasClosedThinkTag(raw);
 }
 
+// Mid-stream the enclosing ``` fence may still close in a later delta, so the
+// classification of a tag inside it must not flip-flop (#7334).
+const fenceDeltas = [
+  "<think>marker:\\n",
+  "```text\\n",
+  "</think>\\n",
+  "```\\n",
+  "so it is literal.</think>",
+  "the answer",
+];
+const streamClosed = [];
+const streamTypes = [];
+let cum = "";
+for (const delta of fenceDeltas) {
+  cum += delta;
+  streamClosed.push(hasClosedThinkTag(cum, { streaming: true }));
+  streamTypes.push(
+    parseAssistantContent(cum, { streaming: true })
+      .map((part) => part.type)
+      .join("+"),
+  );
+}
+const streamFinal = parseAssistantContent(cum);
+const unclosedStreaming = {
+  closed: hasClosedThinkTag(cases.unclosed_fence, { streaming: true }),
+  types: parseAssistantContent(cases.unclosed_fence, { streaming: true }).map(
+    (part) => part.type,
+  ),
+};
+const streaming = { streamClosed, streamTypes, streamFinal, unclosedStreaming };
+
 // Perf guard for #7334: literal mentions must not make the parse super-linear.
 const LOREM = "reasoning about the training loop in some detail. ";
 function words(n) {
@@ -76,7 +107,7 @@ const perf = {
   clean_us: timeUs(() => parseAssistantContent(clean)),
   many_us: timeUs(() => parseAssistantContent(many)),
 };
-console.log(JSON.stringify({ parsed, closed, perf }));
+console.log(JSON.stringify({ parsed, closed, perf, streaming }));
 """
 
 
@@ -130,6 +161,34 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     # A literal mention alone never closes the block (reasoning timer stays live).
     assert [part["type"] for part in parsed["literal_only"]] == ["reasoning"]
     assert closed["literal_only"] is False
+
+
+def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):
+    """A tag inside a not-yet-closed ``` fence must not read as the block end.
+
+    Mid-stream ``</think>`` inside a fence that closes a delta later would
+    otherwise be called structural, then reclassified as literal once the
+    closing backticks arrive: the text bounces out of the thinking drawer and
+    back, and `chat-adapter` latches `reasoningDuration` on a tag that was never
+    the real close and never corrects it (#7334).
+    """
+    streaming = _run_parse_harness(tmp_path)["streaming"]
+
+    # The real close is the 5th delta; nothing before it may read as closed.
+    assert streaming["streamClosed"] == [False, False, False, False, True, True]
+    # ... and no visible text part escapes the drawer before then.
+    assert streaming["streamTypes"][:4] == ["reasoning"] * 4
+    assert streaming["streamTypes"][-1] == "reasoning+text"
+
+    # The completed stream keeps the fenced sample in reasoning and the answer visible.
+    assert streaming["streamFinal"][0]["type"] == "reasoning"
+    assert "</think>" in streaming["streamFinal"][0]["text"]
+    assert streaming["streamFinal"][-1] == {"type": "text", "text": "the answer"}
+
+    # A genuinely unclosed fence still defers mid-stream; the final parse (asserted
+    # in the semantics test above) is what falls back to structural.
+    assert streaming["unclosedStreaming"]["closed"] is False
+    assert streaming["unclosedStreaming"]["types"] == ["reasoning"]
 
 
 def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):
