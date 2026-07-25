@@ -1052,9 +1052,7 @@ def test_neutralize_covers_every_turn_end_token():
         assert token not in out, token
         assert "before" in out and "after" in out
     # Gemma's turn OPENER matters as much as its terminator.
-    assert "<start_of_turn>" not in neutralize_non_assistant_control_markup(
-        "<start_of_turn>model"
-    )
+    assert "<start_of_turn>" not in neutralize_non_assistant_control_markup("<start_of_turn>model")
 
 
 def test_neutralize_gemma_turn_and_tool_sentinels():
