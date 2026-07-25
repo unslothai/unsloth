@@ -664,15 +664,6 @@ _can_read_tty() {
     ( : </dev/tty ) >/dev/null 2>&1
 }
 
-# ── Helper: will sudo run this exact command without prompting? ──
-# `sudo -n -l -- cmd args...` asks the sudoers policy whether the command is
-# permitted, without running it, and fails instead of prompting. `sudo -n true`
-# only proves `true` is allowed, which says nothing under command-specific
-# NOPASSWD rules like `NOPASSWD: /usr/bin/apt-get`.
-_sudo_runs_unattended() {
-    sudo -n -l -- "$@" >/dev/null 2>&1
-}
-
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -703,32 +694,6 @@ _smart_apt_install() {
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
     if command -v sudo >/dev/null 2>&1; then
-        # Probe the argument vectors we are actually going to elevate. Without a
-        # terminal we cannot supply a password, and every sudo call below closes
-        # stdin, so check first rather than letting sudo die on its own prompt
-        # (#7307).
-        if _sudo_runs_unattended apt-get update -y \
-            && _sudo_runs_unattended apt-get install -y $_STILL_MISSING; then
-            _sudo_unattended=true
-        else
-            _sudo_unattended=false
-        fi
-
-        # Nothing to prompt on and sudo wants a password: this cannot succeed.
-        # Exit with the same actionable message as the no-sudo path instead of
-        # assuming consent and failing inside sudo.
-        if ! _can_read_tty && [ "$_sudo_unattended" != true ]; then
-            echo ""
-            echo "    These packages are missing and need sudo to install:"
-            echo "    $_STILL_MISSING"
-            echo "    Detected $(_apt_distro_description)."
-            echo "    No terminal is available to confirm on and sudo requires a"
-            echo "    password here, so this cannot be done unattended."
-            echo "    Please install them first, then re-run Unsloth Studio setup:"
-            echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
-            exit 1
-        fi
-
         _ad_desc="$(_apt_distro_description)"
         echo ""
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
@@ -742,24 +707,38 @@ _smart_apt_install() {
         if _can_read_tty; then
             printf "    Accept? [Y/n] "
             read -r REPLY </dev/tty || REPLY="y"
+            case "$REPLY" in
+                [nN]*)
+                    echo ""
+                    echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                    echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                    exit 1
+                    ;;
+            esac
+            sudo apt-get update -y </dev/null
+            sudo apt-get install -y $_STILL_MISSING </dev/null
         else
-            # Unattended with passwordless sudo: no one can answer, and asking
-            # would only leave a dangling prompt in the log.
-            echo "    No terminal to confirm on; proceeding with passwordless sudo."
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
+            # Nobody can answer a prompt or type a password here, so pass -n:
+            # sudo then refuses outright instead of prompting into a closed
+            # stdin, which is how #7307 died. Running the real commands is the
+            # only reliable test of whether they are passwordless -- `sudo -l`
+            # reports whether a command is *authorized*, which is a different
+            # question from whether running it needs authentication.
+            echo "    No terminal to confirm on; trying passwordless sudo."
+            if sudo -n apt-get update -y </dev/null &&
+                sudo -n apt-get install -y $_STILL_MISSING </dev/null; then
+                echo "    Installed with passwordless sudo."
+            else
                 echo ""
-                echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    Detected ${_ad_desc}."
+                echo "    sudo likely needs a password here and there is no terminal to"
+                echo "    enter one on, so this cannot be done unattended."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
                 echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 exit 1
-                ;;
-            *)
-                sudo apt-get update -y </dev/null
-                sudo apt-get install -y $_STILL_MISSING </dev/null
-                ;;
-        esac
+            fi
+        fi
     else
         echo ""
         echo "    sudo is not available on this system."

@@ -117,7 +117,6 @@ run_smart() {
 
     _f=$(mktemp -p "$_TMP_ROOT")
     sed -n -e '/^_can_read_tty()/,/^}/p' \
-           -e '/^_sudo_runs_unattended()/,/^}/p' \
            -e '/^_smart_apt_install()/,/^}/p' "$INSTALL_SH" \
         | sed -e "s#/dev/tty#$_d/tty#g" > "$_f"
 
@@ -132,16 +131,20 @@ run_smart() {
             fi
             builtin command "$@"
         }
+        # Models real sudo: -n refuses (exit 1, nothing runs) whenever the
+        # command would need a password; otherwise the command runs.
         sudo() {
-            if [ "$1" = -n ]; then
+            _noninteractive=false
+            if [ "$1" = -n ]; then _noninteractive=true; shift; fi
+            if [ "$_noninteractive" = true ]; then
                 case "$_sudo_mode" in
-                    nopasswd) return 0 ;;
-                    # Trivial commands are NOPASSWD but apt-get is not, which is
-                    # exactly what a `sudo -n true` probe reads as unattended.
+                    nopasswd) ;;
+                    # Authorized for everything, but only trivial commands are
+                    # NOPASSWD. `sudo -l` says yes here while execution needs a
+                    # password, so authorization is not the question to ask.
                     aptneedspasswd)
                         case " $* " in
                             *" apt-get "*) return 1 ;;
-                            *) return 0 ;;
                         esac
                         ;;
                     *) return 1 ;;
@@ -164,8 +167,8 @@ assert_contains "no tty + password sudo: gives the manual command" \
 assert_contains "no tty + password sudo: names the distro" \
     "$_out" "TestOS 1.0 (debian-like)"
 case "$_out" in
-    *SUDO_RAN*) echo "  FAIL: no tty + password sudo must not invoke sudo"; FAIL=$((FAIL + 1)) ;;
-    *) echo "  PASS: no tty + password sudo does not invoke sudo"; PASS=$((PASS + 1)) ;;
+    *SUDO_RAN*) echo "  FAIL: no tty + password sudo must not run apt-get as root"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: no tty + password sudo runs nothing as root"; PASS=$((PASS + 1)) ;;
 esac
 case "$_out" in
     *"Accept? [Y/n]"*) echo "  FAIL: must not print an unanswerable prompt"; FAIL=$((FAIL + 1)) ;;
@@ -176,7 +179,7 @@ esac
 _out=$(run_smart notty nopasswd)
 assert_contains "no tty + passwordless sudo: still installs" "$_out" "SUDO_RAN: apt-get install -y cmake"
 assert_contains "no tty + passwordless sudo: says why it proceeded" \
-    "$_out" "proceeding with passwordless sudo"
+    "$_out" "passwordless sudo"
 
 # A readable tty must behave exactly as before: prompt, then honour the answer.
 _out=$(run_smart tty needspasswd)
@@ -201,14 +204,15 @@ else
     echo "  SKIP: this platform cannot fake a readable-but-unopenable /dev/tty"
 fi
 
-# NOPASSWD on trivial commands but not on apt-get: the case `sudo -n true` got
-# wrong. Must fall back to the actionable message, not blind escalation.
+# Authorized for apt-get but not NOPASSWD on it: `sudo -n true` reads this as
+# unattended, and so does `sudo -n -l -- apt-get ...`, since list mode answers
+# authorization rather than authentication. Only running it with -n is truthful.
 _out=$(run_smart notty aptneedspasswd)
 assert_contains "apt-get needs a password: says it cannot run unattended" \
     "$_out" "cannot be done unattended"
 case "$_out" in
-    *SUDO_RAN*) echo "  FAIL: apt-get needing a password must not invoke sudo"; FAIL=$((FAIL + 1)) ;;
-    *) echo "  PASS: apt-get needing a password does not invoke sudo"; PASS=$((PASS + 1)) ;;
+    *SUDO_RAN*) echo "  FAIL: apt-get needing a password must not run as root"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: apt-get needing a password runs nothing as root"; PASS=$((PASS + 1)) ;;
 esac
 
 echo ""
