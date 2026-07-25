@@ -256,7 +256,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
     for token in tokens:
-        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+        # A keyword only separates where a COMMAND may start (see below).
+        if token in _SHELL_SEPARATORS or (token in _SHELL_KEYWORDS_AS_SEP and expect_command):
             expect_command = True
             prefix_pending = False
             continue
@@ -590,7 +591,10 @@ _CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
     r"exec|execute|run|eval|spawn|invoke|launch|"
-    r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter"
+    r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter|"
+    # A bare runtime name (mcp__srv__python, __node, __code) is an execution
+    # tool even without a verb: its payload runs on the MCP server.
+    r"python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|script|repl|sandbox|notebook"
     r")(?:[_\-]|$)",
     re.IGNORECASE,
 )
@@ -1594,7 +1598,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         # purely of separator characters still separates commands.
         if (
             token in _SHELL_SEPARATORS
-            or token in _SHELL_KEYWORDS_AS_SEP
+            or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
             or not set(token) - set(";&|()")
         ):
             expect_command = True
@@ -2697,6 +2701,11 @@ _HIGH_RISK_COMMANDS = frozenset(
         # escaping the child process's workdir and rlimit sandbox entirely.
         # Gated wholesale (a read-only `docker ps` prompts too) because the
         # escape lives in the arguments, and this mode errs toward prompting.
+        # chroot/nsenter/unshare cross a privilege or namespace boundary and
+        # then exec a nested command, so the wrapper hides the real action.
+        "chroot",
+        "nsenter",
+        "unshare",
         "docker",
         "podman",
         "nerdctl",
@@ -2771,6 +2780,9 @@ _PIPE_TO_INTERPRETER_RE = re.compile(
 # never literal text, so it is unscreenable and fails closed. A non-interpreter
 # consumer (diff <(sort a) <(sort b)) reads the substituted file and stays out.
 _BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?\s*>(?!>)\s*\S")
+_HERESTRING_TO_INTERPRETER_RE = re.compile(
+    r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
+)
 _PROC_SUBST_EXEC_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
     r"[^\n]*<\("
@@ -2802,37 +2814,20 @@ _WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # timeout --signal TERM, nice -n 5, xargs -I {}). Without consuming the value
 # it is mistaken for the wrapped command, so `env -u FOO rm -rf x` reads as
 # the command `FOO` and the real `rm` is never judged.
-_WRAPPER_VALUE_FLAGS = frozenset(
-    {
-        # -C/--chdir is deliberately NOT here: env -C is gated as a chdir
-        # (it enables a relative sensitive read), so it must not be skipped.
-        "-u",
-        "--unset",
-        "-i",
-        "--input",
-        "-o",
-        "--output",
-        "-e",
-        "--error",
-        "-s",
-        "--signal",
-        "-k",
-        "--kill-after",
-        "-n",
-        "--adjustment",
-        "-p",
-        "--pid",
-        "-I",
-        "-L",
-        "-P",
-        "-d",
-        "--delimiter",
-        "-a",
-        "--arg-file",
-        "--userspec",
-        "--groups",
-    }
-)
+_WRAPPER_VALUE_FLAGS_BY_CMD = {
+    # env -i/--ignore-environment is VALUELESS; only -u/--unset takes a name.
+    "env": frozenset({"-u", "--unset"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid"}),
+    "xargs": frozenset(
+        {"-I", "-L", "-P", "-d", "--delimiter", "-a", "--arg-file", "-n", "-s", "-E"}
+    ),
+    "chroot": frozenset({"--userspec", "--groups"}),
+    "setsid": frozenset(),
+    "nohup": frozenset(),
+}
 # Non-shell interpreters running an inline program (python -c, node -e, perl -E,
 # php -r): the terminal path never screens that program the way the python tool
 # does, so an arbitrary destructive script would run unprompted. sh/bash -c are
@@ -2981,6 +2976,9 @@ _HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force"})
 # git global options that take a separate value token (git -C repo clean, git
 # --git-dir d clean); the value must be consumed so it is not mistaken for the
 # subcommand. Attached forms (-C=..., --git-dir=...) carry their own value.
+# `git -c alias.NAME=PAYLOAD` defines an alias git then runs; a leading `!`
+# makes the payload a shell command.
+_GIT_ALIAS_ASSIGN_RE = re.compile(r"^alias\.[^=]+=(.*)$", re.DOTALL)
 _GIT_GLOBAL_VALUE_FLAGS = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 )
@@ -3123,6 +3121,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     # so fail closed. diff <(sort a) <(sort b) reads, not executes, and stays out.
     if _PROC_SUBST_EXEC_RE.search(command):
         return True
+    # A script piped into a shell (printf '...' | bash) or fed as a herestring
+    # (bash <<< '...') is executed without ever appearing at command position.
+    if _PIPE_TO_INTERPRETER_RE.search(command.lower()):
+        return True
+    _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
+    if _herestring:
+        return True
     # Newlines separate commands in a shell but read as whitespace to shlex.
     # Decode ANSI-C quoting ($'rm' -> rm, $'\x72\x6d' -> rm) so a command name
     # hidden behind it is classified as the real command Bash will run.
@@ -3188,7 +3193,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         for _tok_idx, token in enumerate(tokens):
             if (
                 token in _SHELL_SEPARATORS
-                or token in _SHELL_KEYWORDS_AS_SEP
+                or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
                 or not set(token) - set(";&|()")
             ):
                 expect_command = True
@@ -3205,7 +3210,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 # A wrapper option that takes a SEPARATE value (env -u NAME,
                 # stdbuf -o L, timeout --signal TERM): the next token is that
                 # value, not the wrapped command, so consume it and keep looking.
-                if prefix_pending and "=" not in token and flag in _WRAPPER_VALUE_FLAGS:
+                if (
+                    prefix_pending
+                    and "=" not in token
+                    and flag in _WRAPPER_VALUE_FLAGS_BY_CMD.get(current_command, frozenset())
+                ):
                     wrapper_value_pending = True
                     continue
                 # An interpreter running inline code (python -c, python3.11 -Bc,
@@ -3324,6 +3333,18 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # The value of a git global option (git -C repo clean): not the subcommand.
             if git_glob_pending:
                 git_glob_pending = False
+                # `git -c alias.x='!cmd'` / `alias.x='clean -fd'` defines an alias
+                # git later executes (a `!` alias runs through a shell), so the
+                # payload is real code hiding in an option value: screen it.
+                m = _GIT_ALIAS_ASSIGN_RE.match(raw)
+                if m and _depth < 3:
+                    alias_body = m.group(1)
+                    # A `!` alias runs through a shell; a plain one is a git
+                    # subcommand, so screen it as `git <body>` to reach the git
+                    # gates (alias.n='clean -fd' really runs `git clean -fd`).
+                    nested = alias_body[1:] if alias_body.startswith("!") else "git " + alias_body
+                    if _terminal_is_high_risk(nested, _depth + 1):
+                        return True
                 continue
             # The value of a wrapper option (env -u FOO, stdbuf -o L): not the
             # command, so skip it and keep looking for the wrapped command.
@@ -3433,6 +3454,21 @@ def _python_is_high_risk(code: str) -> bool:
     # `import os as filesystem` rebinds the module, so os.remove reached through
     # the alias (filesystem.remove) must resolve too; posix is os's low-level twin.
     os_module_aliases: "set[str]" = {"os", "posix", "nt"}
+
+    def _is_os_module_ref(value) -> bool:
+        # A Name bound to os/posix/nt, or a literal __import__("os") call whose
+        # result is used directly (m = __import__("os"); m.remove(...)).
+        if isinstance(value, ast.Name):
+            return value.id in os_module_aliases
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "__import__"
+            and bool(value.args)
+            and isinstance(value.args[0], ast.Constant)
+            and value.args[0].value in ("os", "posix", "nt")
+        )
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in _PY_DESTRUCTIVE_FS_MODULES:
             for alias in node.names:
@@ -3442,17 +3478,18 @@ def _python_is_high_risk(code: str) -> bool:
             for alias in node.names:
                 if alias.name in ("os", "posix", "nt") and alias.asname:
                     os_module_aliases.add(alias.asname)
+        elif isinstance(node, ast.Assign) and _is_os_module_ref(node.value):
+            # m = __import__("os") binds the module under a new name.
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    os_module_aliases.add(tgt.id)
 
     def _is_destructive_attr(attr: str, value) -> bool:
         # A destructive-name attribute (unlink/rmtree/...) on any receiver, or
         # `remove` specifically on the os module (or an alias of it).
         if attr in _PY_DESTRUCTIVE_FS_ATTRS:
             return True
-        return (
-            attr in _PY_DESTRUCTIVE_FS_OS_ATTRS
-            and isinstance(value, ast.Name)
-            and value.id in os_module_aliases
-        )
+        return attr in _PY_DESTRUCTIVE_FS_OS_ATTRS and _is_os_module_ref(value)
 
     # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gate it via
     # the handle name rather than the bare `.truncate` attribute: pandas

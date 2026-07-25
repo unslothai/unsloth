@@ -526,6 +526,27 @@ def test_terminal_classifier(command, unsafe):
         ("until rm -rf x; do :; done", True),
         ("if true; then echo ok; fi", False),
         ("while read l; do echo $l; done", False),
+        # a keyword in ARGUMENT position is an ordinary word, not a separator
+        ("grep if rm README.md", False),
+        ("echo while curl", False),
+        # --- env -i is valueless, so it must not swallow the command ---
+        ("env -i git clean -fd", True),
+        ("env -i python train.py", False),
+        # --- a script fed to a shell over a pipe or herestring is unscreenable ---
+        ("printf 'x' | bash", True),
+        ("cat script.sh | sh", True),
+        ("bash <<< 'git clean -fd'", True),
+        ("git log --oneline | head -20", False),  # ordinary pipes still run
+        ("cat data.csv | wc -l", False),
+        # --- a git -c alias defines code git then executes ---
+        ("git -c alias.n='!rm -rf b' n", True),
+        ("git -c alias.n='clean -fd' n", True),
+        ("git -c user.name=me commit -m x", False),
+        ("git -c core.pager=less log", False),
+        # --- privilege/namespace boundary tools wrap a nested command ---
+        ("chroot / /bin/sh", True),
+        ("nsenter -t 1 -m sh", True),
+        ("unshare -r sh", True),
         # --- a bare redirect truncates; a redirect after a command does not ---
         ("> notes.txt", True),
         (": > notes.txt", True),
@@ -713,6 +734,9 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("f = open('a', 'r+')\nf.truncate(0)", True),
         # an annotated binding is the same alias as a plain one
         ("import os\nf: object = os.remove\nf('important.py')", True),
+        # __import__ binds the module the same way `import os as m` does
+        ("m = __import__('os')\nm.remove('important.py')", True),
+        ("getattr(__import__('os'), 'remove')('x')", True),
         ("import pandas as pd\ndf = pd.read_csv('x')\ndf.truncate(before=1)", False),
         # --- prompt: dynamically built code run past the static checks ---
         ("eval(input())", True),
@@ -787,6 +811,10 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__add_label", {"l": "bug"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_roles", {}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}iam__promote_user", {"u": "x"}) is True
+    # A bare runtime name is an execution tool even without a verb.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}srv__python", {"code": "1"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}srv__node", {"code": "1"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}srv__code", {"code": "1"}) is True
     # clear/reset/empty/flush name the same data loss as delete/drop
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}db__clear_table", {"t": "runs"}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}cache__reset_all", {}) is True
