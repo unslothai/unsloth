@@ -3675,7 +3675,9 @@ def hydrate_source_tree(
                 break
             except Exception as exc:
                 last_exc = exc
-                if index == len(source_urls) - 1:
+                # A full disk fails every mirror, so stop here rather than let a
+                # later 404 become the reported cause and mask the real one.
+                if _environment_fatal_reason(exc) or index == len(source_urls) - 1:
                     raise
                 log(f"source tree download failed from {source_url}: {exc}")
         if not downloaded:
@@ -6001,12 +6003,13 @@ def validate_prebuilt_attempts(
             )
             raise ExistingInstallSatisfied(attempt, tried_fallback)
 
-        shortfall = _insufficient_disk_reason(install_dir)
-        if shortfall is not None:
-            if index == len(attempt_list) - 1:
-                _fail_no_space(shortfall)
-            log(f"{shortfall}; checking the next candidate for a reusable install")
-            continue
+        # Warn once, then let the install run: hosts with a few GB free install
+        # fine, and rejecting them here would also skip the source-build fallback.
+        if index == 0:
+            low_disk = _low_disk_warning(install_dir)
+            if low_disk is not None:
+                log(low_disk)
+                _log_disk_space_help()
 
         staging_dir = create_install_staging_dir(install_dir)
         quantized_path = work_dir / f"stories260K-q4-{index}.gguf"
@@ -6165,12 +6168,28 @@ def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         yield current
-        current = current.__cause__ or current.__context__
+        # `raise X from None` means the earlier exception is unrelated; following
+        # __context__ anyway resurrects it and misreports the cause.
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif current.__suppress_context__:
+            current = None
+        else:
+            current = current.__context__
+
+
+def _is_enospc(exc: BaseException) -> bool:
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        return True
+    # shutil.copytree stringifies each per-file OSError and raises Error(errors)
+    # outside the except block, so errno and the whole chain are gone: the only
+    # surviving evidence is the message text.
+    return isinstance(exc, shutil.Error) and f"Errno {errno.ENOSPC}" in str(exc)
 
 
 def _environment_fatal_reason(exc: BaseException) -> str | None:
     for cause in _causal_chain(exc):
-        if isinstance(cause, OSError) and cause.errno == errno.ENOSPC:
+        if _is_enospc(cause):
             return "no space left on device"
     return None
 
@@ -6189,8 +6208,12 @@ def _first_existing_ancestor(path: Path) -> Path:
     return current
 
 
-def _insufficient_disk_reason(install_dir: Path, *, required_gb: float = 5.0) -> str | None:
-    required = int(required_gb * (1024**3))
+def _low_disk_warning(install_dir: Path, *, advised_gb: float = 5.0) -> str | None:
+    """Advisory only, never fatal. A prebuilt install peaks well under 1 GB (the
+    largest published bundle is 0.77 GB, macOS is 0.01 GB), so a fixed threshold
+    cannot decide whether this host has room -- a real ENOSPC decides that. The
+    number here is the headroom a source-build fallback would want."""
+    advised = int(advised_gb * (1024**3))
     targets = {
         "build/download scratch (TMPDIR)": Path(tempfile.gettempdir()),
         "llama.cpp install dir": _first_existing_ancestor(install_dir),
@@ -6200,10 +6223,10 @@ def _insufficient_disk_reason(install_dir: Path, *, required_gb: float = 5.0) ->
             free = shutil.disk_usage(path).free
         except OSError:
             continue
-        if free < required:
+        if free < advised:
             return (
-                f"insufficient disk space for llama.cpp: {label} at {path} has "
-                f"{free / (1024**3):.1f} GB free, need ~{required_gb:.0f} GB"
+                f"low disk space for llama.cpp: {label} at {path} has "
+                f"{free / (1024**3):.1f} GB free (~{advised_gb:.0f} GB recommended)"
             )
     return None
 
@@ -6282,7 +6305,11 @@ def install_prebuilt(
                     # recorded so the updater re-asserts it (#7213).
                     sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
-            with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
+            # ignore_cleanup_errors: an rmtree failure on the way out would
+            # otherwise replace the in-flight exception and lose EXIT_NO_SPACE.
+            with tempfile.TemporaryDirectory(
+                prefix = "unsloth-llama-prebuilt-", ignore_cleanup_errors = True
+            ) as tmp:
                 work_dir = Path(tmp)
                 probe_path = work_dir / "stories260K.gguf"
                 download_validation_model(probe_path, validation_model_cache_path(install_dir))
