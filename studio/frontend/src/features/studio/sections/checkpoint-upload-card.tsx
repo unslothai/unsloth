@@ -155,17 +155,16 @@ export function CheckpointUploadCard({
             <ExternalLink className="size-3.5" />
           </span>
         ) : null}
-        {!active ? (
-          <button
-            type="button"
-            onClick={() => setDismissedCheckpoint(dismissalKey)}
-            aria-label={t("common.close")}
-            title={t("common.close")}
-            className="pointer-events-auto grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <X className="size-3.5" />
-          </button>
-        ) : null}
+        <button
+          type="button"
+          disabled={active}
+          onClick={() => setDismissedCheckpoint(dismissalKey)}
+          aria-label={t("common.close")}
+          title={t("common.close")}
+          className="pointer-events-auto grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+        >
+          <X className="size-3.5" />
+        </button>
       </div>
 
       {upload.state === "error" ? (
