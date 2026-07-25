@@ -79,9 +79,9 @@ def test_rollback_restores_native_lease_expiry_with_token():
     (which would look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
-    assert re.search(
-        r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src
-    ), "rollback must restore the expiry alongside the token"
+    assert re.search(r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src), (
+        "rollback must restore the expiry alongside the token"
+    )
 
 
 def test_default_caches_keyed_on_inventory_version():
@@ -578,3 +578,52 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_parallel_slots_setting_wired_end_to_end():
+    """The per-load Parallel Slots knob (llama-server --parallel) must flow
+    from the run-settings form through persistence, both /load builders, the
+    validate preflight, and the cross-model reset; losing any hop silently
+    reverts the model to the server-wide slot default."""
+    config = _read("features/model-picker/model-config/per-model-config.ts")
+    # Persisted per model, clamped on every localStorage read/write, and null
+    # (= server default) counts as default so blank configs are not stored.
+    assert '"nParallel",' in config
+    assert "N_PARALLEL_MAX, Math.round(partial.nParallel)" in config
+    assert "config.nParallel == null &&" in config
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # The form renders the knob in the GGUF advanced section; a remembered
+    # override must reopen the section.
+    assert "Parallel Slots" in page
+    assert "config.nParallel != null ||" in page
+    assert 'aria-label="Parallel decode slots"' in page
+    api_types = _read("features/chat/types/api.ts")
+    assert "n_parallel?: number | null;" in api_types
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    # Click-time snapshot, /load body, validate preflight, cross-model reset,
+    # and the failed-switch rollback all carry the value.
+    assert "pendingLoadConfig?.nParallel" in runtime
+    # GGUF-gated, like the compare pane: a transformers load has no slots.
+    assert "n_parallel: isGguf ? loadNParallel : null," in runtime
+    assert "n_parallel: validateNParallel," in runtime
+    assert "loadNParallel = pendingLoadConfig?.nParallel ?? null;" in runtime
+    assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+    chat_api = _read("features/chat/api/chat-api.ts")
+    assert "n_parallel: payload.n_parallel," in chat_api
+    composer = _read("features/chat/shared-composer.tsx")
+    # The compare pane is a second, independent /load builder; its validate
+    # preflight must size like its load.
+    assert composer.count("n_parallel: ownConfig.nParallel ?? null,") == 2
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    # The startup auto-load is a third builder reading the remembered config;
+    # without it a remembered override reverts to the server default.
+    assert adapter.count("n_parallel: config.nParallel ?? null,") == 2
+    assert "loadedNParallel: config.nParallel ?? null," in adapter
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    # Hydration seeds the rollback BASELINE only; adopting the resolved echo
+    # into the control would pin a blank "server default" to a number.
+    assert "loadedNParallel: status.requested_parallel_slots," in status
+    assert "nParallel: status.requested_parallel_slots," not in status
+    sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
+    # The sidebar form remounts when an external change lands.
+    assert 'config.nParallel ?? "",' in sidebar
