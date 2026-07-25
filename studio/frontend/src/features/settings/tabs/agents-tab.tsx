@@ -65,7 +65,6 @@ const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
-const REMOTE_API_KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 
 // Backend PATH detection is only meaningful in the desktop app on a loopback
 // backend; a browser loopback URL may be an SSH/port forward to another host.
@@ -595,9 +594,13 @@ export function AgentsTab() {
   // Browser commands must target the Studio origin the user is viewing. The
   // desktop app instead uses the backend URL reported by /api/health; its
   // window origin is a Tauri URL and is not reachable by the CLI.
+  // No key is passed: the CLI treats an explicit one as authoritative and
+  // caches it per base, so a placeholder would overwrite a working saved key.
+  // Omitting the flag lets it replay the saved key; the remote section covers
+  // first-time setup.
   const commandBase = buildAgentCommand(
     isTauri ? serverUrl : origin,
-    REMOTE_API_KEY_PLACEHOLDER,
+    null,
     isWindowsClient ? "windows" : "unix",
     selectedAgent,
   );
