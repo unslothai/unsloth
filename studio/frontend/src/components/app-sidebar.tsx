@@ -825,11 +825,15 @@ export function AppSidebar() {
       },
     },
   };
-  const pinnedNavIds = sidebarNav
-    .filter((item) => item.pinned)
-    .map((item) => item.id);
-  const overflowNavIds = sidebarNav
+  const unpinnedNavIds = sidebarNav
     .filter((item) => !item.pinned)
+    .map((item) => item.id);
+  // A flyout wrapping a single row costs a click and earns nothing, so More only
+  // appears once it would hold two or more; a lone unpinned row renders inline,
+  // in its saved order position.
+  const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
+  const inlineNavIds = sidebarNav
+    .filter((item) => item.pinned || overflowNavIds.length === 0)
     .map((item) => item.id);
 
   const showSidebarBrand = !usesCustomTitlebar;
@@ -1612,7 +1616,7 @@ export function AppSidebar() {
               {/* Rows come from the saved pin order (Settings -> Appearance ->
                   Sidebar navigation). Pinned ids render here in order; the rest
                   fall into the More flyout below, so nothing is unreachable. */}
-              {pinnedNavIds.map((id) => {
+              {inlineNavIds.map((id) => {
                 const row = navRows[id];
                 return (
                   <NavItem

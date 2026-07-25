@@ -373,7 +373,7 @@ export const zhCN = {
       sidebarNav: {
         title: "侧边栏导航",
         description:
-          "固定并重新排序侧边栏标签。取消固定的项目会移入“更多”菜单而不是被隐藏。新聊天和搜索保持固定。",
+          "固定并重新排序侧边栏标签。取消固定的项目会移入“更多”菜单而不是被隐藏；若仅剩一项，则直接显示。新聊天保持固定。",
         dragToReorder: "拖动以重新排序",
         pinToSidebar: "将{name}固定到侧边栏",
         moreHolds: "更多（{count}）",

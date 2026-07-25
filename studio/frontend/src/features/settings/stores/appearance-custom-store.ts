@@ -84,10 +84,10 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
 
 /**
  * Sidebar NAVIGATION rows the user can pin and reorder (distinct from the
- * profile-menu entries above). New Chat and Search stay fixed at the top: they
- * are actions, not destinations. Array order is render order; an unpinned row
- * moves into the "More" flyout rather than disappearing, so no page becomes
- * unreachable.
+ * profile-menu entries above). New chat stays fixed at the top: it is an action,
+ * not a destination. Array order is render order; an unpinned row moves into the
+ * "More" flyout rather than disappearing, so no page becomes unreachable --
+ * except when it is the only unpinned row, which renders inline instead.
  */
 export const SIDEBAR_NAV_ITEM_IDS = [
   "projects",

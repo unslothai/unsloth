@@ -519,7 +519,7 @@ export const en = {
       sidebarNav: {
         title: "Sidebar navigation",
         description:
-          "Pin and reorder the sidebar tabs. Anything unpinned moves into the More menu instead of being hidden. New chat and Search stay fixed.",
+          "Pin and reorder the sidebar tabs. Anything unpinned moves into the More menu instead of being hidden, unless it is the only one left. New chat stays fixed.",
         dragToReorder: "Drag to reorder",
         pinToSidebar: "Pin {name} to the sidebar",
         moreHolds: "More ({count})",
