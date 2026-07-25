@@ -601,7 +601,7 @@ _AUTO_EXEC_MCP_TOOL_RE = re.compile(
 _AUTO_DESTRUCTIVE_MCP_VERB_RE = re.compile(
     r"(?:^|[_\-])(?:"
     r"delete|destroy|drop|purge|wipe|truncate|erase|remove|unlink|"
-    r"teardown|revoke|terminate|uninstall"
+    r"teardown|revoke|terminate|uninstall|clear|reset|empty|flush|prune|expire"
     r")(?:[_\-]|$)",
     re.IGNORECASE,
 )
@@ -611,7 +611,7 @@ _AUTO_DESTRUCTIVE_MCP_VERB_RE = re.compile(
 # its own; the softer verbs (assign/add/set/attach/bind) only count next to a
 # privilege noun, so assign_issue / add_label keep running.
 _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
-    r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo)(?:[_\-]|$)",
+    r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 _AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
@@ -863,8 +863,27 @@ _PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
 # name imported bare (from shutil import rmtree; rmtree(x)) is caught via its
 # import binding.
 _PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"})
-_PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove"})
-_PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset({"remove", "unlink", "rmtree", "rmdir", "removedirs"})
+# Gated only on the os module (or an alias) so a benign list.remove()/
+# file.truncate-like method on another receiver stays out. os.truncate and
+# os.ftruncate zero a file just like the gated terminal `truncate`; os.kill and
+# os.killpg terminate processes like the blocked `kill`.
+_PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
+_PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rmtree",
+        "rmdir",
+        "removedirs",
+        "truncate",
+        "ftruncate",
+        "kill",
+        "killpg",
+    }
+)
+# Modules whose destructive names are the same calls: posix/nt are os's
+# platform twins (from posix import unlink; nt.remove(...)).
+_PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
 # Reading these off the host escapes the intent of "read-only is safe": they
 # hold credentials. Path traversal (../) escapes the per-session workdir.
@@ -2654,6 +2673,23 @@ _HIGH_RISK_COMMANDS = frozenset(
         "ncat",
         "netcat",
         "socat",
+        "ftp",
+        "tftp",
+        # POSIX unlink(1) deletes a file exactly like rm, which is gated above.
+        "unlink",
+        # Windows / macOS storage destruction, the platform twins of the POSIX
+        # mkfs/wipefs/dd family already gated above.
+        "format",
+        "diskpart",
+        "diskutil",
+        # Windows / macOS scheduled tasks, registry and service control install
+        # persistence or tear down services, the twins of crontab/systemctl.
+        # Gated wholesale (a read-only `reg query` prompts too): the destructive
+        # subcommand lives in the arguments and this mode errs toward prompting.
+        "schtasks",
+        "reg",
+        "sc",
+        "launchctl",
         # container/VM runtimes: the daemon acts with host privileges, so
         # `docker run -v /:/host ...` mounts and writes the real filesystem,
         # escaping the child process's workdir and rlimit sandbox entirely.
@@ -2683,14 +2719,23 @@ _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
 # hard-blocked one) rides inside an argument instead of at command position.
 # GNU tar --checkpoint-action=exec=CMD, rsync/scp -e REMOTE_SHELL.
 _HIGH_RISK_ARG_EXEC_FLAGS = frozenset({"--checkpoint-action", "--rsh", "--rsync-path"})
-# An interpreter run as a network server (python -m http.server, uvicorn,
-# gunicorn) listens on a socket; the sandbox has no network namespace, so the
-# session workdir becomes reachable wherever that port is exposed. Matched on
-# the module token itself, so it also catches `python3 -m http.server`.
-_LISTENER_MODULE_RE = re.compile(
-    r"^(?:http\.server|SimpleHTTPServer|uvicorn|gunicorn|waitress|flask|"
-    r"twisted|websockets|aiohttp\.web|https?\.server)$",
+# An interpreter run as a network server (python -m http.server, uvicorn app:api)
+# listens on a socket; the sandbox has no network namespace, so the session
+# workdir becomes reachable wherever that port is exposed. Both forms are
+# position-scoped: the module must follow `-m`, and a server binary must sit at
+# command position. A bare mention of the name elsewhere (pip install uvicorn,
+# grep uvicorn reqs.txt, pytest -k uvicorn) starts no listener and must not prompt.
+_LISTENER_PY_MODULES = (
+    r"http\.server|SimpleHTTPServer|uvicorn|gunicorn|waitress|flask|"
+    r"twisted|websockets|aiohttp\.web"
+)
+_LISTENER_PY_MODULE_RE = re.compile(
+    r"\b(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
     re.IGNORECASE,
+)
+_LISTENER_BIN_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:uvicorn|gunicorn|waitress-serve|hypercorn|daphne)\b"
 )
 # curl/wget flags that send local data out (exfiltration surface).
 # curl upload/POST flags. The short forms may be attached (-d@f, -Ffile=@dump.sql),
@@ -2723,6 +2768,7 @@ _PIPE_TO_INTERPRETER_RE = re.compile(
 # (bash <(printf 'rm -rf x'), source <(...), . <(...)): the generated content is
 # never literal text, so it is unscreenable and fails closed. A non-interpreter
 # consumer (diff <(sort a) <(sort b)) reads the substituted file and stays out.
+_BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?\s*>(?!>)\s*\S")
 _PROC_SUBST_EXEC_RE = re.compile(
     r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
     r"[^\n]*<\("
@@ -2771,12 +2817,43 @@ _INLINE_CODE_INTERPRETERS = frozenset(
     }
 )
 _INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
+# Inline-code flags are per-interpreter: a flag that evaluates code for one
+# runtime is an ordinary option for another. Sharing one set made `python -E`
+# (ignore PYTHON* env) and `python -Werror` (warning control) look like eval.
+# Value is (long/exact flags, short letters that may appear in a cluster).
+_INLINE_CODE_FLAG_SPEC = {
+    "python": (frozenset({"-c"}), "c"),
+    "pypy": (frozenset({"-c"}), "c"),
+    "node": (frozenset({"-e", "--eval"}), "e"),
+    "nodejs": (frozenset({"-e", "--eval"}), "e"),
+    "deno": (frozenset({"-e", "--eval"}), "e"),
+    "bun": (frozenset({"-e", "--eval"}), "e"),
+    "ruby": (frozenset({"-e"}), "e"),
+    # perl -e and -E both run a one-liner (-E also enables feature bundles).
+    "perl": (frozenset({"-e", "-E"}), "eE"),
+    "php": (frozenset({"-r"}), "r"),
+}
+
+
+def _inline_code_flag_spec(name: str):
+    """(exact flags, short-cluster letters) that make `name` run inline code."""
+    base = name
+    if _VERSIONED_INTERPRETER_RE.match(base):
+        base = re.sub(r"\d+(?:\.\d+)*$", "", base)
+    else:
+        base = re.sub(r"^(python|pypy)[23]$", r"\1", base)
+    return _INLINE_CODE_FLAG_SPEC.get(base)
+
+
 # node/bun evaluate and print the argument to -p / --print (node --help:
 # "-p, --print [...] evaluate script and print result"; bun --print is the same
 # as bun -e). That is arbitrary code the terminal path never screens, exactly
 # like -e/--eval, so gate it. Scoped to the JS runtimes: -p is a print-loop
 # switch for perl/ruby/sed, not inline eval, so it is not shared with those.
 _NODE_PRINT_INTERPRETERS = frozenset({"node", "nodejs", "bun"})
+# Runtimes that expose inline evaluation as a SUBCOMMAND (deno eval "...",
+# bun eval "..."), which the flag scan above never sees.
+_EVAL_SUBCOMMAND_INTERPRETERS = frozenset({"deno", "bun"})
 _NODE_PRINT_FLAGS = frozenset({"-p", "--print"})
 # Windows cmd.exe runs the rest of the line as a nested command after /c (or
 # /k); the payload is screened recursively like a shell -c payload so
@@ -2844,9 +2921,23 @@ def _short_flag_arg(token: str, letters: str) -> "str | None":
 # or pathspec, so `git reset --soft`, a plain `git push`, `git checkout <branch>`
 # and read/commit subcommands run. Ordinary git (add/commit/status/log/pull)
 # stays out.
-_HIGH_RISK_GIT_SUBCOMMANDS = frozenset({"clean", "restore"})
+# `git rm` deletes tracked files from the worktree, the same loss as plain rm.
+_HIGH_RISK_GIT_SUBCOMMANDS = frozenset({"clean", "restore", "rm"})
 _HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
-_HIGH_RISK_GIT_PUSH_FLAGS = frozenset({"-f", "--force", "--force-with-lease"})
+_HIGH_RISK_GIT_PUSH_FLAGS = frozenset(
+    # --delete/-d removes a remote ref; --mirror and --prune delete remote refs
+    # that are absent locally. All are remote data loss, like a force push.
+    {"-f", "--force", "--force-with-lease", "-d", "--delete", "--mirror", "--prune"}
+)
+# `git switch -f/--force/--discard-changes` throws away tracked working-tree
+# edits, the same loss as `git checkout -f` / `git restore`.
+_HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-f", "--force", "--discard-changes"})
+# `git branch -D` force-deletes a branch, discarding unmerged commits; -M
+# force-renames over an existing branch. Plain -d/--delete refuses to drop
+# unmerged work, so it stays out.
+_HIGH_RISK_GIT_BRANCH_FLAGS = frozenset({"-D", "-M", "--force"})
+# `git stash clear` / `drop` destroy stashed work with no reflog to recover it.
+_HIGH_RISK_GIT_STASH_ACTIONS = frozenset({"clear", "drop"})
 # `git checkout -- <path>` / `git checkout .` / `git checkout -f` discard tracked
 # working-tree changes; a bare `git checkout <branch>` (switching) does not.
 _HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force"})
@@ -2886,6 +2977,36 @@ _VAR_EXECUTED_AS_COMMAND_RE = re.compile(
 )
 
 
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
+
+
+def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
+    """Tokens of the segments whose command is curl/wget, or None if there is no
+    such segment. Keeps an unrelated command's option letters out of the upload
+    scan (`ls -T && echo curl`)."""
+    segments: list = []
+    current: list = []
+    for t in tokens:
+        if _SHELL_SEGMENT_SPLIT_RE.match(t):
+            segments.append(current)
+            current = []
+        else:
+            current.append(t)
+    segments.append(current)
+    kept: list = []
+    for seg in segments:
+        # Skip leading NAME=value prefixes to find the command word.
+        i = 0
+        while i < len(seg) and re.match(r"^[A-Za-z_]\w*=", seg[i]):
+            i += 1
+        if i >= len(seg):
+            continue
+        base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
+        if (has_curl and base == "curl") or (has_wget and base == "wget"):
+            kept.extend(seg[i:])
+    return kept or None
+
+
 def _command_is_network_exec_or_exfil(command: str) -> bool:
     """curl/wget used to run remote code (piped into a shell, or via process
     substitution) or to upload local data. Plain downloads (curl -O, wget URL)
@@ -2908,6 +3029,12 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
         tokens = shlex.split(command.replace("\n", " "), posix = True)
     except ValueError:
         return True
+    # Scope the flag scan to the segment that actually runs curl/wget: a shared
+    # option letter from an unrelated command (`ls -T && echo curl`, `tar -T
+    # list.txt` next to a `grep curl`) must not read as an upload flag.
+    tokens = _tokens_for_client_segment(tokens, has_curl, has_wget)
+    if tokens is None:
+        return False
     method_pending = False
     for t in tokens:
         name = t.split("=", 1)[0]
@@ -2947,6 +3074,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return False
     # A credential/secret path read or write, or a sandbox escape (../), asks.
     if _command_references_sensitive(command):
+        return True
+    # A bare redirection with no command (`> notes.txt`, `: > notes.txt`,
+    # `true > notes.txt`) truncates an existing file to zero bytes, the same
+    # loss as the gated `truncate -s 0`. A redirect that follows a real command
+    # (`python train.py > out.log`) is an ordinary write and stays out.
+    if _BARE_TRUNCATING_REDIRECT_RE.search(command):
         return True
     # A process substitution whose output an interpreter executes (bash
     # <(printf 'rm -rf x'), . <(...)) runs a script the static scan can't read,
@@ -3001,9 +3134,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         # command (including hard-blocked ones) inside an argument.
         if any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
             return True
-        # An interpreter serving on the network (python -m http.server) exposes
-        # the session workdir; the sandbox keeps no network namespace.
-        if any(_LISTENER_MODULE_RE.match(t) for t in tokens):
+        # An interpreter serving on the network (python -m http.server, uvicorn
+        # app:api) exposes the session workdir; the sandbox keeps no network
+        # namespace. Position-scoped so a bare mention of the name does not prompt.
+        if _LISTENER_PY_MODULE_RE.search(text) or _LISTENER_BIN_AT_CMD_RE.search(text):
             return True
         expect_command = True  # at the start of a command (after a separator)
         prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
@@ -3013,7 +3147,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         shell_c_pending = False  # a shell `-c` precedes its inline payload
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
-        for token in tokens:
+        for _tok_idx, token in enumerate(tokens):
             if (
                 token in _SHELL_SEPARATORS
                 or token in _SHELL_KEYWORDS_AS_SEP
@@ -3034,8 +3168,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 # node -e, perl -E) executes an arbitrary program the terminal path
                 # never screens. Match the long --eval/--exec forms, and any short
                 # cluster carrying -c (attached python -c'...' and combined -Bc too).
-                if _is_inline_code_interpreter(current_command) and (
-                    flag in _INLINE_CODE_FLAGS or _short_flag_arg(token, "ceEr") is not None
+                _inline_spec = (
+                    _inline_code_flag_spec(current_command)
+                    if _is_inline_code_interpreter(current_command)
+                    else None
+                )
+                if _inline_spec is not None and (
+                    flag in _inline_spec[0] or _short_flag_arg(token, _inline_spec[1]) is not None
                 ):
                     return True
                 # node/bun -p / --print evaluate and print arbitrary source, the
@@ -3094,6 +3233,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         flag in _HIGH_RISK_GIT_CHECKOUT_FLAGS or token == "--"
                     ):
                         return True
+                    # git switch discards tracked edits with the same flags.
+                    if git_subcommand == "switch" and flag in _HIGH_RISK_GIT_SWITCH_FLAGS:
+                        return True
+                    # git branch -D / -M drops or overwrites unmerged commits.
+                    if git_subcommand == "branch" and flag in _HIGH_RISK_GIT_BRANCH_FLAGS:
+                        return True
                     # A git global option that takes a separate value (git -C repo
                     # clean) precedes its value, not the subcommand.
                     if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
@@ -3117,7 +3262,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # command wrapped in `bash -c '...'` is caught (bounded recursion).
             if shell_c_pending:
                 shell_c_pending = False
-                if _depth < 3 and _terminal_is_high_risk(raw, _depth + 1):
+                # An unquoted payload (cmd /c git clean -fd) spans the remaining
+                # tokens, not just this one; screen the whole remainder so the
+                # nested command's own arguments are seen.
+                payload = " ".join(tokens[_tok_idx:])
+                if _depth < 3 and _terminal_is_high_risk(payload, _depth + 1):
+                    return True
+                if _depth < 3 and payload != raw and _terminal_is_high_risk(raw, _depth + 1):
                     return True
                 expect_command = False
                 continue
@@ -3150,6 +3301,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     return True
                 if base in _HIGH_RISK_FORWARDING_COMMANDS:
                     scan_forward = True
+                elif base == "git":
+                    # Only git needs the forwarding scan to stop: its risk lives
+                    # in the SUBCOMMAND (git clean), so following tokens must be
+                    # read as git's own arguments. Other forwarded commands keep
+                    # scanning, since find's path/predicate arguments (`.`,
+                    # `-name`, `*.tmp`) sit between `find` and `-exec rm`.
+                    scan_forward = False
                 # Remember the resolved command so its own flags (python -c), git
                 # subcommand (git clean), or chdir target (cd /proc/x) can be
                 # judged as they follow.
@@ -3161,9 +3319,25 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_subcommand = base
                 if base in _HIGH_RISK_GIT_SUBCOMMANDS:
                     return True
+            elif current_command in _EVAL_SUBCOMMAND_INTERPRETERS and base == "eval":
+                # `deno eval "..."` / `bun eval "..."` run inline code as a
+                # subcommand rather than a flag, the same risk as -e.
+                return True
             elif current_command == "git" and git_subcommand == "checkout" and base == ".":
                 # `git checkout .` discards every tracked working-tree change.
                 return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "stash"
+                and base in _HIGH_RISK_GIT_STASH_ACTIONS
+            ):
+                # `git stash clear` / `drop` destroys stashed work unrecoverably.
+                return True
+            elif current_command == "git" and git_subcommand == "push" and raw[:1] in ("+", ":"):
+                # A refspec forcing (+src:dst) or deleting (:dst) a remote ref is
+                # the punctuation form of --force / --delete.
+                if len(raw) > 1:
+                    return True
             elif chdir_pending:
                 # The target of a cd/pushd: a chdir into a sensitive directory
                 # sets up a relative read that no single token spells out
@@ -3204,15 +3378,15 @@ def _python_is_high_risk(code: str) -> bool:
     destructive_fs_aliases: "set[str]" = set()
     # `import os as filesystem` rebinds the module, so os.remove reached through
     # the alias (filesystem.remove) must resolve too; posix is os's low-level twin.
-    os_module_aliases: "set[str]" = {"os", "posix"}
+    os_module_aliases: "set[str]" = {"os", "posix", "nt"}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module in ("os", "shutil", "pathlib"):
+        if isinstance(node, ast.ImportFrom) and node.module in _PY_DESTRUCTIVE_FS_MODULES:
             for alias in node.names:
                 if alias.name in _PY_DESTRUCTIVE_FS_IMPORT_NAMES:
                     destructive_fs_aliases.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name in ("os", "posix") and alias.asname:
+                if alias.name in ("os", "posix", "nt") and alias.asname:
                     os_module_aliases.add(alias.asname)
 
     def _is_destructive_attr(attr: str, value) -> bool:
@@ -3226,6 +3400,31 @@ def _python_is_high_risk(code: str) -> bool:
             and value.id in os_module_aliases
         )
 
+    # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gate it via
+    # the handle name rather than the bare `.truncate` attribute: pandas
+    # DataFrame.truncate() is a common, non-destructive call in this domain and
+    # must keep running.
+    file_handles: "set[str]" = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "open"
+        ):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    file_handles.add(tgt.id)
+    if file_handles:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "truncate"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in file_handles
+            ):
+                return True
     # A bound reference (f = os.remove; f(x)) hides the call site behind a plain
     # Name, so record the target name as a destructive alias to catch f(...) below.
     for node in ast.walk(tree):

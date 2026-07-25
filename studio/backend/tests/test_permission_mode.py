@@ -466,6 +466,53 @@ def test_terminal_classifier(command, unsafe):
         ("uvicorn app:api", True),
         ("python -m pytest tests/", False),  # a non-server module runs
         ("python -m pip install x", False),
+        # a bare mention of a server name starts no listener
+        ("pip install uvicorn", False),
+        ("grep uvicorn requirements.txt", False),
+        ("pytest -k uvicorn", False),
+        # --- interpreter option letters are per-runtime, not shared ---
+        ("python -E train.py", False),  # -E ignores env vars, it is not eval
+        ("python -Werror train.py", False),
+        ("perl -E 'say 1'", True),  # perl -E does run a one-liner
+        # --- an unrelated command's option letters are not curl upload flags ---
+        ("ls -T && echo curl", False),
+        ("grep curl notes.txt && tar -T list.txt -cf a.tar", False),
+        # --- destructive git forms that discard or delete work ---
+        ("git switch --discard-changes main", True),
+        ("git switch -f main", True),
+        ("git switch main", False),
+        ("git switch -c newbranch", False),
+        ("git stash clear", True),
+        ("git stash drop", True),
+        ("git stash", False),
+        ("git stash list", False),
+        ("git push origin +main", True),
+        ("git push --delete origin main", True),
+        ("git push origin :main", True),
+        ("git push --mirror origin", True),
+        ("git push --prune origin", True),
+        ("git push origin main", False),
+        ("git branch -D feature", True),
+        ("git branch feature", False),
+        ("git rm -f important.py", True),
+        # --- forwarded git subcommands keep their git context ---
+        ("find . -name x -exec git clean -fd {} ;", True),
+        ("echo x | xargs git clean -fd", True),
+        ("cmd /c git clean -fd", True),  # unquoted payload spans the remainder
+        # --- platform twins of the already-gated POSIX destructive tools ---
+        ("unlink important.txt", True),
+        ("ftp -n host", True),
+        ("tftp -i host put secrets", True),
+        ("diskutil eraseDisk JHFS+ X disk2", True),
+        ("schtasks /create /tn u /tr payload.exe /sc onlogon", True),
+        ("launchctl submit -l updater -- payload", True),
+        # --- inline eval exposed as a subcommand rather than a flag ---
+        ("deno eval \"Deno.removeSync('x')\"", True),
+        # --- a bare redirect truncates; a redirect after a command does not ---
+        ("> notes.txt", True),
+        (": > notes.txt", True),
+        ("echo hi > out.txt", False),
+        ("python train.py > run.log", False),
         # --- prompt: an array expansion run as a command (dynamic payload) ---
         ('x=(git clean -fd); bash -c "${x[*]}"', True),
         ('a=(rm -rf build); bash -c "${a[@]}"', True),
@@ -636,6 +683,17 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("import os\ngetattr(os, 'remove')('x')", True),
         ("import os as z\ng = z.remove\ng('x')", True),
         ("a = [1, 2]\nb = a.remove\nb(1)", False),  # a bound list method still runs
+        # os's platform twins expose the same destructive calls
+        ("from posix import unlink\nunlink('x')", True),
+        ("import nt\nnt.remove('x')", True),
+        # truncation and process termination pair with terminal truncate / kill
+        ("import os\nos.truncate('f', 0)", True),
+        ("import os\nos.ftruncate(3, 0)", True),
+        ("import os\nos.kill(1234, 9)", True),
+        ("import os\nos.killpg(1, 9)", True),
+        # a file handle's truncate zeroes the file; pandas truncate does not
+        ("f = open('a', 'r+')\nf.truncate(0)", True),
+        ("import pandas as pd\ndf = pd.read_csv('x')\ndf.truncate(before=1)", False),
         # --- prompt: dynamically built code run past the static checks ---
         ("eval(input())", True),
         ("import base64; exec(base64.b64decode(b'cHJpbnQoMSk='))", True),
@@ -708,6 +766,11 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__assign_issue", {"n": 1}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__add_label", {"l": "bug"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_roles", {}) is False
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}iam__promote_user", {"u": "x"}) is True
+    # clear/reset/empty/flush name the same data loss as delete/drop
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}db__clear_table", {"t": "runs"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}cache__reset_all", {}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}q__empty_queue", {}) is True
     assert (
         is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}fs__read_file", {"path": "/etc/passwd"}) is True
     )
