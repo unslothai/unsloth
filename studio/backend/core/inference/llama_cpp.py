@@ -10567,7 +10567,8 @@ class LlamaCppBackend:
         control has reached a streaming consumer that may have emitted content or
         tool events, so replaying the request could duplicate visible output or side
         effects. Resolve ``base_url`` on each attempt because a respawn may use a new
-        port.
+        port. The one-retry budget is per model request, not per chat turn, so a long
+        tool loop never discards a completed tool just because an earlier turn recovered.
         """
         for attempt in range(2):
             response_opened = False

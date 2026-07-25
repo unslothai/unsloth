@@ -119,6 +119,12 @@ def _patch_successful_respawn(
     return calls
 
 
+def _assert_same_request(first: dict, second: dict) -> None:
+    """A replay resends the same request; server-derived defaults may be rebuilt."""
+    for key in ("messages", "tools", "tool_choice", "temperature", "top_p", "seed"):
+        assert first.get(key) == second.get(key), key
+
+
 def _tool_names(payload: dict) -> list[str]:
     return [
         (tool.get("function") or {}).get("name")
@@ -2334,7 +2340,7 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
 
     assert respawn_calls == [True]
     assert len(payloads) == 2
-    assert payloads[0] == payloads[1]
+    _assert_same_request(payloads[0], payloads[1])
     assert urls == [
         "http://127.0.0.1:48847/v1/chat/completions",
         "http://127.0.0.1:49999/v1/chat/completions",
@@ -2379,7 +2385,7 @@ def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypa
         assert respawn_calls == [True]
         assert tool_calls == [("python", {"code": "print(1)"})]
         assert len(payloads) == 3
-        assert payloads[1] == payloads[2]
+        _assert_same_request(payloads[1], payloads[2])
         assert any(e.get("type") == "content" and e.get("text") == final_text for e in events)
 
 
@@ -2414,6 +2420,33 @@ def test_connect_error_retry_is_bounded(monkeypatch):
     assert raised
     assert respawn_calls == [True]
     assert len(payloads) == 2
+
+
+def test_mtp_crash_recovery_wins_over_respawn(monkeypatch):
+    """An MTP crash reloads without MTP, so never respawn the same config on top."""
+    import httpx
+    for max_tool_iterations in (2, 1):
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [httpx.ConnectError("mtp crash")], payloads)
+        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: True)
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+        raised = False
+        try:
+            list(
+                backend.generate_chat_completion_with_tools(
+                    messages = [{"role": "user", "content": "hello"}],
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_tool_iterations = max_tool_iterations,
+                )
+            )
+        except RuntimeError as exc:
+            raised = True
+            assert "Lost connection" in str(exc)
+
+        assert raised
+        assert respawn_calls == []
+        assert len(payloads) == 1
 
 
 def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
