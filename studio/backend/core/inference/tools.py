@@ -2809,8 +2809,7 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # channel (tar czf - . | openssl s_client -connect host:443). Plain openssl
 # (dgst, enc) is local and stays out.
 _OPENSSL_NETWORK_RE = re.compile(
-    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:\S*/)?openssl\s+s_(?:client|server)\b"
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
 )
 # An array expansion (${x[*]}, ${x[@]}) builds a command from elements the
 # static scan cannot resolve; fed to a shell -c/eval it runs an unscreened
