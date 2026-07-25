@@ -268,8 +268,7 @@ const IDLE_PROGRESS: VideoLoadProgress = {
   error: null,
 };
 
-// The chat composer's slider, so Video, Create and Chat all read the same. The
-// {label, hint, ...} signature is kept for the call sites below.
+// Chat's slider, shared with Create. Signature kept for the call sites below.
 function SliderField({
   label,
   hint,
@@ -1437,8 +1436,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         </div>
       </div>
 
-      {/* ── Controls rail + preview canvas, matching the Images tabs: no cards, the Hub's
-          centered measure, and a rule that runs the full page height. ── */}
+      {/* ── Controls rail + preview canvas, as on the Images tabs: no cards, the Hub's
+          centered measure, a rule that runs the full page height. ── */}
       <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
         <div className="flex w-[368px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}

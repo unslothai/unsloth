@@ -55,8 +55,7 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   return p;
 }
 
-// "Dog (DreamBooth subject)" -> "Dog". The parenthetical is context, not a name, so
-// one-line picker rows and card titles drop it.
+// "Dog (DreamBooth subject)" -> "Dog": one-line rows drop the parenthetical.
 export function shortExampleLabel(label: string): string {
   return label.replace(/\s*\(.*$/, "");
 }
@@ -135,8 +134,7 @@ export function ExampleDatasetCards({
             <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
               {ex.description}
             </p>
-            {/* Import is the card's action, so it sits at the bottom right, on the
-                thumbnail row, instead of floating beside the text. */}
+            {/* The card's action, so: bottom right, on the thumbnail row. */}
             <div className="flex min-w-0 items-end justify-between gap-3">
               <ExamplePreviews repo={ex.repo} />
               <Button

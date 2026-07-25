@@ -23,8 +23,7 @@ import {
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-// The raw Radix trigger: the app's TooltipTrigger adds a click-to-toggle handler that
-// has no business inside a menu row.
+// Raw Radix trigger: the app's adds a click-to-toggle, wrong inside a menu row.
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
@@ -2339,18 +2338,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onDeploy={handleDeployAdapter}
         />
       ) : (
-      /* ── Controls rail + preview canvas. No card: both sit on the page background
-          like the Hub, divided by a rule, so nothing is spent on box chrome. Same
-          centered measure as the Hub (mx-auto, max-w-1100, px-5 / sm:px-8). No bottom
-          padding, so the rule runs the full page height; the panes pad their own
-          content instead. ── */
+      /* ── Controls rail + preview canvas. No cards: both sit on the page background,
+          split by a rule, on the Hub's centered measure. No bottom padding, so the rule
+          runs the full page height; each pane pads its own content. ── */
       <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
         <div className="flex w-[368px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
-            {/* Workflow picker. Seven workflows don't fit a segmented strip in this rail,
-                so it's a dropdown; a row stays disabled until the loaded model supports
-                it (status.workflows). New workflows slot in without shrinking anything. */}
+            {/* Seven workflows don't fit a segmented strip in this rail, so: a dropdown.
+                A row stays disabled until the loaded model supports it (status.workflows). */}
             <div className="grid gap-1.5">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
@@ -2376,10 +2372,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   {WORKFLOW_TABS.map((t) => {
                     const enabled = workflowEnabled(t);
                     return (
-                      // Rows stay one line; what the workflow does (or why it is
-                      // unavailable) arrives as a tooltip after a short hover. The
-                      // trigger wraps the row rather than being the row: a disabled item
-                      // has pointer-events: none, so it would never hover.
+                      // Rows stay one line; the description arrives on hover. The trigger
+                      // wraps the row: a disabled item has pointer-events: none.
                       <Tooltip key={t.id} delayDuration={550}>
                         <TooltipPrimitive.Trigger asChild={true}>
                           <div>
@@ -2851,8 +2845,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       aria-label="Flip width and height"
                       onClick={flipDimensions}
                     >
-                      {/* The arrows turn with the orientation, so the button shows
-                          which way the flip goes. */}
+                      {/* Arrows turn with the orientation, showing which way it flips. */}
                       <HugeiconsIcon
                         icon={ArrowLeftRightIcon}
                         className={cn(

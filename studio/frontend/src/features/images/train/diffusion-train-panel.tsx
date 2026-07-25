@@ -123,8 +123,8 @@ function repoIsPrequantized(baseModel: string): boolean {
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
 const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
-// min-w-0 + a truncating value: without them a long option ("nf4 (4-bit QLoRA,
-// lowest VRAM)") sets the grid column's min width and pushes into its neighbour.
+// min-w-0 + a truncating value: a long option would otherwise set the grid
+// column's min width and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
 // Every settings cell is a grid item, so it needs min-w-0 to be allowed to shrink.
@@ -1029,8 +1029,8 @@ export function DiffusionTrainPanel({
 
   return (
     <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
-      {/* Left: configure. No card here or on the right: both panes sit on the page
-          background like the Hub, divided by a rule that runs the full page height. */}
+      {/* Left: configure. No cards: both panes sit on the page background, split by a
+          rule that runs the full page height. */}
       <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
         <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
@@ -1107,8 +1107,7 @@ export function DiffusionTrainPanel({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {/* Rows stay short: name plus image count. Caption counts show under the
-                    picker, and an example's license shows on its card below. */}
+                {/* Name plus image count only; captions and license show elsewhere. */}
                 {(info?.datasets ?? []).map((d) => (
                   <SelectItem key={d.name} value={d.name}>
                     {d.name} - {d.image_count} image{d.image_count === 1 ? "" : "s"}
@@ -1168,8 +1167,7 @@ export function DiffusionTrainPanel({
                   >
                     Choose images
                   </Button>
-                  {/* Nothing to upload until files are picked, so the count and Upload
-                      only appear then. */}
+                  {/* Count and Upload appear only once files are picked. */}
                   {pickedFileCount > 0 && (
                     <>
                       <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
