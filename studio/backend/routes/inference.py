@@ -14174,9 +14174,7 @@ async def _anthropic_passthrough_stream(
         try:
             url = target_url
             try:
-                req = client.build_request(
-                    "POST", url, json = body, headers = {"Connection": "close"}
-                )
+                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
@@ -14187,9 +14185,7 @@ async def _anthropic_passthrough_stream(
                 url = await _anthropic_passthrough_retry_url(llama_backend, exc)
                 if url is None:
                     raise
-                req = client.build_request(
-                    "POST", url, json = body, headers = {"Connection": "close"}
-                )
+                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request

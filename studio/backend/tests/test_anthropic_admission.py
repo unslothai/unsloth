@@ -72,7 +72,12 @@ class _Request:
         return self._disconnected
 
 
-def _install_backend(monkeypatch, *, slots = 1, base_url = _KEY):
+def _install_backend(
+    monkeypatch,
+    *,
+    slots = 1,
+    base_url = _KEY,
+):
     def _gen_plain(**_kwargs):
         yield "ok"
 
@@ -128,6 +133,7 @@ async def _consume(response):
 
 # ── Non-streaming ─────────────────────────────────────────────
 
+
 def test_non_streaming_completes_and_releases_slot(monkeypatch):
     _install_backend(monkeypatch, slots = 2)
 
@@ -147,7 +153,9 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
     async def _run():
         held = _occupy(_KEY, 1, 1)  # slot busy
         # One waiter fills the max_queue=1; the next reserve rejects.
-        get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig(max_queue = 1))
+        get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
+        )
         with pytest.raises(HTTPException) as exc:
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
@@ -183,7 +191,7 @@ def test_non_streaming_queued_then_admitted(monkeypatch):
         )
         await asyncio.sleep(0.1)
         assert _snapshot().queued == 1  # waiting on the busy slot
-        held[0].release()               # free it
+        held[0].release()  # free it
         response = await asyncio.wait_for(task, timeout = 2)
         assert response.status_code == 200
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -229,6 +237,7 @@ def test_disabled_admission_bypasses_limit(monkeypatch):
 
 # ── Streaming ─────────────────────────────────────────────────
 
+
 def test_streaming_completes_and_releases_slot(monkeypatch):
     _install_backend(monkeypatch, slots = 1)
 
@@ -258,7 +267,7 @@ def test_streaming_emits_keepalives_while_queued_then_streams(monkeypatch):
         first = await asyncio.wait_for(body.__anext__(), timeout = 2)
         first = first.decode() if isinstance(first, (bytes, bytearray)) else first
         assert first.startswith(":")  # SSE comment keep-alive
-        held[0].release()             # free the slot -> real stream follows
+        held[0].release()  # free the slot -> real stream follows
         rest = await asyncio.wait_for(_drain(body), timeout = 2)
         assert "event: message_start" in rest
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -272,11 +281,11 @@ def test_streaming_queue_full_returns_429(monkeypatch):
 
     async def _run():
         held = _occupy(_KEY, 1, 1)
-        get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig(max_queue = 1))
+        get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
+        )
         with pytest.raises(HTTPException) as exc:
-            await anthropic_messages(
-                _payload(stream = True), request = _Request(), current_subject = "t"
-            )
+            await anthropic_messages(_payload(stream = True), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
         for lease in held:
             lease.release()
@@ -306,6 +315,7 @@ def test_streaming_disconnect_while_queued_frees_slot(monkeypatch):
 
 
 # ── Shared queue + fairness + speed ───────────────────────────
+
 
 def test_shares_queue_with_openai_by_base_url(monkeypatch):
     _install_backend(monkeypatch, slots = 1)

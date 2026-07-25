@@ -201,7 +201,11 @@ class _Waiter:
 class LlamaAdmissionLease:
     __slots__ = ("_queue", "_slot", "_released", "_release_lock")
 
-    def __init__(self, queue: Optional["LlamaAdmissionQueue"], slot: Optional[int] = None):
+    def __init__(
+        self,
+        queue: Optional["LlamaAdmissionQueue"],
+        slot: Optional[int] = None,
+    ):
         self._queue = queue
         self._slot = slot
         self._released = False

@@ -38,7 +38,12 @@ _FRESH = "http://127.0.0.1:62933"
 class _Backend:
     """Stub llama backend whose base_url moves to a new port once respawned."""
 
-    def __init__(self, *, respawn_ok = True, mtp_handled = False):
+    def __init__(
+        self,
+        *,
+        respawn_ok = True,
+        mtp_handled = False,
+    ):
         self.base_url = _DEAD
         self.context_length = 4096
         self.respawn_calls = 0
@@ -143,6 +148,7 @@ async def _run_non_streaming(backend):
 
 # ── Helper ────────────────────────────────────────────────────
 
+
 def test_retry_url_rebuilds_from_the_respawned_base_url():
     backend = _Backend()
 
@@ -180,6 +186,7 @@ def test_retry_url_tolerates_a_backend_without_respawn_hooks():
 
 # ── Non-streaming ─────────────────────────────────────────────
 
+
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
     client = _FakeNonStreamingClient()
     monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
@@ -189,10 +196,7 @@ def test_non_streaming_retries_against_the_new_port(monkeypatch):
 
     assert response.status_code == 200
     assert backend.respawn_calls == 1
-    assert client.urls == [
-        f"{_DEAD}/v1/chat/completions",
-        f"{_FRESH}/v1/chat/completions",
-    ]
+    assert client.urls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
 
 
 def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
@@ -219,6 +223,7 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
 
 # ── Streaming ─────────────────────────────────────────────────
 
+
 def test_streaming_retries_against_the_new_port(monkeypatch):
     calls = []
     _install_stream_transport(monkeypatch, calls)
@@ -227,10 +232,7 @@ def test_streaming_retries_against_the_new_port(monkeypatch):
     blob = asyncio.run(_run_stream(backend))
 
     assert backend.respawn_calls == 1
-    assert calls == [
-        f"{_DEAD}/v1/chat/completions",
-        f"{_FRESH}/v1/chat/completions",
-    ]
+    assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
     # The retried stream really produced the turn, not just a clean-looking stop.
     assert "event: message_start" in blob
     assert "event: message_stop" in blob

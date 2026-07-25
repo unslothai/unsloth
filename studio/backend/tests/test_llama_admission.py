@@ -200,8 +200,8 @@ def test_shrinking_capacity_retires_slots_beyond_the_new_pool():
 def test_queue_limit_scales_with_the_serving_slots():
     # The wait line follows --parallel: 16 per slot by default.
     config = LlamaAdmissionConfig()
-    assert config.queue_limit(4) == 64      # --parallel 4  (the default)
-    assert config.queue_limit(8) == 128     # --parallel 8
+    assert config.queue_limit(4) == 64  # --parallel 4  (the default)
+    assert config.queue_limit(8) == 128  # --parallel 8
     assert config.queue_limit(1) == 16
     # An explicit cap wins, and a None multiplier means an unbounded line.
     assert LlamaAdmissionConfig(max_queue = 5).queue_limit(8) == 5
@@ -243,8 +243,8 @@ def test_single_request_at_a_time_never_queues_or_allocates_waiters():
         for _ in range(50):
             reservation = queue.reserve(capacity = 4, config = config)
             lease = reservation.lease_nowait()
-            assert lease is not None                  # admitted immediately
-            assert queue.snapshot().queued == 0       # nobody ever lined up
+            assert lease is not None  # admitted immediately
+            assert queue.snapshot().queued == 0  # nobody ever lined up
             lease.release()
         snapshot = queue.snapshot()
         assert (snapshot.active, snapshot.free, snapshot.queued) == (0, 4, 0)
