@@ -141,12 +141,15 @@ def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatc
     )
     here = _repo("Org/Here", [_file("Q4_K_M.gguf", 6_000)], active / "models--Org--Here")
 
-    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])])
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])]
+    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
 
-    rows = {c["repo_id"]: c for c in asyncio.run(
-        models_route.list_cached_gguf(current_subject = "test-user")
-    )["cached"]}
+    rows = {
+        c["repo_id"]: c
+        for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+    }
 
     assert rows["Org/Away"]["load_id"] == str(snapshot)
     assert "load_id" not in rows["Org/Here"]
