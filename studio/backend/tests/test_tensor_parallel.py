@@ -603,6 +603,164 @@ def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     assert [kw.get("speculative_type") for kw in loads] == ["auto"]
 
 
+def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
+    # Callers that lose the same child queue on _respawn_lock; the winner respawns and
+    # the rest wake holding the healthy REPLACEMENT. Unable to tell it from the child
+    # their own request used, each burns the full reap grace, and since that sleep is
+    # held under the lock the waits serialise: N callers cost N grace periods.
+    class _LiveProcess(_FakeProcess):
+        returncode = None
+
+        def __init__(self):
+            self.polls = 0
+
+        def poll(self):  # never reapable, so the grace loop runs to its deadline
+            self.polls += 1
+            return None
+
+    workers = 4
+    b = _recovery_backend()
+    b._healthy = True
+    b._process.returncode = -9  # only the respawn path logs it
+    live = _LiveProcess()
+    loads: list[dict] = []
+    guard = threading.Lock()
+    all_in_flight = threading.Event()
+
+    # Subclass this one instance rather than patching the class: a descriptor on
+    # LlamaCppBackend itself would redirect _process for every other backend alive
+    # in the process, including ones earlier tests left registered with atexit.
+    state = {"proc": b._process, "readers": set()}
+
+    class _Tracked(type(b)):
+        @property
+        def _process(self):
+            """Reports when every worker has taken its pre-lock look at the child."""
+            with guard:
+                state["readers"].add(threading.get_ident())
+                everyone = len(state["readers"]) >= workers
+            if everyone:
+                all_in_flight.set()
+            return state["proc"]
+
+        @_process.setter
+        def _process(self, value):
+            state["proc"] = value
+
+    b.__class__ = _Tracked
+
+    def _load(**kwargs):
+        # A real load_model spawns a process and takes seconds, so every caller that
+        # lost this child is already in flight before the replacement appears. Waiting
+        # here reproduces that ordering; the timeout keeps the pre-fix build, where the
+        # losers cannot read until the lock is free, from hanging instead of failing.
+        all_in_flight.wait(timeout = 2)
+        with guard:
+            loads.append(kwargs)
+        b._process = live
+        b._healthy = True  # the real load_model marks the new server healthy
+        return True
+
+    monkeypatch.setattr(b, "load_model", _load)
+    results: list[bool] = []
+
+    def _respawn():
+        outcome = b._respawn_if_dead()
+        with guard:
+            results.append(outcome)
+
+    threads = [threading.Thread(target = _respawn) for _ in range(workers)]
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30)
+    elapsed = time.monotonic() - started
+
+    assert results == [True] * workers, results
+    assert len(loads) == 1, f"{len(loads)} reloads, expected one"
+    # The grace loop is the only caller of poll() on a live process, so any count
+    # here means a queued caller charged the wait to a server that never failed.
+    assert live.polls == 0, "queued caller waited out the grace on a healthy server"
+    assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S * (workers - 1)
+
+
+class _DyingChild(_FakeProcess):
+    """Alive for the first polls, then reapable: what a terminate() looks like."""
+
+    def __init__(self, code = -15, alive_polls = 2, on_death = None):
+        self.polls = 0
+        self.returncode = None
+        self._code = code
+        self._alive_polls = alive_polls
+        self._on_death = on_death
+
+    def poll(self):
+        self.polls += 1
+        if self.polls <= self._alive_polls:
+            return None
+        if self.returncode is None:
+            self.returncode = self._code
+            if self._on_death is not None:
+                self._on_death()
+        return self._code
+
+
+def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
+    # unload_model() sets _cancel_event before it kills the child, so a request that
+    # loses the connection during the unload can watch that deliberate exit through
+    # the reap grace loop and call it a crash. _last_load_kwargs is still populated
+    # (unload clears it after the kill), so the model comes straight back.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild()
+    b._cancel_event.set()
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == [], "resurrected a model the user unloaded"
+
+
+def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
+    # The unload can also begin while we are already sleeping in the grace loop.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(on_death = b._cancel_event.set)
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == [], "checked the cancel flag only before the wait"
+
+
+def test_respawn_does_not_revert_a_newer_load(monkeypatch):
+    # A model switch that lands while we wait must win; replaying the old kwargs
+    # would swap the user's new model back out.
+    b = _recovery_backend()
+    b._healthy = True
+    replacement = _DyingChild(alive_polls = 10 ** 6)
+    b._process = _DyingChild(on_death = lambda: setattr(b, "_process", replacement))
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    b._respawn_if_dead()
+    assert loads == [], "replayed stale kwargs over a newer load"
+    assert b._process is replacement
+
+
+def test_respawn_still_recovers_an_ordinary_crash(monkeypatch):
+    # Guard rail: none of the above may disable the recovery this path exists for.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(code = -9)
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is True
+    assert len(loads) == 1
+
+
 def test_runtime_recovery_rechecks_cancel_before_reload():
     # recover() must re-check the cancel flag after the death poll (load_model
     # clears it), so a reload scheduled just before /unload can't resurrect it.

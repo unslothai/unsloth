@@ -10550,10 +10550,18 @@ class LlamaCppBackend:
         recover, returning True once healthy. Serialised on ``_respawn_lock`` so
         many generations hitting the dead server trigger at most one reload.
         """
+        # Read outside the lock: a caller queued behind someone else's respawn can then
+        # tell the replacement from the child its own error came from. The grace wait
+        # below sleeps under the lock, so charging it to a replacement would serialise
+        # one wait per queued caller.
+        served_by = self._process
         with self._respawn_lock:
             proc = self._process
             if proc is None:
                 return False
+            if proc is not served_by:
+                # Replaced while we queued: this child never served our request.
+                return self._healthy
             if proc.poll() is None:
                 # A closing server can beat its own exit status: calling it alive here
                 # returns the stale _healthy and spends the retry on the corpse.
@@ -10570,20 +10578,31 @@ class LlamaCppBackend:
                     # would restart the crashing config and abort that reload.
                     logger.info("Respawn skipped: an MTP-free reload is already recovering.")
                     return False
-            kwargs = self._last_load_kwargs
-            if not kwargs:
-                return False
-            logger.warning(
-                f"llama-server for '{self._model_identifier}' exited "
-                f"(code {proc.returncode}); respawning to recover the session"
-            )
-            with self._lock:
-                self._healthy = False
-            try:
-                return bool(self.load_model(**kwargs))
-            except Exception as exc:
-                logger.error(f"Failed to respawn llama-server: {exc}")
-                return False
+            # Re-check under the load lock, like the MTP-crash reload: an exit we
+            # waited out may have been deliberate. unload_model sets _cancel_event
+            # before it kills, and a switch installs its own process, so both are
+            # visible here. The RLock lets the load_model below re-enter.
+            with self._serial_load_lock:
+                if self._cancel_event.is_set():
+                    logger.info("Respawn skipped: the model was unloaded or the load cancelled.")
+                    return False
+                if self._process is not proc:
+                    logger.info("Respawn skipped: a newer load is already active.")
+                    return self._healthy
+                kwargs = self._last_load_kwargs
+                if not kwargs:
+                    return False
+                logger.warning(
+                    f"llama-server for '{self._model_identifier}' exited "
+                    f"(code {proc.returncode}); respawning to recover the session"
+                )
+                with self._lock:
+                    self._healthy = False
+                try:
+                    return bool(self.load_model(**kwargs))
+                except Exception as exc:
+                    logger.error(f"Failed to respawn llama-server: {exc}")
+                    return False
 
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(self, payload: dict, cancel_event):
