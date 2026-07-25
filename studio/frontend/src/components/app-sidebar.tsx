@@ -1538,7 +1538,12 @@ export function AppSidebar() {
                 >
                   <DropdownMenuTrigger asChild>
                     <SidebarMenuButton
-                      tooltip={t("shell.navigation.more")}
+                      // No `tooltip` here on purpose: with it, SidebarMenuButton
+                      // returns a Tooltip root, and DropdownMenuTrigger asChild
+                      // would hand its ref/handlers to that instead of a DOM
+                      // node, leaving the trigger dead. `title` keeps a label on
+                      // the collapsed rail.
+                      title={t("shell.navigation.more")}
                       isActive={moreSectionActive}
                       className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
                     >
