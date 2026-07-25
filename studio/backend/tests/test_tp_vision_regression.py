@@ -869,8 +869,6 @@ def test_empty_gpu_ids_dedupes_without_stripping_device():
         gpu_ids = [],
         llama_extra_args = ["--device", "Vulkan3", "--top-k", "5"],
     )
-    backend = _dedup_loaded_backend(
-        extra_args = ["--device", "Vulkan3", "--top-k", "5"]
-    )
+    backend = _dedup_loaded_backend(extra_args = ["--device", "Vulkan3", "--top-k", "5"])
     backend._gpu_ids = None
     assert inference_routes._request_matches_loaded_settings(req, backend) is True

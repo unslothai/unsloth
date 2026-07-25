@@ -820,6 +820,7 @@ _CACHE_FLAGS_HELP = """\
 --no-cache-prompt                       do not reuse prompt cache
 """
 
+
 @_NEEDS_BASH
 def test_probe_detects_post_rename_ngram_mod_flavor(tmp_path):
     fake = _make_fake_llama_server(tmp_path / "llama-server", _POST_RENAME_HELP)

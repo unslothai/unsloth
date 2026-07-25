@@ -513,6 +513,8 @@ class LoadResponse(BaseModel):
             "or None for automatic selection."
         ),
     )
+
+
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
 
