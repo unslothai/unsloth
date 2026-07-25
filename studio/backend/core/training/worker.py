@@ -2953,7 +2953,18 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     trainer = UnslothTrainer()
 
     # Wire up progress callback → event_queue
+    _last_checkpoint_upload = None
+
     def _on_progress(progress: TrainingProgress):
+        nonlocal _last_checkpoint_upload
+        checkpoint_upload = getattr(progress, "checkpoint_upload", None)
+        if checkpoint_upload != _last_checkpoint_upload:
+            _last_checkpoint_upload = dict(checkpoint_upload or {})
+            event_queue.put({
+                "type": "checkpoint_upload",
+                "checkpoint_upload": _last_checkpoint_upload,
+                "ts": time.time(),
+            })
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
         if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:

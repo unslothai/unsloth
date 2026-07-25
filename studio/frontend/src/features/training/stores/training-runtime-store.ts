@@ -40,6 +40,7 @@ const initialState: TrainingRuntimeState = {
   currentGradNorm: null,
   currentNumTokens: null,
   outputDir: null,
+  checkpointUpload: { state: "idle", message: "" },
   lossHistory: [],
   lrHistory: [],
   gradNormHistory: [],
@@ -139,6 +140,9 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
     set((state) => ({
       ...initialState,
       hasHydrated: state.hasHydrated,
+      // A reconnect/view reset is not a new job; retain the terminal upload
+      // result until setStartQueued establishes a genuinely new job.
+      checkpointUpload: state.checkpointUpload,
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
@@ -169,6 +173,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       currentGradNorm: null,
       currentNumTokens: null,
       outputDir: null,
+      checkpointUpload: { state: "idle", message: "" },
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
@@ -227,6 +232,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           payload.details?.output_dir !== undefined
             ? payload.details.output_dir
             : state.outputDir,
+        checkpointUpload:
+          payload.details?.checkpoint_upload ?? state.checkpointUpload,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
         gradNormHistory: metricHistory.gradNormHistory ?? state.gradNormHistory,
@@ -267,6 +274,17 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
             ? payload.current_lr
             : state.currentLearningRate,
       };
+    }),
+
+  applyCheckpointUpload: (payload) =>
+    set({
+      checkpointUpload: {
+        ...payload,
+        percentage:
+          typeof payload.percentage === "number"
+            ? Math.min(100, Math.max(0, payload.percentage))
+            : null,
+      },
     }),
 
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) =>

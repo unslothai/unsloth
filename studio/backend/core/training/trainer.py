@@ -303,6 +303,100 @@ class UnslothTrainer:
 
         return _ProgressCallback()
 
+    def _create_checkpoint_upload_callback(self, push_to_hub: bool, repository_id: str | None):
+        """Upload each checkpoint under its own Hub folder and report safe state."""
+        from transformers import TrainerCallback
+        from huggingface_hub import HfApi
+
+        trainer_ref = self
+
+        def emit(**payload):
+            trainer_ref._update_progress(checkpoint_upload = payload)
+
+        def safe_upload_error(exc: Exception) -> str:
+            """Map Hub failures without putting tokens, URLs, or raw responses in events."""
+            name = type(exc).__name__.lower()
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status == 401 or "authentication" in name:
+                return "Hugging Face authentication failed. Check your token."
+            if status == 403 or "permission" in name or "gated" in name:
+                return "You do not have permission to upload to this repository."
+            if status == 404 or "repositorynotfound" in name or "validation" in name:
+                return "The Hugging Face repository is invalid or unavailable."
+            if status == 429 or "ratelimit" in name:
+                return "Hugging Face rate limit reached. Try again later."
+            if isinstance(exc, (ConnectionError, TimeoutError)) or "connection" in name or "timeout" in name:
+                return "The upload could not connect to Hugging Face. Try again later."
+            return "The checkpoint upload failed."
+
+        class _CheckpointUploadCallback(TrainerCallback):
+            def on_save(self, args, state, control, **kwargs):
+                checkpoint = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+                common = {
+                    "checkpoint": checkpoint.name,
+                    "repository_id": repository_id,
+                    "repository_url": (
+                        f"https://huggingface.co/{repository_id}" if repository_id else None
+                    ),
+                }
+                if not push_to_hub:
+                    emit(state = "skipped", message = "Auto upload disabled", **common)
+                    return
+                if not repository_id:
+                    emit(
+                        state = "error",
+                        message = "Checkpoint upload failed",
+                        error = "The Hugging Face repository is invalid or unavailable.",
+                        **common,
+                    )
+                    return
+                if not checkpoint.is_dir():
+                    emit(state = "skipped", message = "No checkpoint was produced", **common)
+                    return
+                files = [path for path in checkpoint.rglob("*") if path.is_file()]
+                total = sum(path.stat().st_size for path in files)
+                emit(state = "preparing", total_bytes = total, total_files = len(files),
+                     message = "Preparing checkpoint upload", **common)
+                emit(state = "uploading", uploaded_bytes = 0, total_bytes = total,
+                     uploaded_files = 0, total_files = len(files), percentage = 0,
+                     message = f"Uploading {checkpoint.name}", **common)
+                try:
+                    api = HfApi()
+                    api.create_repo(repo_id = repository_id, repo_type = "model", exist_ok = True)
+                    # path_in_repo is essential: without it upload_folder flattens
+                    # checkpoint contents into the repository root.
+                    api.upload_folder(
+                        repo_id = repository_id,
+                        repo_type = "model",
+                        folder_path = str(checkpoint),
+                        path_in_repo = checkpoint.name,
+                        commit_message = f"Upload {checkpoint.name}",
+                    )
+                except Exception as exc:
+                    safe_error = safe_upload_error(exc)
+                    logger.warning(
+                        "Checkpoint Hub upload failed",
+                        checkpoint = checkpoint.name,
+                        repository_id = repository_id,
+                        error_category = type(exc).__name__,
+                    )
+                    emit(state = "error", total_bytes = total, total_files = len(files),
+                         message = "Checkpoint upload failed", error = safe_error, **common)
+                    return
+                emit(state = "completed", uploaded_bytes = total, total_bytes = total,
+                     uploaded_files = len(files), total_files = len(files), percentage = 100,
+                     message = f"{checkpoint.name} uploaded", **common)
+
+        return _CheckpointUploadCallback()
+
+    def _add_shared_callbacks(self, training_args):
+        """Install callbacks consistently for every Transformers trainer variant."""
+        self.trainer.add_callback(self._create_progress_callback())
+        self.trainer.add_callback(self._create_checkpoint_upload_callback(
+            bool(training_args.get("push_to_hub", False)),
+            training_args.get("hub_model_id"),
+        ))
+
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
@@ -366,8 +460,10 @@ class UnslothTrainer:
             config["save_steps"] = save_steps_val
             config["save_strategy"] = "steps"
         config["save_total_limit"] = training_args.get("save_total_limit") or None
-        config["push_to_hub"] = bool(save_steps_val and training_args.get("push_to_hub", False))
-        config["hub_model_id"] = training_args.get("hub_model_id") if config["push_to_hub"] else None
+        # Studio owns uploads so checkpoints land at checkpoint-N/ rather than
+        # Transformers flattening their files into the repository root.
+        config["push_to_hub"] = False
+        config["hub_model_id"] = None
 
         # Apply per-branch overrides
         if extra_args:
@@ -2988,7 +3084,7 @@ class UnslothTrainer:
                     train_dataset = dataset,
                     args = TrainingArguments(**config),
                 )
-                self.trainer.add_callback(self._create_progress_callback())
+                self._add_shared_callbacks(training_args)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3027,7 +3123,7 @@ class UnslothTrainer:
                         pad_to_multiple_of = 8,
                     ),
                 )
-                self.trainer.add_callback(self._create_progress_callback())
+                self._add_shared_callbacks(training_args)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3071,7 +3167,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
-                self.trainer.add_callback(self._create_progress_callback())
+                self._add_shared_callbacks(training_args)
 
                 batch_size = training_args.get("batch_size", 2)
                 total = self._calculate_total_steps(
@@ -3276,8 +3372,10 @@ class UnslothTrainer:
                 config_args["save_steps"] = save_steps_val
                 config_args["save_strategy"] = "steps"
             config_args["save_total_limit"] = training_args.get("save_total_limit") or None
-            config_args["push_to_hub"] = bool(save_steps_val and training_args.get("push_to_hub", False))
-            config_args["hub_model_id"] = training_args.get("hub_model_id") if config_args["push_to_hub"] else None
+            # The shared callback uploads the complete checkpoint directory to
+            # checkpoint-N/; disable Transformers' root-level model push.
+            config_args["push_to_hub"] = False
+            config_args["hub_model_id"] = None
 
             # If max_steps is specified, use it instead of epochs
             max_steps_val = training_args.get("max_steps", 0)
@@ -3593,7 +3691,7 @@ class UnslothTrainer:
                     logger.info("Training on full sequences (including prompts)\n")
 
             # ========== PROGRESS TRACKING ==========
-            self.trainer.add_callback(self._create_progress_callback())
+            self._add_shared_callbacks(training_args)
 
             train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset
             is_streaming_dataset = detect_streaming_dataset(train_dataset_obj)
