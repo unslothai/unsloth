@@ -225,6 +225,4 @@ def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):
     # parse near linear (~7x the clean control, vs ~17x re-scanning and far
     # worse as the trailing span grows).
     fenced_ratio = perf["fenced_us"] / perf["clean_us"]
-    assert fenced_ratio < 60, (
-        f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
-    )
+    assert fenced_ratio < 60, f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
