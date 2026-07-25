@@ -11284,10 +11284,12 @@ class _ResponsesReasoningExtractor:
         # Last char of the consumed span, needed as ``before`` when a close tag
         # sits at buffer start (index 0) so its flank is the span's last char.
         self._span_last_char = ""
-        # Resume point for the "does a closing ``` follow the held tag" scan.
-        # While a close tag is held at buffer[0] the buffer only grows at the
-        # tail, so rescanning the whole prefix every delta is O(n^2) (#7334).
+        # Resume points for the two look-ahead scans behind a held close tag
+        # ("does a ``` follow" / "does another close tag follow that ```").
+        # While a tag is held at buffer[0] the buffer only grows at the tail, so
+        # rescanning the whole prefix every delta is O(n^2) (#7334).
         self._fence_scan_from = 0
+        self._close_scan_from = 0
 
     def _add_to_span(self, chunk: str) -> None:
         """Fold a newly consumed chunk into the O(1) parity counters."""
@@ -11303,6 +11305,11 @@ class _ResponsesReasoningExtractor:
         self._fence_state = (len(combined) - len(combined.rstrip("`"))) % 3
         self._span_last_char = chunk[-1]
 
+    def _rebase_scan_cursors(self, shift: int) -> None:
+        """Shift the look-ahead cursors after the buffer is trimmed by ``shift``."""
+        self._fence_scan_from = max(0, self._fence_scan_from - shift)
+        self._close_scan_from = max(0, self._close_scan_from - shift)
+
     def _fence_parity_odd(self, text: str) -> bool:
         """Odd ``` fence count over consumed span + ``text`` (inside a fence)."""
         combined = "`" * self._fence_state + text
@@ -11317,23 +11324,35 @@ class _ResponsesReasoningExtractor:
         deferred mid-stream, and fall back to structural at EOF, so an unclosed
         fence in the reasoning cannot swallow the whole visible answer (#7066).
 
-        The fence enclosing *this* close is resolved iff a closing ``` appears
-        after the tag: that next fence marker closes the fence the tag sits in.
         Global parity over the whole buffer is wrong here, because a *separate*
         later unclosed fence (odd total) would then misflag an earlier close
-        that its own fence already closed (#7334).
+        that its own fence already closed (#7334). A bare "some ``` follows the
+        tag" is wrong too: that marker may open a fenced block in the visible
+        ANSWER rather than close the reasoning-side fence, which hid the whole
+        answer in the drawer for ``draft ```</think>Answer: ```js ... ``` ``.
+        The fence is proven closed only when reasoning continues past that
+        marker to a further close tag.
         """
         if not self._fence_parity_odd(buffer[:close_idx]):
             return False
-        # No further ``` after the tag means the enclosing fence never closes.
         # Resume from the last scanned offset (never before the tag) so a held
         # tag does not re-scan the whole growing buffer on every delta (#7334).
         start = close_idx if close_idx > self._fence_scan_from else self._fence_scan_from
-        if buffer.find("```", start) != -1:
+        fence_at = buffer.find("```", start)
+        if fence_at == -1:
+            # No further ``` at all: the enclosing fence never closes.
+            # Overlap by 2 so a fence straddling this boundary is still found.
+            nxt = len(buffer) - 2
+            self._fence_scan_from = nxt if nxt > close_idx else close_idx
+            return True
+        after = fence_at + 3
+        scan = after if after > self._close_scan_from else self._close_scan_from
+        if buffer.find(_RESPONSES_THINK_CLOSE, scan) != -1:
             return False
-        # Overlap by 2 so a fence straddling this boundary is still found.
-        nxt = len(buffer) - 2
-        self._fence_scan_from = nxt if nxt > close_idx else close_idx
+        # Overlap so a close tag straddling this boundary is still found. The
+        # fence cursor stays put: ``fence_at`` must be re-found next delta.
+        nxt = len(buffer) - (len(_RESPONSES_THINK_CLOSE) - 1)
+        self._close_scan_from = nxt if nxt > after else after
         return True
 
     def _think_close_is_literal(self, buffer: str, close_idx: int) -> bool:
@@ -11417,8 +11436,8 @@ class _ResponsesReasoningExtractor:
                         )
                         self._add_to_span(self._buffer[:hold_start])
                         self._buffer = self._buffer[hold_start:]
-                        # Buffer re-based: the fence scan cursor no longer applies.
-                        self._fence_scan_from = 0
+                        # Buffer re-based: the look-ahead cursors no longer apply.
+                        self._rebase_scan_cursors(hold_start)
                         break
                     # Quoted / backticked / fenced </think> is content (user
                     # echo, script discussion), not the end of reasoning (#7066).
@@ -11435,11 +11454,10 @@ class _ResponsesReasoningExtractor:
                             )
                             self._add_to_span(self._buffer[:close_idx])
                             self._buffer = self._buffer[close_idx:]
-                            # Re-base the scan cursor onto the trimmed buffer: the
-                            # tag now sits at index 0 and everything before the
-                            # last 2 chars has already been scanned (#7334).
-                            nxt = len(self._buffer) - 2
-                            self._fence_scan_from = nxt if nxt > 0 else 0
+                            # Re-base the look-ahead cursors onto the trimmed
+                            # buffer: the tag now sits at index 0 and everything
+                            # already scanned stays scanned (#7334).
+                            self._rebase_scan_cursors(close_idx)
                             break
                         from core.inference.chat_template_helpers import (
                             neutralize_think_markup,
@@ -11452,7 +11470,7 @@ class _ResponsesReasoningExtractor:
                         consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
                         self._add_to_span(self._buffer[:consumed])
                         self._buffer = self._buffer[consumed:]
-                        self._fence_scan_from = 0
+                        self._rebase_scan_cursors(consumed)
                         continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
@@ -11472,7 +11490,7 @@ class _ResponsesReasoningExtractor:
                 reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
                 self._add_to_span(emit)
                 self._buffer = self._buffer[-keep:] if keep else ""
-                self._fence_scan_from = 0
+                self._rebase_scan_cursors(len(emit))
                 break
 
             open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)

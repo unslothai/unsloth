@@ -380,6 +380,45 @@ def test_unclosed_fence_streaming_defers_then_structural():
     assert "visible answer" in visible
 
 
+_ANSWER_FENCE = "draft ```</think>Answer: ```js\nconst a = 1;\n```\ndone"
+
+
+def test_answer_side_fence_does_not_resolve_a_reasoning_fence():
+    """A ``` in the visible ANSWER must not prove a reasoning fence closed.
+
+    With an unclosed fence in the reasoning and a fenced code block in the
+    answer, treating the answer's ``` as the reasoning fence's closer made the
+    genuine close look literal, so the whole answer was hidden in the thinking
+    drawer. The fence is only proven closed when reasoning continues past that
+    marker to a further close tag (#7334).
+    """
+    reasoning, visible = _extract_responses_reasoning(
+        _ANSWER_FENCE,
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert reasoning == "draft ```"
+    assert visible == "Answer: ```js\nconst a = 1;\n```\ndone"
+
+
+def test_answer_side_fence_streaming_matches_single_delta():
+    """Same, delta by delta: the answer must not end up in the drawer."""
+    for size in (1, 3, 7):
+        ex = _ResponsesReasoningExtractor(
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        parts = [
+            ex.feed(_ANSWER_FENCE[i : i + size])
+            for i in range(0, len(_ANSWER_FENCE), size)
+        ]
+        parts.append(ex.finish())
+        reasoning = "".join(r for r, _ in parts)
+        visible = "".join(v for _, v in parts)
+        assert reasoning == "draft ```", size
+        assert visible == "Answer: ```js\nconst a = 1;\n```\ndone", size
+
+
 def test_closed_fence_literal_still_stays_reasoning():
     """A ``</think>`` inside a *closed* fence remains literal reasoning (#7334)."""
     reasoning, visible = _extract_responses_reasoning(

@@ -41,6 +41,8 @@ const cases = {
   quoted_literal: '<think>user wrote "</think>" here</think>answer',
   closed_fence_literal: "<think>see ```\\n</think>\\n``` example</think>real answer",
   unclosed_fence: "<think>unclosed ```python\\n</think>\\nthe answer",
+  // Unclosed reasoning fence + a fenced code block in the ANSWER (#7334).
+  answer_fence: "<think>draft ```</think>Answer: ```js\\nconst a = 1;\\n```\\ndone",
   literal_only: '<think>only a "</think>" mention, still thinking',
 };
 const parsed = {};
@@ -161,6 +163,15 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     # A literal mention alone never closes the block (reasoning timer stays live).
     assert [part["type"] for part in parsed["literal_only"]] == ["reasoning"]
     assert closed["literal_only"] is False
+
+    # A ``` in the visible ANSWER is not proof that a reasoning-side fence
+    # closed: taking it as such made the genuine close look literal and hid the
+    # entire answer inside the thinking drawer (#7334).
+    assert parsed["answer_fence"] == [
+        {"type": "reasoning", "text": "draft ```"},
+        {"type": "text", "text": "Answer: ```js\nconst a = 1;\n```\ndone"},
+    ]
+    assert closed["answer_fence"] is True
 
 
 def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):

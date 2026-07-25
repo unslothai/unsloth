@@ -151,29 +151,36 @@ function findStructuralThinkClose(
 
     let literal: boolean;
     if (fences % 2 === 1) {
-      // The close sits inside an open ``` fence. That fence is resolved (a real
-      // fenced example) iff a closing ``` appears after this tag; the next fence
-      // marker closes it. Global parity over the rest of the span is wrong, since
-      // a separate later unclosed fence would then misflag an earlier close whose
-      // own fence already closed (#7334). No further ``` means the enclosing
-      // fence never closes, so treat this tag as a genuine structural close --
-      // an unclosed fence in the reasoning must not swallow the visible answer.
-      // Mirrors the backend extractor's EOF fallback (_fence_unresolved_at_close).
-      if (nextFence !== -1) {
-        // A greedy fence at/after the tag already proves the fence closes; only
-        // fall back to the O(n) scan when the greedy cursor is exhausted, since
-        // overlapping runs such as "````" can still hide a marker from it.
-        literal = true;
-      } else if (streaming) {
-        // More deltas are coming, so "no closing ``` yet" is not "never". Defer
-        // like the backend extractor's hold: calling it structural now and
-        // reversing it when the fence closes would bounce text out of the
+      // The close sits inside an open ``` fence. Global parity over the rest of
+      // the span is wrong here, since a separate later unclosed fence would
+      // misflag an earlier close whose own fence already closed (#7334).
+      if (streaming) {
+        // More deltas are coming, so "not closed yet" is not "never closes".
+        // Defer like the backend extractor's hold: calling it structural now
+        // and reversing it when the fence closes would bounce text out of the
         // thinking drawer and back, and latch reasoningDuration on a tag that
         // was never the real close (#7334).
         literal = true;
       } else {
-        if (lastFence === undefined) lastFence = raw.lastIndexOf(FENCE);
-        literal = lastFence >= closeIndex;
+        // Where the enclosing fence would close. The greedy cursor answers this
+        // directly; only fall back to the O(n) scan when it is exhausted, since
+        // overlapping runs such as "````" can hide a marker from it.
+        let fenceClose = nextFence;
+        if (fenceClose === -1) {
+          if (lastFence === undefined) lastFence = raw.lastIndexOf(FENCE);
+          if (lastFence >= closeIndex) fenceClose = lastFence;
+        }
+        // No closing ``` at all: the enclosing fence never closes, so this tag
+        // is the genuine structural close -- an unclosed fence in the reasoning
+        // must not swallow the visible answer. And a ``` that does follow only
+        // proves the reasoning-side fence closed when reasoning continues past
+        // it to a further close tag; otherwise that marker opens a fenced block
+        // in the ANSWER, which used to hide the whole answer in the drawer for
+        // "draft ```</think>Answer: ```js ... ```" (#7334). Mirrors the backend
+        // extractor's _fence_unresolved_at_close.
+        literal =
+          fenceClose !== -1 &&
+          raw.indexOf(THINK_CLOSE_TAG, fenceClose + FENCE.length) !== -1;
       }
     } else {
       const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
