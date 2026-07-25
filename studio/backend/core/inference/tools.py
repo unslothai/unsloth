@@ -605,6 +605,24 @@ _AUTO_DESTRUCTIVE_MCP_VERB_RE = re.compile(
     r")(?:[_\-]|$)",
     re.IGNORECASE,
 )
+# Privilege escalation over MCP: granting a role/permission/policy hands out
+# access the operator never approved, and MCP runs outside the terminal sandbox.
+# An unambiguous privilege verb (grant/authorize/elevate/impersonate) matches on
+# its own; the softer verbs (assign/add/set/attach/bind) only count next to a
+# privilege noun, so assign_issue / add_label keep running.
+_AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:role|roles|permission|permissions|privilege|privileges|acl|acls|"
+    r"policy|policies|scope|scopes|grant|grants|membership|admin|owner)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_PRIVILEGE_MCP_SOFT_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:assign|add|set|attach|bind|put|update|create)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 
 # Python: modules whose import alone signals side effects auto mode should ask
 # about (process spawning, network, bulk file ops, low-level memory).
@@ -2636,6 +2654,19 @@ _HIGH_RISK_COMMANDS = frozenset(
         "ncat",
         "netcat",
         "socat",
+        # container/VM runtimes: the daemon acts with host privileges, so
+        # `docker run -v /:/host ...` mounts and writes the real filesystem,
+        # escaping the child process's workdir and rlimit sandbox entirely.
+        # Gated wholesale (a read-only `docker ps` prompts too) because the
+        # escape lives in the arguments, and this mode errs toward prompting.
+        "docker",
+        "podman",
+        "nerdctl",
+        "ctr",
+        "crictl",
+        "lxc",
+        "machinectl",
+        "kubectl",
     }
 )
 # Recursive-permission commands are high risk only with a recursive flag
@@ -2648,6 +2679,19 @@ _HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "
 # find/fd flags that delete matches outright (a bare `find . -delete`, with no
 # separate command token to catch); an `-exec rm` is caught via forwarding.
 _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
+# Flags whose VALUE is a command the tool then executes, so a payload (even a
+# hard-blocked one) rides inside an argument instead of at command position.
+# GNU tar --checkpoint-action=exec=CMD, rsync/scp -e REMOTE_SHELL.
+_HIGH_RISK_ARG_EXEC_FLAGS = frozenset({"--checkpoint-action", "--rsh", "--rsync-path"})
+# An interpreter run as a network server (python -m http.server, uvicorn,
+# gunicorn) listens on a socket; the sandbox has no network namespace, so the
+# session workdir becomes reachable wherever that port is exposed. Matched on
+# the module token itself, so it also catches `python3 -m http.server`.
+_LISTENER_MODULE_RE = re.compile(
+    r"^(?:http\.server|SimpleHTTPServer|uvicorn|gunicorn|waitress|flask|"
+    r"twisted|websockets|aiohttp\.web|https?\.server)$",
+    re.IGNORECASE,
+)
 # curl/wget flags that send local data out (exfiltration surface).
 # curl upload/POST flags. The short forms may be attached (-d@f, -Ffile=@dump.sql),
 # so they are matched prefix-wise; the long forms are exact.
@@ -2952,6 +2996,14 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
         )
         if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
+            return True
+        # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
+        # command (including hard-blocked ones) inside an argument.
+        if any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
+            return True
+        # An interpreter serving on the network (python -m http.server) exposes
+        # the session workdir; the sandbox keeps no network namespace.
+        if any(_LISTENER_MODULE_RE.match(t) for t in tokens):
             return True
         expect_command = True  # at the start of a command (after a separator)
         prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
@@ -3312,6 +3364,12 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name):
             return True
         if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
+            tool_name
+        ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
             return True
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
             return True
