@@ -1159,13 +1159,15 @@ def _openai_admission_log(
         wait_ms = int(max(0.0, time.monotonic() - wait_started_at) * 1000)
     log = getattr(logger, level, logger.debug)
     log(
-        "openai admission %s: mode=%s path=%s completion_id=%s capacity=%s active=%s queued=%s wait_ms=%s",
+        "openai admission %s: mode=%s path=%s completion_id=%s "
+        "pool=%s/%s free=%s queued=%s wait_ms=%s",
         event,
         mode,
         _openai_admission_request_path(request),
         completion_id,
-        getattr(snapshot, "capacity", None),
         getattr(snapshot, "active", None),
+        getattr(snapshot, "capacity", None),
+        getattr(snapshot, "free", None),
         getattr(snapshot, "queued", None),
         wait_ms,
     )
@@ -1186,6 +1188,23 @@ def _openai_admission_http_exception(exc: Exception, *, status_code: int) -> HTT
     return HTTPException(
         status_code = status_code,
         detail = _openai_admission_error_body(exc, status_code = status_code),
+    )
+
+
+def _anthropic_admission_http_exception(exc: Exception, *, status_code: int) -> HTTPException:
+    """Anthropic-shaped error for an admission reject/timeout/cancel (429/503/499)."""
+    snapshot = getattr(exc, "snapshot", None)
+    message = str(exc)
+    if snapshot is not None:
+        message = (
+            f"{message} "
+            f"(active={snapshot.active}, queued={snapshot.queued}, capacity={snapshot.capacity})"
+        )
+    # A saturated backend is Anthropic's overloaded_error; 499 keeps the per-status default.
+    err_type = "overloaded_error" if status_code in (429, 503) else None
+    return HTTPException(
+        status_code = status_code,
+        detail = anthropic_error_body(message, status = status_code, err_type = err_type),
     )
 
 
@@ -13220,12 +13239,129 @@ async def anthropic_messages(
             cancel_event,
         )
 
+    # ── Admission control ─────────────────────────────────────
+    # Bound concurrent llama-server generations to the backend's serving slots via a
+    # FIFO queue keyed by base_url (shared with /v1/chat/completions, same slots).
+    # Excess requests queue; a streaming waiter gets SSE keep-alives, the queue 429s
+    # once full. Mirrors the OpenAI passthrough admission wiring. Streaming holds the
+    # slot only while the body iterates (the upstream stream opens on iteration); the
+    # non-stream path holds it across the single awaited generation.
+    async def _admitted_anthropic_stream(orig_body, reservation, admission_config, stream_lease):
+        lease = stream_lease
+        try:
+            if lease is None:
+                async for wait_item in _openai_admission_wait_stream_chunks(
+                    reservation,
+                    admission_config,
+                    request = request,
+                    cancel_event = cancel_event,
+                ):
+                    if isinstance(wait_item, str):
+                        yield wait_item
+                        continue
+                    lease = wait_item
+                    break
+            if lease is None:
+                return
+            async for chunk in orig_body:
+                yield chunk
+        except LlamaAdmissionTimeout as exc:
+            api_monitor.fail(monitor_id, str(exc))
+            yield build_anthropic_sse_event(
+                "error",
+                anthropic_error_body(str(exc), status = 503, err_type = "overloaded_error"),
+            )
+        except LlamaAdmissionCancelled:
+            return
+        finally:
+            _aclose = getattr(orig_body, "aclose", None)
+            if _aclose is not None:
+                try:
+                    await _aclose()
+                except Exception:
+                    pass
+            if lease is not None:
+                lease.release()
+            else:
+                reservation.cancel()
+
+    async def _admitted_anthropic(coro):
+        try:
+            reservation, admission_config = _openai_llama_admission_reserve(
+                request = request, llama_backend = llama_backend
+            )
+        except LlamaAdmissionQueueFull as exc:
+            coro.close()
+            api_monitor.fail(monitor_id, str(exc))
+            raise _anthropic_admission_http_exception(exc, status_code = 429)
+
+        if payload.stream:
+            stream_lease = reservation.lease_nowait()
+            # Set up the stream (token count + tracker enter) and surface a pre-response
+            # cancel now, exactly as the un-admitted path did; the upstream generation is
+            # deferred to body iteration, so the slot is only held while tokens flow.
+            try:
+                monitored = await _monitored_anthropic(coro)
+            except BaseException:
+                if stream_lease is not None:
+                    stream_lease.release()
+                reservation.cancel()
+                raise
+            orig_body = getattr(monitored, "body_iterator", None)
+            if orig_body is None:
+                if stream_lease is not None:
+                    stream_lease.release()
+                else:
+                    reservation.cancel()
+                return monitored
+
+            async def _unstarted_cleanup() -> None:
+                _aclose = getattr(orig_body, "aclose", None)
+                if _aclose is not None:
+                    try:
+                        await _aclose()
+                    except Exception:
+                        pass
+                if stream_lease is not None:
+                    stream_lease.release()
+                reservation.cancel()
+
+            monitored.body_iterator = _admitted_anthropic_stream(
+                orig_body, reservation, admission_config, stream_lease
+            )
+            monitored._unstarted_cleanup = _unstarted_cleanup
+            return monitored
+
+        lease = None
+        try:
+            lease = await _wait_for_openai_admission_non_streaming(
+                reservation,
+                admission_config,
+                request = request,
+                cancel_event = cancel_event,
+            )
+            monitored = await _monitored_anthropic(coro)
+            return monitored
+        except LlamaAdmissionTimeout as exc:
+            coro.close()
+            api_monitor.fail(monitor_id, str(exc))
+            raise _anthropic_admission_http_exception(exc, status_code = 503)
+        except LlamaAdmissionCancelled as exc:
+            coro.close()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
+        finally:
+            if lease is not None:
+                lease.release()
+            else:
+                reservation.cancel()
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
 
         if payload.stream:
-            return await _monitored_anthropic(
+            return await _admitted_anthropic(
                 _anthropic_passthrough_stream(
                     request,
                     cancel_event,
@@ -13249,7 +13385,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 )
             )
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_passthrough_non_streaming(
                 llama_backend,
                 openai_messages,
@@ -13353,7 +13489,7 @@ async def anthropic_messages(
             )
 
         if payload.stream:
-            return await _monitored_anthropic(
+            return await _admitted_anthropic(
                 _anthropic_tool_stream(
                     request,
                     cancel_event,
@@ -13366,7 +13502,7 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                 )
             )
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
                 _run_tool_gen,
                 message_id,
@@ -13392,7 +13528,7 @@ async def anthropic_messages(
         )
 
     if payload.stream:
-        return await _monitored_anthropic(
+        return await _admitted_anthropic(
             _anthropic_plain_stream(
                 request,
                 cancel_event,
@@ -13403,7 +13539,7 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
             )
         )
-    return await _monitored_anthropic(
+    return await _admitted_anthropic(
         _anthropic_plain_non_streaming(
             _run_plain_gen,
             message_id,
@@ -13915,6 +14051,24 @@ def _build_passthrough_payload(
     return body
 
 
+async def _anthropic_passthrough_retry_url(llama_backend, exc):
+    """Fresh upstream URL after respawning a dead llama-server, else None.
+
+    A crashed server relaunches on a NEW ephemeral port, so a passthrough still
+    holding the old base_url keeps failing until the next load. Mirrors the
+    respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
+    already scheduled its own recovery, or when nothing needed respawning.
+    """
+    recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
+    if recover is not None and recover(exc):
+        return None
+    respawn = getattr(llama_backend, "_respawn_if_dead", None)
+    if respawn is None or not await asyncio.to_thread(respawn):
+        return None
+    logger.warning("llama-server was unreachable; respawned it and retrying the passthrough")
+    return f"{llama_backend.base_url}/v1/chat/completions"
+
+
 async def _anthropic_passthrough_stream(
     request,
     cancel_event,
@@ -14018,13 +14172,28 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            req = client.build_request(
-                "POST", target_url, json = body, headers = {"Connection": "close"}
-            )
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-            resp = await _send_stream_with_preheader_cancel(
-                client, req, cancel_event, request = request
-            )
+            url = target_url
+            try:
+                req = client.build_request(
+                    "POST", url, json = body, headers = {"Connection": "close"}
+                )
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
+            except httpx.ConnectError as exc:
+                # Nothing has streamed yet, so a respawned server can be retried once
+                # on its new port without duplicating output.
+                url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+                if url is None:
+                    raise
+                req = client.build_request(
+                    "POST", url, json = body, headers = {"Connection": "close"}
+                )
+                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                resp = await _send_stream_with_preheader_cancel(
+                    client, req, cancel_event, request = request
+                )
             if resp is None:
                 return
 
@@ -14143,11 +14312,24 @@ async def _anthropic_passthrough_non_streaming(
         backend_ctx = llama_backend.context_length,
     )
 
-    resp = await nonstreaming_client().post(
-        target_url,
-        json = body,
-        timeout = _llama_non_streaming_generation_timeout(),
-    )
+    try:
+        resp = await nonstreaming_client().post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
+    except httpx.ConnectError as exc:
+        # Nothing was returned yet, so retry once against the respawned server's
+        # new port; the nudge retry below then reuses the same fresh URL.
+        retry_url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+        if retry_url is None:
+            raise
+        target_url = retry_url
+        resp = await nonstreaming_client().post(
+            target_url,
+            json = body,
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
 
     if resp.status_code != 200:
         raise HTTPException(
