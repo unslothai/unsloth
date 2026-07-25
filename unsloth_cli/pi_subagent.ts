@@ -5,8 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-// Keep this distinct from the normal `unsloth` provider because subagent mode
-// intentionally preserves the user's Pi configuration and its provider names.
+// Distinct from the normal `unsloth` provider: subagent mode preserves the user's Pi config.
 const provider = "unsloth-studio-subagent";
 const maxResultCharacters = 100_000;
 const maxParallelAgents = 4;

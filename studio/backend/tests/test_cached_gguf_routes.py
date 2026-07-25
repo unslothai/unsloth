@@ -127,8 +127,7 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
 
 
 def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
-    """A repo outside the active cache carries the snapshot path to load by;
-    one inside it is loadable by id, so no load_id is sent."""
+    """Only a repo outside the active cache needs a snapshot load_id."""
     active = tmp_path / "active"
     snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
     away = _repo(

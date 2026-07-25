@@ -3017,12 +3017,9 @@ def _repo_gguf_last_modified(repo_info) -> float:
 
 
 def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
-    """Snapshot dir to load a cached GGUF repo by, when its id will not do.
-
-    A repo outside the active hub cache does not resolve by id, so it loads by
-    the snapshot holding its newest primary GGUF, as
-    ``hub.services.models.cache_inventory`` already does. ``None`` when the id
-    works or no snapshot is recorded, since the repo dir itself is not loadable.
+    """Snapshot dir holding the newest primary GGUF, for a repo outside the active
+    hub cache that does not resolve by id. ``None`` when the id works or no
+    snapshot is recorded, since the repo dir itself is not loadable.
     """
     repo_path = getattr(repo_info, "repo_path", None)
     if repo_path is None or active_root is None:

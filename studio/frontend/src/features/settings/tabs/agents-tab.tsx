@@ -264,8 +264,7 @@ function activeGgufSelection(
     return null;
   }
   return {
-    // Status reports the selected quant for path-based loads too, where the
-    // identifier carries no ":variant" suffix to parse.
+    // Status reports the quant for path loads too, whose id has no ":variant" suffix.
     model: active.repo,
     variant: status.gguf_variant ?? active.variant,
   };
@@ -410,8 +409,7 @@ function CommandBlock({ command }: { command: string }) {
   );
 }
 
-// Quote a --model value for copy-paste. Safe identifiers are left as-is; only
-// values with shell metacharacters (e.g. a local path with spaces) are quoted.
+// Quote only values with shell metacharacters, e.g. a local path with spaces.
 function quoteShellArg(value: string, windows: boolean): string {
   if (SAFE_SHELL_ARG_PATTERN.test(value)) {
     return value;
@@ -518,8 +516,8 @@ export function AgentsTab() {
   const t = useT();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
-  // The copied commands run on the client, so quote and pick the shell from the client
-  // platform, not deviceType. Anchor the match: a bare includes("win") also matches "darwin".
+  // Copied commands run on the client, so pick the shell from the client platform, not
+  // deviceType. Anchor the match: a bare includes("win") also matches "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
     return p.startsWith("win") || p.includes("windows");
@@ -537,8 +535,8 @@ export function AgentsTab() {
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
-  // The model /api/inference/status reports as resident, so the command can
-  // attach to it as loaded rather than remapping it to another cached copy.
+  // The model /api/inference/status reports as resident, so the command attaches to it
+  // rather than remapping to another cached copy.
   const [activeStatusModel, setActiveStatusModel] = useState<string | null>(
     null,
   );
@@ -583,10 +581,9 @@ export function AgentsTab() {
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
   const selectedAgentDetails = detailsFor(selectedAgent);
-  // A GGUF outside the active HF cache only loads by its snapshot path, and a
-  // path takes its quant via --gguf-variant since it has no ":variant" suffix.
-  // The resident model is exempt: it already loaded by id, and cached-gguf keeps
-  // the largest copy, whose snapshot could switch cache or quant under it.
+  // A GGUF outside the active HF cache only loads by snapshot path, which takes its quant
+  // via --gguf-variant. The resident model is exempt: it already loaded by id, and
+  // cached-gguf keeps the largest copy, whose snapshot could switch cache or quant.
   const cachedLoadId =
     selectedModel === activeStatusModel
       ? null
@@ -602,14 +599,10 @@ export function AgentsTab() {
     selectedVariant && !suffixVariant
       ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsClient)}`
       : `--model ${commandModelArg}`;
-  // Browser commands must target the Studio origin the user is viewing. The
-  // desktop app instead uses the backend URL reported by /api/health; its
-  // window origin is a Tauri URL and is not reachable by the CLI.
-  // No key is passed: the CLI treats an explicit one as authoritative and
-  // caches it per base, so a placeholder would overwrite a working saved key.
-  // Omitting the flag lets it replay the saved key; the remote section covers
-  // first-time setup. getApiBase is the base the app already talks to, so fall
-  // back to it while the health request that fills serverUrl is in flight.
+  // Browser commands target the viewed origin; a desktop window origin is a Tauri URL the
+  // CLI cannot reach, so use the backend URL from /api/health (getApiBase until it lands).
+  // No key is passed: the CLI caches an explicit one per base, overwriting a working saved
+  // key. Omitting it replays the saved key; the remote section covers first-time setup.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const commandOs = isWindowsClient ? "windows" : "unix";
   const commandBase = buildAgentCommand(
@@ -689,8 +682,7 @@ export function AgentsTab() {
           info?.models ?? [],
           cachedGgufs.map((cached) => cached.repo_id),
         );
-        // A GGUF outside the active HF cache only loads by its snapshot path,
-        // so keep that load_id for --model while listing it by repo id.
+        // Keep the snapshot load_id for --model while listing the model by repo id.
         const loadIds: Record<string, string> = {};
         for (const cached of cachedGgufs) {
           if (cached.load_id && cached.load_id !== cached.repo_id) {
@@ -746,8 +738,7 @@ export function AgentsTab() {
       };
     }
 
-    // Offer the quants from the same place the command loads from: a snapshot
-    // outside the active cache would otherwise list remote-only variants.
+    // Offer the quants from the same place the command loads from, not remote-only ones.
     listGgufVariants(selectedModel, hfToken || undefined, {
       preferLocalCache: cachedLoadId != null,
       localPath: cachedLoadId,
@@ -792,7 +783,6 @@ export function AgentsTab() {
             {
               filename: "",
               quant: preferredVariant,
-              // API field names intentionally mirror the backend response.
               // biome-ignore lint/style/useNamingConvention: API response field
               size_bytes: 0,
             },
@@ -810,8 +800,8 @@ export function AgentsTab() {
     };
   }, [cachedLoadId, hfToken, preferredVariant, selectedModel]);
 
-  // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits otherwise), but
-  // the picker only offers GGUFs and the command names the one it built, so no warning fits.
+  // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
+  // picker only ever offers GGUF models.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
