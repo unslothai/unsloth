@@ -11,8 +11,9 @@ import {
   ExternalLink,
   MinusCircle,
   UploadCloud,
+  X,
 } from "lucide-react";
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -48,8 +49,9 @@ export function CheckpointUploadCard({
   upload,
 }: {
   upload: CheckpointUploadProgress;
-}): ReactElement {
+}): ReactElement | null {
   const t = useT();
+  const [dismissed, setDismissed] = useState(false);
   const percent =
     typeof upload.percentage === "number"
       ? Math.min(100, Math.max(0, upload.percentage))
@@ -67,6 +69,10 @@ export function CheckpointUploadCard({
         : upload.state === "skipped"
           ? MinusCircle
           : UploadCloud;
+
+  if (dismissed) {
+    return null;
+  }
 
   return (
     <aside
@@ -138,6 +144,15 @@ export function CheckpointUploadCard({
             <ExternalLink className="size-3.5" />
           </a>
         ) : null}
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          aria-label={t("common.close")}
+          title={t("common.close")}
+          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <X className="size-3.5" />
+        </button>
       </div>
 
       {upload.state === "error" ? (
