@@ -34,7 +34,7 @@ import {
 import { useHfTokenStore } from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 import { useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
+import { getApiBase, isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -128,6 +128,8 @@ type ParsedModel = {
   variant: string | null;
 };
 
+// These names are not translated, so `settings.agents.intro` lists them all to
+// keep every agent findable from settings search.
 const SUPPORTED_AGENTS: AgentDetails[] = [
   {
     id: "claude",
@@ -597,9 +599,10 @@ export function AgentsTab() {
   // No key is passed: the CLI treats an explicit one as authoritative and
   // caches it per base, so a placeholder would overwrite a working saved key.
   // Omitting the flag lets it replay the saved key; the remote section covers
-  // first-time setup.
+  // first-time setup. getApiBase is the base the app already talks to, so fall
+  // back to it while the health request that fills serverUrl is in flight.
   const commandBase = buildAgentCommand(
-    isTauri ? serverUrl : origin,
+    isTauri ? (serverUrl ?? getApiBase()) : origin,
     null,
     isWindowsClient ? "windows" : "unix",
     selectedAgent,
@@ -811,16 +814,26 @@ export function AgentsTab() {
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
+      {/* Labels let settings search scroll to these, since they are indexed. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">
+        <h1
+          data-settings-label={t("settings.agents.title")}
+          className="text-xl font-semibold font-heading"
+        >
           {t("settings.agents.title")}
         </h1>
-        <p className="text-xs text-muted-foreground leading-relaxed">
+        <p
+          data-settings-label={t("settings.agents.description")}
+          className="text-xs text-muted-foreground leading-relaxed"
+        >
           {t("settings.agents.description")}
         </p>
       </header>
 
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p
+        data-settings-label={t("settings.agents.intro")}
+        className="text-sm text-muted-foreground leading-relaxed"
+      >
         <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground dark:bg-white/[0.08]">
           unsloth start
         </code>{" "}
