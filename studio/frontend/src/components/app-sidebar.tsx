@@ -276,11 +276,17 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
-// Small "New" pill trailing a nav label, for recently shipped tabs. Hidden on the
-// collapsed rail, where there is no room beside the icon.
-function NavBadge({ label }: { label: string }) {
+// Small "New" pill for recently shipped tabs. Same recipe as the brand "beta"
+// badge (nav-badge font, --ui-font-scale sizing, nav token colours) so the two
+// read as one design language.
+function NavBadge({ label, className }: { label: string; className?: string }) {
   return (
-    <span className="ml-auto shrink-0 rounded-full border border-border/60 px-1.5 py-px text-[9px] font-semibold uppercase leading-[14px] tracking-wider text-muted-foreground group-data-[collapsible=icon]:hidden">
+    <span
+      className={cn(
+        "nav-badge inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium uppercase leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+        className,
+      )}
+    >
       {label}
     </span>
   );
@@ -331,7 +337,12 @@ function NavItem({
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
-          {badge && <NavBadge label={badge} />}
+          {badge && (
+            <NavBadge
+              label={badge}
+              className="ml-auto group-data-[collapsible=icon]:hidden"
+            />
+          )}
           {spinner && (
             <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
@@ -376,22 +387,11 @@ function MoreMenuItem({
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className={cn(
-        "gap-2 rounded-md px-2 py-1.5 text-ui-14p5 leading-ui-19 tracking-nav",
-        active && "bg-accent/60",
-      )}
+      className={cn(active && "bg-accent/60")}
     >
-      <HugeiconsIcon
-        icon={icon}
-        strokeWidth={1.75}
-        className="size-icon! shrink-0"
-      />
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {badge && (
-        <span className="shrink-0 rounded-full border border-border/60 px-1.5 py-px text-[9px] font-semibold uppercase leading-[14px] tracking-wider text-muted-foreground">
-          {badge}
-        </span>
-      )}
+      {badge && <NavBadge label={badge} />}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
     </DropdownMenuItem>
   );
@@ -413,7 +413,12 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { togglePinned, isMobile, setOpenMobile } = useSidebar();
+  const {
+    togglePinned,
+    isMobile,
+    setOpenMobile,
+    state: sidebarState,
+  } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
 
@@ -1536,27 +1541,39 @@ export function AppSidebar() {
                   onOpenChange={setMoreOpen}
                   modal={false}
                 >
-                  <DropdownMenuTrigger asChild>
-                    <SidebarMenuButton
-                      // No `tooltip` here on purpose: with it, SidebarMenuButton
-                      // returns a Tooltip root, and DropdownMenuTrigger asChild
-                      // would hand its ref/handlers to that instead of a DOM
-                      // node, leaving the trigger dead. `title` keeps a label on
-                      // the collapsed rail.
-                      title={t("shell.navigation.more")}
-                      isActive={moreSectionActive}
-                      className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
+                  {/* No `tooltip` prop on the button: with it, SidebarMenuButton
+                      returns a Tooltip root and DropdownMenuTrigger asChild would
+                      hand its ref/handlers to that instead of a DOM node, leaving
+                      the trigger dead. Wrap it here instead, so both triggers
+                      compose onto the same button. */}
+                  <Tooltip>
+                    <TooltipPrimitive.Trigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <SidebarMenuButton
+                          isActive={moreSectionActive}
+                          className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
+                        >
+                          <HugeiconsIcon
+                            icon={MoreHorizontalIcon}
+                            strokeWidth={1.75}
+                            className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                          />
+                          <span className="text-ui-14p5 leading-ui-19 tracking-nav">
+                            {t("shell.navigation.more")}
+                          </span>
+                        </SidebarMenuButton>
+                      </DropdownMenuTrigger>
+                    </TooltipPrimitive.Trigger>
+                    {/* Only the collapsed rail needs it; expanded rows show their label. */}
+                    <TooltipContent
+                      side="right"
+                      align="center"
+                      className="tooltip-compact"
+                      hidden={isMobile || sidebarState !== "collapsed"}
                     >
-                      <HugeiconsIcon
-                        icon={MoreHorizontalIcon}
-                        strokeWidth={1.75}
-                        className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
-                      />
-                      <span className="text-ui-14p5 leading-ui-19 tracking-nav">
-                        {t("shell.navigation.more")}
-                      </span>
-                    </SidebarMenuButton>
-                  </DropdownMenuTrigger>
+                      {t("shell.navigation.more")}
+                    </TooltipContent>
+                  </Tooltip>
                   <DropdownMenuContent
                     side="right"
                     align="start"
