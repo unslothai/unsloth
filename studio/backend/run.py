@@ -1166,7 +1166,29 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
         return False
 
 
-def _auto_generate_admin_password(admin_username: str) -> "Optional[str]":
+def _generated_password_is_live(admin_username: str, candidate: str) -> bool:
+    """True when *candidate* is the password the stored admin hash now accepts.
+
+    Only used to resolve a partial success: ``update_password`` commits the row
+    before its remaining best-effort cleanup, so a raise from that cleanup still
+    leaves the new password live. Any failure to read or verify answers False, so
+    the caller fails closed instead of assuming the write landed. Comparison runs
+    through ``verify_password`` (PBKDF2 + ``hmac.compare_digest``).
+    """
+    from auth import hashing as _auth_hashing
+    from auth import storage as _auth_storage
+
+    try:
+        record = _auth_storage.get_user_and_secret(admin_username)
+        if record is None:
+            return False
+        salt, pwd_hash = record[0], record[1]
+        return bool(_auth_hashing.verify_password(candidate, salt, pwd_hash))
+    except Exception:
+        return False
+
+
+def _auto_generate_admin_password(admin_username: str, *, out = None) -> "Optional[str]":
     """Generate a strong random admin password and commit it for a headless
     public launch that supplied none.
 
@@ -1181,18 +1203,48 @@ def _auto_generate_admin_password(admin_username: str) -> "Optional[str]":
     gate's read and this write, and an unconditional update would overwrite the
     password the user just chose. Returns None when that guard rejects the write,
     so the caller shows nothing rather than a credential that never took effect.
+
+    ``update_password`` commits the row BEFORE its remaining best-effort cleanup
+    (removing the on-disk bootstrap password file), so that cleanup can still
+    raise -- e.g. printing its own warning to a stderr the launcher has closed --
+    with the new password already live and the seeded recovery credential already
+    gone. Propagating there would abort the launch behind a password nobody has
+    ever seen, an unrecoverable lockout short of `unsloth studio reset-password`.
+    So an exception is resolved against the stored hash, exactly as the Colab path
+    does: return the generated value when it is the live one, and re-raise when it
+    is not (nothing was committed, the seeded credential still works, and the
+    caller must fail closed rather than publish under an unknown state).
     """
     import secrets as _secrets
 
     from auth import storage as _auth_storage
 
     generated = _secrets.token_urlsafe(24)
-    committed = _auth_storage.update_password(
-        admin_username,
-        generated,
-        revoke_refresh_tokens = True,
-        require_must_change = True,
-    )
+    try:
+        committed = _auth_storage.update_password(
+            admin_username,
+            generated,
+            revoke_refresh_tokens = True,
+            require_must_change = True,
+        )
+    except Exception as e:
+        if not _generated_password_is_live(admin_username, generated):
+            raise
+        if out is not None:
+            # Console-only stream (never the tee'd session log). Reports the
+            # cleanup failure, not the credential -- the banner below prints that.
+            # Never fatal: losing this notice must not cost the operator the
+            # password it is introducing.
+            try:
+                print(
+                    "Warning: the admin password commit reported an error after it "
+                    f"was applied ({e}); the password below is the live one.",
+                    file = out,
+                    flush = True,
+                )
+            except Exception:
+                pass
+        return generated
     return generated if committed else None
 
 
@@ -1305,7 +1357,7 @@ def _terminal_password_gate(
                 flush = True,
             )
             return False, False
-        generated = _auto_generate_admin_password(_admin)
+        generated = _auto_generate_admin_password(_admin, out = out)
         if generated is None:
             # Lost the compare-and-set: a password was set elsewhere between the
             # gate's read and the rotation, so ours was never written. The account

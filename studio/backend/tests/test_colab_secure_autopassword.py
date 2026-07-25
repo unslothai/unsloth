@@ -227,8 +227,8 @@ def test_display_channel_active_false_without_a_kernel():
 
 def test_auto_generate_keeps_credential_when_post_commit_cleanup_raises(monkeypatch):
     # update_password commits the row and only then runs its best-effort cleanup
-    # (clear_bootstrap_password, clear_desktop_secret -- the latter opens a second
-    # SQLite connection that can hit a lock). A raise there used to discard the
+    # (clear_bootstrap_password, which can still raise on a read-only auth dir or a
+    # closed stderr). A raise there used to discard the
     # generated password even though it was already live, and the caller would then
     # publish the link (must_change is 0) under a credential nobody holds.
     admin = _seed_admin(must_change_password = True)
@@ -506,3 +506,20 @@ def test_start_threads_same_tab_link_token_when_opted_in(monkeypatch):
 
     assert finalize_calls == []
     assert embed_kwargs.get("same_tab_link_token") == "same-tab-token"
+
+
+def test_notebook_text_warns_that_cell_output_is_saved():
+    # The runtime card already says the notebook saves its output; the notebook's
+    # own intro cell and code comment must not contradict it by promising the
+    # credential is never written to disk. Colab autosaves to Drive and a shared or
+    # exported copy carries the cell output -- and the password with it.
+    import json
+
+    notebook = Path(__file__).resolve().parents[2] / "Unsloth_Studio_Colab.ipynb"
+    cells = json.loads(notebook.read_text(encoding = "utf-8"))["cells"]
+    text = "".join("".join(cell.get("source", [])) for cell in cells)
+
+    assert "never written to disk" not in text  # the old, false promise
+    assert "SAVES its cell output" in text  # intro cell
+    assert "This notebook saves cell output" in text  # code-cell comment
+    assert text.count("clear the output") >= 2

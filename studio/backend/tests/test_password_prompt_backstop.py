@@ -753,3 +753,131 @@ def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
     monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "env-should-be-stripped")
     run._apply_supplied_password("literal-new-password")
     assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ
+
+
+# ── partial-success recovery on the direct-server path ───────────────
+
+
+@pytest.fixture
+def real_auth_db(tmp_path, monkeypatch):
+    """Point auth storage at a throwaway DB for the tests that need the REAL
+    update_password commit (the stubs above never touch SQLite)."""
+    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
+    monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
+    monkeypatch.setattr(auth_storage, "_api_key_pbkdf2_salt_cache", None)
+    return tmp_path
+
+
+def _seed_real_admin(*, must_change_password: bool = True) -> str:
+    import secrets as _secrets
+    auth_storage.create_initial_user(
+        username = auth_storage.DEFAULT_ADMIN_USERNAME,
+        password = "bootstrap-secret-123",
+        jwt_secret = _secrets.token_urlsafe(64),
+        must_change_password = must_change_password,
+    )
+    return auth_storage.DEFAULT_ADMIN_USERNAME
+
+
+def _commit_then_raise(monkeypatch, exc: Exception) -> None:
+    """Make update_password commit for real and only then raise, reproducing a
+    failure in the post-commit cleanup that runs outside the transaction."""
+    real_update = auth_storage.update_password
+
+    def _update(username, new_password, **kwargs):
+        real_update(username, new_password, **kwargs)
+        raise exc
+
+    monkeypatch.setattr(auth_storage, "update_password", _update)
+
+
+def test_auto_generate_keeps_credential_when_post_commit_cleanup_raises(real_auth_db, monkeypatch):
+    # update_password commits the row BEFORE its best-effort bootstrap-file
+    # cleanup, so a raise there leaves the generated password live while the
+    # seeded recovery credential is already gone. Discarding it (the exception
+    # used to propagate out of the gate) aborted the launch behind a password
+    # nobody had ever seen -- an unrecoverable lockout. Resolve the partial
+    # success against the stored hash instead, as the Colab path does.
+    admin = _seed_real_admin()
+    _commit_then_raise(monkeypatch, OSError("database is locked"))
+    console = _Stream(isatty = True)
+
+    generated = run._auto_generate_admin_password(admin, out = console)
+
+    assert isinstance(generated, str) and generated
+    from auth import hashing as _hashing
+
+    salt, pwd_hash, _jwt, _mc = auth_storage.get_user_and_secret(admin)
+    # The returned value is exactly the one that landed, so the banner shows a
+    # password that actually authenticates.
+    assert _hashing.verify_password(generated, salt, pwd_hash) is True
+    assert auth_storage.requires_password_change(admin) is False
+    notice = console.getvalue()
+    assert "reported an error" in notice
+    assert generated not in notice  # the notice never repeats the credential
+
+
+def test_auto_generate_reraises_when_the_commit_itself_fails(real_auth_db, monkeypatch):
+    # The converse: nothing was committed, so the seeded credential is still the
+    # live one. Returning None here would tell the gate "someone else set a
+    # password" and publish the tunnel; re-raise so the launch fails closed.
+    admin = _seed_real_admin()
+
+    def _explode(username, new_password, **kwargs):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(auth_storage, "update_password", _explode)
+
+    with pytest.raises(OSError):
+        run._auto_generate_admin_password(admin)
+    assert auth_storage.requires_password_change(admin) is True
+    from auth import hashing as _hashing
+
+    salt, pwd_hash, _jwt, _mc = auth_storage.get_user_and_secret(admin)
+    assert _hashing.verify_password("bootstrap-secret-123", salt, pwd_hash) is True
+
+
+def test_auto_generate_returns_none_when_the_compare_and_set_loses(real_auth_db, monkeypatch):
+    # No exception, just a lost CAS (another tab completed /change-password): the
+    # generated value was never written, so it must not be shown.
+    admin = _seed_real_admin(must_change_password = False)
+    assert run._auto_generate_admin_password(admin) is None
+
+
+def test_gate_surfaces_the_password_when_post_commit_cleanup_raises(real_auth_db, monkeypatch):
+    # End to end on the direct `python run.py --secure` path: the gate must still
+    # proceed and print the live credential instead of aborting after the rotation.
+    _seed_real_admin()
+    stderr = _patch_streams_autogen(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    _commit_then_raise(monkeypatch, OSError("database is locked"))
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+
+    admin = auth_storage.DEFAULT_ADMIN_USERNAME
+    out = stderr.getvalue()
+    assert "auto-generated" in out
+    printed = re.search(r"Password: (\S+)", out)
+    assert printed is not None, out
+    from auth import hashing as _hashing
+
+    salt, pwd_hash, _jwt, _mc = auth_storage.get_user_and_secret(admin)
+    assert _hashing.verify_password(printed.group(1), salt, pwd_hash) is True
+
+
+def test_gate_aborts_when_the_rotation_never_landed(real_auth_db, monkeypatch):
+    # Same shape, but the commit failed outright: the gate must not swallow it and
+    # publish under the seeded credential.
+    admin = _seed_real_admin()
+    _patch_streams_autogen(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+
+    def _explode(username, new_password, **kwargs):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(auth_storage, "update_password", _explode)
+
+    with pytest.raises(OSError):
+        run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS)
+    assert auth_storage.requires_password_change(admin) is True

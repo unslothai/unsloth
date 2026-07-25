@@ -627,6 +627,15 @@ def update_password(
     the old key before this rotation and could otherwise still consume its jti
     against a now-stale token. A separate post-commit delete could fail and leave
     a pre-change link token consumable.
+
+    The desktop auth secret is revoked in that same transaction too, for the same
+    reason: it authenticates as this user without the password, so a post-commit
+    ``clear_desktop_secret()`` -- which opens a SECOND connection and can raise
+    ``sqlite3.OperationalError`` on a locked/busy database -- could leave a
+    pre-change desktop credential live, and would also propagate that error to a
+    caller whose new password is already committed. The only remaining post-commit
+    step is the best-effort bootstrap FILE removal, which cannot join a SQL
+    transaction and never fails the change.
     """
     from .hashing import hash_password
 
@@ -645,12 +654,12 @@ def update_password(
         )
         if cursor.rowcount > 0:
             conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
+            clear_desktop_secret(conn)
             if revoke_refresh_tokens:
                 conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
-            clear_desktop_secret()
         return cursor.rowcount > 0
     finally:
         conn.close()
@@ -872,8 +881,21 @@ def validate_desktop_secret(raw_secret: str) -> Optional[str]:
         conn.close()
 
 
-def clear_desktop_secret() -> None:
-    """Remove backend-side desktop auth state."""
+def clear_desktop_secret(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Remove backend-side desktop auth state.
+
+    Given an open *conn*, the delete joins the CALLER's transaction and the caller
+    commits it (``update_password`` revokes the desktop secret in the same atomic
+    write as the password rotation, so a failure cannot leave a pre-change desktop
+    credential able to authenticate without the password). Otherwise it runs
+    standalone on its own connection.
+    """
+    if conn is not None:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key IN (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, _DESKTOP_SECRET_CREATED_AT_KEY),
+        )
+        return
     conn = get_connection()
     try:
         conn.execute(

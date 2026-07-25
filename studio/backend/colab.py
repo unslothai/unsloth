@@ -464,9 +464,9 @@ def _auto_generate_colab_admin_password() -> "str | None":
             )
         except Exception as e:
             # update_password commits the row BEFORE its best-effort cleanup
-            # (clear_bootstrap_password, then clear_desktop_secret, which opens a
-            # second SQLite connection that can hit a lock or I/O error). A raise
-            # there leaves the new password live, and discarding it would publish
+            # (clear_bootstrap_password, which can still raise -- e.g. printing its
+            # own warning to a closed stderr). A raise there leaves the new password
+            # live, and discarding it would publish
             # the link -- must_change is already 0 -- under a credential nobody
             # holds. Ask the stored hash which password actually won.
             logger.warning(f"Admin password commit reported an error ({e}); checking what landed.")
