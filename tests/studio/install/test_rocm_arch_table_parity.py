@@ -500,9 +500,9 @@ class TestSpoofFixtureParity:
                 continue
             for where, rows in tables.items():
                 got = _resolve(where, rows, gpu_name)
-                assert got == gfx, (
-                    f"{where}: spoof says {gfx} is {gpu_name!r}, installer says {got!r}"
-                )
+                assert (
+                    got == gfx
+                ), f"{where}: spoof says {gfx} is {gpu_name!r}, installer says {got!r}"
 
     def test_divergences_are_real_and_still_diverging(self):
         """Keeps the exception list from going stale: if the installers are
@@ -513,9 +513,7 @@ class TestSpoofFixtureParity:
         for gfx in _SPOOF_DIVERGENCES:
             assert gfx in profiles, f"{gfx} is exempted but no longer in the spoof"
             answers = {_resolve(w, r, profiles[gfx]) for w, r in tables.items()}
-            assert answers != {gfx}, (
-                f"{gfx} now agrees everywhere; drop it from _SPOOF_DIVERGENCES"
-            )
+            assert answers != {gfx}, f"{gfx} now agrees everywhere; drop it from _SPOOF_DIVERGENCES"
 
 
 # ── The meta-guard: find copies nobody registered ────────────────────────────
@@ -568,7 +566,9 @@ def _files_carrying_a_name_arch_table() -> dict[str, int]:
             text = path.read_text(encoding = "utf-8", errors = "ignore")
         except OSError:
             continue
-        hits = sum(1 for line in text.splitlines() if _MKT_NAME.search(line) and _GFX_ID.search(line))
+        hits = sum(
+            1 for line in text.splitlines() if _MKT_NAME.search(line) and _GFX_ID.search(line)
+        )
         if hits >= _TABLE_LINE_THRESHOLD:
             found[rel] = hits
     return found
