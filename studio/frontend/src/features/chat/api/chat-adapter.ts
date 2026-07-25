@@ -1594,6 +1594,7 @@ async function autoLoadSmallestModel(): Promise<{
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
+              n_parallel: config.nParallel ?? null,
             }
           : {}),
       }))
@@ -1627,6 +1628,9 @@ async function autoLoadSmallestModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
+            // Parallel slots are per-model too; without this the auto-load
+            // silently reverts a remembered override to the server default.
+            n_parallel: config.nParallel ?? null,
           }
         : {}),
     });
@@ -1693,6 +1697,9 @@ async function autoLoadSmallestModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // Click-time value, not the resolved backend echo (see performLoad).
+        nParallel: config.nParallel ?? null,
+        loadedNParallel: config.nParallel ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
