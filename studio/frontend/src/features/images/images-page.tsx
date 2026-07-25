@@ -61,6 +61,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
@@ -424,6 +425,7 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
 
 // Mirrors the Train page's SliderRow (studio/sections/params-section.tsx):
 // label + standard Slider + number input, same classes.
+// The Images sliders are Chat's ParamSlider, so both pages share one control.
 function SliderField({
   label,
   hint,
@@ -442,34 +444,15 @@ function SliderField({
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-        {label}
-        {hint && <InfoHint>{hint}</InfoHint>}
-      </span>
-      <div className="flex items-center gap-3">
-        <Slider
-          value={[value]}
-          onValueChange={([v]) => onChange(v)}
-          min={min}
-          max={max}
-          step={step}
-          className="w-32"
-        />
-        <input
-          type="number"
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          min={min}
-          max={max}
-          step={step}
-          // The slider is the primary control, so the native number spinners are redundant --
-          // and on this narrow field their arrows overlapped the value. Remove them on every
-          // engine: appearance:textfield for Firefox, zeroed webkit inner/outer spin buttons.
-          className="w-14 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [appearance:textfield] [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none"
-        />
-      </div>
-    </div>
+    <ParamSlider
+      label={label}
+      info={hint}
+      value={value}
+      min={min}
+      max={max}
+      step={step}
+      onChange={onChange}
+    />
   );
 }
 
@@ -2333,9 +2316,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. pt-3 keeps the
           cards off the model selector row. ── */
       <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
-        {/* The controls rail. Plain card (the gray surface) with no header —
-            the prompt + Generate button make the panel self-explanatory. */}
-        <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col overflow-hidden rounded-3xl panel-soft-surface">
+        {/* Controls and preview share one card, split by a divider, so the page
+            reads as a single surface instead of two floating boxes. */}
+        <div className="bg-card corner-squircle flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-3xl panel-soft-surface">
+        <div className="flex w-[340px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-5">
             {/* Workflow picker. Seven workflows don't fit a segmented strip in a 340px
                 rail, so it's a dropdown: the trigger carries the current workflow and
@@ -2897,7 +2881,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl panel-soft-surface">
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
@@ -3043,6 +3027,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               )}
             </div>
           )}
+        </div>
         </div>
 
         {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default,

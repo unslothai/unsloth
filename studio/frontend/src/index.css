@@ -1505,10 +1505,10 @@ html[data-chat-font] .aui-root {
 		box-shadow: none;
 	}
 
-	/* Panel cards: no outline, composer shadow in light, flat in dark (same
-	   convention as .chat-composer-surface and the menus). */
+	/* Panel cards: no outline, flat in dark. Lighter than the composer's shadow
+	   but spread wider, so a large card reads as lifted without a hard edge. */
 	.panel-soft-surface {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: 0 4px 22px -6px rgba(0, 0, 0, 0.1);
 	}
 
 	.dark .panel-soft-surface {
