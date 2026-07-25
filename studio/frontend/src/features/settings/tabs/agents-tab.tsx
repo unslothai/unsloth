@@ -5,7 +5,7 @@ import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
+import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -300,23 +300,35 @@ export function AgentsTab() {
   // treats an explicit one as authoritative and caches it per base, so a
   // placeholder would overwrite a working saved key. Omitting the flag lets it
   // replay the saved key; the remote section below covers first-time setup.
-  const commandBase = isTauri ? serverUrl : origin;
+  // getApiBase is the base the app is already talking to, so fall back to it
+  // while the health request that fills serverUrl is still in flight or failed.
+  const commandBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const commandOs = isWindowsClient ? "windows" : "unix";
   const agentCommand = (agentId: string) =>
     buildAgentCommand(commandBase, null, commandOs, agentId);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
+      {/* Labels let settings search scroll to these, since they are indexed. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-xl font-semibold font-heading">
+        <h1
+          data-settings-label={t("settings.agents.title")}
+          className="text-xl font-semibold font-heading"
+        >
           {t("settings.agents.title")}
         </h1>
-        <p className="text-xs text-muted-foreground leading-relaxed">
+        <p
+          data-settings-label={t("settings.agents.description")}
+          className="text-xs text-muted-foreground leading-relaxed"
+        >
           {t("settings.agents.description")}
         </p>
       </header>
 
-      <p className="text-sm text-muted-foreground leading-relaxed">
+      <p
+        data-settings-label={t("settings.agents.intro")}
+        className="text-sm text-muted-foreground leading-relaxed"
+      >
         <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground dark:bg-white/[0.08]">
           unsloth start
         </code>{" "}
