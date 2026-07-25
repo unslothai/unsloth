@@ -56,9 +56,7 @@ def no_metadata_server(monkeypatch):
         raise OSError("no metadata server in this test")
 
     monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
-    monkeypatch.setattr(
-        socket, "socket", lambda *a, **k: _FakeSocket()
-    )
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _FakeSocket())
     return calls, real_urlopen
 
 
@@ -80,9 +78,9 @@ def test_default_never_contacts_the_public_ip_service(monkeypatch, no_metadata_s
     monkeypatch.delenv(PUBLIC_IP_PROBE_ENV_VAR, raising = False)
 
     assert _resolve_external_ip() == "192.168.1.50"
-    assert PUBLIC_IP_PROBE_URL not in calls, (
-        "the public-IP service must not be contacted unless the user opts in"
-    )
+    assert (
+        PUBLIC_IP_PROBE_URL not in calls
+    ), "the public-IP service must not be contacted unless the user opts in"
 
 
 def test_opt_in_contacts_the_public_ip_service(monkeypatch, no_metadata_server):
