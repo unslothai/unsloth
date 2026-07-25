@@ -223,8 +223,16 @@ def test_commented_out_sections_are_not_releases(changelog_module, text):
 def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_module):
     """build.sh writes studio/CHANGELOG.md; the edited root file must win."""
     paths = [str(p) for p in changelog_module._local_changelog_candidates()]
-    root = next(i for i, p in enumerate(paths) if p.endswith(f"/unsloth/{changelog_module.CHANGELOG_FILENAME}"))
-    packaged = next(i for i, p in enumerate(paths) if p.endswith(f"/studio/{changelog_module.CHANGELOG_FILENAME}"))
+    root = next(
+        i
+        for i, p in enumerate(paths)
+        if p.endswith(f"/unsloth/{changelog_module.CHANGELOG_FILENAME}")
+    )
+    packaged = next(
+        i
+        for i, p in enumerate(paths)
+        if p.endswith(f"/studio/{changelog_module.CHANGELOG_FILENAME}")
+    )
     assert root < packaged
     build = (REPO / "build.sh").read_text(encoding = "utf-8")
     assert "rm -f studio/CHANGELOG.md" in build, "snapshot must not linger after a build"

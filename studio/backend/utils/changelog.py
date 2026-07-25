@@ -114,9 +114,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     for line in text.splitlines():
         fence = _FENCE_PATTERN.match(line)
         if fence and not in_comment:
-            open_fence = _next_fence_state(
-                open_fence, fence.group("marker"), fence.group("rest")
-            )
+            open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
             visible = ""
         elif open_fence:
             visible = ""
