@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { SectionCard } from "@/components/section-card";
 import { Progress } from "@/components/ui/progress";
-import { useT } from "@/i18n";
 import type { CheckpointUploadProgress } from "@/features/training";
+import { useT, type TranslationKey } from "@/i18n";
+import { cn } from "@/lib/utils";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ExternalLink,
+  MinusCircle,
+  UploadCloud,
+} from "lucide-react";
 import type { ReactElement } from "react";
 
 function formatBytes(value: number): string {
@@ -14,30 +21,130 @@ function formatBytes(value: number): string {
   return `${(value / 1024 ** 3).toFixed(1)} GiB`;
 }
 
-export function CheckpointUploadCard({ upload }: { upload: CheckpointUploadProgress }): ReactElement {
-  const t = useT();
-  const percent = typeof upload.percentage === "number"
-    ? Math.min(100, Math.max(0, upload.percentage)) : null;
-  const repositoryUrl = upload.repository_url?.startsWith("https://huggingface.co/")
-    ? upload.repository_url : null;
-  const active = upload.state === "preparing" || upload.state === "uploading";
-  const title = upload.state === "completed" ? t("studio.checkpointUpload.completed")
-    : upload.state === "skipped" ? t("studio.checkpointUpload.skipped")
-    : upload.state === "preparing" ? t("studio.checkpointUpload.preparing")
-    : upload.state === "uploading" ? t("studio.checkpointUpload.uploading")
-    : t("studio.checkpointUpload.title");
+const stateLabel = {
+  idle: "studio.checkpointUpload.title",
+  preparing: "studio.checkpointUpload.preparing",
+  uploading: "studio.checkpointUpload.uploading",
+  completed: "studio.checkpointUpload.completed",
+  skipped: "studio.checkpointUpload.skipped",
+  error: "studio.checkpointUpload.transferError",
+} satisfies Record<CheckpointUploadProgress["state"], TranslationKey>;
 
-  return <SectionCard icon={<span aria-hidden>↑</span>} title={title} description={upload.message || title}>
-    <div className="space-y-3 text-sm">
-      {upload.checkpoint ? <div><span className="text-muted-foreground">{t("studio.checkpointUpload.checkpoint")}: </span>{upload.checkpoint}</div> : null}
-      {upload.repository_id ? <div><span className="text-muted-foreground">{t("studio.checkpointUpload.destination")}: </span>{upload.repository_id}</div> : null}
-      {active ? <Progress value={percent ?? undefined} className="h-2" /> : null}
-      {percent !== null ? <div>{percent.toFixed(0)}%</div> : active ? <div>{t("studio.checkpointUpload.unknownTotal")}</div> : null}
-      {upload.uploaded_bytes != null ? <div>{formatBytes(upload.uploaded_bytes)}{upload.total_bytes != null ? ` / ${formatBytes(upload.total_bytes)}` : ""}</div>
-        : upload.uploaded_files != null ? <div>{upload.uploaded_files}{upload.total_files != null ? ` / ${upload.total_files} files` : " files"}</div> : null}
-      {upload.message ? <p className="text-muted-foreground">{upload.message}</p> : null}
-      {upload.state === "error" ? <div role="alert" className="rounded-md bg-destructive/10 p-3 text-destructive">{upload.error || t("studio.checkpointUpload.transferError")}</div> : null}
-      {repositoryUrl && upload.state === "completed" ? <a href={repositoryUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">{repositoryUrl}</a> : null}
-    </div>
-  </SectionCard>;
+function transferText(upload: CheckpointUploadProgress): string | null {
+  if (upload.uploaded_bytes != null) {
+    return upload.total_bytes != null
+      ? `${formatBytes(upload.uploaded_bytes)} / ${formatBytes(upload.total_bytes)}`
+      : formatBytes(upload.uploaded_bytes);
+  }
+  if (upload.uploaded_files != null) {
+    return upload.total_files != null
+      ? `${upload.uploaded_files} / ${upload.total_files} files`
+      : `${upload.uploaded_files} files`;
+  }
+  return null;
+}
+
+export function CheckpointUploadCard({
+  upload,
+}: {
+  upload: CheckpointUploadProgress;
+}): ReactElement {
+  const t = useT();
+  const percent =
+    typeof upload.percentage === "number"
+      ? Math.min(100, Math.max(0, upload.percentage))
+      : null;
+  const active = upload.state === "preparing" || upload.state === "uploading";
+  const repositoryUrl = upload.repository_url?.startsWith("https://huggingface.co/")
+    ? upload.repository_url
+    : null;
+  const transferred = transferText(upload);
+  const StateIcon =
+    upload.state === "completed"
+      ? CheckCircle2
+      : upload.state === "error"
+        ? AlertCircle
+        : upload.state === "skipped"
+          ? MinusCircle
+          : UploadCloud;
+
+  return (
+    <aside
+      aria-label={t("studio.checkpointUpload.title")}
+      className={cn(
+        "rounded-xl border bg-card px-3 py-2.5 shadow-xs",
+        upload.state === "error" && "border-destructive/30 bg-destructive/[0.03]",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2.5">
+        <div
+          className={cn(
+            "grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground",
+            active && "bg-control-accent/10 text-control-accent",
+            upload.state === "completed" && "bg-emerald-500/10 text-emerald-600",
+            upload.state === "error" && "bg-destructive/10 text-destructive",
+          )}
+        >
+          <StateIcon className={cn("size-3.5", active && "animate-pulse")} />
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2 text-xs">
+            <span className="shrink-0 font-medium">{t(stateLabel[upload.state])}</span>
+            {upload.checkpoint ? (
+              <span className="truncate text-muted-foreground">{upload.checkpoint}</span>
+            ) : null}
+            {percent !== null ? (
+              <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+                {percent.toFixed(0)}%
+              </span>
+            ) : null}
+          </div>
+
+          {active ? (
+            percent !== null ? (
+              <Progress value={percent} className="mt-1.5 h-1" />
+            ) : (
+              <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-foreground/[0.06]">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-control-accent" />
+              </div>
+            )
+          ) : null}
+
+          <div className="mt-1 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
+            {upload.message ? <span className="truncate">{upload.message}</span> : null}
+            {upload.repository_id ? (
+              <span
+                className={cn(
+                  "truncate",
+                  upload.message && "before:mr-2 before:content-['·']",
+                )}
+              >
+                {upload.repository_id}
+              </span>
+            ) : null}
+            {transferred ? <span className="ml-auto shrink-0 tabular-nums">{transferred}</span> : null}
+          </div>
+        </div>
+
+        {repositoryUrl && upload.state === "completed" ? (
+          <a
+            href={repositoryUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`${t("studio.checkpointUpload.destination")}: ${upload.repository_id ?? "Hugging Face"}`}
+            className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <ExternalLink className="size-3.5" />
+          </a>
+        ) : null}
+      </div>
+
+      {upload.state === "error" ? (
+        <p role="alert" className="mt-2 border-t border-destructive/15 pt-2 text-xs text-destructive">
+          {upload.error || t("studio.checkpointUpload.transferError")}
+        </p>
+      ) : null}
+    </aside>
+  );
 }
