@@ -272,7 +272,7 @@ def test_remote_failure_is_reported_so_the_ui_can_retry(changelog_module, tmp_pa
 
 
 def test_preview_keeps_comparison_operators():
-    """"Support Python <3.15 and >3.9" must not lose its operators to the tag
+    """ "Support Python <3.15 and >3.9" must not lose its operators to the tag
     strip, which would turn it into "Support Python 3.9"."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "/<\\/?[a-zA-Z][^>]*>/g" in src, "tag strip must require a name character"
