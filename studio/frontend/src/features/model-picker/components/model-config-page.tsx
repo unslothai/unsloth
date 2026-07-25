@@ -28,7 +28,14 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useId, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -54,7 +61,10 @@ import {
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
-import { NumericValueInput } from "./numeric-value-input";
+import {
+  NumericValueInput,
+  type NumericValueInputHandle,
+} from "./numeric-value-input";
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
@@ -174,11 +184,13 @@ function MaxSeqLengthSetting({
   max,
   inputMax,
   onChange,
+  inputRef,
 }: {
   value: number;
   max: number;
   inputMax: number;
   onChange: (value: number) => void;
+  inputRef?: Ref<NumericValueInputHandle>;
 }) {
   return (
     <div className="space-y-3">
@@ -190,6 +202,7 @@ function MaxSeqLengthSetting({
           </InfoHint>
         </div>
         <NumericValueInput
+          ref={inputRef}
           value={value}
           min={MAX_SEQ_LENGTH_MIN}
           max={inputMax}
@@ -226,6 +239,7 @@ function AdvancedGpuSlider({
   onChange,
   displayValue,
   info,
+  inputRef,
 }: {
   label: string;
   value: number;
@@ -234,6 +248,7 @@ function AdvancedGpuSlider({
   onChange: (value: number) => void;
   displayValue?: string;
   info?: ReactNode;
+  inputRef?: Ref<NumericValueInputHandle>;
 }) {
   return (
     <div className="space-y-3">
@@ -243,6 +258,7 @@ function AdvancedGpuSlider({
           {info && <InfoHint>{info}</InfoHint>}
         </div>
         <NumericValueInput
+          ref={inputRef}
           value={value}
           min={min}
           max={max}
@@ -277,6 +293,8 @@ function GpuMemorySettings({
   moeLayerCount,
   isDiffusion,
   gpuDevices,
+  gpuLayersInputRef,
+  moeLayersInputRef,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -284,6 +302,8 @@ function GpuMemorySettings({
   moeLayerCount: number | null;
   isDiffusion: boolean;
   gpuDevices: SystemGpuDevice[];
+  gpuLayersInputRef?: Ref<NumericValueInputHandle>;
+  moeLayersInputRef?: Ref<NumericValueInputHandle>;
 }) {
   const mode = config.gpuMemoryMode ?? "auto";
   const isManual = mode === "manual";
@@ -376,6 +396,7 @@ function GpuMemorySettings({
         <>
           <AdvancedGpuSlider
             label="GPU Layers"
+            inputRef={gpuLayersInputRef}
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
@@ -392,6 +413,7 @@ function GpuMemorySettings({
           {showMoeSlider && (
             <AdvancedGpuSlider
               label="MoE Layers on CPU"
+              inputRef={moeLayersInputRef}
               value={Math.min(nCpuMoe, moeLayersMax)}
               min={0}
               max={moeLayersMax}
@@ -454,6 +476,8 @@ function GgufAdvancedSettings({
   moeLayerCount,
   isDiffusion,
   gpuDevices,
+  gpuLayersInputRef,
+  moeLayersInputRef,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -464,6 +488,8 @@ function GgufAdvancedSettings({
   moeLayerCount: number | null;
   isDiffusion: boolean;
   gpuDevices: SystemGpuDevice[];
+  gpuLayersInputRef?: Ref<NumericValueInputHandle>;
+  moeLayersInputRef?: Ref<NumericValueInputHandle>;
 }) {
   return (
     <>
@@ -594,6 +620,8 @@ function GgufAdvancedSettings({
         moeLayerCount={moeLayerCount}
         isDiffusion={isDiffusion}
         gpuDevices={gpuDevices}
+        gpuLayersInputRef={gpuLayersInputRef}
+        moeLayersInputRef={moeLayersInputRef}
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -664,6 +692,10 @@ export function ModelConfigPage({
   const [showAdvanced, setShowAdvanced] = useState(() =>
     hasNonDefaultAdvanced(config),
   );
+  const contextInputRef = useRef<NumericValueInputHandle>(null);
+  const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
+  const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
+  const moeLayersInputRef = useRef<NumericValueInputHandle>(null);
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
@@ -836,11 +868,6 @@ export function ModelConfigPage({
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
       : loadableConfig
     : loadableConfig;
-  // Load request needs a concrete max length; substitute the fallback here only,
-  // never in the persisted runtimeConfig.
-  const loadConfig = target.isGguf
-    ? runtimeConfig
-    : { ...runtimeConfig, maxSeqLength: maxSeqLengthValue };
   const rememberChanged = remember !== savedRemember;
   const persistenceOnly = isActiveModel && atBaseline && rememberChanged;
   const primaryActionLabel = persistenceOnly
@@ -852,18 +879,99 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
-    const defaultConfig = isDefaultConfig(runtimeConfig);
+    // Same-click Load/Reload: a numeric draft the user just typed is flushed only
+    // by that input's blur handler, which updates the parent config after this
+    // click closure already captured the stale value. Commit every numeric input
+    // imperatively so the staged load honors what the user just typed, not just
+    // the Context field.
+    const committedContext = target.isGguf
+      ? contextInputRef.current?.commit()
+      : undefined;
+    const committedMaxSeqLength = target.isGguf
+      ? undefined
+      : maxSeqLengthInputRef.current?.commit();
+    const committedGpuLayers = target.isGguf
+      ? gpuLayersInputRef.current?.commit()
+      : undefined;
+    const committedMoeLayers = target.isGguf
+      ? moeLayersInputRef.current?.commit()
+      : undefined;
+
+    const pendingPatch: Partial<PerModelConfig> = {};
+    if (committedContext != null) {
+      pendingPatch.customContextLength = committedContext;
+    }
+    if (committedMaxSeqLength != null) {
+      pendingPatch.maxSeqLength = clampMaxSeqLength(
+        committedMaxSeqLength,
+        MAX_SEQ_LENGTH_MAX,
+      );
+    }
+    if (committedGpuLayers != null) {
+      pendingPatch.gpuLayers = committedGpuLayers;
+    }
+    if (committedMoeLayers != null) {
+      pendingPatch.nCpuMoe = committedMoeLayers;
+    }
+    const hasPending =
+      committedContext != null ||
+      committedMaxSeqLength != null ||
+      committedGpuLayers != null ||
+      committedMoeLayers != null;
+
+    const effectiveConfig = hasPending
+      ? { ...config, ...pendingPatch }
+      : config;
+    const effectiveLoadableConfig = resolvedIsDiffusion
+      ? withoutUnsupportedDiffusionSettings(effectiveConfig, gpuIndexKind)
+      : effectiveConfig;
+    // pinFixedLayerContext above was computed from the render-time config, before
+    // the same-click GPU Layers draft was committed. Recompute it from
+    // effectiveConfig so committing a positive fixed-layer value still pins the
+    // fitted context; otherwise the saved config carries customContextLength: null
+    // and a later fresh load sends the native context with fixed layers (the OOM
+    // the pin exists to avoid).
+    const effectivePinFixedLayerContext =
+      target.isGguf &&
+      effectiveLoadableConfig.gpuMemoryMode === "manual" &&
+      effectiveLoadableConfig.gpuLayers != null &&
+      effectiveLoadableConfig.gpuLayers >= 0 &&
+      effectiveLoadableConfig.customContextLength == null &&
+      activeLoadedContext != null;
+    const effectiveRuntimeConfig = hasPending
+      ? effectivePinFixedLayerContext
+        ? {
+            ...effectiveLoadableConfig,
+            customContextLength: activeLoadedContext,
+          }
+        : effectiveLoadableConfig
+      : runtimeConfig;
+    // Non-GGUF load substitutes the resolved max sequence length; recompute it
+    // from the committed draft so a same-click Max Seq Length edit is not lost.
+    const effectiveMaxSeqLengthValue =
+      committedMaxSeqLength == null
+        ? maxSeqLengthValue
+        : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
+          clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectiveAtBaseline = perModelConfigsEqual(
+      effectiveLoadableConfig,
+      baseline,
+    );
+    const effectivePersistenceOnly =
+      isActiveModel && effectiveAtBaseline && rememberChanged;
+    const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
     let saveFailed = false;
     if (remember) {
       saveFailed = !savePerModelConfig(
         target.id,
         target.ggufVariant,
-        runtimeConfig,
+        effectiveRuntimeConfig,
       );
     } else {
       saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
     }
-    if (persistenceOnly) {
+    if (effectivePersistenceOnly) {
       if (saveFailed) {
         toast.error("Couldn't save settings for this model.");
         return;
@@ -883,7 +991,10 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    onRun(loadConfig, resolvedIsDiffusion);
+    const effectiveLoadConfig = target.isGguf
+      ? effectiveRuntimeConfig
+      : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+    onRun(effectiveLoadConfig, resolvedIsDiffusion);
   };
 
   return (
@@ -930,6 +1041,7 @@ export function ModelConfigPage({
                   </InfoHint>
                 </div>
                 <NumericValueInput
+                  ref={contextInputRef}
                   value={contextValue}
                   min={minContext}
                   max={maxContext}
@@ -980,6 +1092,8 @@ export function ModelConfigPage({
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
                 isDiffusion={resolvedIsDiffusion}
                 gpuDevices={gpuDevices}
+                gpuLayersInputRef={gpuLayersInputRef}
+                moeLayersInputRef={moeLayersInputRef}
               />
             )}
 
@@ -1008,6 +1122,7 @@ export function ModelConfigPage({
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
               inputMax={MAX_SEQ_LENGTH_MAX}
+              inputRef={maxSeqLengthInputRef}
               onChange={(value) =>
                 update({
                   maxSeqLength: clampMaxSeqLength(value, MAX_SEQ_LENGTH_MAX),
