@@ -195,7 +195,10 @@ export function LiveTrainingView(): ReactElement {
           />
         </div>
         {runtime.checkpointUpload.state !== "idle" ? (
-          <CheckpointUploadCard upload={runtime.checkpointUpload} />
+          <CheckpointUploadCard
+            key={runtime.jobId ?? "no-job"}
+            upload={runtime.checkpointUpload}
+          />
         ) : null}
         <ChartsSection
           currentStep={viewData.currentStep}
