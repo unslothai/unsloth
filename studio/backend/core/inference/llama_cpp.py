@@ -306,9 +306,8 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
-# A transport error can arrive a beat before the child is reapable. Wait this long
-# for poll() before calling it alive; the MTP reload affords 5s because it runs in the
-# background, a request path cannot.
+# A transport error can arrive before the child is reapable. The background MTP reload
+# affords 5s for the same race; a request path cannot.
 _RESPAWN_REAP_GRACE_S = 1.0
 
 
@@ -10003,9 +10002,8 @@ class LlamaCppBackend:
             return False
         if not self._mtp_runtime_fallback_active:
             return False
-        # Read both BEFORE claiming: anything that raises between the claim and
-        # _recover's own try/finally strands the flag set, and nothing else ever
-        # clears it -- which would then block every later respawn, for any model.
+        # Read before claiming: a raise between the claim and _recover's try/finally
+        # strands the flag, and nothing else clears it, blocking every later respawn.
         kwargs = self._last_load_kwargs
         proc = self._process
         if not kwargs or proc is None:
@@ -10066,8 +10064,8 @@ class LlamaCppBackend:
         try:
             threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
         except RuntimeError as exc:
-            # Out of threads, the very pressure that kills llama-server. Release the
-            # claim or the reload that never started blocks respawn forever.
+            # Out of threads, the very pressure that kills llama-server: release the
+            # claim, or a reload that never started blocks respawn forever.
             with self._mtp_runtime_fallback_lock:
                 self._mtp_runtime_fallback_in_progress = False
             logger.error(f"Could not start the MTP-crash reload: {exc}")
@@ -10557,9 +10555,8 @@ class LlamaCppBackend:
             if proc is None:
                 return False
             if proc.poll() is None:
-                # A closing server can beat its own exit status here. Reporting "alive"
-                # then hands back the stale _healthy, and the caller spends its single
-                # retry on the corpse instead of on a replacement.
+                # A closing server can beat its own exit status: calling it alive here
+                # returns the stale _healthy and spends the retry on the corpse.
                 deadline = time.monotonic() + _RESPAWN_REAP_GRACE_S
                 while proc.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.05)
@@ -10569,9 +10566,8 @@ class LlamaCppBackend:
                 return self._healthy
             with self._mtp_runtime_fallback_lock:
                 if self._mtp_runtime_fallback_in_progress:
-                    # An MTP-free reload already owns this corpse. Replaying the
-                    # old kwargs would restart the crashing MTP config and make
-                    # that reload abort on its "newer load is active" check.
+                    # An MTP-free reload owns this corpse; replaying the old kwargs
+                    # would restart the crashing config and abort that reload.
                     logger.info("Respawn skipped: an MTP-free reload is already recovering.")
                     return False
             kwargs = self._last_load_kwargs
@@ -10593,20 +10589,18 @@ class LlamaCppBackend:
     def _open_chat_stream_with_respawn_retry(self, payload: dict, cancel_event):
         """Open a chat stream, respawning a dead llama-server once before streaming.
 
-        Retry only when opening the response fails. Once the response is open,
-        control has reached a streaming consumer that may have emitted content or
-        tool events, so replaying the request could duplicate visible output or side
-        effects. Resolve ``base_url`` on each attempt because a respawn may use a new
-        port. The one-retry budget is per model request, not per chat turn, so a long
-        tool loop never discards a completed tool just because an earlier turn recovered.
+        Retry only when opening the response fails: once it is open a consumer may
+        already have emitted content or tool events, so a replay could duplicate
+        output and side effects. ``base_url`` is resolved per attempt because a
+        respawn may pick a new port. The budget is one retry per model request, not
+        per chat turn, so a long tool loop never discards a completed tool.
 
-        A child that dies after accepting the socket but before the response headers
-        surfaces as ReadError/WriteError/RemoteProtocolError, not ConnectError, and
-        which one differs per OS. That window is a death while the request body is
-        still uploading or while it waits behind busy slots; llama-server flushes its
-        200 at slot start, so a death during decode arrives with the response already
-        open and is deliberately not replayed. Timeouts are excluded on purpose: they
-        mean the server is slow, not dead, and replaying one would just spend the
+        A child dying after the accept but before the headers surfaces as
+        ReadError/WriteError/RemoteProtocolError rather than ConnectError, and which
+        one differs per OS. llama-server flushes its 200 at slot start, so that window
+        is an upload still in flight or a request behind busy slots; a death during
+        decode arrives with the response open and is not replayed. Timeouts are
+        excluded: the server is slow, not dead, and a replay would spend the
         first-token budget twice.
         """
         for attempt in range(2):
