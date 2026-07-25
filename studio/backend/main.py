@@ -1290,10 +1290,7 @@ def _get_cached_system_gpu_info(logger, force_refresh: bool = False) -> dict[str
 
 
 @app.get("/api/system")
-def get_system_info(
-    refresh: bool = False,
-    current_subject: str = Depends(get_current_subject),
-):
+def get_system_info(refresh: bool = False, current_subject: str = Depends(get_current_subject)):
     """Get system information.
 
     Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
@@ -1314,7 +1311,7 @@ def get_system_info(
 
     logger = logging.getLogger(__name__)
 
-    gpu_info = _get_cached_system_gpu_info(logger, force_refresh=refresh)
+    gpu_info = _get_cached_system_gpu_info(logger, force_refresh = refresh)
 
     memory = psutil.virtual_memory()
 

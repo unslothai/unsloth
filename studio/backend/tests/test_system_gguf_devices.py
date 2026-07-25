@@ -206,17 +206,13 @@ _IGPU_ONLY_INVENTORY = [
 ]
 
 
-def test_igpu_only_vulkan_inventory_reports_the_igpu_and_its_total(
-    main_module, monkeypatch
-):
+def test_igpu_only_vulkan_inventory_reports_the_igpu_and_its_total(main_module, monkeypatch):
     """An APU box on a Vulkan build (Strix Halo) enumerates one integrated device
     and no discrete card. The backend must still surface it, flagged is_igpu with
     its real total, so the frontend can tell this shape apart from a masked probe
     and budget GGUF against the APU pool instead of labelling everything OOM.
     """
-    info = _gpu_info(
-        main_module, monkeypatch, is_vulkan = True, inventory = _IGPU_ONLY_INVENTORY
-    )
+    info = _gpu_info(main_module, monkeypatch, is_vulkan = True, inventory = _IGPU_ONLY_INVENTORY)
 
     assert len(info["gguf_devices"]) == 1
     dev = info["gguf_devices"][0]
