@@ -1302,7 +1302,14 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
     snapshot = "/home/u/.cache/legacy/models--Org--Model/snapshots/abc123"
     state = {"loaded": False}
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/v1/models"):
             return {"data": [{"id": "abc123"}] if state["loaded"] else []}
         if url.endswith("/api/inference/load"):
