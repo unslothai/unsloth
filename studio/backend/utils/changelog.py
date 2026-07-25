@@ -178,8 +178,10 @@ def get_release_notes(version: str) -> dict[str, Any]:
                 source = candidate.source,
             )
 
-    error = remote.error if (remote.error and not local.text) else None
-    return _notes_response(version = version, error = error)
+    # Nothing matched: a remote failure still matters, since the bundled copy
+    # cannot know a version newer than the install. Reporting it lets the UI
+    # offer a retry instead of claiming no notes were published.
+    return _notes_response(version = version, error = remote.error)
 
 
 def get_remote_changelog() -> ChangelogSource:

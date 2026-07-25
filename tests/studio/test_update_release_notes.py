@@ -253,6 +253,42 @@ def test_panel_prefers_the_callers_release_url():
     assert "releaseNotesUrl ?? notes?.releaseNotesUrl" in src
 
 
+def test_remote_failure_is_reported_so_the_ui_can_retry(changelog_module, tmp_path, monkeypatch):
+    """A bundled changelog cannot know a version newer than the install, so a
+    failed remote lookup must not read as "no notes were published"."""
+    monkeypatch.delenv(changelog_module.DISABLE_ENV_VAR, raising = False)
+    local = tmp_path / "CHANGELOG.md"
+    local.write_text("## 1.0\n\n- old release\n", encoding = "utf-8")
+    monkeypatch.setenv(changelog_module.CHANGELOG_PATH_ENV_VAR, str(local))
+    # Port 9 (discard) refuses fast, standing in for an unreachable host.
+    monkeypatch.setenv(changelog_module.CHANGELOG_URL_ENV_VAR, "http://127.0.0.1:9/CHANGELOG.md")
+    changelog_module.reset_changelog_cache()
+    try:
+        payload = changelog_module.get_release_notes("2.0")
+        assert payload["matched"] is False
+        assert payload["error"], "remote failure must reach the UI"
+    finally:
+        changelog_module.reset_changelog_cache()
+
+
+def test_preview_keeps_comparison_operators():
+    """"Support Python <3.15 and >3.9" must not lose its operators to the tag
+    strip, which would turn it into "Support Python 3.9"."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "/<\\/?[a-zA-Z][^>]*>/g" in src, "tag strip must require a name character"
+
+
+def test_preview_hides_commented_out_notes():
+    """Unpublished notes inside <!-- --> are not rendered, so not previewed."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "stripCommentSpans" in src and "COMMENT_OPEN" in src
+
+
+def test_hook_treats_a_reported_failure_as_retryable():
+    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    assert "next.error !== null" in src
+
+
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""

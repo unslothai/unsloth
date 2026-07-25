@@ -13,6 +13,8 @@ export interface ReleaseNotes {
   truncated: boolean;
   source: string | null;
   releaseNotesUrl: string | null;
+  // Set when the lookup itself failed, as opposed to a version with no notes.
+  error: string | null;
 }
 
 export type ReleaseNotesState = "idle" | "loading" | "ready" | "error";
@@ -47,6 +49,7 @@ function toReleaseNotes(value: unknown, version: string): ReleaseNotes | null {
     truncated: payload.truncated === true,
     source: stringOrNull(payload, "source"),
     releaseNotesUrl: stringOrNull(payload, "release_notes_url"),
+    error: stringOrNull(payload, "error"),
   };
 }
 
@@ -91,7 +94,9 @@ export function useReleaseNotes({
           return;
         }
         setNotes(next);
-        setState(next ? "ready" : "error");
+        // A reported failure is retryable; "no notes for this version" is not.
+        const failed = !next || (!next.matched && next.error !== null);
+        setState(failed ? "error" : "ready");
       })
       .catch(() => {
         if (requestedVersionRef.current === target) {

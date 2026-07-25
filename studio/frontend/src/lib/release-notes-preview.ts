@@ -14,7 +14,11 @@ const BULLET = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
 const BLOCKQUOTE = /^\s*>\s?/;
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK = /\[([^\]]*)\]\([^)]*\)/g;
-const HTML_TAG = /<[^>]*>/g;
+// Real tags only: a name character must follow "<", so a version constraint
+// like "Support Python <3.15 and >3.9" keeps its operators.
+const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
+const COMMENT_OPEN = "<!--";
+const COMMENT_CLOSE = "-->";
 // Paired emphasis only. Underscores inside identifiers are literal, so
 // UNSLOTH_DISABLE_UPDATE_CHECK keeps its name.
 const BOLD_STAR = /\*\*(?=\S)([\s\S]*?\S)\*\*/g;
@@ -85,13 +89,43 @@ interface ContentLine {
  * same-character run at least as long closes a fence, so a ``` sample inside a
  * ```` block does not end it early.
  */
+function stripCommentSpans(
+  line: string,
+  startInComment: boolean,
+): [string, boolean] {
+  let visible = "";
+  let index = 0;
+  let inComment = startInComment;
+  while (index < line.length) {
+    if (inComment) {
+      const close = line.indexOf(COMMENT_CLOSE, index);
+      if (close === -1) {
+        return [visible, true];
+      }
+      index = close + COMMENT_CLOSE.length;
+      inComment = false;
+      continue;
+    }
+    const open = line.indexOf(COMMENT_OPEN, index);
+    if (open === -1) {
+      visible += line.slice(index);
+      break;
+    }
+    visible += line.slice(index, open);
+    index = open + COMMENT_OPEN.length;
+    inComment = true;
+  }
+  return [visible, inComment];
+}
+
 function contentLines(markdown: string): ContentLine[] {
   const lines: ContentLine[] = [];
   let openFence: string | null = null;
+  let inComment = false;
 
   for (const rawLine of markdown.split("\n")) {
     const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
-    const fence = FENCE.exec(line);
+    const fence = inComment ? null : FENCE.exec(line);
     if (fence) {
       const marker = fence[1] ?? "";
       const rest = fence[2] ?? "";
@@ -112,7 +146,14 @@ function contentLines(markdown: string): ContentLine[] {
     if (openFence !== null) {
       continue;
     }
-    const stripped = line.replace(BLOCKQUOTE, "");
+    // Commented-out notes are not rendered, so they are not previewed either.
+    const [uncommented, stillInComment] = stripCommentSpans(line, inComment);
+    inComment = stillInComment;
+    if (!uncommented.trim()) {
+      lines.push({ text: "", indent: 0 });
+      continue;
+    }
+    const stripped = uncommented.replace(BLOCKQUOTE, "");
     lines.push({
       text: stripped.trim(),
       indent: stripped.length - stripped.trimStart().length,
