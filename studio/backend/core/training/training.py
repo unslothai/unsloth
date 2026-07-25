@@ -332,6 +332,9 @@ class TrainingProgress:
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
     output_dir: Optional[str] = None
+    checkpoint_upload: dict[str, Any] = field(default_factory = lambda: {
+        "state": "idle", "message": ""
+    })
 
 
 class _MLXTrainerAdapter:
@@ -673,6 +676,9 @@ class _MLXTrainerAdapter:
 
     def _handle_event(self, event: dict[str, Any]):
         etype = event.get("type")
+        if etype == "checkpoint_upload":
+            self._update_progress(checkpoint_upload = dict(event.get("checkpoint_upload") or {}))
+            return
         if etype == "status":
             self._update_progress(
                 status_message = event.get("status_message") or event.get("message") or ""
@@ -1795,7 +1801,11 @@ class TrainingBackend:
             return
 
         with self._lock:
-            if etype == "progress":
+            if etype == "checkpoint_upload":
+                # Upload failure is deliberately independent of training.error.
+                self._progress.checkpoint_upload = dict(event.get("checkpoint_upload") or {})
+
+            elif etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
                 # loss/lr sanitized below.
