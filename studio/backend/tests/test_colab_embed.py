@@ -376,7 +376,8 @@ def test_shareable_link_html_password_has_no_adjacent_whitespace():
     assert after.startswith("<")
     # Label on its own line, so nothing shares the password's text node.
     assert "Password:" not in html
-    assert "user-select: all" in html
+    # Plain selectable text: user-select overrides break double click to select.
+    assert "user-select" not in html
 
 
 def test_shareable_link_html_omits_login_block_without_password():
