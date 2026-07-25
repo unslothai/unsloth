@@ -17,6 +17,7 @@ import {
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingRuntimeStore } from "../types/runtime";
+import type { CheckpointUploadProgress, TrainingProgressPayload } from "../types/runtime";
 
 const STATUS_POLL_INTERVAL_MS = 3000;
 const METRICS_POLL_INTERVAL_MS = 5000;
@@ -194,7 +195,11 @@ export function useTrainingRuntimeLifecycle(): void {
               liveStore.setLastEventId(event.id);
             }
 
-            liveStore.applyProgress(event.payload, event.id ?? undefined);
+            if (event.event === "checkpoint_upload") {
+              liveStore.applyCheckpointUpload(event.payload as CheckpointUploadProgress);
+              return;
+            }
+            liveStore.applyProgress(event.payload as TrainingProgressPayload, event.id ?? undefined);
 
             if (event.event === "complete") {
               void pollStatus();

@@ -31,6 +31,8 @@ export type {
   TrainingPhase,
   TrainingViewData,
   TrainingSeriesPoint,
+  CheckpointUploadProgress,
+  CheckpointUploadState,
 } from "./types/runtime";
 export type {
   TrainingRunSummary,

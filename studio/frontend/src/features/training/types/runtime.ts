@@ -13,6 +13,23 @@ export type TrainingPhase =
   | "error"
   | "stopped";
 
+export type CheckpointUploadState =
+  | "idle" | "preparing" | "uploading" | "completed" | "skipped" | "error";
+
+export interface CheckpointUploadProgress {
+  state: CheckpointUploadState;
+  checkpoint?: string | null;
+  repository_id?: string | null;
+  repository_url?: string | null;
+  uploaded_bytes?: number | null;
+  total_bytes?: number | null;
+  uploaded_files?: number | null;
+  total_files?: number | null;
+  percentage?: number | null;
+  message: string;
+  error?: string | null;
+}
+
 export interface TrainingStatusResponse {
   job_id: string;
   phase: TrainingPhase;
@@ -28,6 +45,7 @@ export interface TrainingStatusResponse {
     learning_rate?: number;
     // null = explicit clear (run stopped without saving); absent = unchanged.
     output_dir?: string | null;
+    checkpoint_upload?: CheckpointUploadProgress;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -101,6 +119,7 @@ export interface TrainingRuntimeState {
   currentGradNorm: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
+  checkpointUpload: CheckpointUploadProgress;
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
@@ -131,6 +150,7 @@ export interface TrainingRuntimeActions {
   applyStatus: (payload: TrainingStatusResponse) => void;
   applyMetrics: (payload: TrainingMetricsResponse) => void;
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
+  applyCheckpointUpload: (payload: CheckpointUploadProgress) => void;
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
