@@ -2025,6 +2025,9 @@ class LlamaCppBackend:
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
         self._effective_parallel_slots: int = 1
+        # --parallel count the last load was invoked with, before any fit-time
+        # slot reduction (mirrors _requested_n_ctx for the reload dedupe).
+        self._requested_n_parallel: int = 1
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
@@ -2249,6 +2252,19 @@ class LlamaCppBackend:
         return max(1, slots)
 
     @property
+    def requested_parallel_slots(self) -> int:
+        """--parallel count the last load was invoked with (before any
+        fit-time slot reduction). Used by the route's reload dedupe to compare
+        requested-vs-requested, mirroring requested_n_ctx: comparing against
+        the effective count would reload forever whenever the fitter reduced
+        the slots."""
+        try:
+            slots = int(getattr(self, "_requested_n_parallel", 1))
+        except (TypeError, ValueError):
+            slots = 1
+        return max(1, slots)
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -2273,6 +2289,9 @@ class LlamaCppBackend:
 
     def _reset_effective_parallel_slots(self) -> None:
         self._effective_parallel_slots = 1
+        # Requested count shares the effective lifecycle: cleared on unload /
+        # kill so a stale value can't poison the next load's dedupe.
+        self._requested_n_parallel = 1
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -6471,6 +6490,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                n_parallel = n_parallel,
                 preserve_multi_gpu_on_layer = preserve_multi_gpu_on_layer,
             ):
                 logger.info(
@@ -8670,6 +8690,9 @@ class LlamaCppBackend:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
+                # The local n_parallel may have been rebound by the slot
+                # reduction above; the pending snapshot holds the invoked value.
+                self._requested_n_parallel = max(1, int(_pending_load_kwargs["n_parallel"]))
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_kwargs = _pending_load_kwargs
@@ -9082,6 +9105,7 @@ class LlamaCppBackend:
         tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
         mtp_draft_path: Optional[str] = None,
+        n_parallel: int = 1,
         preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
@@ -9143,6 +9167,11 @@ class LlamaCppBackend:
         if not self._is_diffusion:
             # A GPU-memory-mode flip (Unsloth / manual) must always reload.
             if self._gpu_memory_mode != gpu_memory_mode:
+                return False
+            # Requested-vs-requested (like n_ctx above): the fitter may launch
+            # fewer slots, so comparing the effective count would reload
+            # forever. The diffusion runner ignores --parallel entirely.
+            if self._requested_n_parallel != max(1, int(n_parallel)):
                 return False
             # Manual: a layer-count change always reloads (covers Auto(-1) <-> a
             # pinned count); MoE/split only matter with an explicit offload.
