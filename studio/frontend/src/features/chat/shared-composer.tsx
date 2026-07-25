@@ -1103,6 +1103,8 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
+                // Slots scale the KV estimate; keep validate sized like the load.
+                n_parallel: ownConfig.nParallel ?? null,
               }
             : {}),
         });
@@ -1171,6 +1173,7 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                n_parallel: ownConfig.nParallel ?? null,
               }
             : {}),
         });
@@ -1210,6 +1213,10 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          // Click-time value, not the resolved backend echo (see the single-
+          // model load path); non-GGUF loads never send slots.
+          nParallel: targetIsGguf ? (ownConfig.nParallel ?? null) : null,
+          loadedNParallel: targetIsGguf ? (ownConfig.nParallel ?? null) : null,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
