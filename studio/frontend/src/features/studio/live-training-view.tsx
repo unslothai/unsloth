@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
+import { CheckpointUploadCard } from "./sections/checkpoint-upload-card";
 import {
   type RunConfigOverride,
   mapRunConfigToOverride,
@@ -65,6 +66,7 @@ export function LiveTrainingView(): ReactElement {
       evalLossHistory: state.evalLossHistory,
       firstStepReceived: state.firstStepReceived,
       isStarting: state.isStarting,
+      checkpointUpload: state.checkpointUpload,
     })),
   );
 
@@ -192,6 +194,12 @@ export function LiveTrainingView(): ReactElement {
             configOverride={runConfigOverride}
           />
         </div>
+        {runtime.checkpointUpload.state !== "idle" ? (
+          <CheckpointUploadCard
+            key={runtime.jobId ?? "no-job"}
+            upload={runtime.checkpointUpload}
+          />
+        ) : null}
         <ChartsSection
           currentStep={viewData.currentStep}
           totalSteps={viewData.totalSteps}

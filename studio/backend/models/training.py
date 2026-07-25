@@ -609,6 +609,22 @@ class TrainingJobResponse(BaseModel):
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
 
 
+class CheckpointUploadProgress(BaseModel):
+    """Credential-free checkpoint upload lifecycle shared with Studio clients."""
+
+    state: Literal["idle", "preparing", "uploading", "completed", "skipped", "error"] = "idle"
+    checkpoint: Optional[str] = None
+    repository_id: Optional[str] = None
+    repository_url: Optional[str] = None
+    uploaded_bytes: Optional[int] = Field(None, ge = 0)
+    total_bytes: Optional[int] = Field(None, ge = 0)
+    uploaded_files: Optional[int] = Field(None, ge = 0)
+    total_files: Optional[int] = Field(None, ge = 0)
+    percentage: Optional[float] = Field(None, ge = 0, le = 100)
+    message: str = ""
+    error: Optional[str] = None
+
+
 class TrainingStatus(BaseModel):
     """Current training job status - works for streaming or polling"""
 
@@ -660,6 +676,10 @@ class TrainingProgress(BaseModel):
     num_tokens: Optional[int] = Field(None, description = "Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
+    )
+    checkpoint_upload: CheckpointUploadProgress = Field(
+        default_factory = CheckpointUploadProgress,
+        description = "Latest checkpoint upload state; errors do not fail local training",
     )
 
 
