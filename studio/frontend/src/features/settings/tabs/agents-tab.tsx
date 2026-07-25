@@ -16,6 +16,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { useChatRuntimeStore } from "@/features/chat";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { type CodingAgentsInfo, loadCodingAgents } from "../api/coding-agents";
 import { isLoopbackHost, normalizeHost } from "../components/agent-command";
@@ -267,6 +268,22 @@ export function AgentsTab() {
   const detected = new Set(visibleInfo?.detected ?? []);
   const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
+  // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits
+  // otherwise), so flag its row when the loaded model doesn't qualify rather
+  // than offering a command that fails. Mirrors the same three-signal check the
+  // API usage panel uses: activeGgufVariant covers an HF-repo GGUF pick,
+  // activeNativePathToken a direct local .gguf file, and ggufContextLength is
+  // only set when /api/inference/status reported is_gguf for the active model.
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const isGguf =
+    activeGgufVariant != null ||
+    activeNativePathToken != null ||
+    ggufContextLength != null;
+
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <header className="flex min-w-0 flex-col gap-1">
@@ -327,6 +344,11 @@ export function AgentsTab() {
                 {detected.has(agent.id) ? (
                   <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
                     {t("settings.agents.quickstart.installed")}
+                  </span>
+                ) : null}
+                {agent.id === "codex" && !isGguf ? (
+                  <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-[10px] leading-none font-semibold text-muted-foreground">
+                    {t("settings.agents.supportedAgents.requiresGguf")}
                   </span>
                 ) : null}
               </div>
