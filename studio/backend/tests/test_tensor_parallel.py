@@ -529,10 +529,9 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
 
 
 def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatch):
-    # The flag is claimed before the reload thread exists, and only that thread's
-    # finally clears it. If starting it raises (thread exhaustion is exactly the
-    # pressure that kills llama-server), the claim must not latch: nothing else ever
-    # resets it, and _respawn_if_dead then refuses forever, for every later model.
+    # Only the reload thread's finally clears the claim, so if starting it raises the
+    # claim must not latch: nothing else resets it, and _respawn_if_dead then refuses
+    # forever, for every later model.
     b = _recovery_backend()
 
     class _NoThread:
@@ -549,9 +548,9 @@ def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatc
 
 
 def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
-    # The gate and the snapshot must share one read. Reading twice lets an unload
-    # (which nulls _last_load_kwargs) land in between, so dict(None) raises after the
-    # claim and strands the flag set with no thread alive to clear it.
+    # Gate and snapshot must share one read: reading twice lets an unload null
+    # _last_load_kwargs in between, so dict(None) raises after the claim and strands
+    # the flag with no thread alive to clear it.
     b = _recovery_backend()
 
     class _CountingKwargs:  # data descriptor, so it wins over the instance dict
@@ -585,9 +584,8 @@ def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
 
 
 def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
-    # The single-flight "already recovering" False must not read as "not an MTP
-    # crash": respawning would replay the crashing MTP kwargs and make the
-    # in-flight no-MTP reload abort on its "newer load is active" check.
+    # "Already recovering" must not read as "not an MTP crash": respawning replays the
+    # crashing MTP kwargs and aborts the in-flight no-MTP reload on its "newer load" check.
     b = _recovery_backend()
     b._mtp_runtime_fallback_in_progress = True
     loads: list[dict] = []
@@ -604,10 +602,9 @@ def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
 
 
 def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
-    # Callers that lose the same child queue on _respawn_lock; the winner respawns and
-    # the rest wake holding the healthy REPLACEMENT. Unable to tell it from the child
-    # their own request used, each burns the full reap grace, and since that sleep is
-    # held under the lock the waits serialise: N callers cost N grace periods.
+    # Callers losing the same child queue on _respawn_lock and wake holding the healthy
+    # REPLACEMENT. Unable to tell it from their own child, each burns the reap grace, and
+    # that sleep is held under the lock, so N callers cost N grace periods.
     class _LiveProcess(_FakeProcess):
         returncode = None
 
@@ -627,9 +624,8 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
     guard = threading.Lock()
     all_in_flight = threading.Event()
 
-    # Subclass this one instance rather than patching the class: a descriptor on
-    # LlamaCppBackend itself would redirect _process for every other backend alive
-    # in the process, including ones earlier tests left registered with atexit.
+    # Subclass this instance, not the class: a descriptor on LlamaCppBackend would
+    # redirect _process for every other live backend, including atexit-registered ones.
     state = {"proc": b._process, "readers": set()}
 
     class _Tracked(type(b)):
@@ -650,10 +646,10 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
     b.__class__ = _Tracked
 
     def _load(**kwargs):
-        # A real load_model spawns a process and takes seconds, so every caller that
-        # lost this child is already in flight before the replacement appears. Waiting
-        # here reproduces that ordering; the timeout keeps the pre-fix build, where the
-        # losers cannot read until the lock is free, from hanging instead of failing.
+        # A real load_model takes seconds, so every caller that lost this child is in
+        # flight before the replacement appears; waiting reproduces that ordering. The
+        # timeout keeps the pre-fix build, where losers cannot read until the lock is
+        # free, from hanging instead of failing.
         all_in_flight.wait(timeout = 2)
         with guard:
             loads.append(kwargs)
@@ -679,8 +675,8 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
 
     assert results == [True] * workers, results
     assert len(loads) == 1, f"{len(loads)} reloads, expected one"
-    # The grace loop is the only caller of poll() on a live process, so any count
-    # here means a queued caller charged the wait to a server that never failed.
+    # The grace loop is the only poll() of a live process, so any count means a queued
+    # caller charged the wait to a server that never failed.
     assert live.polls == 0, "queued caller waited out the grace on a healthy server"
     assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S * (workers - 1)
 
@@ -712,10 +708,9 @@ class _DyingChild(_FakeProcess):
 
 
 def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
-    # unload_model() sets _cancel_event before it kills the child, so a request that
-    # loses the connection during the unload can watch that deliberate exit through
-    # the reap grace loop and call it a crash. _last_load_kwargs is still populated
-    # (unload clears it after the kill), so the model comes straight back.
+    # unload_model() sets _cancel_event before killing, so a request that loses the
+    # connection can watch that deliberate exit through the grace loop and call it a
+    # crash, with _last_load_kwargs still populated (unload clears it after the kill).
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild()
@@ -740,8 +735,8 @@ def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
 
 
 def test_respawn_does_not_revert_a_newer_load(monkeypatch):
-    # A model switch that lands while we wait must win; replaying the old kwargs
-    # would swap the user's new model back out.
+    # A model switch landing while we wait must win; replaying the old kwargs would
+    # swap the user's new model back out.
     b = _recovery_backend()
     b._healthy = True
     replacement = _DyingChild(alive_polls = 10**6)

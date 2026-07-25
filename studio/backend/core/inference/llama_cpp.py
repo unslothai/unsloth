@@ -306,8 +306,8 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
-# A transport error can arrive before the child is reapable. The background MTP reload
-# affords 5s for the same race; a request path cannot.
+# A transport error can arrive before the child is reapable; a request path cannot
+# afford the 5s the background MTP reload spends on the same race.
 _RESPAWN_REAP_GRACE_S = 1.0
 
 
@@ -10002,8 +10002,8 @@ class LlamaCppBackend:
             return False
         if not self._mtp_runtime_fallback_active:
             return False
-        # Read before claiming: a raise between the claim and _recover's try/finally
-        # strands the flag, and nothing else clears it, blocking every later respawn.
+        # Read before claiming: a raise after the claim strands the flag, and nothing
+        # else clears it, blocking every later respawn.
         kwargs = self._last_load_kwargs
         proc = self._process
         if not kwargs or proc is None:
@@ -10064,8 +10064,7 @@ class LlamaCppBackend:
         try:
             threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
         except RuntimeError as exc:
-            # Out of threads, the very pressure that kills llama-server: release the
-            # claim, or a reload that never started blocks respawn forever.
+            # Release the claim: a reload that never started would block respawn forever.
             with self._mtp_runtime_fallback_lock:
                 self._mtp_runtime_fallback_in_progress = False
             logger.error(f"Could not start the MTP-crash reload: {exc}")
@@ -10550,10 +10549,9 @@ class LlamaCppBackend:
         recover, returning True once healthy. Serialised on ``_respawn_lock`` so
         many generations hitting the dead server trigger at most one reload.
         """
-        # Read outside the lock: a caller queued behind someone else's respawn can then
-        # tell the replacement from the child its own error came from. The grace wait
-        # below sleeps under the lock, so charging it to a replacement would serialise
-        # one wait per queued caller.
+        # Read outside the lock so a queued caller can tell the replacement from the child
+        # its own error came from; otherwise each burns the grace wait below, and that
+        # sleep is held under the lock, so the waits serialise.
         served_by = self._process
         with self._respawn_lock:
             proc = self._process
@@ -10563,25 +10561,24 @@ class LlamaCppBackend:
                 # Replaced while we queued: this child never served our request.
                 return self._healthy
             if proc.poll() is None:
-                # A closing server can beat its own exit status: calling it alive here
-                # returns the stale _healthy and spends the retry on the corpse.
+                # A closing server can beat its own exit status: calling it alive returns
+                # the stale _healthy and spends the retry on the corpse.
                 deadline = time.monotonic() + _RESPAWN_REAP_GRACE_S
                 while proc.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.05)
             if proc.poll() is None:
-                # Process is alive: either a concurrent caller already respawned
-                # it (healthy), or this connection error wasn't a dead server.
+                # Alive: either a concurrent caller already respawned it (healthy), or
+                # this connection error wasn't a dead server.
                 return self._healthy
             with self._mtp_runtime_fallback_lock:
                 if self._mtp_runtime_fallback_in_progress:
                     # An MTP-free reload owns this corpse; replaying the old kwargs
-                    # would restart the crashing config and abort that reload.
+                    # restarts the crashing config and aborts that reload.
                     logger.info("Respawn skipped: an MTP-free reload is already recovering.")
                     return False
-            # Re-check under the load lock, like the MTP-crash reload: an exit we
-            # waited out may have been deliberate. unload_model sets _cancel_event
-            # before it kills, and a switch installs its own process, so both are
-            # visible here. The RLock lets the load_model below re-enter.
+            # Re-check under the load lock: an exit we waited out may be deliberate.
+            # unload_model sets _cancel_event before killing and a switch installs its own
+            # process, so both are visible here. The RLock lets load_model below re-enter.
             with self._serial_load_lock:
                 if self._cancel_event.is_set():
                     logger.info("Respawn skipped: the model was unloaded or the load cancelled.")
