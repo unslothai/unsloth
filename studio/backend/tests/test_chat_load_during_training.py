@@ -257,6 +257,18 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(info["mode"], "gguf_vulkan")
         self.assertEqual(info["usable_gb"], 18.5)
 
+    def test_vulkan_multi_gpu_enforces_per_device_floor(self):
+        # Aggregate capacity clears 15.5 GB, but one shard has less than half.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 60), (1, 80, 78)),
+            required_override = 10.0,
+            gpu_ids = [0, 1],
+            gpu_ids_are_vulkan_ordinals = True,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["per_gpu_needed_gb"], 7.75)
+        self.assertEqual(info["min_free_gb"], 2.0)
+
     def test_single_device_unresolved_token_sizes_against_worst_device(self):
         # Unknown single-device tokens use the least-free visible GPU.
         ok, info, _ = self._run(
@@ -1066,6 +1078,13 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
     def setUpClass(cls):
         cls.route = _load_inference_route()
 
+    def test_cuda_gpu_ids_allow_matching_draft_device(self):
+        self.route._reject_draft_device_with_gpu_ids(
+            [1],
+            ["--spec-draft-device", "CUDA0"],
+            gpu_ids_are_vulkan_ordinals = False,
+        )
+
     def test_refusal_409_and_no_unload(self):
         import contextlib
         from unittest.mock import MagicMock
@@ -1113,7 +1132,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()
 
-    def test_gguf_inherited_draft_device_rejected_under_gpu_ids(self):
+    def test_gguf_inherited_draft_device_rejected_under_vulkan_gpu_ids(self):
         # Check effective inherited extras, not only the raw request.
         import contextlib
         from unittest.mock import MagicMock
@@ -1128,7 +1147,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             hf_variant = None,
             extra_args = ["--spec-draft-device", "CUDA1"],
             extra_args_source = ("x.gguf", None),
-            is_vulkan_build = lambda: False,
+            is_vulkan_build = lambda: True,
         )
         llama.unload_model = MagicMock()
         cfg = SimpleNamespace(
@@ -1160,7 +1179,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(
                 self.route,
                 "_resolve_gguf_gpu_ids_for_request",
-                return_value = ([0], False),
+                return_value = ([0], True),
             ),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),

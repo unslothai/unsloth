@@ -3218,7 +3218,6 @@ def _request_matches_loaded_settings(
     # stored extras stripped the way the reload strips them, so an extras-driven
     # tensor load isn't seen as a mismatch that needlessly reloads the server.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
-    _strip_mem = LlamaCppBackend._memory_mode_env_override()
     effective_extra = (
         request.llama_extra_args
         if request.llama_extra_args is not None
@@ -3227,7 +3226,6 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
-            strip_memory_mode = _strip_mem,
         )
     )
     if not _tensor_parallel_matches_loaded(
@@ -3312,14 +3310,12 @@ def _request_matches_loaded_settings(
                 strip_split_mode = _should_strip_split_mode(request, backend_extra),
                 strip_tensor_split = _should_strip_tensor_split(request),
                 strip_offload = request.gpu_memory_mode == "manual",
-                strip_memory_mode = _strip_mem,
             )
             != backend_extra
         ):
             return False
     else:
         # Compare against the managed flags that load_model actually persisted.
-        # Keep backend memory flags so an explicit mode can replace raw argv.
         _strip_dev = bool(request.gpu_ids)
         _request_extra = (
             strip_shadowing_flags(
@@ -3329,10 +3325,9 @@ def _request_matches_loaded_settings(
                 strip_spec = False,
                 strip_template = False,
                 strip_split_mode = False,
-                strip_memory_mode = _strip_mem,
                 strip_device = _strip_dev,
             )
-            if (_strip_mem or _strip_dev)
+            if _strip_dev
             else list(request.llama_extra_args)
         )
         if _request_extra != backend_extra:
@@ -3948,10 +3943,13 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
 
 
 def _reject_draft_device_with_gpu_ids(
-    gpu_ids: Optional[List[int]], extra_args: Optional[list[str]]
+    gpu_ids: Optional[List[int]],
+    extra_args: Optional[list[str]],
+    *,
+    gpu_ids_are_vulkan_ordinals: bool,
 ) -> None:
-    """Reject a drafter pin that can escape the main model's GPU pool."""
-    if not gpu_ids:
+    """Reject a physical drafter pin beside Vulkan-ordinal main placement."""
+    if not gpu_ids or not gpu_ids_are_vulkan_ordinals:
         return
     draft_device = _extra_args_draft_device_pin(extra_args)
     if draft_device is not None:
@@ -4221,8 +4219,6 @@ def _resolve_inherited_extra_args(
                 or effective_chat_template_override is not None
             ),
             strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # Operator LLAMA_ARG_* host-memory values own inherited raw argv.
-            strip_memory_mode = LlamaCppBackend._memory_mode_env_override(),
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
             # keeping the user's --split-mode row/none/layer choice.
@@ -4568,7 +4564,11 @@ async def _load_model_impl(
                 gguf_gpu_ids,
                 gpu_ids_are_vulkan_ordinals,
             ) = await _resolve_gguf_gpu_ids_for_request(config, effective_gpu_ids)
-            _reject_draft_device_with_gpu_ids(gguf_gpu_ids, extra_llama_args)
+            _reject_draft_device_with_gpu_ids(
+                gguf_gpu_ids,
+                extra_llama_args,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            )
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
                 status_code = 400,
@@ -5165,7 +5165,11 @@ async def validate_model(
                 config,
                 effective_gpu_ids,
             )
-            _reject_draft_device_with_gpu_ids(validated_gpu_ids, effective_extra_args)
+            _reject_draft_device_with_gpu_ids(
+                validated_gpu_ids,
+                effective_extra_args,
+                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+            )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

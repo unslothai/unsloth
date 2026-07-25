@@ -394,7 +394,6 @@ def test_strip_shadowing_flags_keeps_device_by_default():
         strip_spec = False,
         strip_template = False,
         strip_split_mode = False,
-        strip_memory_mode = False,
     )
     assert out == ["--device", "Vulkan1", "--top-k", "20"]
 
@@ -409,7 +408,6 @@ def test_strip_shadowing_flags_drops_device_when_requested():
             strip_spec = False,
             strip_template = False,
             strip_split_mode = False,
-            strip_memory_mode = False,
             strip_device = True,
         )
         assert out == ["--top-k", "20"], flag
@@ -898,68 +896,3 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
         strip_template = False,
     )
     assert out == ["--model-draft", "/custom/mtp.gguf"]
-
-
-# ── Host-memory environment override shadowing ───────────────────────────────
-
-
-def test_strip_shadowing_flags_drops_memory_mode_when_requested():
-    out = strip_shadowing_flags(
-        [
-            "--load-mode",
-            "dio",
-            "--mlock",
-            "--no-mmap",
-            "--mmap",
-            "--direct-io",
-            "--top-k",
-            "20",
-        ],
-        strip_memory_mode = True,
-    )
-    assert out == ["--top-k", "20"]
-
-
-def test_strip_shadowing_flags_keeps_memory_mode_when_not_requested():
-    out = strip_shadowing_flags(
-        ["--mlock", "--no-mmap", "--mmap", "--top-k", "20"],
-        strip_memory_mode = False,
-    )
-    assert out == ["--mlock", "--no-mmap", "--mmap", "--top-k", "20"]
-
-
-def test_strip_shadowing_flags_default_keeps_memory_mode():
-    # Host-memory stripping is opt-in: without an environment override, preserve
-    # the user's pass-through flags.
-    assert strip_shadowing_flags(["--mlock", "--no-mmap", "--mmap"]) == [
-        "--mlock",
-        "--no-mmap",
-        "--mmap",
-    ]
-
-
-def test_strip_split_mode_only_keeps_memory_mode():
-    # Tensor->layer downgrade must not strip the user's memory mode choice.
-    assert strip_split_mode_only(["--mlock", "--no-mmap", "--mmap", "-sm", "tensor"]) == [
-        "--mlock",
-        "--no-mmap",
-        "--mmap",
-    ]
-
-
-def test_strip_shadowing_flags_drops_inverse_mmap_flag():
-    # An inherited --mmap must not override an operator environment policy.
-    out = strip_shadowing_flags(["--mmap"], strip_memory_mode = True)
-    assert out == []
-
-
-@pytest.mark.parametrize("flag", ["--mlock", "--no-mmap", "--mmap"])
-def test_strip_memory_mode_valueless_preserves_next_token(flag):
-    # The memory-mode flags take no value; stripping must not consume the next token.
-    out = strip_shadowing_flags([flag, "--top-k", "40"], strip_memory_mode = True)
-    assert out == ["--top-k", "40"]
-
-
-def test_strip_memory_mode_kept_without_environment_override():
-    out = strip_shadowing_flags(["--mmap"], strip_memory_mode = False)
-    assert out == ["--mmap"]

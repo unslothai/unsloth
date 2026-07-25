@@ -421,6 +421,7 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  isDiffusion?: boolean;
   config?: PerModelConfig;
 };
 
@@ -995,13 +996,8 @@ export function SharedComposer({
         gpuLayers: store.gpuLayers,
         nCpuMoe: store.nCpuMoe,
         splitRatio: store.splitRatio,
-        // Reconcile the pick against the GPUs present now, like the model-switch
-        // path: an early remember-restore can hold a stale cross-host pick that
-        // /load would reject (the device cache is populated by send time).
-        selectedGpuIds: reconcilePersistedGpuIds(
-          store.selectedGpuIds,
-          store.selectedGpuIndexKind,
-        ),
+        selectedGpuIds: store.selectedGpuIds,
+        selectedGpuIndexKind: store.selectedGpuIndexKind,
       };
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
@@ -1062,8 +1058,13 @@ export function SharedComposer({
             ? reconcilePersistedGpuIds(
                 ownConfig.selectedGpuIds,
                 ownConfig.selectedGpuIndexKind,
+                sel.isDiffusion === true,
               )
-            : compareLoadKnobs.selectedGpuIds;
+            : reconcilePersistedGpuIds(
+                compareLoadKnobs.selectedGpuIds,
+                compareLoadKnobs.selectedGpuIndexKind,
+                sel.isDiffusion === true,
+              );
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --
         // resolveFitMaxSeqLength would treat that as a pin and load this pane at

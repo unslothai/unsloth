@@ -177,21 +177,6 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
-# Host-memory flags can be removed when an operator supplied the corresponding
-# LLAMA_ARG_* environment override.
-_MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
-    {
-        "-lm",
-        "--load-mode",
-        "--mlock",
-        "--no-mmap",
-        "--mmap",
-        "-dio",
-        "--direct-io",
-        "-ndio",
-        "--no-direct-io",
-    }
-)
 # Multi-GPU split mode shadows the Tensor Parallelism toggle
 # (--split-mode tensor). Pass-through stays allowed so users keep the
 # row/none/layer modes the toggle doesn't expose, but it's stripped on
@@ -219,12 +204,7 @@ _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe"
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
-    _CONTEXT_FLAGS
-    | _CACHE_FLAGS
-    | _SPEC_FLAGS
-    | _TEMPLATE_FLAGS
-    | _SPLIT_SHADOWING_FLAGS
-    | _MEMORY_MODE_FLAGS
+    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
@@ -235,13 +215,6 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
         "-cmoe",
         "--cpu-moe",
-        "--mlock",
-        "--no-mmap",
-        "--mmap",
-        "-dio",
-        "--direct-io",
-        "-ndio",
-        "--no-direct-io",
     }
 )
 
@@ -478,7 +451,6 @@ def strip_shadowing_flags(
     strip_split_mode: bool = True,
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
-    strip_memory_mode: bool = False,
     strip_device: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
@@ -494,8 +466,7 @@ def strip_shadowing_flags(
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
     row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
-    owns placement. ``strip_memory_mode`` is enabled only when an operator
-    ``LLAMA_ARG_*`` environment variable owns host-memory behavior.
+    owns placement.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -512,8 +483,6 @@ def strip_shadowing_flags(
         shadowing |= _TENSOR_SPLIT_FLAGS
     if strip_offload:
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
-    if strip_memory_mode:
-        shadowing |= _MEMORY_MODE_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
 

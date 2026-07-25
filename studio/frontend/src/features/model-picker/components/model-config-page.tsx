@@ -919,12 +919,12 @@ export function ModelConfigPage({
       committedGpuLayers != null ||
       committedMoeLayers != null;
 
-    const effectiveConfig = hasPending
+    const committedConfig = hasPending
       ? { ...config, ...pendingPatch }
       : config;
-    const effectiveLoadableConfig = resolvedIsDiffusion
-      ? withoutUnsupportedDiffusionSettings(effectiveConfig, gpuIndexKind)
-      : effectiveConfig;
+    const effectiveConfig = resolvedIsDiffusion
+      ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
+      : committedConfig;
     // pinFixedLayerContext above was computed from the render-time config, before
     // the same-click GPU Layers draft was committed. Recompute it from
     // effectiveConfig so committing a positive fixed-layer value still pins the
@@ -933,18 +933,15 @@ export function ModelConfigPage({
     // the pin exists to avoid).
     const effectivePinFixedLayerContext =
       target.isGguf &&
-      effectiveLoadableConfig.gpuMemoryMode === "manual" &&
-      effectiveLoadableConfig.gpuLayers != null &&
-      effectiveLoadableConfig.gpuLayers >= 0 &&
-      effectiveLoadableConfig.customContextLength == null &&
+      effectiveConfig.gpuMemoryMode === "manual" &&
+      effectiveConfig.gpuLayers != null &&
+      effectiveConfig.gpuLayers >= 0 &&
+      effectiveConfig.customContextLength == null &&
       activeLoadedContext != null;
     const effectiveRuntimeConfig = hasPending
       ? effectivePinFixedLayerContext
-        ? {
-            ...effectiveLoadableConfig,
-            customContextLength: activeLoadedContext,
-          }
-        : effectiveLoadableConfig
+        ? { ...effectiveConfig, customContextLength: activeLoadedContext }
+        : effectiveConfig
       : runtimeConfig;
     // Non-GGUF load substitutes the resolved max sequence length; recompute it
     // from the committed draft so a same-click Max Seq Length edit is not lost.
@@ -954,10 +951,7 @@ export function ModelConfigPage({
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
     // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectiveAtBaseline = perModelConfigsEqual(
-      effectiveLoadableConfig,
-      baseline,
-    );
+    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
     const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);

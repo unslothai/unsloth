@@ -198,6 +198,8 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
     assert "ownConfig.selectedGpuIndexKind," in src
+    assert "compareLoadKnobs.selectedGpuIndexKind," in src
+    assert src.count("sel.isDiffusion === true") >= 2
     for field in (
         "gpu_memory_mode: effectiveGpuMemoryMode",
         "gpu_layers: effectiveGpuLayers",
@@ -205,6 +207,10 @@ def test_compare_load_uses_each_models_gpu_config():
         "gpu_ids: effectiveSelectedGpuIds ?? undefined",
     ):
         assert field in src
+
+    page = _read("features/chat/chat-page.tsx")
+    assert page.count("isDiffusion: meta.isDiffusion") >= 2
+    assert "isDiffusion: globalIsDiffusion" in page
 
 
 def test_active_native_gguf_metadata_uses_path_token():

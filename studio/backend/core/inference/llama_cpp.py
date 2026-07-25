@@ -127,15 +127,6 @@ LLAMA_SERVER_NOT_FOUND_DETAIL = (
     "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
 )
 
-_LLAMA_MEMORY_MODE_ENV_VARS = (
-    "LLAMA_ARG_LOAD_MODE",
-    "LLAMA_ARG_MLOCK",
-    "LLAMA_ARG_NO_MMAP",
-    "LLAMA_ARG_MMAP",
-    "LLAMA_ARG_DIO",
-)
-
-
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
 # Unsloth can warn. Priority: explicit "offloaded N/M layers to GPU" counts
@@ -6473,12 +6464,6 @@ class LlamaCppBackend:
         )
         self._stdout_thread.start()
 
-    @staticmethod
-    def _memory_mode_env_override(env: Optional[Mapping[str, str]] = None) -> bool:
-        """Whether the operator environment owns host-memory placement."""
-        source = os.environ if env is None else env
-        return any(name in source for name in _LLAMA_MEMORY_MODE_ENV_VARS)
-
     @_with_gguf_load_marker
     def load_model(
         self,
@@ -6525,18 +6510,6 @@ class LlamaCppBackend:
 
         Returns True if the server started and the health check passed.
         """
-        # LLAMA_ARG_* host-memory settings are operator overrides. When present,
-        # they also own raw pass-through flags so no request can shadow them.
-        if self._memory_mode_env_override() and extra_args:
-            extra_args = strip_shadowing_flags(
-                extra_args,
-                strip_context = False,
-                strip_cache = False,
-                strip_spec = False,
-                strip_template = False,
-                strip_split_mode = False,
-                strip_memory_mode = True,
-            )
         # Raw load inputs so the runtime MTP-crash reload can replay this model
         # without MTP. Committed to _last_load_kwargs only on a healthy load.
         _pending_load_kwargs = {
