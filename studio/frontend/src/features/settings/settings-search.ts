@@ -104,9 +104,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.accessTokens",
   ],
   agents: [
-    // Heading, intro and builder labels carry the terms users search for
-    // ("unsloth start", the agent names). Every key here must be rendered with
-    // a matching data-settings-label, or the result has nothing to scroll to.
+    // Heading, intro and builder labels carry the searched terms ("unsloth start", agent names).
+    // Every key needs a rendered data-settings-label, or the hit has nothing to scroll to.
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",

@@ -65,8 +65,7 @@ const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
 
-// Backend PATH detection is only meaningful in the desktop app on a loopback
-// backend; a browser loopback URL may be an SSH/port forward to another host.
+// Desktop-only: a browser loopback URL may be an SSH/port forward to another host.
 function canUseLocalAgentDetection(base: string): boolean {
   if (!isTauri) return false;
   try {
@@ -76,8 +75,7 @@ function canUseLocalAgentDetection(base: string): boolean {
   }
 }
 
-// Copy-to-clipboard state with a single timeout that a rapid re-click resets
-// and unmount clears, so the "copied" tick never resets early or leaks.
+// One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
 function useCopyButton(text: string) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<number | null>(null);
@@ -127,8 +125,7 @@ type ParsedModel = {
   variant: string | null;
 };
 
-// These names are not translated, so `settings.agents.intro` lists them all to
-// keep every agent findable from settings search.
+// Names are untranslated, so `settings.agents.intro` lists them all to keep them searchable.
 const SUPPORTED_AGENTS: AgentDetails[] = [
   {
     id: "claude",
@@ -383,7 +380,6 @@ const PASSTHROUGH_COMMANDS = [
 
 const DRY_RUN_CMD = "unsloth start claude --no-launch";
 
-/** Monospace command block with a copy-to-clipboard button in the corner. */
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
   const { copied, copy } = useCopyButton(command);
@@ -522,8 +518,8 @@ export function AgentsTab() {
   const t = useT();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
-  // The copied commands run on the client's machine, so quote and pick the
-  // remote shell from the client platform, not the server-reported deviceType.
+  // The copied commands run on the client, so quote and pick the shell from the client
+  // platform, not deviceType. Anchor the match: a bare includes("win") also matches "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
     return p.startsWith("win") || p.includes("windows");
@@ -621,8 +617,7 @@ export function AgentsTab() {
     void fetchDeviceType({ force: true });
   }, []);
 
-  // Only probe PATH when detection is meaningful; a remote backend's PATH says
-  // nothing about the machine the copied command will run on.
+  // A remote backend's PATH says nothing about the machine running the copied command.
   useEffect(() => {
     if (!localDetection) {
       return;
@@ -651,7 +646,7 @@ export function AgentsTab() {
         setDetectedAgents(new Set(next.detected));
       })
       .catch(() => {
-        // PATH probing is best-effort; the tab is still useful without it.
+        // Best-effort; the tab still works without PATH detection.
       })
       .finally(() => {
         if (!cancelled) {
@@ -798,13 +793,12 @@ export function AgentsTab() {
     };
   }, [cachedLoadIds, hfToken, preferredVariant, selectedModel]);
 
-  // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits
-  // otherwise), but the picker below only offers GGUFs and the command names
-  // the one it built, so there is nothing left to warn about here.
+  // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits otherwise), but
+  // the picker only offers GGUFs and the command names the one it built, so no warning fits.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
-      {/* Labels let settings search scroll to these, since they are indexed. */}
+      {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1
           data-settings-label={t("settings.agents.title")}
