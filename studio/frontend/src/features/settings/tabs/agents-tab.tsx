@@ -67,7 +67,8 @@ function useCopyButton(text: string) {
 
 // Each agent's `unsloth start <id>` token and display name. `logo` reuses an
 // official provider asset; agents without one fall back to a monogram tile.
-// Ids match the backend detection list.
+// Ids match the backend detection list. These names are not translated, so
+// `settings.agents.intro` lists them all to keep every one findable in search.
 const SUPPORTED_AGENTS: {
   id: string;
   name: string;

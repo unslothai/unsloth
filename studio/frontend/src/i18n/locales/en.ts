@@ -586,7 +586,7 @@ export const en = {
       description:
         "Connect coding agents like Claude Code and Codex to a model running locally in Unsloth.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenCode and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs a OpenAI-compatible server for the agent and never touches your agent's config files.",
+        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode, Pi and other agents to a model served locally by Unsloth, fully offline on your own hardware. It runs a OpenAI-compatible server for the agent and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
