@@ -174,6 +174,7 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
 ];
 
 const QUICKSTART_AGENT = "claude";
+const REMOTE_API_KEY_PLACEHOLDER = "sk-unsloth-...";
 
 // Single line so the copied command pastes as-is in POSIX, PowerShell and cmd.
 const MODEL_SUFFIX_CMD =
@@ -288,15 +289,22 @@ export function AgentsTab() {
     activeNativePathToken != null ||
     ggufContextLength != null;
 
-  // The desktop app falls back across ports 8888-8908, and the UI can be
-  // attached to any Studio base, so a bare `unsloth start` would probe the
-  // default 127.0.0.1:8888 instead of the server holding the loaded model.
-  // buildAgentCommand keeps the bare form for the default local server and
-  // sets UNSLOTH_STUDIO_URL otherwise, matching the API usage panel.
-  const commandBase = serverUrl ?? origin;
+  // A bare `unsloth start` probes 127.0.0.1:8888, but the desktop falls back
+  // across 8888-8908 and Studio may be remote, so build the command from the
+  // reachable base: the browser must use the origin it is viewing, since
+  // /api/health reports the backend's own URL (the user's localhost behind a
+  // tunnel), while the desktop has no reachable window origin. buildAgentCommand
+  // keeps the bare form for the default local server, and a non-loopback base
+  // needs the key placeholder so the copied command shows --api-key.
+  const commandBase = isTauri ? serverUrl : origin;
   const commandOs = isWindowsClient ? "windows" : "unix";
   const agentCommand = (agentId: string) =>
-    buildAgentCommand(commandBase, null, commandOs, agentId);
+    buildAgentCommand(
+      commandBase,
+      REMOTE_API_KEY_PLACEHOLDER,
+      commandOs,
+      agentId,
+    );
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
