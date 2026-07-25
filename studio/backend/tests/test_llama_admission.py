@@ -597,8 +597,10 @@ def test_module_imports_on_python_39(monkeypatch):
 
     # int.bit_count() (3.10+)
     assert not [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
         and n.func.attr == "bit_count"
     ]
     # dataclass(slots = ...) (3.10+)
@@ -623,7 +625,7 @@ def test_held_count_tracks_the_bitmask():
         assert queue._held == popcount() == 3
         shrunk = queue.reserve(capacity = 2, config = config)  # shrink with slots held
         assert queue._held == popcount() == 3
-        shrunk.cancel()          # else it is granted a slot as the others drain
+        shrunk.cancel()  # else it is granted a slot as the others drain
         for lease in leases:
             lease.release()
         assert queue._held == popcount() == 0
@@ -639,11 +641,11 @@ def test_snapshot_free_never_exceeds_what_can_be_admitted():
         config = LlamaAdmissionConfig()
 
         held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
-        queue.reserve(capacity = 1, config = config)      # capacity collapses to 1
+        queue.reserve(capacity = 1, config = config)  # capacity collapses to 1
         min(held, key = lambda lease: lease.slot).release()
 
         snapshot = queue.snapshot()
-        assert snapshot.free == 0, snapshot        # nothing is actually takeable
+        assert snapshot.free == 0, snapshot  # nothing is actually takeable
         assert snapshot.active == 3
         for lease in held:
             lease.release()

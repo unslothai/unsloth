@@ -551,9 +551,7 @@ def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
 
         assert _snapshot().active == 0  # slot returned despite the failure
         # And the pool still serves the next caller.
-        again = get_llama_admission_queue(_KEY).reserve(
-            capacity = 1, config = LlamaAdmissionConfig()
-        )
+        again = get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig())
         lease = again.lease_nowait()
         assert lease is not None
         lease.release()
