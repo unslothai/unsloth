@@ -2230,10 +2230,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* ── Top: model selector and page-mode switch, on the Hub's centered measure
-          (mx-auto, max-w-1100, px-5 / sm:px-8) so both tabs line up with it. The load
-          progress shows in a chat-style toast, not here. ── */}
-      <div className="mx-auto flex h-[48px] w-full max-w-[1100px] shrink-0 items-start justify-between px-5 pt-[11px] sm:px-8">
+      {/* ── Top: the model selector, kept at the chat tab's exact position so the
+          shared element matches. The load progress shows in a chat-style toast,
+          not here. ── */}
+      <div className="flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
           <ModelSelector
             models={MODELS}
@@ -2320,9 +2320,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) : (
       /* ── Controls rail + preview canvas. No card: both sit on the page background
           like the Hub, divided by a rule, so nothing is spent on box chrome. Same
-          centered measure as the top bar. No bottom padding, so the rule runs the full
-          page height; the panes pad their own content instead. ── */
-      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-5 sm:px-8">
+          centered measure as the Hub (mx-auto, max-w-1100, px-5 / sm:px-8). No bottom
+          padding, so the rule runs the full page height; the panes pad their own
+          content instead. ── */
+      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
         <div className="flex w-[392px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">

@@ -1024,7 +1024,7 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-5 sm:px-8">
+    <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
       {/* Left: configure. No card here or on the right: both panes sit on the page
           background like the Hub, divided by a rule that runs the full page height. */}
       <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
