@@ -230,6 +230,7 @@ function CommandBlock({ command }: { command: string }) {
 export function AgentsTab() {
   const t = useT();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const deviceType = usePlatformStore((s) => s.deviceType);
   const [info, setInfo] = useState<CodingAgentsInfo | null>(null);
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -286,7 +287,12 @@ export function AgentsTab() {
   // No --api-key: the CLI caches an explicit key per base, so a placeholder would overwrite a
   // working saved one. Omitting it replays the saved key; the remote section covers first setup.
   const commandBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const commandOs = isWindowsClient ? "windows" : "unix";
+  // These commands run where the CLI is, i.e. this Studio's host, so take the
+  // shell from the server-reported deviceType like the API usage panel does.
+  // The browser OS would say Windows for a WSL Studio viewed from Windows and
+  // emit PowerShell $env: syntax that WSL's bash rejects; any non-windows
+  // deviceType (wsl included) is POSIX.
+  const commandOs = deviceType === "windows" ? "windows" : "unix";
   const agentCommand = (agentId: string) =>
     buildAgentCommand(commandBase, null, commandOs, agentId);
   const example = (agentId: string, flags: string) =>
