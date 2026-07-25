@@ -128,7 +128,7 @@ const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
 // Every settings cell is a grid item, so it needs min-w-0 to be allowed to shrink.
-const fieldClass = "grid min-w-0 gap-1.5";
+const fieldClass = "grid min-w-0 gap-2";
 
 // Merge the backend's reported families (if any) over the presets, keeping the preset
 // ordering (popularity) and filling labels/notes/defaults the backend omits.
@@ -879,8 +879,8 @@ export function DiffusionTrainPanel({
   // (settings are set once, up front); once training starts the run view (progress +
   // charts) replaces them. Laid out as a wide grid for the center column.
   const trainingSettings = (
-    <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-3">
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-3">
         {durationField}
         {numberField("LoRA rank", rank, setRank, 1)}
         {numberField("Resolution", resolution, setResolution, 512, { min: 64, step: 64 })}
@@ -889,7 +889,7 @@ export function DiffusionTrainPanel({
         {numberField("Seed", seed, setSeed, 42, { min: 0 })}
       </div>
 
-      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-4 lg:grid-cols-3">
+      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-5 lg:grid-cols-3">
         {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
           min: 0,
           step: 0.00001,
@@ -918,7 +918,7 @@ export function DiffusionTrainPanel({
           numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, { min: 0 })}
       </div>
 
-      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-4 lg:grid-cols-3">
+      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-5 lg:grid-cols-3">
         <div className={fieldClass}>
           <Label className="text-xs">Gradient checkpointing</Label>
           <Select
@@ -1033,7 +1033,7 @@ export function DiffusionTrainPanel({
           background like the Hub, divided by a rule that runs the full page height. */}
       <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-        <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
+        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
           <div>
             <h2 className="text-base font-semibold">Train a LoRA</h2>
             <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
