@@ -571,3 +571,81 @@ def test_empty_canonical_env_falls_through_to_legacy(monkeypatch):
     monkeypatch.setenv(ADMISSION_CONTROL_ENV, "   ")
     monkeypatch.setenv(llama_admission._LEGACY_ENV[ADMISSION_CONTROL_ENV], "0")
     assert llama_admission_config_from_env().enabled is False
+
+
+def test_explicit_queue_per_slot_is_not_floored(monkeypatch):
+    # The floor exists so a 1-slot backend keeps its old depth by default, not to
+    # override an operator who asked for a shallow line.
+    monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, "2")
+    config = llama_admission_config_from_env()
+    assert config.queue_limit(1) == 2
+    assert config.queue_limit(8) == 16
+
+    # Unset, the default multiplier is floored instead.
+    monkeypatch.delenv(ADMISSION_QUEUE_PER_SLOT_ENV, raising = False)
+    assert llama_admission_config_from_env().queue_limit(1) == 64
+
+
+def test_module_imports_on_python_39(monkeypatch):
+    """No 3.10+ API on an import path. The package declares >=3.9 but CI only
+    runs 3.12, so a regression here would ship broken."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(llama_admission.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+
+    # int.bit_count() (3.10+)
+    assert not [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "bit_count"
+    ]
+    # dataclass(slots = ...) (3.10+)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name == "dataclass":
+            assert "slots" not in {kw.arg for kw in node.keywords}
+
+
+def test_held_count_tracks_the_bitmask():
+    # _held replaces int.bit_count(); the two must never drift apart.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+        popcount = lambda: bin(queue._in_use).count("1")
+
+        leases = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
+        assert queue._held == popcount() == 4
+        leases[1].release()
+        assert queue._held == popcount() == 3
+        shrunk = queue.reserve(capacity = 2, config = config)  # shrink with slots held
+        assert queue._held == popcount() == 3
+        shrunk.cancel()          # else it is granted a slot as the others drain
+        for lease in leases:
+            lease.release()
+        assert queue._held == popcount() == 0
+
+    asyncio.run(_run())
+
+
+def test_snapshot_free_never_exceeds_what_can_be_admitted():
+    # After a shrink, low ids can sit in _free while holdovers fill the ceiling.
+    # Reporting them as free made the admission log contradict itself.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
+        queue.reserve(capacity = 1, config = config)      # capacity collapses to 1
+        min(held, key = lambda lease: lease.slot).release()
+
+        snapshot = queue.snapshot()
+        assert snapshot.free == 0, snapshot        # nothing is actually takeable
+        assert snapshot.active == 3
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())

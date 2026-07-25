@@ -50,29 +50,34 @@ DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
 DEFAULT_ADMISSION_MIN_QUEUE = 64
 
 
-@dataclass(frozen = True, slots = True)
+@dataclass(frozen = True)
 class LlamaAdmissionConfig:
     enabled: bool = DEFAULT_ADMISSION_ENABLED
     queue_timeout_s: Optional[float] = DEFAULT_ADMISSION_QUEUE_TIMEOUT_S
     keepalive_interval_s: float = DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
     max_queue: Optional[int] = DEFAULT_ADMISSION_MAX_QUEUE
     queue_per_slot: Optional[int] = DEFAULT_ADMISSION_QUEUE_PER_SLOT
+    # Only floors the default multiplier, so an operator who sets QUEUE_PER_SLOT
+    # deliberately gets exactly the depth they asked for. None disables it.
+    min_queue: Optional[int] = DEFAULT_ADMISSION_MIN_QUEUE
 
     def queue_limit(self, capacity: int) -> Optional[int]:
         """How many callers may line up for a pool of ``capacity`` slots.
 
         An explicit ``max_queue`` wins; otherwise the line scales with the slots
-        so it follows ``--parallel``, floored so small pools do not shrink. None
+        so it follows ``--parallel``. The default multiplier is floored, so a
+        1-slot backend does not end up shallower than it was before scaling. None
         (or any non-positive setting) means an unbounded line.
         """
         if self.max_queue is not None:
             return self.max_queue if self.max_queue > 0 else None
         if not self.queue_per_slot or self.queue_per_slot <= 0:
             return None
-        return max(DEFAULT_ADMISSION_MIN_QUEUE, self.queue_per_slot * max(1, capacity))
+        scaled = self.queue_per_slot * max(1, capacity)
+        return max(self.min_queue, scaled) if self.min_queue else scaled
 
 
-@dataclass(frozen = True, slots = True)
+@dataclass(frozen = True)
 class LlamaAdmissionSnapshot:
     key: str
     capacity: int
@@ -158,30 +163,36 @@ def _optional_positive_int_env(name: str, default: Optional[int]) -> Optional[in
     return parsed if parsed > 0 else None
 
 
-def _queue_limits_from_env() -> tuple[Optional[int], Optional[int]]:
-    """(max_queue, queue_per_slot) from the environment.
+def _queue_limits_from_env() -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """(max_queue, queue_per_slot, min_queue) from the environment.
 
     An absolute MAX_QUEUE wins outright; MAX_QUEUE=0 asks for an unbounded line.
-    Unset leaves the per-slot multiplier in charge (itself 0 for unbounded).
+    Unset leaves the per-slot multiplier in charge (itself 0 for unbounded). The
+    floor applies only to the default multiplier: setting QUEUE_PER_SLOT means
+    the operator wants that exact depth, however shallow.
     """
+    raw_per_slot = _raw_env(ADMISSION_QUEUE_PER_SLOT_ENV)
+    explicit_per_slot = bool(raw_per_slot and raw_per_slot.strip())
     per_slot = _optional_positive_int_env(
         ADMISSION_QUEUE_PER_SLOT_ENV,
         DEFAULT_ADMISSION_QUEUE_PER_SLOT,
     )
+    min_queue = None if explicit_per_slot else DEFAULT_ADMISSION_MIN_QUEUE
     raw = _raw_env(ADMISSION_MAX_QUEUE_ENV)
     if raw is None or not raw.strip():
-        return None, per_slot
+        return None, per_slot, min_queue
     try:
         parsed = int(raw.strip())
     except ValueError:
-        return None, per_slot
-    return (parsed, None) if parsed > 0 else (None, None)
+        return None, per_slot, min_queue
+    return (parsed, None, None) if parsed > 0 else (None, None, None)
 
 
 def llama_admission_config_from_env() -> LlamaAdmissionConfig:
-    max_queue, queue_per_slot = _queue_limits_from_env()
+    max_queue, queue_per_slot, min_queue = _queue_limits_from_env()
     return LlamaAdmissionConfig(
         queue_per_slot = queue_per_slot,
+        min_queue = min_queue,
         enabled = _bool_env(ADMISSION_CONTROL_ENV, DEFAULT_ADMISSION_ENABLED),
         queue_timeout_s = _optional_positive_float_env(
             ADMISSION_QUEUE_TIMEOUT_ENV,
@@ -195,7 +206,7 @@ def llama_admission_config_from_env() -> LlamaAdmissionConfig:
     )
 
 
-@dataclass(slots = True)
+@dataclass
 class _Waiter:
     loop: asyncio.AbstractEventLoop
     future: asyncio.Future
@@ -272,6 +283,13 @@ class LlamaAdmissionReservation:
         return self._lease
 
     async def wait(self, timeout_s: float) -> Optional[LlamaAdmissionLease]:
+        """Wait up to ``timeout_s`` for a slot.
+
+        A timeout leaves this reservation queued so the caller can poll again.
+        Any exit that abandons the wait for good must call ``cancel()``, or the
+        slot granted later is delivered to a future nobody reads and is never
+        released.
+        """
         lease = self.lease_nowait()
         if lease is not None:
             return lease
@@ -313,11 +331,13 @@ class LlamaAdmissionQueue:
     slot busy waits in arrival order and is handed the next slot to free, so the
     backend never sees more concurrent generations than it has slots and no caller
     can be starved. Waiting is unbounded in time by default (``queue_timeout_s``
-    None); ``max_queue`` only caps how many may line up before new arrivals are
-    rejected, and setting it to None lets the line grow without limit.
+    None); the wait line itself is bounded, and only how many may line up before
+    new arrivals are rejected. By default that is ``16 x slots`` floored at 64,
+    not unlimited: an unbounded line takes ``max_queue`` or ``queue_per_slot``
+    set to 0. See ``LlamaAdmissionConfig.queue_limit``.
     """
 
-    __slots__ = ("key", "_lock", "_capacity", "_free", "_in_use", "_waiters")
+    __slots__ = ("key", "_lock", "_capacity", "_free", "_in_use", "_held", "_waiters")
 
     def __init__(self, key: str):
         self.key = key
@@ -325,8 +345,10 @@ class LlamaAdmissionQueue:
         self._capacity = 1
         self._free: list[int] = [0]
         # Held slots as a bitmask: one int instead of a set, so the pool costs the
-        # same whether it is idle or saturated.
+        # same whether it is idle or saturated. _held is its popcount, kept as a
+        # counter because int.bit_count() is 3.10+ and this package targets 3.9.
         self._in_use = 0
+        self._held = 0
         self._waiters: Deque[_Waiter] = deque()
 
     def _resize_pool_locked(self, capacity: int) -> None:
@@ -339,13 +361,14 @@ class LlamaAdmissionQueue:
     def _can_admit_locked(self) -> bool:
         # Slots still held above a shrunk capacity keep occupying the backend, so
         # count every held slot against the ceiling, not just the ids below it.
-        return bool(self._free) and self._in_use.bit_count() < self._capacity
+        return bool(self._free) and self._held < self._capacity
 
     def _take_slot_locked(self) -> Optional[int]:
         if not self._can_admit_locked():
             return None
         slot = self._free.pop()
         self._in_use |= 1 << slot
+        self._held += 1
         return slot
 
     def reserve(self, *, capacity: int, config: LlamaAdmissionConfig) -> LlamaAdmissionReservation:
@@ -392,6 +415,7 @@ class LlamaAdmissionQueue:
         if slot is None or not self._in_use >> slot & 1:
             return
         self._in_use &= ~(1 << slot)
+        self._held -= 1
         if slot < self._capacity:
             self._free.append(slot)
 
@@ -444,6 +468,10 @@ class LlamaAdmissionQueue:
                 self._release_slot_locked(slot)
 
     def _deliver_lease(self, waiter: _Waiter, lease: LlamaAdmissionLease) -> None:
+        # Runs on the waiter's own loop thread, which is also the only thread that
+        # cancels that reservation, so waiter state is safe to touch unlocked here.
+        # release() may be called from any thread, but only reaches this via
+        # call_soon_threadsafe. Cancelling off-loop would need this under _lock.
         if waiter.cancelled or waiter.future.done():
             waiter.granted_lease = None
             if not waiter.future.done():
@@ -478,9 +506,12 @@ class LlamaAdmissionQueue:
         return LlamaAdmissionSnapshot(
             key = self.key,
             capacity = self._capacity,
-            active = self._in_use.bit_count(),
+            active = self._held,
             queued = len(self._waiters),
-            free = len(self._free),
+            # What another caller could actually take, so the admission log never
+            # shows free slots next to queued requests: after a shrink, ids below
+            # the new capacity can be free while holdovers still fill the ceiling.
+            free = min(len(self._free), max(0, self._capacity - self._held)),
         )
 
 

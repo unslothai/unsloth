@@ -13307,20 +13307,26 @@ async def anthropic_messages(
         except LlamaAdmissionCancelled:
             return
         finally:
-            if body_started:
-                await _close_openai_admitted_stream_iterator(
-                    orig_body,
-                    cancelled = stream_cancelled,
-                )
-            else:
-                # Giving up while queued: the monitored body never ran, so nothing
-                # downstream finalizes the entry or exits the response's tracker.
-                api_monitor.finish(monitor_id, "cancelled")
-                await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
-            if lease is not None:
-                lease.release()
-            else:
-                reservation.cancel()
+            # Closing can raise (a raw body re-raises CancelledError after
+            # teardown), and a slot lost that way never comes back: with no queue
+            # timeout the pool just shrinks and later callers wait forever. Keep
+            # the release in its own finally, as the /responses wiring does.
+            try:
+                if body_started:
+                    await _close_openai_admitted_stream_iterator(
+                        orig_body,
+                        cancelled = stream_cancelled,
+                    )
+                else:
+                    # Gave up while queued: the monitored body never ran, so nothing
+                    # downstream finalizes the entry or exits the response's tracker.
+                    api_monitor.finish(monitor_id, "cancelled")
+                    await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
+            finally:
+                if lease is not None:
+                    lease.release()
+                else:
+                    reservation.cancel()
 
     async def _admitted_anthropic(coro):
         try:
@@ -13331,6 +13337,11 @@ async def anthropic_messages(
             coro.close()
             api_monitor.fail(monitor_id, str(exc))
             raise _anthropic_admission_http_exception(exc, status_code = 429)
+        except BaseException:
+            # Reserving never awaited the generation, so close it rather than
+            # leave an un-awaited coroutine behind.
+            coro.close()
+            raise
 
         if payload.stream:
             stream_lease = reservation.lease_nowait()
@@ -14186,8 +14197,15 @@ async def _anthropic_passthrough_stream(
                 openai_tools,
                 disable_parallel_tool_use = disable_parallel_tool_use,
             )
-        for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
-            yield line
+        # These yields sit outside the teardown try below, so a disconnect while
+        # the opening lines are being sent would strand the tracker. __exit__ is
+        # idempotent, so the normal path still exits once, down there.
+        try:
+            for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
+                yield line
+        except BaseException:
+            _tracker.__exit__(None, None, None)
+            raise
 
         # Manage the httpx client, response, AND the aiter_lines() async
         # generator MANUALLY -- no `async with`, no anonymous iterator.

@@ -525,3 +525,37 @@ def test_passthrough_stream_registers_a_pre_start_cleanup():
         and getattr(n.value.func, "id", "") == "_sse_streaming_response"
     )
     assert "unstarted_cleanup" in {kw.arg for kw in call.keywords}
+
+
+def test_slot_is_released_even_if_closing_the_body_raises(monkeypatch):
+    # A slot lost here never comes back: with no queue timeout the pool silently
+    # shrinks and later callers wait forever, so the release must not sit behind
+    # anything that can throw.
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _boom(iterator, *, cancelled):
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr(inf_mod, "_close_openai_admitted_stream_iterator", _boom)
+
+    async def _run():
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        body = response.body_iterator
+        await asyncio.wait_for(body.__anext__(), timeout = 2)  # stream started
+        assert _snapshot().active == 1
+
+        with pytest.raises(RuntimeError):
+            await body.aclose()
+
+        assert _snapshot().active == 0  # slot returned despite the failure
+        # And the pool still serves the next caller.
+        again = get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig()
+        )
+        lease = again.lease_nowait()
+        assert lease is not None
+        lease.release()
+
+    asyncio.run(_run())
