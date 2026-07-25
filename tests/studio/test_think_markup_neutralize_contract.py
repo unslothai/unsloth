@@ -363,7 +363,7 @@ def test_structured_content_wrapper_closes_are_known(tmp_path):
     assert "closeOffsets" in src
     assert "syntheticCloses.add(cumulativeText.length + offset)" in src
     # The wrapper close must be emitted separately so its offset is recorded.
-    assert '`<think>${neutralizeThinkMarkup(thinking)}</think>`' not in src
+    assert "`<think>${neutralizeThinkMarkup(thinking)}</think>`" not in src
 
 
 def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):

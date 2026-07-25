@@ -11219,7 +11219,12 @@ def _is_word_char(ch: str) -> bool:
     return bool(ch) and ch.isalnum()
 
 
-def _count_quote_delimiters(text: str, ch: str, prev: str = "", nxt: str = "") -> int:
+def _count_quote_delimiters(
+    text: str,
+    ch: str,
+    prev: str = "",
+    nxt: str = "",
+) -> int:
     """Occurrences of ``ch`` in *text* that act as quote DELIMITERS.
 
     An apostrophe between two word chars is punctuation, not an opening quote:
@@ -11444,10 +11449,7 @@ class _ResponsesReasoningExtractor:
             if before == "'" and self._pending_apostrophe_prev is not None:
                 # The span's held apostrophe: the live buffer supplies the right
                 # neighbour it was waiting for.
-                if not (
-                    _is_word_char(self._pending_apostrophe_prev)
-                    and _is_word_char(buffer[0])
-                ):
+                if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(buffer[0])):
                     count += 1
             if count % 2 == 1:
                 return True
