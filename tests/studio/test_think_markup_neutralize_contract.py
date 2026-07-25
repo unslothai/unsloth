@@ -92,9 +92,7 @@ def _run_parse_harness(tmp_path):
     if probe.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
     script = tmp_path / "run.mts"
-    script.write_text(
-        _HARNESS.replace("__PARSE_TS__", PARSE_TS.as_posix()), encoding = "utf-8"
-    )
+    script.write_text(_HARNESS.replace("__PARSE_TS__", PARSE_TS.as_posix()), encoding = "utf-8")
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
         cwd = str(tmp_path),
