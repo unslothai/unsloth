@@ -1954,8 +1954,8 @@ else
                 [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
                 _SMOKE_RC=0
                 run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
-                # Exit 4 is a full disk, not a bad GPU build: the CPU rebuild needs
-                # more of the space that just ran out, so keep what we already have.
+                # Exit 4 is a full disk, not a bad build: the CPU rebuild needs even
+                # more space, so keep what we already have.
                 if [ "$_SMOKE_RC" -eq 4 ]; then
                     substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
                     _LLAMA_CPP_NO_SPACE=true
@@ -2017,7 +2017,7 @@ fi  # end _SKIP_GGUF_BUILD check
 # binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
 # instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
 # attributes so the CPU bundle is selected rather than re-attempting CUDA. Skipped
-# when the disk is full: the retry would just fail the same way and bury the hint.
+# on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
         && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \

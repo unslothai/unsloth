@@ -3675,8 +3675,7 @@ def hydrate_source_tree(
                 break
             except Exception as exc:
                 last_exc = exc
-                # A full disk fails every mirror, so stop here rather than let a
-                # later 404 become the reported cause and mask the real one.
+                # A full disk fails every mirror; stop so a later 404 cannot mask it.
                 if _environment_fatal_reason(exc) or index == len(source_urls) - 1:
                     raise
                 log(f"source tree download failed from {source_url}: {exc}")
@@ -6003,8 +6002,8 @@ def validate_prebuilt_attempts(
             )
             raise ExistingInstallSatisfied(attempt, tried_fallback)
 
-        # Warn once, then let the install run: hosts with a few GB free install
-        # fine, and rejecting them here would also skip the source-build fallback.
+        # Advisory: a few GB free usually fits, and rejecting here would also skip
+        # the source-build fallback.
         if index == 0:
             low_disk = _low_disk_warning(install_dir)
             if low_disk is not None:
@@ -6168,8 +6167,8 @@ def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         yield current
-        # `raise X from None` means the earlier exception is unrelated; following
-        # __context__ anyway resurrects it and misreports the cause.
+        # `raise X from None` sets __suppress_context__: the earlier exception is
+        # unrelated, so following __context__ anyway would misreport the cause.
         if current.__cause__ is not None:
             current = current.__cause__
         elif current.__suppress_context__:
@@ -6179,15 +6178,12 @@ def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
 
 
 # ERROR_HANDLE_DISK_FULL / ERROR_DISK_FULL. CPython's PC/errmap.h maps 112 to
-# ENOSPC but has no case for 39, so it arrives as EINVAL: check winerror too or
-# a Windows os.replace() onto a full disk reads as an ordinary failure.
+# ENOSPC but has no case for 39, which arrives as EINVAL, so check winerror too.
 _WINDOWS_DISK_FULL = (39, 112)
-# EDQUOT means the volume has blocks this user may not have (NFS/XFS project
-# quota, container quota). The source build wants more of the same allowance, so
-# it is just as doomed as a full disk and has to stop the retry too. Reported
-# apart from ENOSPC because a user told "no space" would check df, see free
-# blocks, and be misled. Read defensively: the MSVC CRT has no EDQUOT, so on
-# Windows CPython aliases it to WSAEDQUOT (10069), which no file write raises.
+# A quota (NFS/XFS/container) leaves blocks this user cannot have, so the bigger
+# source build is just as doomed; named apart from ENOSPC so df does not mislead.
+# Guarded: the MSVC CRT has no EDQUOT, so on Windows CPython aliases it to the
+# Winsock WSAEDQUOT (10069), which no file write raises.
 _DISK_FULL_ERRNOS = {errno.ENOSPC: "no space left on device"}
 if hasattr(errno, "EDQUOT"):
     _DISK_FULL_ERRNOS[errno.EDQUOT] = "disk quota exceeded"
@@ -6213,10 +6209,10 @@ def _out_of_space_reason(exc: BaseException) -> str | None:
         if _winerror_of(exc) in _WINDOWS_DISK_FULL:
             return "no space left on device"
     # shutil.copytree stringifies each per-file OSError and raises Error(errors)
-    # outside the except block, so errno and the whole chain are gone: the only
-    # surviving evidence is the message text. Windows prints "[WinError 112] There
-    # is not enough space on the disk" and never "[Errno 28]" (CPython
-    # OSError_str prefers winerror), so match both spellings.
+    # outside the except block, so errno and the chain are gone and only text
+    # survives. OSError.__str__ returns early on winerror, so Windows reads
+    # "[WinError 112]" and never "[Errno 28]": match both, brackets included so
+    # WinError 112 does not match WinError 1120.
     if isinstance(exc, shutil.Error):
         text = str(exc)
         for code, reason in _DISK_FULL_ERRNOS.items():
@@ -6614,8 +6610,7 @@ def main() -> int:
                 install_kind = args.install_kind,
             )
         except PrebuiltFallback as exc:
-            # A full disk here is not a bad build: retrying it as a CPU source
-            # build needs more of the space that just ran out.
+            # A full disk is not a bad build: the CPU source rebuild needs more space.
             fatal = _environment_fatal_reason(exc)
             if fatal:
                 _fail_no_space(f"install validation failed: {fatal}")
