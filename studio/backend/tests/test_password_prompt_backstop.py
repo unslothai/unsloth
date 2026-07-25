@@ -881,3 +881,72 @@ def test_gate_aborts_when_the_rotation_never_landed(real_auth_db, monkeypatch):
     with pytest.raises(OSError):
         run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS)
     assert auth_storage.requires_password_change(admin) is True
+
+
+class _DyingStream(_Stream):
+    """A terminal that passes the preflight and then raises on write.
+
+    Models the console going away between _one_time_secret_stream()'s checks and
+    the post-commit banner: an SSH session that drops, or a closed terminal window
+    whose orphaned pty fails writes with OSError EIO.
+    """
+
+    def __init__(self, isatty: bool = True):
+        super().__init__(isatty = isatty)
+        self.writes = 0
+
+    def write(self, data):
+        self.writes += 1
+        raise OSError(5, "Input/output error")
+
+
+def test_delivery_retries_the_other_console_when_the_first_write_dies(monkeypatch):
+    # Regression (Codex 3651035060, P2): the banner is written AFTER
+    # update_password committed the generated password and deleted the seeded
+    # bootstrap credential, so a write failure there used to propagate and abort
+    # the launch with a live password nobody had ever seen. Retry the other real
+    # terminal instead of losing the only copy.
+    dying = _DyingStream()
+    alive = _Stream(isatty = True)
+    monkeypatch.setattr(sys, "stderr", dying)
+    monkeypatch.setattr(sys, "stdout", alive)
+
+    assert run._deliver_one_time_credential("unsloth", "Retry-Console-Pw-1", out = dying) is True
+    assert dying.writes >= 1  # the dead console was tried first
+    assert "Retry-Console-Pw-1" in alive.getvalue()
+
+
+def test_delivery_never_falls_back_to_a_tee_or_a_redirected_stream(monkeypatch):
+    # The retry must not downgrade the surface: the only other candidates here are
+    # a tee'd session log (retained on disk) and a redirected non-tty file, both of
+    # which would PERSIST the plaintext (CWE-532). Report failure instead.
+    log_fh = io.StringIO()
+    dying = _DyingStream()
+    redirected = _Stream(isatty = False)  # `> server.log`
+    monkeypatch.setattr(sys, "stderr", run._TeeStream(dying, log_fh))
+    monkeypatch.setattr(sys, "stdout", run._TeeStream(redirected, log_fh))
+
+    assert run._deliver_one_time_credential("unsloth", "No-Tee-Pw-2", out = dying) is False
+    assert log_fh.getvalue() == ""
+    assert redirected.getvalue() == ""
+
+
+def test_gate_fails_closed_when_the_credential_cannot_be_delivered(real_auth_db, monkeypatch):
+    # End to end: every console dies after the preflight. The gate must not raise
+    # (an unhandled OSError aborted startup with an opaque traceback); it fails
+    # closed with a secret-free message so the operator knows to run
+    # `unsloth studio reset-password`.
+    _seed_real_admin()
+    monkeypatch.setattr(sys, "stdin", _Stream(isatty = False))
+    monkeypatch.setattr(sys, "stderr", _DyingStream())
+    monkeypatch.setattr(sys, "stdout", _DyingStream())
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    logged: list[str] = []
+    monkeypatch.setattr(run.logger, "error", lambda msg, *a, **k: logged.append(str(msg)))
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+
+    assert logged and "reset-password" in logged[0]
+    # The message names no credential: it is written through the logger, which the
+    # session-log tee persists.
+    assert "Password:" not in logged[0]

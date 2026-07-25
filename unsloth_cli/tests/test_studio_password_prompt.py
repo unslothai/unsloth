@@ -142,7 +142,7 @@ def _install_prompt_env(
     # is not a tty, so provide a usable console here: these tests exercise the
     # rotation/re-exec logic given a surface, not the tty preflight. Tests for the
     # no-console fail-closed path override this back to None afterwards.
-    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda: sys.stderr)
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda **_kw: sys.stderr)
 
     def fake_prompt(verify_current, out = None):
         events.append(("prompt", verify_current))
@@ -387,7 +387,7 @@ def test_studio_default_non_tty_no_console_preserves_bootstrap(monkeypatch, tmp_
     before = _seed_auth(studio_mod)
     bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
     assert bootstrap_file.exists()
-    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda: None)
+    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda **_kw: None)
 
     result = _invoke_studio_default(monkeypatch, events, ["--secure"])
 
@@ -1550,3 +1550,98 @@ def test_reset_password_then_password_roundtrip(monkeypatch, tmp_path):
     _invoke_studio_default(monkeypatch, events, ["--secure", "--password", "second-password-2"])
     assert [kind for kind, _ in events] == ["exec"], events
     assert _auth_state(studio_mod)["must_change_password"] == 0
+
+
+class _DyingConsole:
+    """A terminal that passes the preflight and then raises on write.
+
+    Models the console going away between _one_time_secret_console_stream()'s
+    checks and the post-commit banner (a dropped SSH session leaves an orphaned
+    pty whose writes fail with OSError EIO).
+    """
+
+    closed = False
+
+    def __init__(self):
+        self.writes = 0
+
+    def write(self, *_a, **_k):
+        self.writes += 1
+        raise OSError(5, "Input/output error")
+
+    def flush(self, *_a, **_k):
+        pass
+
+    def isatty(self):
+        return True
+
+
+class _LiveConsole:
+    closed = False
+
+    def __init__(self):
+        self.text = ""
+
+    def write(self, data):
+        self.text += data
+        return len(data)
+
+    def flush(self, *_a, **_k):
+        pass
+
+    def isatty(self):
+        return True
+
+
+def test_credential_delivery_retries_the_other_console(monkeypatch):
+    # Regression (Codex 3651035060, P2): _echo_auto_generated_credentials runs
+    # AFTER _cli_update_password committed the generated password and removed the
+    # seeded bootstrap file, so a raise there used to abort the launch with a live
+    # password nobody had ever seen. Retry the other terminal instead.
+    studio_mod = _studio()
+    dying, alive = _DyingConsole(), _LiveConsole()
+    monkeypatch.setattr(sys, "stderr", dying)
+    monkeypatch.setattr(sys, "stdout", alive)
+
+    delivered = studio_mod._deliver_auto_generated_credentials(
+        "unsloth", "Cli-Retry-Pw-1", out = dying
+    )
+
+    assert delivered is True
+    assert dying.writes >= 1
+    assert "Cli-Retry-Pw-1" in alive.text
+
+
+def test_credential_delivery_reports_failure_without_a_usable_console(monkeypatch):
+    # No console accepts the write, and a redirected non-tty stream must NOT be
+    # used as a fallback (it would persist the plaintext, CWE-532). The caller
+    # then exits non-zero with a secret-free message instead of a traceback.
+    studio_mod = _studio()
+    dying = _DyingConsole()
+
+    class _Redirected(_LiveConsole):
+        def isatty(self):
+            return False
+
+    redirected = _Redirected()
+    monkeypatch.setattr(sys, "stderr", dying)
+    monkeypatch.setattr(sys, "stdout", redirected)
+
+    assert (
+        studio_mod._deliver_auto_generated_credentials("unsloth", "Cli-Lost-Pw-2", out = dying)
+        is False
+    )
+    assert redirected.text == ""
+
+
+def test_delivery_failure_message_carries_no_credential(monkeypatch):
+    # The advisory printed after an undeliverable credential must name the
+    # recovery command and nothing else; it can reach a log the password may not.
+    studio_mod = _studio()
+    printed: list[str] = []
+    monkeypatch.setattr(studio_mod.typer, "echo", lambda msg, **k: printed.append(str(msg)))
+
+    studio_mod._log_secret_free_delivery_failure()
+
+    assert printed and "reset-password" in printed[0]
+    assert "Password:" not in printed[0]

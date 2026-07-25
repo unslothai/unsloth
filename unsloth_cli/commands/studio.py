@@ -682,7 +682,7 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
-def _one_time_secret_console_stream():
+def _one_time_secret_console_stream(*, skip = None):
     """Return an interactive-terminal stream to surface a one-time secret, or None.
 
     Mirrors run.py's ``_one_time_secret_stream`` fail-closed contract for the CLI
@@ -697,10 +697,17 @@ def _one_time_secret_console_stream():
     the caller fails closed rather than rotate away and lose (or leak) the only
     credential. The CLI parent has no session-log tee, so no _TeeStream unwrapping
     is needed here.
+
+    *skip* excludes an already-resolved console so a delivery that RAISED on it can
+    retry the other one (see _deliver_auto_generated_credentials). The remaining
+    candidate still has to pass every check above, so the retry cannot downgrade to
+    a redirected, non-tty surface.
     """
     for candidate in (sys.stderr, sys.stdout):
         try:
             if candidate is None or getattr(candidate, "closed", False):
+                continue
+            if skip is not None and candidate is skip:
                 continue
             if not callable(getattr(candidate, "write", None)):
                 continue
@@ -823,6 +830,52 @@ def _echo_auto_generated_credentials(
         typer.echo(banner, err = True)
     else:
         print(banner, file = out, flush = True)
+
+
+def _deliver_auto_generated_credentials(username: str, password: str, *, out) -> bool:
+    """Echo the one-time credential to *out*, retrying once on the other console.
+
+    Mirrors run.py's ``_deliver_one_time_credential``. The console preflight runs
+    before the rotation, but this write happens after ``_cli_update_password`` has
+    committed the generated password and removed the seeded bootstrap credential.
+    A terminal that disappears in between (a dropped SSH session; writes to the
+    orphaned pty raise OSError EIO) would make the echo raise, aborting the launch
+    with a live password nobody has ever seen. Retry once on the other console
+    (re-resolved through the same tty/closed/writable preflight, so the retry can
+    never land the credential in a redirected file or journal), and report whether
+    it reached a console at all so the caller can fail closed instead of crashing.
+    """
+    fallback = _one_time_secret_console_stream(skip = out)
+    # Never retry the stream that just failed (a stubbed resolver could return it).
+    for stream in (out, fallback if fallback is not out else None):
+        if stream is None:
+            continue
+        try:
+            _echo_auto_generated_credentials(username, password, out = stream)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _log_secret_free_delivery_failure() -> None:
+    """Explain an undeliverable one-time credential, WITHOUT echoing the secret.
+
+    Reached only when every console refused the banner, so this message may itself
+    fail to land; it is best-effort and deliberately carries no password (writing
+    the value anywhere else would persist it, CWE-532). The non-zero exit is the
+    part the caller can always rely on.
+    """
+    try:
+        typer.echo(
+            "Error: the auto-generated Unsloth admin password could not be shown: "
+            "the console went away after the pre-rotation check. It is now the live "
+            "password but was never displayed, so nothing can recover it. Reset the "
+            "credential with `unsloth studio reset-password`, then relaunch.",
+            err = True,
+        )
+    except Exception:
+        pass
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
@@ -1213,7 +1266,13 @@ def _enforce_password_change_before_exposure(
                 # The account is off the seeded default, so launch with theirs and
                 # never show a credential that would not authenticate.
                 return
-            _echo_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out)
+            # Delivery is post-commit: the seeded recovery password is already gone,
+            # so a console that died since the preflight must not propagate its
+            # write error. Retry the other console, and fail closed with a
+            # secret-free message when neither accepts the banner.
+            if not _deliver_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out):
+                _log_secret_free_delivery_failure()
+                raise typer.Exit(1)
             return
         password_salt, password_hash = row[0], row[1]
 

@@ -1102,7 +1102,7 @@ def _console_only_stream(stream):
     return None
 
 
-def _one_time_secret_stream():
+def _one_time_secret_stream(*, skip = None):
     """Return an interactive-terminal stream to surface a one-time secret, or None.
 
     Prefers sys.stderr, then sys.stdout, unwrapping the _TeeStream session-log
@@ -1126,10 +1126,17 @@ def _one_time_secret_stream():
     so neither may be treated as usable. Mirrors the CLI's
     _one_time_secret_console_stream tty/closed/writable preflight so the direct
     `python run.py` path makes the same fail-closed decision before rotating.
+
+    *skip* excludes an already-resolved console (identity match on the unwrapped
+    stream) so a delivery that RAISED on it can retry the other one; see
+    _deliver_one_time_credential. The remaining candidate still has to pass every
+    check above, so the retry can never downgrade to a tee'd or non-tty surface.
     """
     for candidate in (sys.stderr, sys.stdout):
         raw = _console_only_stream(candidate)
         if raw is None:
+            continue
+        if skip is not None and raw is skip:
             continue
         try:
             if getattr(raw, "closed", False):
@@ -1268,6 +1275,37 @@ def _print_auto_generated_credentials(username: str, password: str, *, out) -> N
     )
 
 
+def _deliver_one_time_credential(username: str, password: str, *, out) -> bool:
+    """Write the one-time credential to *out*, retrying once on the other console.
+
+    The stream checks in _one_time_secret_stream run BEFORE the rotation, but the
+    write happens after ``update_password`` has already committed the generated
+    password and deleted the seeded bootstrap credential. A terminal that goes
+    away in between (an SSH session that drops, a closed terminal window: writes
+    to the orphaned pty raise OSError EIO) would make ``print`` raise, and letting
+    that propagate aborts the launch with the new password live and never shown,
+    locking the operator out of the account until `unsloth studio reset-password`.
+
+    So a failed write is not fatal by itself: retry once on the other console
+    (resolved through the same tty/closed/writable/no-tee preflight, so the retry
+    cannot land the credential in the retained session log or a redirected file),
+    and report whether the credential reached a console at all. Returns False only
+    when every console failed, and the caller must then fail closed -- there is no
+    third surface, and logging or printing the value would persist it (CWE-532).
+    """
+    fallback = _one_time_secret_stream(skip = out)
+    # Never retry the stream that just failed (a stubbed resolver could return it).
+    for stream in (out, fallback if fallback is not out else None):
+        if stream is None:
+            continue
+        try:
+            _print_auto_generated_credentials(username, password, out = stream)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def _terminal_password_gate(
     *,
     tunnel_will_start: bool,
@@ -1368,7 +1406,17 @@ def _terminal_password_gate(
         # _TeeStream that _setup_server_disk_logging() installed: the tee mirrors
         # everything into a retained server-*.log, and this password must never be
         # persisted (the banner itself promises it is not written to disk).
-        _print_auto_generated_credentials(_admin, generated, out = out)
+        # Delivery is post-commit, so a console that died since the preflight must
+        # not propagate: retry the other console, and fail closed with an
+        # actionable (secret-free) message when neither accepts the write.
+        if not _deliver_one_time_credential(_admin, generated, out = out):
+            logger.error(
+                "The auto-generated Unsloth admin password could not be shown: the "
+                "console went away after the pre-rotation check. It is now the live "
+                "password but was never displayed, so nothing can recover it. Reset "
+                "the credential with `unsloth studio reset-password`, then relaunch."
+            )
+            return False, False
         # Password is no longer the default; still suppress any HTML injection of a
         # stale bootstrap credential over the public URL.
         return True, True

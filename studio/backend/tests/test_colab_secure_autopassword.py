@@ -523,3 +523,110 @@ def test_notebook_text_warns_that_cell_output_is_saved():
     assert "SAVES its cell output" in text  # intro cell
     assert "This notebook saves cell output" in text  # code-cell comment
     assert text.count("clear the output") >= 2
+
+
+# ── server-reuse fast path: UNSLOTH_STUDIO_PASSWORD ──────────────────
+
+
+def test_supplied_password_env_name_matches_the_backend_constant():
+    # colab.py hardcodes the name so the strip still runs when the auth import
+    # fails; keep it identical to the one run.py/the CLI resolve.
+    from auth.terminal_prompt import SUPPLIED_PASSWORD_ENV
+    assert colab._SUPPLIED_PASSWORD_ENV == SUPPLIED_PASSWORD_ENV
+
+
+def test_start_reuse_applies_supplied_password_before_the_tunnel(monkeypatch):
+    # Regression (Codex 3651035062, P2): the fast path never calls run_server, so
+    # run._apply_supplied_password never runs. The supplied password was ignored
+    # while the bootstrap one was still pending (an auto-generated one replaced
+    # it), and the plaintext was still in os.environ when cloudflared was spawned,
+    # so the child inherited it through the process environment (CWE-214/CWE-526).
+    import os
+
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "notebook-supplied-pw-1")
+    seen: dict = {}
+    finalize_calls: list[str] = []
+    embed_kwargs: dict = {}
+    _patch_start_for_cloudflare(
+        monkeypatch, finalize_calls = finalize_calls, embed_kwargs = embed_kwargs
+    )
+
+    def _tunnel(port):
+        seen["env_at_spawn"] = os.environ.get("UNSLOTH_STUDIO_PASSWORD")
+        seen["must_change"] = storage.requires_password_change(admin)
+        return "https://share.trycloudflare.com"
+
+    monkeypatch.setattr(colab, "start_cloudflare_tunnel", _tunnel)
+
+    colab.start(cloudflare = True)
+
+    # Stripped BEFORE the subprocess spawn, and applied rather than discarded.
+    assert seen["env_at_spawn"] is None
+    assert seen["must_change"] is False
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    assert hashing.verify_password("notebook-supplied-pw-1", salt, pwd_hash) is True
+    assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+
+
+def test_start_reuse_strips_supplied_password_when_one_is_already_set(monkeypatch):
+    # The common re-run: a password is already set, so the variable only sets the
+    # INITIAL password and must not overwrite it -- but it must still be removed
+    # from the environment before anything is spawned.
+    import os
+
+    admin = _seed_admin(must_change_password = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "notebook-supplied-pw-2")
+    seen: dict = {}
+    finalize_calls: list[str] = []
+    embed_kwargs: dict = {}
+    _patch_start_for_cloudflare(
+        monkeypatch, finalize_calls = finalize_calls, embed_kwargs = embed_kwargs
+    )
+
+    def _tunnel(port):
+        seen["env_at_spawn"] = os.environ.get("UNSLOTH_STUDIO_PASSWORD")
+        return "https://share.trycloudflare.com"
+
+    monkeypatch.setattr(colab, "start_cloudflare_tunnel", _tunnel)
+
+    colab.start(cloudflare = True)
+
+    assert seen["env_at_spawn"] is None
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    # The existing password still authenticates; the supplied one did not win.
+    assert hashing.verify_password("bootstrap-secret-123", salt, pwd_hash) is True
+    assert hashing.verify_password("notebook-supplied-pw-2", salt, pwd_hash) is False
+
+
+def test_consume_supplied_password_rejects_invalid_values_but_still_strips(monkeypatch):
+    # Too short / whitespace fails the same rules the CLI enforces. In a notebook
+    # we cannot exit the process, so the value is ignored (the tunnel path then
+    # auto-generates and shows one) -- but never left in the environment.
+    import os
+    admin = _seed_admin(must_change_password = True)
+    for bad in ("short", "has space in it"):
+        monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", bad)
+        colab._consume_supplied_password_on_reuse()
+        assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+        # Left pending, so start_cloudflare_tunnel still secures the link itself.
+        assert storage.requires_password_change(admin) is True
+
+
+def test_consume_supplied_password_never_logs_the_value(monkeypatch, caplog):
+    # The password must not reach the logger: the server tees stdout/stderr into a
+    # retained session log on disk (run._setup_server_disk_logging).
+    import logging
+    import os
+
+    _seed_admin(must_change_password = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "notebook-supplied-pw-3")
+    with caplog.at_level(logging.DEBUG):
+        colab._consume_supplied_password_on_reuse()
+
+    assert "notebook-supplied-pw-3" not in caplog.text
+    assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ

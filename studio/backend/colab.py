@@ -583,6 +583,78 @@ def _link_token_opt_in(explicit: bool) -> bool:
     )
 
 
+# Literal on purpose: the strip below must run even if importing auth fails, so it
+# cannot depend on auth.terminal_prompt.SUPPLIED_PASSWORD_ENV being importable. A
+# test asserts the two stay equal.
+_SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
+
+
+def _consume_supplied_password_on_reuse() -> None:
+    """Apply-or-strip ``UNSLOTH_STUDIO_PASSWORD`` on start()'s server-reuse path.
+
+    A normal launch goes through ``run_server`` -> ``run._apply_supplied_password``,
+    which reads the variable and then unconditionally pops it, so no child process
+    inherits the plaintext. The fast path (a re-run cell reusing an already-healthy
+    server) never calls ``run_server``, so without this the variable is still set
+    when ``start_cloudflare_tunnel`` spawns cloudflared, and every process spawned
+    from the kernel afterwards inherits the admin password through its environment
+    (CWE-214/CWE-526: readable via ``/proc/<pid>/environ`` and crash dumps for
+    anything running as this user, including Studio's own code-execution tools).
+
+    So the variable is popped FIRST and unconditionally, even when the auth imports
+    or the update fail. If a value was supplied and the admin still owes its
+    bootstrap change, it is then applied through the same compare-and-set update the
+    normal path uses, so the password the user asked for is the one that protects
+    the shared link instead of being silently replaced by an auto-generated one.
+    An already-set password is never overwritten (that is `reset-password`'s job),
+    and a value that fails the length/whitespace rules is ignored, leaving
+    ``start_cloudflare_tunnel`` to auto-generate and display one. Never logs the
+    value, and never exits the process: this runs inside a notebook cell.
+    """
+    supplied = os.environ.pop(_SUPPLIED_PASSWORD_ENV, None) or None
+    if not supplied:
+        return
+    try:
+        from auth.storage import (
+            DEFAULT_ADMIN_USERNAME,
+            MIN_PASSWORD_LENGTH,
+            ensure_default_admin,
+            requires_password_change,
+            update_password,
+        )
+
+        ensure_default_admin()
+        if not requires_password_change(DEFAULT_ADMIN_USERNAME):
+            logger.info(
+                f"An admin password is already set, so {_SUPPLIED_PASSWORD_ENV} was "
+                "ignored (it only sets the initial password). Change it with "
+                "`unsloth studio reset-password`."
+            )
+            return
+        if len(supplied) < MIN_PASSWORD_LENGTH or any(ch.isspace() for ch in supplied):
+            logger.warning(
+                f"Ignoring {_SUPPLIED_PASSWORD_ENV}: a password must be at least "
+                f"{MIN_PASSWORD_LENGTH} characters and contain no spaces. A strong "
+                "one will be generated and shown in this cell instead."
+            )
+            return
+        if update_password(
+            DEFAULT_ADMIN_USERNAME,
+            supplied,
+            revoke_refresh_tokens = True,
+            require_must_change = True,
+        ):
+            logger.info(f"Applied the admin password supplied in {_SUPPLIED_PASSWORD_ENV}.")
+        else:
+            # Lost the compare-and-set: a password was set elsewhere between the
+            # check and the write, so keep theirs (same rule as auto-generation).
+            logger.info("An admin password was set concurrently; keeping it.")
+    except Exception as e:
+        # Never log the value itself. Falling through leaves the bootstrap password
+        # pending, so the tunnel path still auto-generates or refuses.
+        logger.warning(f"Could not apply the supplied admin password ({e}).")
+
+
 def start_cloudflare_tunnel(port: int) -> "str | None":
     """Open a shareable Cloudflare quick tunnel to localhost:*port*, or None.
 
@@ -898,6 +970,12 @@ def start(
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.
     if _is_studio_healthy(port):
         logger.info(f"   Unsloth is already running on port {port} — reusing existing server.")
+        # run_server (and with it run._apply_supplied_password) is skipped here, so
+        # apply-or-strip UNSLOTH_STUDIO_PASSWORD ourselves BEFORE spawning
+        # cloudflared: otherwise the supplied password is ignored while the
+        # bootstrap one is still pending, and the plaintext stays in os.environ for
+        # every child process to inherit.
+        _consume_supplied_password_on_reuse()
         # try/finally: tear the tunnel down even if interrupted mid-start/render.
         try:
             # start_cloudflare_tunnel owns the shared-link credential: it auto-generates
