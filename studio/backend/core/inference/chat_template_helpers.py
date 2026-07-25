@@ -131,9 +131,7 @@ _SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
 _SCHEMA_NAME_MAP_KEYS = frozenset({"dependentRequired", "dependencies"})
 # Pointers and the anchors they resolve against: "#/$defs/<name>" has to keep
 # matching the $defs key it names, which this pass leaves alone (#7066).
-_SCHEMA_REF_KEYS = frozenset(
-    {"$ref", "$dynamicRef", "$id", "$anchor", "$dynamicAnchor", "$schema"}
-)
+_SCHEMA_REF_KEYS = frozenset({"$ref", "$dynamicRef", "$id", "$anchor", "$dynamicAnchor", "$schema"})
 
 
 def _is_schema_name_list(item) -> bool:
