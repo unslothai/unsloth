@@ -968,7 +968,7 @@ export function ChatSettingsPanel({
             </div>
             <p className="text-ui-11 leading-relaxed text-muted-foreground">
               Saving a preset also stores current load settings (context length,
-              KV cache dtype, speculative decoding, GPU layers, Host RAM).
+              KV cache dtype, speculative decoding, GPU layers).
               {currentLoadSummary ? (
                 <>
                   {" "}

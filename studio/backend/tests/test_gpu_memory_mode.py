@@ -610,18 +610,6 @@ def test_gguf_load_and_status_responses_include_requested_gpu_pool():
     assert route_src.count("requested_gpu_ids = llama_backend.requested_gpu_ids") == 3
 
 
-def test_already_loaded_response_preserves_explicit_default_memory_mode():
-    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
-    assert "llama_backend._record_matching_memory_request(request.host_memory_mode)" in route_src
-
-    backend = LlamaCppBackend()
-    backend._last_load_kwargs = {"memory_mode": None}
-    backend._record_matching_memory_request("default")
-    assert backend.requested_memory_mode == "default"
-    assert backend.memory_mode is None
-    assert backend._last_load_kwargs["memory_mode"] == "default"
-
-
 def test_gpu_ids_property_default_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_ids is None

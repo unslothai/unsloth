@@ -9,7 +9,6 @@ import {
   normalizeModelIdentity,
 } from "./model-identity";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
-import type { HostMemoryMode } from "@/features/chat";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -28,7 +27,6 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  hostMemoryMode?: HostMemoryMode;
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
@@ -103,7 +101,6 @@ const STORED_CONFIG_FIELDS = new Set([
   "nCpuMoe",
   "selectedGpuIds",
   "selectedGpuIndexKind",
-  "hostMemoryMode",
 ]);
 
 function normalizeGpuFields(partial: RawConfig): {
@@ -112,7 +109,6 @@ function normalizeGpuFields(partial: RawConfig): {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  hostMemoryMode?: HostMemoryMode;
 } {
   const out: {
     gpuMemoryMode?: "auto" | "manual";
@@ -120,7 +116,6 @@ function normalizeGpuFields(partial: RawConfig): {
     nCpuMoe?: number;
     selectedGpuIds?: number[] | null;
     selectedGpuIndexKind?: GpuIndexKind | null;
-    hostMemoryMode?: HostMemoryMode;
   } = {};
   // Only "manual" is a real override; persisting "auto" would pin the model and
   // stop it following later changes to the global GPU Memory preference.
@@ -156,12 +151,6 @@ function normalizeGpuFields(partial: RawConfig): {
     partial.selectedGpuIndexKind === null
   ) {
     out.selectedGpuIndexKind = partial.selectedGpuIndexKind;
-  }
-  if (
-    partial.hostMemoryMode === "pinned" ||
-    partial.hostMemoryMode === "resident"
-  ) {
-    out.hostMemoryMode = partial.hostMemoryMode;
   }
   return out;
 }
@@ -331,10 +320,6 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
         : Array.isArray(raw.selectedGpuIds)
           ? (raw.selectedGpuIds as number[])
           : undefined,
-    hostMemoryMode:
-      raw.hostMemoryMode === "pinned" || raw.hostMemoryMode === "resident"
-        ? raw.hostMemoryMode
-        : undefined,
   });
 }
 
@@ -638,8 +623,7 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
     (config.nCpuMoe == null || config.nCpuMoe === 0) &&
-    config.selectedGpuIds == null &&
-    (config.hostMemoryMode ?? "default") === "default"
+    config.selectedGpuIds == null
   );
 }
 

@@ -36,35 +36,6 @@ def test_nonblank_chat_template_override_is_preserved_verbatim():
     assert req.chat_template_override == template
 
 
-import pytest  # noqa: E402
-from pydantic import ValidationError  # noqa: E402
-
-from models.inference import ValidateModelRequest  # noqa: E402
-
-
-@pytest.mark.parametrize("blank", ["", "   ", "\n\t"])
-def test_blank_host_memory_mode_normalizes_to_default(blank):
-    # A form may serialize the llama.cpp default as ""; avoid a 422.
-    assert _base_load_request(host_memory_mode = blank).host_memory_mode == "default"
-    assert (
-        ValidateModelRequest.model_validate(
-            {"model_path": "x", "host_memory_mode": blank}
-        ).host_memory_mode
-        == "default"
-    )
-
-
-@pytest.mark.parametrize("mode", ["default", "pinned", "resident"])
-def test_valid_host_memory_mode_preserved(mode):
-    assert _base_load_request(host_memory_mode = mode).host_memory_mode == mode
-
-
-def test_invalid_host_memory_mode_still_rejected():
-    # Non-blank typos must still fail Literal validation (only blanks are rescued).
-    with pytest.raises(ValidationError):
-        _base_load_request(host_memory_mode = "resdent")
-
-
 # ---------- ChatCompletionRequest tool_call_id walkback ----------
 
 from models.inference import ChatCompletionRequest

@@ -23,7 +23,6 @@ import {
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import type { HostMemoryMode } from "../types/api";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
@@ -636,7 +635,6 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
-  host_memory_mode?: HostMemoryMode | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -661,8 +659,6 @@ export function loadedGpuMemoryFields(resp: {
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
-      hostMemoryMode: null,
-      loadedHostMemoryMode: resp.host_memory_mode ?? null,
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
@@ -717,9 +713,6 @@ export function loadedGpuMemoryFields(resp: {
     selectedGpuIds: gpuIds,
     selectedGpuIndexKind: gpuIds == null ? null : gpuIndexKind,
     loadedGpuIds: gpuIds,
-    // Reset both editable and loaded state to the applied backend mode.
-    hostMemoryMode: resp.host_memory_mode ?? null,
-    loadedHostMemoryMode: resp.host_memory_mode ?? null,
     ...manualKnobs,
   };
 }
@@ -947,10 +940,6 @@ type ChatRuntimeStore = {
   /** Namespace used by selectedGpuIds; kept with deferred persisted picks. */
   selectedGpuIndexKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
-  /** Requested GGUF host-memory loading policy. null = backend/default behavior. */
-  hostMemoryMode: HostMemoryMode | null;
-  /** Loaded GGUF host-memory mode used for hydration and rollback. */
-  loadedHostMemoryMode: HostMemoryMode | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -1408,8 +1397,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   selectedGpuIds: null,
   selectedGpuIndexKind: null,
   loadedGpuIds: null,
-  hostMemoryMode: null,
-  loadedHostMemoryMode: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
@@ -1665,8 +1652,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       selectedGpuIds: null,
       selectedGpuIndexKind: null,
       loadedGpuIds: null,
-      hostMemoryMode: null,
-      loadedHostMemoryMode: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,

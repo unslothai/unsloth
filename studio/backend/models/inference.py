@@ -20,8 +20,6 @@ from pydantic import (
 
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
-HostMemoryMode = Literal["default", "pinned", "resident"]
-
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -185,29 +183,6 @@ class LoadRequest(BaseModel):
             raise ValueError("tensor_split must have a positive total")
         return value
 
-    host_memory_mode: Optional[HostMemoryMode] = Field(
-        None,
-        description = (
-            "GGUF host-memory placement mode (llama.cpp --mlock/--no-mmap). These "
-            "control system RAM residency and file mapping on the host, NOT GPU VRAM "
-            "placement, so they do not by themselves keep offloaded weights pinned in "
-            "VRAM. Omit the field or use 'default' to leave the loading policy to the "
-            "installed llama.cpp version. 'pinned' locks mapped host pages so the OS "
-            "cannot page them out. 'resident' loads a RAM copy instead of mapping the "
-            "file; on newer llama.cpp builds that copy cannot also be locked and may "
-            "still be swapped. LLAMA_ARG_* host-memory environment variables are "
-            "authoritative. Ignored for non-GGUF models."
-        ),
-    )
-
-    @field_validator("host_memory_mode", mode = "before")
-    @classmethod
-    def normalize_blank_host_memory_mode(cls, value: Any) -> Any:
-        # A blank form value leaves the policy to llama.cpp.
-        if isinstance(value, str) and value.strip() == "":
-            return "default"
-        return value
-
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -275,22 +250,6 @@ class ValidateModelRequest(BaseModel):
             "delegate fitting to llama.cpp, while explicit layers are user-owned."
         ),
     )
-    host_memory_mode: Optional[HostMemoryMode] = Field(
-        None,
-        description = (
-            "Intended GGUF host-memory placement mode; mirrors /load. "
-            "LLAMA_ARG_* host-memory environment variables are authoritative."
-        ),
-    )
-
-    @field_validator("host_memory_mode", mode = "before")
-    @classmethod
-    def normalize_blank_host_memory_mode(cls, value: Any) -> Any:
-        # Mirror LoadRequest and avoid a 422 for blank form values.
-        if isinstance(value, str) and value.strip() == "":
-            return "default"
-        return value
-
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -554,12 +513,6 @@ class LoadResponse(BaseModel):
             "or None for automatic selection."
         ),
     )
-    host_memory_mode: Optional[HostMemoryMode] = Field(
-        None,
-        description = "Active GGUF host-memory placement mode. Only meaningful when is_gguf is True.",
-    )
-
-
 class UnloadResponse(BaseModel):
     """Response after unloading a model"""
 
@@ -732,10 +685,6 @@ class InferenceStatusResponse(BaseModel):
             "GPU placement pool requested by the user before fit-time narrowing, "
             "or None for automatic selection."
         ),
-    )
-    host_memory_mode: Optional[HostMemoryMode] = Field(
-        None,
-        description = "Active GGUF host-memory placement mode. Only meaningful when is_gguf is True.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

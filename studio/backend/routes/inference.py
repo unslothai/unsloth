@@ -3218,8 +3218,7 @@ def _request_matches_loaded_settings(
     # stored extras stripped the way the reload strips them, so an extras-driven
     # tensor load isn't seen as a mismatch that needlessly reloads the server.
     backend_extra = list(llama_backend.extra_args) if llama_backend.extra_args else []
-    # Explicit null means no opinion, so only a real value owns memory flags.
-    _strip_mem = request.host_memory_mode is not None
+    _strip_mem = LlamaCppBackend._memory_mode_env_override()
     effective_extra = (
         request.llama_extra_args
         if request.llama_extra_args is not None
@@ -3259,8 +3258,6 @@ def _request_matches_loaded_settings(
     # original request or the effective status-echoed subset; diffusion keeps
     # its single-device normalization.
     if not llama_backend.matches_gpu_ids(request.gpu_ids):
-        return False
-    if not llama_backend.matches_memory_mode(request.host_memory_mode):
         return False
     # Preserved tensor->layer fallback (both report tensor=off, so the check above
     # matches): if the user now explicitly drops tensor intent, reload so placement
@@ -3950,22 +3947,6 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
-def _reject_diffusion_memory_mode(config: ModelConfig, memory_mode: Optional[str]) -> None:
-    """Reject host-memory modes unsupported by the diffusion runner."""
-    if not config.is_gguf:
-        return
-    if LlamaCppBackend._canonical_memory_mode(memory_mode) is None:
-        return
-    if _classify_diffusion_gguf(config) is True:
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "Explicit host_memory_mode is not supported for diffusion "
-                "(DiffusionGemma) GGUF models."
-            ),
-        )
-
-
 def _reject_draft_device_with_gpu_ids(
     gpu_ids: Optional[List[int]], extra_args: Optional[list[str]]
 ) -> None:
@@ -4240,9 +4221,8 @@ def _resolve_inherited_extra_args(
                 or effective_chat_template_override is not None
             ),
             strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # A non-null first-class mode owns prior raw argv. Operator
-            # LLAMA_ARG_* values remain authoritative in load_model.
-            strip_memory_mode = getattr(request, "host_memory_mode", None) is not None,
+            # Operator LLAMA_ARG_* host-memory values own inherited raw argv.
+            strip_memory_mode = LlamaCppBackend._memory_mode_env_override(),
             # manual + per-GPU ratio emits its own --tensor-split; drop
             # an inherited one (appended last would override it) while
             # keeping the user's --split-mode row/none/layer choice.
@@ -4458,7 +4438,6 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 llama_backend._record_matching_gpu_request(request.gpu_ids)
-                llama_backend._record_matching_memory_request(request.host_memory_mode)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4506,7 +4485,6 @@ async def _load_model_impl(
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
                     requested_gpu_ids = llama_backend.requested_gpu_ids,
-                    host_memory_mode = llama_backend.requested_memory_mode,
                 )
         else:
             if (
@@ -4569,8 +4547,6 @@ async def _load_model_impl(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
-
-        _reject_diffusion_memory_mode(config, request.host_memory_mode)
 
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
@@ -4706,7 +4682,6 @@ async def _load_model_impl(
                 n_cpu_moe = request.n_cpu_moe,
                 tensor_split = request.tensor_split,
                 gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
-                memory_mode = request.host_memory_mode,
                 n_parallel = _n_parallel,
                 # Issue #7164: explicit GPU pin resolved to physical ids above.
                 gpu_ids = gguf_gpu_ids,
@@ -4884,7 +4859,6 @@ async def _load_model_impl(
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
-                host_memory_mode = llama_backend.requested_memory_mode,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -5174,8 +5148,6 @@ async def validate_model(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
-
-        _reject_diffusion_memory_mode(config, request.host_memory_mode)
 
         effective_extra_args = _resolve_inherited_extra_args(
             request, config, model_identifier, None
@@ -6021,7 +5993,6 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
-                host_memory_mode = llama_backend.requested_memory_mode,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,

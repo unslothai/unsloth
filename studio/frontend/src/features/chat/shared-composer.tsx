@@ -1064,7 +1064,6 @@ export function SharedComposer({
                 ownConfig.selectedGpuIndexKind,
               )
             : compareLoadKnobs.selectedGpuIds;
-        const effectiveHostMemoryMode = ownConfig.hostMemoryMode ?? null;
         // A pane's context comes from its own config only: a saved pin, or null
         // (Auto/native). It must not inherit the active model's shared snapshot --
         // resolveFitMaxSeqLength would treat that as a pin and load this pane at
@@ -1109,7 +1108,6 @@ export function SharedComposer({
             ? {
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 gpu_memory_mode: effectiveGpuMemoryMode,
-                host_memory_mode: effectiveHostMemoryMode,
               }
             : {}),
         });
@@ -1178,7 +1176,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                host_memory_mode: effectiveHostMemoryMode,
               }
             : {}),
         });

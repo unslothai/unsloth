@@ -17,7 +17,6 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
-  type HostMemoryMode,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useGpuDevices } from "@/hooks/use-gpu-info";
@@ -83,8 +82,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
     (config.nCpuMoe ?? 0) > 0 ||
-    config.selectedGpuIds != null ||
-    (config.hostMemoryMode ?? "default") !== "default"
+    config.selectedGpuIds != null
   );
 }
 
@@ -98,7 +96,6 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
-    (config.hostMemoryMode ?? "default") === "default" &&
     !hasVulkanGpuPick
   ) {
     return config;
@@ -108,7 +105,6 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
-    hostMemoryMode: undefined,
     ...(hasVulkanGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -431,49 +427,6 @@ function GpuMemorySettings({
           </div>
         </div>
       )}
-      <div className={isDiffusion ? "hidden" : ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Host RAM</span>
-          <InfoHint>
-            <div className="flex flex-col gap-1.5">
-              <div>
-                <span className="font-medium">Default:</span> uses llama.cpp's
-                default host RAM behavior.
-              </div>
-              <div>
-                <span className="font-medium">Mapped + locked:</span>{" "}
-                memory-maps the model and locks its pages in RAM.
-              </div>
-              <div>
-                <span className="font-medium">No memory map:</span> loads the
-                model into ordinary RAM, where it may still be swapped.
-              </div>
-            </div>
-          </InfoHint>
-        </div>
-        <Select
-          value={config.hostMemoryMode ?? "default"}
-          onValueChange={(value) =>
-            update({
-              hostMemoryMode: value as HostMemoryMode,
-            })
-          }
-        >
-          <SelectTrigger
-            animateRadius={false}
-            icon={ChevronDownStandardIcon}
-            iconClassName="size-3.5"
-            className={`w-[148px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="default">Default</SelectItem>
-            <SelectItem value="pinned">Mapped + locked</SelectItem>
-            <SelectItem value="resident">No memory map</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
     </>
   );
 }
@@ -776,7 +729,6 @@ export function ModelConfigPage({
     contextFetchKey != null &&
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" ||
-      (config.hostMemoryMode ?? "default") !== "default" ||
       config.selectedGpuIds != null);
   const resolvedIsDiffusion =
     isDiffusion || stagedDims?.isDiffusion === true;

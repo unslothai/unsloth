@@ -3,8 +3,6 @@
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
-export type HostMemoryMode = "default" | "pinned" | "resident";
-
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -79,8 +77,6 @@ export interface LoadModelRequest {
   tensor_split?: number[] | null;
   /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
-  /** GGUF host-only loading policy. It does not control GPU VRAM residency. */
-  host_memory_mode?: HostMemoryMode | null;
 }
 
 export interface ValidateModelResponse {
@@ -197,8 +193,6 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** GGUF host-memory placement mode the load was invoked with. */
-  host_memory_mode?: HostMemoryMode | null;
 }
 
 export interface UnloadModelRequest {
@@ -254,8 +248,6 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Active GGUF host-memory placement mode (from /status). */
-  host_memory_mode?: HostMemoryMode | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

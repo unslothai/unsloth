@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for GGUF memory placement mode and explicit GPU selection (#7164)."""
+"""Tests for explicit GGUF GPU selection and placement."""
 
 from __future__ import annotations
 
@@ -136,45 +136,11 @@ def _loaded_backend(**overrides):
     backend._extra_args_source = None
     backend._gguf_path = None
     backend._gpu_ids = None
-    backend._requested_memory_mode = None
     for key, value in overrides.items():
         setattr(backend, key, value)
     if "_gpu_ids" in overrides and "_requested_gpu_ids" not in overrides:
         backend._requested_gpu_ids = list(overrides["_gpu_ids"] or []) or None
     return backend
-
-
-# ── _memory_mode_flags ───────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "mode,expected",
-    [
-        (None, []),
-        ("default", []),
-        ("DEFAULT", []),
-        ("pinned", ["--mlock"]),
-        ("PINNED", ["--mlock"]),
-        ("resident", ["--no-mmap"]),
-        ("RESIDENT", ["--no-mmap"]),
-        ("", []),
-    ],
-)
-def test_memory_mode_flags_maps_modes(mode, expected):
-    assert LlamaCppBackend._memory_mode_flags(mode) == expected
-
-
-@pytest.mark.parametrize(
-    "mode,expected",
-    [
-        (None, []),
-        ("default", []),
-        ("pinned", ["--load-mode", "mlock"]),
-        ("resident", ["--load-mode", "none"]),
-    ],
-)
-def test_memory_mode_flags_use_unified_load_mode(mode, expected):
-    assert LlamaCppBackend._memory_mode_flags(mode, supports_load_mode = True) == expected
 
 
 # ── _already_in_target_state ─────────────────────────────────────────────────
@@ -191,21 +157,7 @@ def _base_target_state_kwargs(backend):
         "extra_args": None,
         "is_vision": False,
         "gpu_ids": backend.gpu_ids,
-        "memory_mode": backend.memory_mode,
     }
-
-
-def test_already_in_target_state_matches_same_memory_mode():
-    backend = _loaded_backend(_requested_memory_mode = "resident")
-    kwargs = _base_target_state_kwargs(backend)
-    assert backend._already_in_target_state(**kwargs) is True
-
-
-def test_already_in_target_state_rejects_different_memory_mode():
-    backend = _loaded_backend(_requested_memory_mode = "resident")
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "pinned"
-    assert backend._already_in_target_state(**kwargs) is False
 
 
 def test_already_in_target_state_keeps_device_extras_without_gpu_ids():
@@ -526,55 +478,6 @@ def test_gpu_ids_scrubs_inherited_llama_arg_device(tmp_path, monkeypatch, gpu_id
     assert ("LLAMA_ARG_DEVICE" not in captured_envs[-1]) == scrubbed
 
 
-@pytest.mark.parametrize(
-    "mode,user_flag,winning",
-    [
-        ("resident", "--mmap", "--no-mmap"),
-        ("pinned", "--no-mmap", None),
-        ("default", "--mlock", None),
-    ],
-)
-def test_memory_mode_strips_conflicting_extra_args(tmp_path, mode, user_flag, winning):
-    """Strip user memory flags when a first-class mode owns placement."""
-    gguf = tmp_path / "model.gguf"
-    _write_minimal_gguf(gguf)
-    backend = _mem_env_backend(gguf)
-
-    captured_cmds = []
-
-    def _make_fake_popen(cmd, **kwargs):
-        if not cmd or str(cmd[0]) != "/fake/llama-server":
-            return _REAL_POPEN(cmd, **kwargs)
-
-        class _FakePopen:
-            pid = 12345
-
-            def __init__(self, cmd, **kwargs):
-                captured_cmds.append(list(cmd))
-
-            def poll(self):
-                return None
-
-        return _FakePopen(cmd, **kwargs)
-
-    with patch.object(subprocess, "Popen", side_effect = _make_fake_popen):
-        backend.load_model(
-            gguf_path = str(gguf),
-            model_identifier = "test",
-            memory_mode = mode,
-            extra_args = [user_flag],
-        )
-
-    assert captured_cmds, "llama-server was not spawned"
-    cmd = captured_cmds[-1]
-    assert user_flag not in cmd
-    mmap_flags = [a for a in cmd if a in ("--mmap", "--no-mmap")]
-    if winning is None:
-        assert "--mmap" not in cmd  # user --mmap/--no-mmap fully stripped
-    else:
-        assert mmap_flags[-1] == winning
-
-
 def test_vulkan_gpu_ids_used_as_direct_ordinals_not_remapped(tmp_path):
     """Do not remap Vulkan ordinals through the CUDA/HIP visibility mask."""
     gguf = tmp_path / "model.gguf"
@@ -748,55 +651,8 @@ def test_explicit_gpu_ids_strips_stored_device_extra_args(tmp_path):
     assert "--top-k" in stored  # unrelated extras are preserved
 
 
-def test_memory_mode_default_matches_none_in_target_state():
-    """An explicit default request should not reload a load that omitted the field."""
-    backend = _loaded_backend()
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "default"
-    assert backend._already_in_target_state(**kwargs) is True
-
-
-def test_explicit_default_matches_child_with_authoritative_mem_env(monkeypatch):
-    """A live environment override makes the UI/API mode irrelevant."""
-    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
-    backend = _loaded_backend(_launched_with_inherited_mem_env = True)
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "default"
-    assert backend._already_in_target_state(**kwargs) is True
-
-
-def test_removed_mem_env_reloads_child_that_inherited_it():
-    """Removing an operator override requires a reload to drop its effect."""
-    backend = _loaded_backend(_launched_with_inherited_mem_env = True)
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = None
-    assert backend._already_in_target_state(**kwargs) is False
-
-
-def test_explicit_default_matches_child_without_mem_env():
-    backend = _loaded_backend(_launched_with_inherited_mem_env = False)
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "default"
-    assert backend._already_in_target_state(**kwargs) is True
-
-
-def test_new_mem_env_reloads_child_to_apply_operator_override(monkeypatch):
-    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
-    backend = _loaded_backend(_launched_with_inherited_mem_env = False)
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = None
-    assert backend._already_in_target_state(**kwargs) is False
-
-
-def test_memory_mode_pinned_does_not_match_none():
-    backend = _loaded_backend()
-    kwargs = _base_target_state_kwargs(backend)
-    kwargs["memory_mode"] = "pinned"
-    assert backend._already_in_target_state(**kwargs) is False
-
-
-def test_load_response_and_status_round_trip_placement_fields():
-    """Placement fields round-trip through load and status schemas."""
+def test_load_response_and_status_round_trip_gpu_placement_fields():
+    """GPU placement fields round-trip through load and status schemas."""
     from models.inference import InferenceStatusResponse, LoadResponse
 
     load_resp = LoadResponse(
@@ -806,51 +662,14 @@ def test_load_response_and_status_round_trip_placement_fields():
         is_gguf = True,
         inference = {},
         gpu_ids = [0, 1],
-        host_memory_mode = "resident",
     )
     assert load_resp.gpu_ids == [0, 1]
-    assert load_resp.host_memory_mode == "resident"
 
     status_resp = InferenceStatusResponse(
         is_gguf = True,
         gpu_ids = [0, 1],
-        host_memory_mode = "pinned",
     )
     assert status_resp.gpu_ids == [0, 1]
-    assert status_resp.host_memory_mode == "pinned"
-
-
-@pytest.mark.parametrize(
-    "mode,expected_requested,expected_canonical",
-    [
-        ("default", "default", None),
-        ("DEFAULT", "default", None),
-        ("pinned", "pinned", "pinned"),
-        (None, None, None),
-    ],
-)
-def test_requested_memory_mode_preserves_explicit_default(
-    tmp_path, mode, expected_requested, expected_canonical
-):
-    """Preserve explicit default for status while canonicalizing it to None."""
-    gguf = tmp_path / "model.gguf"
-    _write_minimal_gguf(gguf)
-    backend = _mem_env_backend(gguf)
-
-    with patch.object(subprocess, "Popen"):
-        assert backend.load_model(gguf_path = str(gguf), model_identifier = "t", memory_mode = mode)
-    assert backend.requested_memory_mode == expected_requested
-    assert backend.memory_mode == expected_canonical
-
-
-def test_inherited_memory_env_hides_ignored_request():
-    backend = _loaded_backend(
-        _launched_with_inherited_mem_env = True,
-        _last_load_kwargs = {"memory_mode": "resident"},
-    )
-    backend._record_matching_memory_request("pinned")
-    assert backend.requested_memory_mode is None
-    assert backend._last_load_kwargs["memory_mode"] is None
 
 
 # ── LLAMA_ARG_* host-memory env is authoritative ─────────────────────────────
@@ -874,8 +693,7 @@ def _mem_env_backend(gguf):
     return backend
 
 
-@pytest.mark.parametrize("mode", ["default", "pinned", "resident", None])
-def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
+def test_memory_mode_env_overrides_pass_through_flags(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
     monkeypatch.setenv("LLAMA_ARG_NO_MMAP", "1")
     monkeypatch.setenv("LLAMA_ARG_MMAP", "true")
@@ -909,7 +727,6 @@ def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
         backend.load_model(
             gguf_path = str(gguf),
             model_identifier = "test",
-            memory_mode = mode,
             extra_args = ["--load-mode", "none", "--top-k", "20"],
         )
 
@@ -929,8 +746,6 @@ def test_memory_mode_env_overrides_every_request(tmp_path, monkeypatch, mode):
     assert "--mmap" not in cmd
     assert "--no-mmap" not in cmd
     assert "--top-k" in cmd
-    assert backend.requested_memory_mode is None
-    assert backend._last_load_kwargs["memory_mode"] is None
 
 
 # ── diffusion GGUF placement ─────────────────────────────────────────────────
@@ -984,36 +799,6 @@ def test_confirmed_diffusion_allows_physical_gpu_id_on_vulkan_build(tmp_path):
     assert captured["gpu_ids"] == [1]
 
 
-def test_remote_diffusion_rejects_explicit_memory_mode_before_teardown(tmp_path):
-    gguf = tmp_path / "renamed.gguf"
-    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
-
-    backend = LlamaCppBackend()
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
-    backend._is_vulkan_backend = lambda _binary = None: False
-    backend._download_gguf = lambda **_kwargs: str(gguf)
-    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
-    backend._start_diffusion_server = lambda **_kwargs: pytest.fail(
-        "unsupported memory mode reached the diffusion runner"
-    )
-
-    with (
-        patch.object(
-            backend,
-            "_kill_process",
-            side_effect = AssertionError("invalid placement tore down the live model"),
-        ),
-        pytest.raises(ValueError, match = "host-memory modes are not supported"),
-    ):
-        backend.load_model(
-            hf_repo = "renamed/model",
-            hf_variant = "Q4_K_M",
-            model_identifier = "renamed/model",
-            speculative_type = "off",
-            memory_mode = "resident",
-        )
-
-
 def test_remote_normal_cpu_only_pin_rejects_before_teardown(tmp_path):
     gguf = tmp_path / "renamed.gguf"
     _write_minimal_gguf(gguf, arch = "llama")
@@ -1064,34 +849,6 @@ def test_remote_diffusion_cpu_only_pin_reaches_runner(tmp_path):
         gpu_ids_are_vulkan_ordinals = False,
     )
     assert captured["gpu_ids"] == [1]
-
-
-@pytest.mark.parametrize("mode", [None, "default", "DEFAULT", ""])
-def test_diffusion_load_clears_stale_memory_mode(tmp_path, mode):
-    """A diffusion load clears stale llama-server memory-mode state."""
-    gguf = tmp_path / "diffusion.gguf"
-    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
-
-    backend = LlamaCppBackend()
-    backend._read_gguf_metadata = lambda _p: setattr(backend, "_is_diffusion", True)
-    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
-    backend._is_vulkan_backend = lambda _binary = None: False
-    backend._start_diffusion_server = lambda **kw: True
-
-    backend._requested_memory_mode = "resident"
-    backend._launched_with_inherited_mem_env = True
-
-    assert (
-        backend.load_model(
-            gguf_path = str(gguf),
-            model_identifier = "d",
-            memory_mode = mode,
-        )
-        is True
-    )
-    assert backend.memory_mode is None
-    assert backend._requested_memory_mode is None
-    assert backend._launched_with_inherited_mem_env is False
 
 
 def test_local_chat_gguf_in_diffusion_path_not_prekilled(tmp_path):

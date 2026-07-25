@@ -34,7 +34,6 @@ export type PresetLoadConfig = Pick<
   | "gpuMemoryMode"
   | "gpuLayers"
   | "nCpuMoe"
-  | "hostMemoryMode"
 >;
 
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
@@ -81,12 +80,6 @@ export function normalizePresetLoadConfig(
       : null;
   const gpuMemoryMode =
     partial.gpuMemoryMode === "manual" ? ("manual" as const) : undefined;
-  const hostMemoryMode =
-    partial.hostMemoryMode === "default" ||
-    partial.hostMemoryMode === "pinned" ||
-    partial.hostMemoryMode === "resident"
-      ? partial.hostMemoryMode
-      : undefined;
   let gpuLayers: number | undefined;
   if (typeof partial.gpuLayers === "number" && Number.isFinite(partial.gpuLayers)) {
     gpuLayers = partial.gpuLayers < 0 ? GPU_LAYERS_AUTO : Math.floor(partial.gpuLayers);
@@ -121,7 +114,6 @@ export function normalizePresetLoadConfig(
     ...(gpuMemoryMode ? { gpuMemoryMode } : {}),
     ...(gpuLayers !== undefined ? { gpuLayers } : {}),
     ...(nCpuMoe !== undefined ? { nCpuMoe } : {}),
-    ...(hostMemoryMode ? { hostMemoryMode } : {}),
   };
 
   const coalesced = coalesceDefaultLoadKnobs(normalized);
@@ -172,9 +164,6 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     ...(snapshot.nCpuMoe != null && snapshot.nCpuMoe > 0
       ? { nCpuMoe: snapshot.nCpuMoe }
       : {}),
-    ...(snapshot.hostMemoryMode
-      ? { hostMemoryMode: snapshot.hostMemoryMode }
-      : {}),
   };
   const coalesced = coalesceDefaultLoadKnobs(captured);
   return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
@@ -200,9 +189,6 @@ function coalesceDefaultLoadKnobs(
   if ((result.nCpuMoe ?? 0) === 0) {
     delete result.nCpuMoe;
   }
-  if (result.hostMemoryMode === "default") {
-    delete result.hostMemoryMode;
-  }
   return result;
 }
 
@@ -227,7 +213,6 @@ export function applyPresetLoadConfig(
     nCpuMoe: config.nCpuMoe,
     selectedGpuIds: store.selectedGpuIds,
     selectedGpuIndexKind: store.selectedGpuIndexKind,
-    hostMemoryMode: config.hostMemoryMode,
   });
 }
 
@@ -255,11 +240,6 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.tensorParallel) {
     parts.push("TP");
-  }
-  if (config.hostMemoryMode === "pinned") {
-    parts.push("Mapped + locked");
-  } else if (config.hostMemoryMode === "resident") {
-    parts.push("No memory map");
   }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

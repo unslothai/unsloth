@@ -816,16 +816,11 @@ def test_already_in_target_state_reloads_on_tensor_off_after_fallback():
     assert _backend(False)._already_in_target_state(**kwargs) is True
 
 
-# ── route dedup: host-residency memory mode + gpu_ids device strip (#7164/#7188) ─
+# ── route dedup: gpu_ids device strip (#7164/#7188) ───────────────────────────
 
 
-def _mem_loaded_backend(
-    *,
-    memory_mode,
-    extra_args,
-    launched_with_inherited_mem_env = False,
-):
-    """A loaded GGUF backend in a given memory-placement state, for the route dedup."""
+def _dedup_loaded_backend(*, extra_args):
+    """A loaded GGUF backend for route dedup tests."""
     b = LlamaCppBackend()
     b._model_identifier = "owner/repo"
     b._requested_n_ctx = 0
@@ -837,78 +832,7 @@ def _mem_loaded_backend(
     b._chat_template_override = None
     b._gguf_path = None
     b._gpu_ids = None
-    b._requested_memory_mode = memory_mode
-    b._launched_with_inherited_mem_env = launched_with_inherited_mem_env
     return b
-
-
-def test_explicit_default_reloads_over_passthrough_mlock_in_extras():
-    """A server loaded with no memory_mode keeps a pass-through --mlock and is still
-    mlocked. An explicit default repeating --mlock must NOT dedupe: stripping only the
-    request side keeps the backend's --mlock visible, so the matcher reloads."""
-    from models.inference import LoadRequest
-
-    inference_routes = _load_inference_routes_module()
-
-    req = LoadRequest(
-        model_path = "owner/repo",
-        host_memory_mode = "default",
-        llama_extra_args = ["--mlock"],
-    )
-    assert "host_memory_mode" in req.model_fields_set
-    backend = _mem_loaded_backend(memory_mode = None, extra_args = ["--mlock"])
-    assert inference_routes._request_matches_loaded_settings(req, backend) is False
-
-
-def test_explicit_null_memory_mode_dedupes_over_passthrough_mlock():
-    """An explicit host_memory_mode=null (a client echoing the status response) is "no
-    opinion", not a mode change. Pydantic marks it set, but the dedup gates the strip on
-    the VALUE: null must NOT strip the request's --mlock, so a status-hydrated Apply
-    dedupes to the running server (#7188)."""
-    from models.inference import LoadRequest
-
-    inference_routes = _load_inference_routes_module()
-
-    req = LoadRequest(
-        model_path = "owner/repo",
-        host_memory_mode = None,
-        llama_extra_args = ["--mlock"],
-    )
-    # Pydantic marks an explicit null as set -- why gating on model_fields_set was wrong.
-    assert "host_memory_mode" in req.model_fields_set
-    backend = _mem_loaded_backend(memory_mode = None, extra_args = ["--mlock"])
-    assert inference_routes._request_matches_loaded_settings(req, backend) is True
-
-
-def test_memory_env_override_reloads_child_that_did_not_inherit_it(monkeypatch):
-    from models.inference import LoadRequest
-
-    inference_routes = _load_inference_routes_module()
-    monkeypatch.setenv("LLAMA_ARG_MLOCK", "1")
-    req = LoadRequest(model_path = "owner/repo", host_memory_mode = None)
-    backend = _mem_loaded_backend(
-        memory_mode = None,
-        extra_args = None,
-        launched_with_inherited_mem_env = False,
-    )
-    assert inference_routes._request_matches_loaded_settings(req, backend) is False
-
-
-def test_explicit_pinned_dedupes_when_flags_already_applied():
-    """A server loaded WITH memory_mode="pinned" already had --mlock stripped from its
-    extras. A repeat pinned Apply re-sending --mlock must still dedupe: the request-side
-    strip makes it compare equal to the empty backend extras (#7164)."""
-    from models.inference import LoadRequest
-
-    inference_routes = _load_inference_routes_module()
-
-    req = LoadRequest(
-        model_path = "owner/repo",
-        host_memory_mode = "pinned",
-        llama_extra_args = ["--mlock"],
-    )
-    backend = _mem_loaded_backend(memory_mode = "pinned", extra_args = None)
-    assert inference_routes._request_matches_loaded_settings(req, backend) is True
 
 
 def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
@@ -925,7 +849,7 @@ def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
         gpu_ids = [0],
         llama_extra_args = ["--device", "Vulkan3", "--top-k", "5"],
     )
-    backend = _mem_loaded_backend(memory_mode = None, extra_args = ["--top-k", "5"])
+    backend = _dedup_loaded_backend(extra_args = ["--top-k", "5"])
     backend._gpu_ids = [0]
     backend._requested_gpu_ids = [0]
     assert inference_routes._request_matches_loaded_settings(req, backend) is True
@@ -945,8 +869,8 @@ def test_empty_gpu_ids_dedupes_without_stripping_device():
         gpu_ids = [],
         llama_extra_args = ["--device", "Vulkan3", "--top-k", "5"],
     )
-    backend = _mem_loaded_backend(
-        memory_mode = None, extra_args = ["--device", "Vulkan3", "--top-k", "5"]
+    backend = _dedup_loaded_backend(
+        extra_args = ["--device", "Vulkan3", "--top-k", "5"]
     )
     backend._gpu_ids = None
     assert inference_routes._request_matches_loaded_settings(req, backend) is True

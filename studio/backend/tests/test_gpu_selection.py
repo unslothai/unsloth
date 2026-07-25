@@ -1323,7 +1323,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("--no-mmap", out)
         self.assertNotIn("-c", out)  # first-class max_seq_length still strips the inherited -c
 
-    def test_inherited_extras_strip_memory_flags_when_mode_requested(self):
+    def test_inherited_extras_strip_memory_flags_when_env_overrides(self):
         inference_route = _load_route_module(
             "inference_route_module_for_inherit_memflags_strip_test",
             "routes/inference.py",
@@ -1334,8 +1334,11 @@ class TestRouteErrors(unittest.TestCase):
             extra_args_source = (model_id, None),
         )
         config = SimpleNamespace(is_gguf = True, gguf_variant = None)
-        request = LoadRequest(model_path = model_id, host_memory_mode = "resident")
-        with patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend):
+        request = LoadRequest(model_path = model_id)
+        with (
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.dict(os.environ, {"LLAMA_ARG_MLOCK": "1"}, clear = False),
+        ):
             out = inference_route._resolve_inherited_extra_args(request, config, model_id, None)
         self.assertNotIn("--mlock", out)
         self.assertNotIn("--no-mmap", out)

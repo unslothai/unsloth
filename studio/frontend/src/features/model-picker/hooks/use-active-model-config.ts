@@ -31,7 +31,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const selectedGpuIndexKind = useChatRuntimeStore(
     (s) => s.selectedGpuIndexKind,
   );
-  const hostMemoryMode = useChatRuntimeStore((s) => s.hostMemoryMode);
 
   const isGguf =
     activeGgufVariant != null ||
@@ -61,7 +60,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nCpuMoe,
       selectedGpuIds,
       selectedGpuIndexKind,
-      hostMemoryMode: hostMemoryMode ?? undefined,
     };
   }, [
     checkpoint,
@@ -78,7 +76,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nCpuMoe,
     selectedGpuIds,
     selectedGpuIndexKind,
-    hostMemoryMode,
   ]);
 
   return { checkpoint, isGguf, config };

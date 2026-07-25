@@ -1333,7 +1333,6 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
                 return_value = ("x.gguf", "x.gguf", False),
             ),
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
-            patch.object(self.route, "_reject_diffusion_memory_mode", return_value = None),
             patch.object(
                 self.route,
                 "_resolve_gguf_gpu_ids_for_request",
@@ -1400,7 +1399,6 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
                 return_value = ("x.gguf", "x.gguf", False),
             ),
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
-            patch.object(self.route, "_reject_diffusion_memory_mode", return_value = None),
             patch.object(self.route, "_request_matches_loaded_settings", return_value = False),
             patch.object(
                 self.route,

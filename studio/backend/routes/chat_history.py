@@ -172,7 +172,6 @@ class ChatPresetLoadConfig(BaseModel):
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
-    hostMemoryMode: Optional[Literal["default", "pinned", "resident"]] = None
 
 
 class ChatPreset(BaseModel):

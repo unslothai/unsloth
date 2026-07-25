@@ -2088,10 +2088,6 @@ class LlamaCppBackend:
         # EFFECTIVE (fit-narrowed) pin for /status; dedupe compares this raw value so a
         # [0, 1] narrowed to [0] and re-sent as [0, 1] still matches (#7239).
         self._requested_gpu_ids: Optional[List[int]] = None
-        # Raw mode preserves explicit "auto"; the property provides its canonical form.
-        self._requested_memory_mode: Optional[str] = None
-        # An explicit mode must reload a child that inherited placement env vars.
-        self._launched_with_inherited_mem_env: bool = False
         # Layer load kept multi-GPU only to honor a downgraded tensor request, so a
         # later explicit tensor-off reloads instead of deduping to it (#6659).
         self._layer_preserves_tensor_intent: bool = False
@@ -2603,36 +2599,6 @@ class LlamaCppBackend:
                 list(self._requested_gpu_ids) if self._requested_gpu_ids else None
             )
 
-    def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
-        """Adopt a matching request unless the operator environment owns it."""
-        self._requested_memory_mode = (
-            None
-            if self._launched_with_inherited_mem_env
-            else (memory_mode or "").strip().lower() or None
-        )
-        if self._last_load_kwargs is not None and "memory_mode" in self._last_load_kwargs:
-            self._last_load_kwargs["memory_mode"] = self._requested_memory_mode
-
-    @property
-    def memory_mode(self) -> Optional[str]:
-        """Canonical active GGUF host-memory mode; default is None."""
-        return self._canonical_memory_mode(self._requested_memory_mode)
-
-    @property
-    def requested_memory_mode(self) -> Optional[str]:
-        """Applied request mode for status, preserving explicit default."""
-        return self._requested_memory_mode
-
-    def matches_memory_mode(self, memory_mode: Optional[str]) -> bool:
-        """Whether the child already has the requested host-memory behavior."""
-        if self._memory_mode_env_override():
-            return self._launched_with_inherited_mem_env
-        if self._launched_with_inherited_mem_env:
-            return False
-        if self.memory_mode != self._canonical_memory_mode(memory_mode):
-            return False
-        return True
-
     @property
     def n_layers(self) -> Optional[int]:
         """Model layer count (GGUF block_count), or None if unknown."""
@@ -2883,7 +2849,6 @@ class LlamaCppBackend:
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
                 "supports_fit_target": False,
-                "supports_load_mode": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "supports_no_cache_prompt": False,
@@ -2905,7 +2870,6 @@ class LlamaCppBackend:
         supports_kv_unified = False
         supports_fit_ctx = False
         supports_fit_target = False
-        supports_load_mode = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
@@ -3011,7 +2975,6 @@ class LlamaCppBackend:
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
             supports_fit_target = _is_real("--fit-target")
-            supports_load_mode = _is_real("--load-mode")
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
@@ -3048,7 +3011,6 @@ class LlamaCppBackend:
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
             "supports_fit_target": supports_fit_target,
-            "supports_load_mode": supports_load_mode,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "supports_no_cache_prompt": supports_no_cache_prompt,
@@ -3451,7 +3413,6 @@ class LlamaCppBackend:
             strip_spec = False,
             strip_template = False,
             strip_split_mode = False,
-            strip_memory_mode = False,
             strip_device = True,
         )
 
@@ -6421,35 +6382,10 @@ class LlamaCppBackend:
         self._stdout_thread.start()
 
     @staticmethod
-    def _canonical_memory_mode(memory_mode: Optional[str]) -> Optional[str]:
-        """Normalize default, blank, and None to no explicit policy."""
-        mode = (memory_mode or "").strip().lower()
-        if mode in ("", "default"):
-            return None
-        return mode
-
-    @staticmethod
     def _memory_mode_env_override(env: Optional[Mapping[str, str]] = None) -> bool:
         """Whether the operator environment owns host-memory placement."""
         source = os.environ if env is None else env
         return any(name in source for name in _LLAMA_MEMORY_MODE_ENV_VARS)
-
-    @staticmethod
-    def _memory_mode_flags(
-        memory_mode: Optional[str], *, supports_load_mode: bool = False
-    ) -> List[str]:
-        """Translate a memory mode to unified or legacy llama.cpp flags."""
-        mode = LlamaCppBackend._canonical_memory_mode(memory_mode)
-        if mode == "pinned":
-            if supports_load_mode:
-                return ["--load-mode", "mlock"]
-            return ["--mlock"]
-        if mode == "resident":
-            if supports_load_mode:
-                # Unified load modes cannot combine a RAM copy with mlock.
-                return ["--load-mode", "none"]
-            return ["--no-mmap"]
-        return []
 
     @_with_gguf_load_marker
     def load_model(
@@ -6482,7 +6418,6 @@ class LlamaCppBackend:
         # the fitter may pin the smallest subset of this pool that fits.
         gpu_ids: Optional[List[int]] = None,
         gpu_ids_are_vulkan_ordinals: Optional[bool] = None,
-        memory_mode: Optional[str] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
@@ -6500,8 +6435,7 @@ class LlamaCppBackend:
         """
         # LLAMA_ARG_* host-memory settings are operator overrides. When present,
         # they also own raw pass-through flags so no request can shadow them.
-        _memory_env_override = self._memory_mode_env_override()
-        if (memory_mode is not None or _memory_env_override) and extra_args:
+        if self._memory_mode_env_override() and extra_args:
             extra_args = strip_shadowing_flags(
                 extra_args,
                 strip_context = False,
@@ -6537,7 +6471,6 @@ class LlamaCppBackend:
             "tensor_split": list(tensor_split) if tensor_split is not None else None,
             "gpu_ids": list(gpu_ids) if gpu_ids is not None else None,
             "gpu_ids_are_vulkan_ordinals": gpu_ids_are_vulkan_ordinals,
-            "memory_mode": memory_mode,
             "n_threads": n_threads,
             "n_gpu_layers": n_gpu_layers,
             "n_parallel": n_parallel,
@@ -6569,7 +6502,6 @@ class LlamaCppBackend:
                 n_cpu_moe = n_cpu_moe,
                 tensor_split = tensor_split,
                 gpu_ids = gpu_ids,
-                memory_mode = memory_mode,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -6619,12 +6551,7 @@ class LlamaCppBackend:
             # Classify remote loads before teardown when diffusion would change
             # the meaning or validity of requested placement.
             _preflight_model_path = None
-            _preflight_memory_mode = self._canonical_memory_mode(
-                None if _memory_env_override else memory_mode
-            )
-            if hf_repo and (
-                _vulkan_ordinal_pin or _cpu_only_pin or _preflight_memory_mode is not None
-            ):
+            if hf_repo and (_vulkan_ordinal_pin or _cpu_only_pin):
                 _resolved_repo = _resolve_repo_id_casing(hf_repo)
                 if _resolved_repo != hf_repo:
                     logger.info(
@@ -6643,11 +6570,6 @@ class LlamaCppBackend:
                     _preflight_model_path, model_identifier
                 )
                 if _preflight_is_diffusion:
-                    if _preflight_memory_mode is not None:
-                        raise ValueError(
-                            "GGUF host-memory modes are not supported for "
-                            "DiffusionGemma models. Leave Host RAM at its default."
-                        )
                     if _vulkan_ordinal_pin:
                         raise ValueError(
                             "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
@@ -6738,14 +6660,6 @@ class LlamaCppBackend:
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
             if self._is_diffusion:
-                if (
-                    not _memory_env_override
-                    and self._canonical_memory_mode(memory_mode) is not None
-                ):
-                    raise ValueError(
-                        "GGUF host-memory modes are not supported for "
-                        "DiffusionGemma models. Leave Host RAM at its default."
-                    )
                 # The diffusion runner cannot translate Vulkan ordinals to CUDA IDs.
                 if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is not False:
                     raise ValueError(
@@ -6758,9 +6672,6 @@ class LlamaCppBackend:
                 # Not a tensor/layer GGUF: clear any preserved-fallback flag from a
                 # prior load (this path skips the command builder that clears it).
                 self._layer_preserves_tensor_intent = False
-                # The diffusion runner has no host-memory placement modes.
-                self._requested_memory_mode = None
-                self._launched_with_inherited_mem_env = False
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")
@@ -7941,14 +7852,6 @@ class LlamaCppBackend:
 
                 server_caps = self.probe_server_capabilities(binary)
 
-                # Emit the requested policy unless the operator environment owns it.
-                cmd.extend(
-                    self._memory_mode_flags(
-                        None if _memory_env_override else memory_mode,
-                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
-                    )
-                )
-
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
                 # "model" field of its chat/completions responses.
@@ -8319,10 +8222,6 @@ class LlamaCppBackend:
                 # arg handler and silently force hardware_concurrency(). #5692
                 if "--threads" not in cmd:
                     env.pop("LLAMA_ARG_THREADS", None)
-
-                # Host-memory environment variables are authoritative over UI/API
-                # choices and raw llama-server arguments.
-                _child_inherited_mem_env = self._memory_mode_env_override(env)
 
                 # Reconcile the inherited LLAMA_ARG_* env with Unsloth's final
                 # decision: stripping CLI extras on a tensor->layer downgrade
@@ -8839,15 +8738,6 @@ class LlamaCppBackend:
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
-                self._launched_with_inherited_mem_env = _child_inherited_mem_env
-                # Report only a mode the child applied. Operator environment
-                # overrides suppress the request and remain intentionally opaque.
-                self._requested_memory_mode = (
-                    None
-                    if _child_inherited_mem_env
-                    else (memory_mode or "").strip().lower() or None
-                )
-                _pending_load_kwargs["memory_mode"] = self._requested_memory_mode
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_kwargs = _pending_load_kwargs
@@ -9259,7 +9149,6 @@ class LlamaCppBackend:
         n_cpu_moe: int = 0,
         tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
-        memory_mode: Optional[str] = None,
         mtp_draft_path: Optional[str] = None,
         preserve_multi_gpu_on_layer: bool = False,
     ) -> bool:
@@ -9342,10 +9231,6 @@ class LlamaCppBackend:
         if not self.matches_gpu_ids(gpu_ids):
             return False
 
-        # GGUF host-memory placement mode is first-class; a change must reload (#7164).
-        if not self.matches_memory_mode(memory_mode):
-            return False
-
         # Compare on the canonical requested mode. With --spec-type in
         # extra_args the backend stores None; mirror that here.
         if _extra_args_set_spec_type(extra_args):
@@ -9406,7 +9291,6 @@ class LlamaCppBackend:
             if candidate != current:
                 return False
         self._record_matching_gpu_request(gpu_ids)
-        self._record_matching_memory_request(memory_mode)
         return True
 
     def _classify_gpu_offload(
@@ -9547,8 +9431,6 @@ class LlamaCppBackend:
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
-            self._requested_memory_mode = None
-            self._launched_with_inherited_mem_env = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
             self._requested_spec_mode = None

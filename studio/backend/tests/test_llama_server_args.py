@@ -900,7 +900,7 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
     assert out == ["--model-draft", "/custom/mtp.gguf"]
 
 
-# ── Memory mode shadowing (#7164) ───────────────────────────────────────────
+# ── Host-memory environment override shadowing ───────────────────────────────
 
 
 def test_strip_shadowing_flags_drops_memory_mode_when_requested():
@@ -929,9 +929,8 @@ def test_strip_shadowing_flags_keeps_memory_mode_when_not_requested():
 
 
 def test_strip_shadowing_flags_default_keeps_memory_mode():
-    # Memory-mode stripping is opt-in (like offload/tensor_split/device): the default
-    # must PRESERVE inherited --mlock/--mmap/--no-mmap so an Apply that omits
-    # host_memory_mode doesn't silently drop a user's pass-through memory flag (#7188).
+    # Host-memory stripping is opt-in: without an environment override, preserve
+    # the user's pass-through flags.
     assert strip_shadowing_flags(["--mlock", "--no-mmap", "--mmap"]) == [
         "--mlock",
         "--no-mmap",
@@ -949,7 +948,7 @@ def test_strip_split_mode_only_keeps_memory_mode():
 
 
 def test_strip_shadowing_flags_drops_inverse_mmap_flag():
-    # An inherited --mmap must not override Unsloth's resident-mode --no-mmap (#7164).
+    # An inherited --mmap must not override an operator environment policy.
     out = strip_shadowing_flags(["--mmap"], strip_memory_mode = True)
     assert out == []
 
@@ -961,7 +960,6 @@ def test_strip_memory_mode_valueless_preserves_next_token(flag):
     assert out == ["--top-k", "40"]
 
 
-def test_strip_memory_mode_kept_when_field_not_supplied():
-    # Pass-through preserved when the user didn't change host_memory_mode.
+def test_strip_memory_mode_kept_without_environment_override():
     out = strip_shadowing_flags(["--mmap"], strip_memory_mode = False)
     assert out == ["--mmap"]

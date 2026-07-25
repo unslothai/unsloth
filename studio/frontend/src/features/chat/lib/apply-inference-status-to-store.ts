@@ -224,16 +224,12 @@ export function applyActiveModelStatusToStore(
     incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
   const incomingGpuFields = loadedGpuMemoryFields(status);
   const incomingGpuIds = incomingGpuFields.loadedGpuIds;
-  const incomingHostMemoryMode = status.is_gguf
-    ? (status.host_memory_mode ?? null)
-    : null;
   const gpuStatusChanged =
     prevState.loadedGpuMemoryMode !== incomingGpuMode ||
     prevState.loadedGpuLayers !== incomingGpuLayers ||
     prevState.loadedNCpuMoe !== incomingNCpuMoe ||
     !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
     !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
-    prevState.loadedHostMemoryMode !== incomingHostMemoryMode ||
     prevState.loadedCustomContextLength !== gpuPin;
   const gpuMemoryEditsPending =
     (prevState.loadedGpuMemoryMode !== null &&
@@ -247,8 +243,6 @@ export function applyActiveModelStatusToStore(
     prevState.selectedGpuIds,
     prevState.loadedGpuIds,
   );
-  const hostMemoryModeEditPending =
-    prevState.hostMemoryMode !== prevState.loadedHostMemoryMode;
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
@@ -269,8 +263,6 @@ export function applyActiveModelStatusToStore(
         selectedGpuIds: prevState.selectedGpuIds,
         selectedGpuIndexKind: prevState.selectedGpuIndexKind,
       }),
-    ...(preserveSameModelEdits &&
-      hostMemoryModeEditPending && { hostMemoryMode: prevState.hostMemoryMode }),
   };
 
   useChatRuntimeStore.setState({
@@ -339,10 +331,6 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         gpuStatusChanged) &&
       gpuStatusFields),
-    // Advance the loaded baseline without overwriting same-model edits.
-    ...(seedLoadParams && {
-      loadedHostMemoryMode: status.host_memory_mode ?? null,
-    }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

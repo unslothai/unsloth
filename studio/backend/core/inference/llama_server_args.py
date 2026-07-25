@@ -177,9 +177,8 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
-# Shadow the GGUF memory_mode field: pass-through in explicit extras, stripped on
-# inherit when the mode changes. New llama.cpp builds unify these under
-# --load-mode; retain every deprecated spelling for older/custom binaries.
+# Host-memory flags can be removed when an operator supplied the corresponding
+# LLAMA_ARG_* environment override.
 _MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
     {
         "-lm",
@@ -486,7 +485,7 @@ def strip_shadowing_flags(
 
     Used when inheriting a previous load's ``llama_extra_args`` so an
     inherited `-c 4096` can't override the current `max_seq_length`
-    (same for cache / spec / template / split-mode / memory_mode). Each ``strip_*``
+    (same for cache / spec / template / split-mode). Each ``strip_*``
     toggle controls one group; the route only strips groups whose
     first-class field the caller actually supplied.
 
@@ -494,12 +493,9 @@ def strip_shadowing_flags(
     ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
-    row/none/layer choice intact. ``strip_device`` and ``strip_memory_mode`` are
-    off by default (opt-in, like ``strip_offload`` / ``strip_tensor_split``): a user
-    may pass ``--device`` / ``--mlock`` / ``--no-mmap`` when Unsloth has no opinion,
-    so they're stripped only when the caller sets gpu_ids / host_memory_mode. Enabling
-    them by default would silently drop those inherited pass-through flags on an Apply
-    that omits the field.
+    row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
+    owns placement. ``strip_memory_mode`` is enabled only when an operator
+    ``LLAMA_ARG_*`` environment variable owns host-memory behavior.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -556,5 +552,4 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
         strip_spec = False,
         strip_template = False,
         strip_split_mode = True,
-        strip_memory_mode = False,
     )

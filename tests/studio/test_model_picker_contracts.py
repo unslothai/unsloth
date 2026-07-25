@@ -196,8 +196,6 @@ def test_compare_load_uses_each_models_gpu_config():
     assert "ownConfig.gpuMemoryMode ?? compareLoadKnobs.gpuMemoryMode" in src
     assert "ownConfig.gpuLayers ?? compareLoadKnobs.gpuLayers" in src
     assert "ownConfig.nCpuMoe ?? compareLoadKnobs.nCpuMoe" in src
-    assert "ownConfig.hostMemoryMode ?? null" in src
-    assert "compareLoadKnobs.hostMemoryMode" not in src
     assert "if (ownConfig.selectedGpuIds != null)" in src
     assert "ownConfig.selectedGpuIndexKind," in src
     for field in (
@@ -499,12 +497,6 @@ def test_vulkan_gguf_devices_do_not_replace_global_gpu_info():
     assert "data?.gpu?.gguf_devices ?? data?.gpu?.devices" in frontend
 
 
-def test_model_switch_clears_host_memory_mode_before_validation():
-    src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    assert "const validateHostMemoryMode = resetsPerModelSettings" in src
-    assert "host_memory_mode: validateHostMemoryMode" in src
-
-
 def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
     api = _read("features/chat/api/chat-api.ts")
     assert "isDiffusion: res.is_diffusion ?? false" in api
@@ -519,7 +511,6 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         'gpuMemoryMode: "auto"',
         "gpuLayers: undefined",
         "nCpuMoe: undefined",
-        "hostMemoryMode: undefined",
         "selectedGpuIds: undefined",
         "selectedGpuIndexKind: undefined",
     ):
