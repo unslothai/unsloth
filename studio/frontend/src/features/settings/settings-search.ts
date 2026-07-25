@@ -104,8 +104,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.accessTokens",
   ],
   agents: [
-    // The heading and intro carry the terms users actually search for
-    // ("unsloth start", the agent names); the section titles below do not.
+    // Heading and intro carry the searched terms ("unsloth start", agent names); titles do not.
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",

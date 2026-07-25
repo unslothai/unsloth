@@ -28,8 +28,7 @@ import { SettingsSection } from "../components/settings-section";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 
-// Backend PATH detection is only meaningful in the desktop app on a loopback
-// backend; a browser loopback URL may be an SSH/port forward to another host.
+// Desktop-only: a browser loopback URL may be an SSH/port forward to another host.
 function canUseLocalAgentDetection(base: string): boolean {
   if (!isTauri) return false;
   try {
@@ -39,8 +38,7 @@ function canUseLocalAgentDetection(base: string): boolean {
   }
 }
 
-// Copy-to-clipboard state with a single timeout that a rapid re-click resets
-// and unmount clears, so the "copied" tick never resets early or leaks.
+// One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
 function useCopyButton(text: string) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<number | null>(null);
@@ -65,10 +63,8 @@ function useCopyButton(text: string) {
   return { copied, copy };
 }
 
-// Each agent's `unsloth start <id>` token and display name. `logo` reuses an
-// official provider asset; agents without one fall back to a monogram tile.
-// Ids match the backend detection list. These names are not translated, so
-// `settings.agents.intro` lists them all to keep every one findable in search.
+// Ids match the backend detection list; agents without an official `logo` asset get a monogram.
+// Names are untranslated, so `settings.agents.intro` lists them all to keep them searchable.
 const SUPPORTED_AGENTS: {
   id: string;
   name: string;
@@ -112,7 +108,6 @@ function AgentIcon({
   );
 }
 
-/** Compact, click-to-copy command chip for an agent row. */
 function InlineCommand({ command }: { command: string }) {
   const t = useT();
   const { copied, copy } = useCopyButton(command);
@@ -128,8 +123,7 @@ function InlineCommand({ command }: { command: string }) {
         }: ${command}`}
         className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2.5 pr-2 font-mono text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.04]"
       >
-        {/* A remote base adds the origin and key placeholder, so truncate
-            rather than pushing the copy icon out of a narrow panel. */}
+        {/* Truncate: a remote base makes the command long enough to push the icon out. */}
         <span className="truncate whitespace-nowrap">{command}</span>
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
@@ -202,7 +196,6 @@ const PASSTHROUGH_COMMANDS = [
 
 const DRY_RUN_CMD = "unsloth start claude --no-launch";
 
-/** Monospace command block with a copy-to-clipboard button in the corner. */
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
   const { copied, copy } = useCopyButton(command);
@@ -241,9 +234,8 @@ export function AgentsTab() {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
 
-  // The remote snippet runs on the client's machine, so pick its shell from the
-  // client platform, not the server-reported deviceType. Match "win"/"windows"
-  // at the start (a bare includes("win") would also match "darwin").
+  // The remote snippet runs on the client, so use the client platform, not deviceType.
+  // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
     return p.startsWith("win") || p.includes("windows");
@@ -253,8 +245,7 @@ export function AgentsTab() {
     void fetchDeviceType({ force: true });
   }, []);
 
-  // Only probe PATH when detection is meaningful; a remote backend's PATH says
-  // nothing about the machine the copied command will run on.
+  // A remote backend's PATH says nothing about the machine running the copied command.
   useEffect(() => {
     if (!localDetection) return;
     let cancelled = false;
@@ -263,7 +254,7 @@ export function AgentsTab() {
         if (!cancelled) setInfo(next);
       })
       .catch(() => {
-        // PATH probing is best-effort; the tab is still useful without it.
+        // Best-effort; the tab still works without PATH detection.
       });
     return () => {
       cancelled = true;
@@ -275,12 +266,8 @@ export function AgentsTab() {
   const detected = new Set(visibleInfo?.detected ?? []);
   const remoteCommand = isWindowsClient ? REMOTE_CMD_WINDOWS : REMOTE_CMD_UNIX;
 
-  // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits
-  // otherwise), so flag its row when the loaded model doesn't qualify rather
-  // than offering a command that fails. Mirrors the same three-signal check the
-  // API usage panel uses: activeGgufVariant covers an HF-repo GGUF pick,
-  // activeNativePathToken a direct local .gguf file, and ggufContextLength is
-  // only set when /api/inference/status reported is_gguf for the active model.
+  // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits otherwise), so flag
+  // its row instead of offering a failing command. Same three signals the API usage panel uses.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -291,18 +278,12 @@ export function AgentsTab() {
     activeNativePathToken != null ||
     ggufContextLength != null;
 
-  // A bare `unsloth start` probes 127.0.0.1:8888, but the desktop falls back
-  // across 8888-8908 and Studio may be remote, so build the command from the
-  // reachable base: the browser must use the origin it is viewing, since
-  // /api/health reports the backend's own URL (the user's localhost behind a
-  // tunnel), while the desktop has no reachable window origin. buildAgentCommand
-  // keeps the bare form for the default local server, and a non-loopback base
-  // keeps the bare form for the default local server. No key is passed: the CLI
-  // treats an explicit one as authoritative and caches it per base, so a
-  // placeholder would overwrite a working saved key. Omitting the flag lets it
-  // replay the saved key; the remote section below covers first-time setup.
-  // getApiBase is the base the app is already talking to, so fall back to it
-  // while the health request that fills serverUrl is still in flight or failed.
+  // Build from the reachable base: a bare `unsloth start` only probes 127.0.0.1:8888, but the
+  // desktop falls back across 8888-8908 and Studio may be remote. The browser must use its own
+  // origin, since /api/health reports the backend's localhost (the user's, behind a tunnel);
+  // the desktop has no window origin and falls back to getApiBase() while serverUrl loads.
+  // No --api-key: the CLI caches an explicit key per base, so a placeholder would overwrite a
+  // working saved one. Omitting it replays the saved key; the remote section covers first setup.
   const commandBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const commandOs = isWindowsClient ? "windows" : "unix";
   const agentCommand = (agentId: string) =>
@@ -310,7 +291,7 @@ export function AgentsTab() {
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
-      {/* Labels let settings search scroll to these, since they are indexed. */}
+      {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1
           data-settings-label={t("settings.agents.title")}
