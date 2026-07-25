@@ -362,9 +362,7 @@ def test_shareable_link_html_renders_the_url_as_a_link():
 
 def test_shareable_link_html_emphasises_the_password():
     """The password is the one thing to copy, so it is enlarged and underlined."""
-    html = colab._shareable_link_html(
-        "https://share.trycloudflare.com", "secret-pass", "unsloth"
-    )
+    html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
     pw_tag = html[html.index("Password:") : html.index("secret-pass")]
     assert "font-size: 24px" in pw_tag
     assert "text-decoration: underline" in pw_tag
