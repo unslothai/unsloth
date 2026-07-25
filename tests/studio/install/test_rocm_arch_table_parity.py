@@ -16,6 +16,7 @@ The same three tables are hand-copied into up to six places each:
                             install.ps1 ($nameArchTable)
                             studio/setup.ps1 ($nameArchTable)
                             studio/install_python_stack.py (_WIN_GPU_NAME_ARCH_TABLE)
+                            tests/_zoo_rocm_spoof.py (_PROFILES, inverted gfx -> name)
 
   torch>=2.11 pin allowlist install.sh (case "$_torch_index_leaf")
                             install.ps1 ($_pinGfx211)
@@ -30,8 +31,13 @@ user on the missed path gets CPU-only PyTorch.
 
 These tests parse each copy out of its source file and compare them, so a table
 edited in one place fails CI naming the file that was missed.
+
+Counting the copies by hand is itself unreliable -- the in-code "kept in sync
+with" comments claimed four when there were seven -- so TestNoUnregisteredArchTable
+below rediscovers them by scanning the repo instead of trusting this list.
 """
 
+import ast
 import fnmatch
 import importlib.util
 import re
@@ -48,6 +54,7 @@ _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
+_SPOOF_PY = PACKAGE_ROOT / "tests" / "_zoo_rocm_spoof.py"
 
 
 def _load_stack_module():
@@ -357,6 +364,38 @@ def _name_tables() -> dict[str, object]:
     }
 
 
+def _spoof_profiles() -> dict[str, str]:
+    """gfx -> marketing name out of tests/_zoo_rocm_spoof.py::_PROFILES.
+
+    Parsed with ast rather than imported: that module spoofs torch.cuda and the
+    AMD identity as an import side effect, which would poison every test sharing
+    the process."""
+    tree = ast.parse(_SPOOF_PY.read_text(encoding = "utf-8"))
+    for node in tree.body:
+        target = node.target if isinstance(node, ast.AnnAssign) else None
+        if target is not None and getattr(target, "id", "") == "_PROFILES":
+            return {gfx: value[0] for gfx, value in ast.literal_eval(node.value).items()}
+    raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
+
+
+# The spoof fixture states the mapping backwards (gfx -> the name torch should
+# report), so it is the one copy written from the hardware's point of view
+# instead of the installer's. That makes it a useful independent witness: it had
+# gfx1101 -> "RX 7800 XT" and gfx1201 -> "RX 9070 XT" correct while all six
+# installer copies were wrong, and nothing compared the two.
+#
+# RX 6700 XT is a known, deliberate divergence rather than drift. AMD's
+# compatibility matrix documents no consumer RX 6000 card and no gfx1031 at all
+# (only "AMD Radeon PRO W6800 (gfx1030)"), the installer arm is commented
+# "gfx103X family", and no code consumes the exact id -- gfx1031 appears only as
+# a key in the index-family maps, never as a value any name table emits. With no
+# external source to correct it against, changing shipped behaviour here would be
+# guesswork, so the divergence is pinned instead of silently normalised.
+_SPOOF_DIVERGENCES = {
+    "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
+}
+
+
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
     """Shell copies are case globs; the PowerShell and Python copies are both
     ordered first-match regex tables evaluated case-insensitively, so _match_ps
@@ -423,6 +462,138 @@ class TestGpuNameArchParity:
         for where, rows in _name_tables().items():
             for arch in {arch for _, arch in rows}:
                 assert arch in families, f"{where}: {arch} has no entry in _GFX_TO_AMD_INDEX_ARCH"
+
+    def test_every_documented_gpu_resolves_somewhere(self):
+        """The reverse of the AMD check above. That one asks "do the tables get
+        the documented cards right"; this asks "is a documented card missing
+        entirely", which is a silent CPU fallback rather than a wrong id.
+
+        This cannot notice a GPU AMD shipped that nobody transcribed into
+        _AMD_DOCUMENTED_ARCH -- doing that honestly would mean fetching AMD's
+        matrix at test time, which makes the suite non-hermetic and offline
+        runners fail. It does catch a card added to the ground-truth list, or to
+        one installer, without the tables being completed."""
+        for gpu_name in sorted(_AMD_DOCUMENTED_ARCH):
+            for where, rows in _name_tables().items():
+                assert (
+                    _resolve(where, rows, gpu_name) is not None
+                ), f"{where}: {gpu_name!r} matches no arm, so this card gets CPU-only torch"
+
+
+class TestSpoofFixtureParity:
+    """tests/_zoo_rocm_spoof.py is the seventh copy of the name/gfx mapping and
+    was outside every drift guard. It is the fixture other ROCm tests build their
+    fake AMD host from, so if it and the installers disagree, those tests exercise
+    a machine that cannot exist."""
+
+    def test_spoof_profiles_parse(self):
+        profiles = _spoof_profiles()
+        assert profiles, "parsed an empty _PROFILES (renamed or restructured?)"
+        assert all(gfx.startswith("gfx") for gfx in profiles), profiles
+
+    def test_spoof_names_resolve_back_to_their_own_arch(self):
+        """Round-trip: feed each spoofed marketing name through the installer
+        tables and the answer must be the gfx the spoof claims to be emulating."""
+        tables = _name_tables()
+        for gfx, gpu_name in sorted(_spoof_profiles().items()):
+            if gfx in _SPOOF_DIVERGENCES:
+                continue
+            for where, rows in tables.items():
+                got = _resolve(where, rows, gpu_name)
+                assert got == gfx, (
+                    f"{where}: spoof says {gfx} is {gpu_name!r}, installer says {got!r}"
+                )
+
+    def test_divergences_are_real_and_still_diverging(self):
+        """Keeps the exception list from going stale: if the installers are
+        corrected later, this fails and the entry has to be removed rather than
+        quietly suppressing a check that now passes."""
+        tables = _name_tables()
+        profiles = _spoof_profiles()
+        for gfx in _SPOOF_DIVERGENCES:
+            assert gfx in profiles, f"{gfx} is exempted but no longer in the spoof"
+            answers = {_resolve(w, r, profiles[gfx]) for w, r in tables.items()}
+            assert answers != {gfx}, (
+                f"{gfx} now agrees everywhere; drop it from _SPOOF_DIVERGENCES"
+            )
+
+
+# ── The meta-guard: find copies nobody registered ────────────────────────────
+
+
+# A table line names a card and gives its arch. Matching both on one line is what
+# separates a real table from the many files that merely mention a gfx id (kernel
+# dispatch, OOM guards, doc comments).
+_MKT_NAME = re.compile(r"(RX\s*\d{4}|PRO\s*[WV]\d{3,4}|\b90[5-8]0\b)", re.IGNORECASE)
+_GFX_ID = re.compile(r"gfx1[0-2][0-9a-z]{1,2}")
+
+# Skip dirs of third-party or generated code; scanning them is slow and any hit
+# would not be ours to fix.
+_SCAN_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "build", "dist", "__pycache__"}
+
+# Every file allowed to carry a name/arch table, as a repo-relative posix path.
+# Adding a copy means adding it here AND wiring it into a parity check above;
+# that is the point of the guard.
+_REGISTERED_TABLE_FILES = {
+    "install.sh",
+    "install.ps1",
+    "studio/setup.sh",
+    "studio/setup.ps1",
+    "studio/install_python_stack.py",
+    "tests/_zoo_rocm_spoof.py",
+}
+
+# Three or more such lines means a table. One or two means prose: the two known
+# single-line hits are comments ("Verified on gfx1151 (Radeon 8060S)" in
+# scripts/install_rocm_wsl_strixhalo.sh, and a parenthetical in
+# studio/install_llama_prebuilt.py). Real tables score 9 to 17, so the gap is
+# wide and the threshold is not load-bearing.
+_TABLE_LINE_THRESHOLD = 3
+
+
+def _files_carrying_a_name_arch_table() -> dict[str, int]:
+    found: dict[str, int] = {}
+    for path in PACKAGE_ROOT.rglob("*"):
+        if path.suffix not in {".sh", ".ps1", ".py"} or not path.is_file():
+            continue
+        rel = path.relative_to(PACKAGE_ROOT).as_posix()
+        if any(part in _SCAN_SKIP_DIRS for part in path.relative_to(PACKAGE_ROOT).parts):
+            continue
+        # Tests that *assert* on the tables quote card names next to gfx ids by
+        # nature. Fixtures like _zoo_rocm_spoof.py do not start with test_ and so
+        # stay in scope, which is how the seventh copy surfaced.
+        if path.name.startswith("test_"):
+            continue
+        try:
+            text = path.read_text(encoding = "utf-8", errors = "ignore")
+        except OSError:
+            continue
+        hits = sum(1 for line in text.splitlines() if _MKT_NAME.search(line) and _GFX_ID.search(line))
+        if hits >= _TABLE_LINE_THRESHOLD:
+            found[rel] = hits
+    return found
+
+
+class TestNoUnregisteredArchTable:
+    """The failure this whole file exists for is a copy of the table that nobody
+    knew about. Enumerating the copies by hand is the same manual step that let
+    them drift, so this rediscovers them from the source tree."""
+
+    def test_scan_still_finds_the_known_copies(self):
+        """Guards the guard: if the heuristic stops matching (patterns reformatted
+        onto multiple lines, say), it would silently find nothing and pass."""
+        found = _files_carrying_a_name_arch_table()
+        missing = _REGISTERED_TABLE_FILES - set(found)
+        assert not missing, f"scan no longer detects known tables in {sorted(missing)}"
+
+    def test_no_unregistered_copies(self):
+        found = _files_carrying_a_name_arch_table()
+        extra = {rel: n for rel, n in found.items() if rel not in _REGISTERED_TABLE_FILES}
+        assert not extra, (
+            f"unregistered GPU-name/arch table(s): {extra}. Wire each into "
+            f"_name_tables() (or the spoof check) and add it to "
+            f"_REGISTERED_TABLE_FILES, so drift there fails CI too."
+        )
 
 
 # ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────
