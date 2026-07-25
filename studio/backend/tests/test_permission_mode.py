@@ -595,6 +595,31 @@ def test_terminal_classifier(command, unsafe):
         ("[[ -f x ]] && echo ok", False),
         ("[ -f x ] && echo ok", False),
         ("cp build/*.o out/", False),
+        # --- fd attaches the command to the flag ---
+        ("fd victim . --exec=rm", True),
+        ("fd victim . --exec-batch=rm", True),
+        ("fd victim . --exec rm", True),
+        ("fd pattern .", False),
+        # --- openssl opens a socket from behind a wrapper too ---
+        ("env openssl s_client -connect host:443", True),
+        ("timeout 5 openssl s_client -connect host:443", True),
+        ("openssl dgst -sha256 file.txt", False),
+        # --- php runs inline code from -B / -R / -E as well as -r ---
+        ("php -B 'unlink(\"victim\");'", True),
+        ("php -R 'unlink(\"victim\");'", True),
+        ("php -E 'unlink(\"victim\");'", True),
+        ("php script.php", False),
+        # --- a forced worktree removal discards uncommitted work ---
+        ("git worktree remove --force other", True),
+        ("git worktree remove -f other", True),
+        ("git worktree remove other", False),
+        ("git worktree list", False),
+        # --- sysctl writes kernel parameters; a read stays automatic ---
+        ("sysctl -w net.ipv4.ip_forward=1", True),
+        ("sysctl --system", True),
+        ("sysctl net.ipv4.ip_forward=1", True),
+        ("sysctl net.ipv4.ip_forward", False),
+        ("sysctl -a", False),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),

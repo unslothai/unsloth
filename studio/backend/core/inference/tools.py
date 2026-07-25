@@ -309,6 +309,17 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
     for i, tok in enumerate(tokens):
+        # The long flags also carry the command attached (fd --exec=rm). Only the
+        # long spellings are checked here: a short `-x` belongs to too many other
+        # utilities (grep -x rm file) to read its neighbour as a command.
+        if "=" in tok and tok.split("=", 1)[0] in _ATTACHED_EXEC_FLAGS:
+            attached = tok.split("=", 1)[1].strip("\"'")
+            if attached:
+                attached_base = _token_basename(attached.split()[0])
+                if attached_base in _BLOCKED_COMMANDS:
+                    blocked.add(attached_base)
+                else:
+                    blocked |= _blocked_matching_glob(attached_base)
         if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
             base = _token_basename(tokens[i + 1])
             if base in _BLOCKED_COMMANDS:
@@ -2794,6 +2805,10 @@ _HIGH_RISK_COMMANDS = frozenset(
 )
 # Recursive-permission commands are high risk only with a recursive flag
 # (chmod -R 777 .); a scoped `chmod +x build.sh` stays out.
+# sysctl's write and load forms change kernel parameters (-w
+# net.ipv4.ip_forward=1, --system loads every config file, -p loads one);
+# a read-only query (sysctl -a, sysctl net.ipv4.ip_forward) stays automatic.
+_SYSCTL_WRITE_FLAGS = frozenset({"-w", "--write", "-p", "--load", "--system"})
 _HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
 # Commands that forward command position to a following command name
 # (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
@@ -2801,7 +2816,12 @@ _HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
 _HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "watch"})
 # Of those, find/fd only execute a child after an explicit -exec-style flag.
 _EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
-_EXEC_FORWARD_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "--exec", "-x", "-X"})
+_EXEC_FORWARD_FLAGS = frozenset(
+    {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
+)
+# The long forms also accept the command attached to the flag (fd --exec=rm),
+# where the value is command position rather than a discarded option argument.
+_ATTACHED_EXEC_FLAGS = frozenset({"-exec", "-execdir", "--exec", "--exec-batch"})
 # find/fd flags that delete matches outright (a bare `find . -delete`, with no
 # separate command token to catch); an `-exec rm` is caught via forwarding.
 _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
@@ -2883,6 +2903,9 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # openssl's s_client/s_server open a TLS socket, the classic no-curl exfil
 # channel (tar czf - . | openssl s_client -connect host:443). Plain openssl
 # (dgst, enc) is local and stays out.
+# The same two subcommands, matched on the resolved command segment so the
+# wrapped forms (env openssl s_client, timeout 5 openssl s_client) are seen.
+_OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
 )
@@ -2948,7 +2971,8 @@ _INLINE_CODE_FLAG_SPEC = {
     "ruby": (frozenset({"-e"}), "e"),
     # perl -e and -E both run a one-liner (-E also enables feature bundles).
     "perl": (frozenset({"-e", "-E"}), "eE"),
-    "php": (frozenset({"-r"}), "r"),
+    # php -r runs code; -B / -R / -E run begin / per-line / end code.
+    "php": (frozenset({"-r", "-B", "-R", "-E"}), "rBRE"),
 }
 
 
@@ -3052,6 +3076,10 @@ _HIGH_RISK_GIT_PUSH_FLAGS = frozenset(
 )
 # `git switch -f/--force/--discard-changes` throws away tracked working-tree
 # edits, the same loss as `git checkout -f` / `git restore`.
+# `git worktree remove --force` deletes a linked worktree even when it holds
+# uncommitted work or is locked. An unforced remove refuses on a dirty
+# worktree, so it stays out.
+_HIGH_RISK_GIT_WORKTREE_FLAGS = frozenset({"-f", "--force"})
 _HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-f", "--force", "--discard-changes"})
 # `git branch -D` force-deletes a branch, discarding unmerged commits; -M
 # force-renames over an existing branch. Plain -d/--delete refuses to drop
@@ -3300,6 +3328,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         wrapper_value_pending = False  # a wrapper option precedes its value
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
+        git_worktree_action = ""  # the action after `git worktree`
         git_config_alias_pending = False  # `git config alias.x` precedes its body
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
@@ -3317,6 +3346,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 scan_forward = False
                 current_command = ""
                 git_subcommand = ""
+                git_worktree_action = ""
                 shell_c_pending = False
                 git_glob_pending = False
                 chdir_pending = False
@@ -3325,6 +3355,14 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 flag = token.split("=", 1)[0]
                 # find/fd: the command after -exec/-ok is the one that runs.
                 if exec_flag_pending and flag in _EXEC_FORWARD_FLAGS:
+                    # `fd . --exec=rm` attaches the command to the flag, so the
+                    # value is the command that runs, not an option argument.
+                    if "=" in token and flag in _ATTACHED_EXEC_FLAGS:
+                        attached = token.split("=", 1)[1].strip("\"'")
+                        if attached and (
+                            _depth >= 3 or _terminal_is_high_risk(attached, _depth + 1)
+                        ):
+                            return True
                     scan_forward = True
                     expect_command = True
                     continue
@@ -3403,6 +3441,15 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         return True
                 # git reset --hard discards the working tree; git push --force
                 # overwrites a remote ref.
+                if current_command == "sysctl" and flag in _SYSCTL_WRITE_FLAGS:
+                    return True
+                if (
+                    current_command == "git"
+                    and git_subcommand == "worktree"
+                    and git_worktree_action == "remove"
+                    and flag in _HIGH_RISK_GIT_WORKTREE_FLAGS
+                ):
+                    return True
                 if current_command == "git":
                     if git_subcommand == "reset" and flag in _HIGH_RISK_GIT_RESET_FLAGS:
                         return True
@@ -3541,6 +3588,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_subcommand = base
                 if base in _HIGH_RISK_GIT_SUBCOMMANDS:
                     return True
+            elif current_command == "openssl" and base in _OPENSSL_NETWORK_SUBCOMMANDS:
+                # openssl s_client/s_server open a TLS socket. The regex above is
+                # anchored at command position, so it misses the wrapped forms.
+                return True
+            elif current_command == "sysctl" and "=" in raw:
+                # `sysctl net.ipv4.ip_forward=1` writes without needing -w.
+                return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "worktree"
+                and not git_worktree_action
+            ):
+                git_worktree_action = base
             elif current_command in _EVAL_SUBCOMMAND_INTERPRETERS and base == "eval":
                 # `deno eval "..."` / `bun eval "..."` run inline code as a
                 # subcommand rather than a flag, the same risk as -e.

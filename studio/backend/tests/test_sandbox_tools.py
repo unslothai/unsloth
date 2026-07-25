@@ -724,6 +724,17 @@ class TestBashBlocklistPosition:
         # A bracket expression in argument position is not a command word.
         assert self._find()("echo '[a]'") == set()
 
+    def test_attached_exec_flag_value_blocked(self):
+        # fd accepts the command attached to the flag, so the value is the
+        # command that runs rather than a discarded option argument.
+        assert "rm" in self._find()("fd victim . --exec=rm")
+        assert "rm" in self._find()("fd victim . --exec-batch=rm")
+
+    def test_short_flag_neighbour_not_read_as_command(self):
+        # Only the long spellings carry an attached command; a short -x belongs
+        # to too many other utilities to read its neighbour as one.
+        assert self._find()("grep -x rm file.txt") == set()
+
 
 class TestHfUploadImportGate:
     """Upload-method blocking requires an HF import in scope, so paramiko /
