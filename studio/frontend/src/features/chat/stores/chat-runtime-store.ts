@@ -871,6 +871,14 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** User --parallel slots override for GGUF loads (null = server default).
+   *  Deliberately NOT re-seeded from backend echoes: the echo is the resolved
+   *  count, and adopting it would silently pin a blank "follow the server
+   *  default" control. */
+  nParallel: number | null;
+  /** The nParallel value the last successful load sent (null = default);
+   *  rollback re-sends it so a failed switch can't lose the override. */
+  loadedNParallel: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -1340,6 +1348,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   specFallbackReason: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  nParallel: null,
+  loadedNParallel: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
@@ -1593,6 +1603,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       specFallbackReason: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      nParallel: null,
+      loadedNParallel: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
