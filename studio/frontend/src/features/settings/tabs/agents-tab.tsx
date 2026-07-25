@@ -581,14 +581,15 @@ export function AgentsTab() {
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
   const selectedAgentDetails = detailsFor(selectedAgent);
-  // A GGUF outside the active HF cache only loads by snapshot path, which takes its quant
-  // via --gguf-variant. The resident model is exempt: it already loaded by id, and
-  // cached-gguf keeps the largest copy, whose snapshot could switch cache or quant.
+  // The snapshot path of a GGUF outside the active cache is used to list its
+  // quants, but never as --model: /v1/models reports a path as its basename
+  // (public_model_id), which matches neither the requested path nor the load
+  // response, so `unsloth start` would abort with "didn't report as loaded".
   const cachedLoadId =
     selectedModel === activeStatusModel
       ? null
       : (cachedLoadIds[selectedModel] ?? null);
-  const modelId = cachedLoadId ?? selectedModel;
+  const modelId = selectedModel;
   const suffixVariant = isHuggingFaceRepo(modelId);
   const commandModel =
     selectedVariant && suffixVariant
