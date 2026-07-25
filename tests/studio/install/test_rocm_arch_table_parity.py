@@ -122,7 +122,9 @@ def _strip_sh_comment(line: str) -> str:
 
 
 def _gfx_family_map_sh() -> dict[str, str]:
-    body = _sh_function_body(_INSTALL_SH.read_text(encoding = "utf-8"), "_amd_arch_index_family_for_gfx")
+    body = _sh_function_body(
+        _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_arch_index_family_for_gfx"
+    )
     out: dict[str, str] = {}
     for line in body.splitlines():
         m = re.match(r"\s*(gfx[^)]*)\)\s*echo\s+(\S+)\s*;;", _strip_sh_comment(line))
@@ -156,7 +158,9 @@ class TestGfxIndexFamilyParity:
 
     def test_every_copy_is_non_empty(self):
         for where, table in _gfx_family_maps().items():
-            assert table, f"{where}: parsed an empty gfx -> index family map (table moved or renamed?)"
+            assert (
+                table
+            ), f"{where}: parsed an empty gfx -> index family map (table moved or renamed?)"
 
     def test_all_copies_identical(self):
         maps = _gfx_family_maps()
@@ -167,8 +171,14 @@ class TestGfxIndexFamilyParity:
                 continue
             missing = {k: v for k, v in reference.items() if k not in table}
             extra = {k: v for k, v in table.items() if k not in reference}
-            wrong = {k: (v, reference[k]) for k, v in table.items() if k in reference and v != reference[k]}
-            assert not missing, f"{where} is missing {sorted(missing)} (present in {reference_name})"
+            wrong = {
+                k: (v, reference[k])
+                for k, v in table.items()
+                if k in reference and v != reference[k]
+            }
+            assert (
+                not missing
+            ), f"{where} is missing {sorted(missing)} (present in {reference_name})"
             assert not extra, f"{where} has {sorted(extra)} that {reference_name} does not"
             assert not wrong, f"{where} maps {wrong} (value, expected)"
 
@@ -176,7 +186,15 @@ class TestGfxIndexFamilyParity:
         """#7277 added gfx1030-1036 to three files; install.sh followed later.
         Pin the whole RDNA2 range so the next family lands everywhere at once."""
         for where, table in _gfx_family_maps().items():
-            for arch in ("gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035", "gfx1036"):
+            for arch in (
+                "gfx1030",
+                "gfx1031",
+                "gfx1032",
+                "gfx1033",
+                "gfx1034",
+                "gfx1035",
+                "gfx1036",
+            ):
                 assert table.get(arch) == "gfx103X-all", f"{where}: {arch} -> {table.get(arch)!r}"
 
 
@@ -186,7 +204,9 @@ class TestSupportedWheelArchList:
     CPU-only PyTorch (the 'not in supported arch list' report from r/unsloth)."""
 
     def test_wheel_arch_list_covers_every_mapped_arch(self):
-        block = _ps_block(_SETUP_PS1.read_text(encoding = "utf-8"), "$_rocmWheelArches = @(", "(", ")")
+        block = _ps_block(
+            _SETUP_PS1.read_text(encoding = "utf-8"), "$_rocmWheelArches = @(", "(", ")"
+        )
         listed = set(re.findall(r'"(gfx[0-9a-z]+)"', block))
         assert listed, "could not parse $_rocmWheelArches"
         mapped = set(stack_mod._GFX_TO_AMD_INDEX_ARCH)
@@ -220,7 +240,9 @@ def _name_table_sh_case(source: str, subject: str, var: str) -> list[tuple[list[
     block = _sh_case_block(source, subject)
     rows: list[tuple[list[str], str]] = []
     for line in block.splitlines():
-        m = re.match(rf'\s*(\*.*?)\)\s*{re.escape(var)}="(gfx[0-9a-z]+)"\s*;;', _strip_sh_comment(line))
+        m = re.match(
+            rf'\s*(\*.*?)\)\s*{re.escape(var)}="(gfx[0-9a-z]+)"\s*;;', _strip_sh_comment(line)
+        )
         if m:
             rows.append(([p.strip() for p in m.group(1).split("|")], m.group(2)))
     return rows
@@ -323,7 +345,9 @@ def _name_tables() -> dict[str, object]:
         # becomes authoritative. Neither this copy nor the two below were in this
         # parity check until the arch-id fix went looking for every place the
         # table lives -- six, not four.
-        "install.sh:_gpu_disp_gfx": _name_table_sh_case(install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"),
+        "install.sh:_gpu_disp_gfx": _name_table_sh_case(
+            install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
+        ),
         "studio/setup.sh": _name_table_sh_case(
             _SETUP_SH.read_text(encoding = "utf-8"), '"$_setup_mkt"', "_setup_gfx"
         ),
@@ -338,7 +362,11 @@ def _resolve(where: str, rows, gpu_name: str) -> str | None:
     ordered first-match regex tables evaluated case-insensitively, so _match_ps
     models either one. `where` may be "<file>:<symbol>" for the files that carry
     the table more than once."""
-    return _match_sh(rows, gpu_name) if where.split(":")[0].endswith(".sh") else _match_ps(rows, gpu_name)
+    return (
+        _match_sh(rows, gpu_name)
+        if where.split(":")[0].endswith(".sh")
+        else _match_ps(rows, gpu_name)
+    )
 
 
 class TestGpuNameArchParity:
@@ -366,9 +394,9 @@ class TestGpuNameArchParity:
         for where, rows in _name_tables().items():
             arch = _resolve(where, rows, gpu_name)
             assert arch is not None, f"{where}: {gpu_name!r} matched nothing"
-            assert families.get(arch) == expected_leaf, (
-                f"{where}: {gpu_name!r} -> {arch} -> {families.get(arch)!r}, expected {expected_leaf!r}"
-            )
+            assert (
+                families.get(arch) == expected_leaf
+            ), f"{where}: {gpu_name!r} -> {arch} -> {families.get(arch)!r}, expected {expected_leaf!r}"
 
     @pytest.mark.parametrize("gpu_name,expected_arch", sorted(_AMD_DOCUMENTED_ARCH.items()))
     def test_every_copy_matches_amds_documented_arch(self, gpu_name, expected_arch):
@@ -377,9 +405,9 @@ class TestGpuNameArchParity:
         all five were transcribed from the same mistake."""
         for where, rows in _name_tables().items():
             arch = _resolve(where, rows, gpu_name)
-            assert arch == expected_arch, (
-                f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
-            )
+            assert (
+                arch == expected_arch
+            ), f"{where}: {gpu_name!r} -> {arch!r}, AMD documents {expected_arch!r}"
 
     def test_unknown_name_matches_nothing_anywhere(self):
         """An unrecognised card must fall through to the CPU path in every copy,
@@ -414,7 +442,9 @@ class TestTorch211PinAllowlistParity:
         arm = re.search(r"\n\s*(rocm7\.2\|[^)]*)\)", source[idx:])
         assert arm, "torch 2.11 pin arm not found in install.sh"
         leaves = {leaf.strip() for leaf in arm.group(1).split("|")}
-        assert self._EXPECTED <= leaves, f"install.sh pin arm missing {sorted(self._EXPECTED - leaves)}"
+        assert (
+            self._EXPECTED <= leaves
+        ), f"install.sh pin arm missing {sorted(self._EXPECTED - leaves)}"
         assert "rocm7.2" in leaves
 
     def test_install_ps1_pins_the_same_leaves(self):

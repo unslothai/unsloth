@@ -109,13 +109,15 @@ class TestBackendCiRunsEveryShellTest:
     def test_each_skip_is_documented_in_the_workflow(self):
         source = _BACKEND_CI.read_text(encoding = "utf-8")
         for name in _EXPECTED_CI_SKIPS:
-            assert source.count(name) >= 2, (
-                f"{name} is skipped in Backend CI without a comment explaining why"
-            )
+            assert (
+                source.count(name) >= 2
+            ), f"{name} is skipped in Backend CI without a comment explaining why"
 
     def test_rollback_lifecycle_really_does_run_elsewhere(self):
         """The one skip justified by 'another workflow covers it' must be true."""
-        assert "tests/sh/test_install_rollback_lifecycle.sh" in _PARITY_CI.read_text(encoding = "utf-8")
+        assert "tests/sh/test_install_rollback_lifecycle.sh" in _PARITY_CI.read_text(
+            encoding = "utf-8"
+        )
 
     def test_rocm_shell_suite_is_in_scope(self):
         """The suite whose absence prompted this file: it must exist and be
@@ -173,7 +175,9 @@ class TestBackendCiPathFilters:
             assert changed in paths
         for changed in ("studio/setup.ps1", "studio/setup.sh", "studio/install_python_stack.py"):
             assert any(
-                changed.startswith(pattern.rstrip("*").rstrip("/")) for pattern in paths if pattern.endswith("/**")
+                changed.startswith(pattern.rstrip("*").rstrip("/"))
+                for pattern in paths
+                if pattern.endswith("/**")
             ), f"nothing in the path filter matches {changed}"
 
 

@@ -213,7 +213,9 @@ class TestGroupedNumerics:
         b = torch.randn(2, 4, 5)
         expected = torch.cat([a[0:2] @ b[0], a[2:4] @ b[1]], dim = 0)
         for dtype in (torch.int32, torch.int64):
-            torch.testing.assert_close(fallback.fn(a, b, torch.tensor([2, 4], dtype = dtype)), expected)
+            torch.testing.assert_close(
+                fallback.fn(a, b, torch.tensor([2, 4], dtype = dtype)), expected
+            )
 
 
 class TestBiasAndDtype:
@@ -291,7 +293,7 @@ class TestLinuxHipVersionGate:
     @pytest.mark.parametrize(
         "hip_str,version,affected",
         [
-            ("7.12.0", "2.10.0+rocm7.12.0", True),   # the broken kernel
+            ("7.12.0", "2.10.0+rocm7.12.0", True),  # the broken kernel
             ("7.6.0", "2.9.0+rocm7.6.0", True),
             ("6.4.0", "2.8.0+rocm6.4.0", True),
             ("7.13.0", "2.11.0+rocm7.13.0", False),  # AMD's fix
@@ -340,9 +342,10 @@ class TestLinuxRdna4NameMatch:
         """The pattern is all-lowercase, so it only works against a lowercased
         name. Device names arrive mixed case ("AMD Radeon RX 9070 XT")."""
         assert self._pattern() == self._pattern().lower(), "pattern is not all-lowercase"
-        assert re.search(r"_lin_name\s*=\s*\(getattr\(_props,\s*\"name\",\s*\"\"\)\s*or\s*\"\"\)\.lower\(\)", _WORKER_SOURCE), (
-            "worker.py must lowercase the device name before matching the RDNA4 pattern"
-        )
+        assert re.search(
+            r"_lin_name\s*=\s*\(getattr\(_props,\s*\"name\",\s*\"\"\)\s*or\s*\"\"\)\.lower\(\)",
+            _WORKER_SOURCE,
+        ), "worker.py must lowercase the device name before matching the RDNA4 pattern"
 
     def test_name_match_is_only_a_fallback_when_arch_is_unknown(self):
         """gcnArchName is authoritative when present. Letting the name regex fire
@@ -359,7 +362,7 @@ class TestLinuxRdna4NameMatch:
             ("AMD Radeon RX 9060 XT", True),
             ("Radeon RX9070", True),
             ("AMD Radeon AI PRO R9700", True),
-            ("AMD Radeon RX 7900 XTX", False),   # RDNA3, kernel is fine
+            ("AMD Radeon RX 7900 XTX", False),  # RDNA3, kernel is fine
             ("AMD Radeon 8060S Graphics", False),  # Strix Halo
             ("AMD Radeon RX 6800 XT", False),
             ("NVIDIA GeForce RTX 4090", False),

@@ -45,7 +45,9 @@ _HELPERS = ("_bundled_hip_present", "_native_linux_system_rocm_lib_dirs")
 
 
 def _load_prebuilt_module():
-    spec = importlib.util.spec_from_file_location("studio_install_llama_prebuilt_native", _PREBUILT_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "studio_install_llama_prebuilt_native", _PREBUILT_PATH
+    )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
@@ -74,7 +76,9 @@ def _impls():
     """The two copies of the helper, by the file they live in."""
     return {
         "studio/install_llama_prebuilt.py": prebuilt_mod._native_linux_system_rocm_lib_dirs,
-        "studio/backend/core/inference/llama_cpp.py": llama_ns["_native_linux_system_rocm_lib_dirs"],
+        "studio/backend/core/inference/llama_cpp.py": llama_ns[
+            "_native_linux_system_rocm_lib_dirs"
+        ],
     }
 
 
@@ -108,7 +112,12 @@ def _clean_rocm_env(monkeypatch):
         monkeypatch.delenv(var, raising = False)
 
 
-def _call(impl, bundle, present, platform = "linux"):
+def _call(
+    impl,
+    bundle,
+    present,
+    platform = "linux",
+):
     """Run one copy of the helper against a fake host.
 
     sys.platform is patched inside the call rather than in a fixture: pytest's own
@@ -123,7 +132,9 @@ class TestBundledHipPresent:
     """The prepend only makes sense when the prebuilt actually bundles HIP; a
     CPU or CUDA build must be left alone."""
 
-    @pytest.mark.parametrize("where", ["studio/install_llama_prebuilt.py", "studio/backend/core/inference/llama_cpp.py"])
+    @pytest.mark.parametrize(
+        "where", ["studio/install_llama_prebuilt.py", "studio/backend/core/inference/llama_cpp.py"]
+    )
     def test_detects_versioned_and_plain_sonames(self, tmp_path, where):
         impl = (
             prebuilt_mod._bundled_hip_present
@@ -143,7 +154,9 @@ class TestBundledHipPresent:
         assert impl(str(versioned)) is True, f"{where}: versioned soname not detected"
         assert impl(str(cpu_only)) is False, f"{where}: CPU-only build treated as HIP"
         assert impl("") is False, f"{where}: empty binary_dir must be falsy"
-        assert impl(str(tmp_path / "does-not-exist")) is False, f"{where}: missing dir must be falsy"
+        assert (
+            impl(str(tmp_path / "does-not-exist")) is False
+        ), f"{where}: missing dir must be falsy"
 
 
 class TestNativeLinuxGates:
@@ -203,7 +216,9 @@ class TestNativeLinuxGates:
         for value in ("0", "", "false"):
             monkeypatch.setenv("UNSLOTH_LLAMA_NO_SYSTEM_ROCM", value)
             for where, impl in _impls().items():
-                assert self._run(impl, bundle_dir, self._HOST) == [self._ROCM_LIB], f"{where} ({value!r})"
+                assert self._run(impl, bundle_dir, self._HOST) == [
+                    self._ROCM_LIB
+                ], f"{where} ({value!r})"
 
 
 class TestNativeLinuxRootResolution:
@@ -221,7 +236,10 @@ class TestNativeLinuxRootResolution:
             "/opt/rocm/lib/libhsa-runtime64.so",
         }
         for where, impl in _impls().items():
-            assert self._run(impl, bundle_dir, present) == ["/usr/local/rocm7/lib", "/opt/rocm/lib"], where
+            assert self._run(impl, bundle_dir, present) == [
+                "/usr/local/rocm7/lib",
+                "/opt/rocm/lib",
+            ], where
 
     def test_all_three_env_roots_are_consulted_in_order(self, bundle_dir, monkeypatch):
         monkeypatch.setenv("HIP_PATH", "/a")
@@ -249,7 +267,10 @@ class TestNativeLinuxRootResolution:
             "/opt/rocm/lib64/libhsa-runtime64.so",
         }
         for where, impl in _impls().items():
-            assert self._run(impl, bundle_dir, present) == ["/opt/rocm/lib", "/opt/rocm/lib64"], where
+            assert self._run(impl, bundle_dir, present) == [
+                "/opt/rocm/lib",
+                "/opt/rocm/lib64",
+            ], where
 
     def test_duplicate_roots_are_deduped(self, bundle_dir, monkeypatch):
         """ROCM_PATH=/opt/rocm is the common setup; it must not emit the dir twice."""
@@ -392,9 +413,13 @@ class TestLlamaCppRuntimeNativeOrdering:
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
         idx_helper = source.find("lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))")
         idx_binary = source.find("lib_dirs.append(binary_dir)")
-        assert idx_helper != -1, "serve-time launcher must call the native-Linux helper with binary_dir"
+        assert (
+            idx_helper != -1
+        ), "serve-time launcher must call the native-Linux helper with binary_dir"
         assert idx_binary != -1
-        assert idx_helper < idx_binary, "system ROCm must be searched before the bundled HIP runtime"
+        assert (
+            idx_helper < idx_binary
+        ), "system ROCm must be searched before the bundled HIP runtime"
 
     def test_dxg_detection_stays_on_the_wsl_branch(self):
         """HSA_ENABLE_DXG_DETECTION must be set from the WSL helper's result only."""
