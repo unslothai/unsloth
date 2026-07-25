@@ -13282,7 +13282,10 @@ async def anthropic_messages(
             if lease is None:
                 wait_started_at = time.monotonic()
                 _llama_admission_log(
-                    "queued", reservation, request = request, mode = _anthropic_admission_mode,
+                    "queued",
+                    reservation,
+                    request = request,
+                    mode = _anthropic_admission_mode,
                 )
                 async for wait_item in _openai_admission_wait_stream_chunks(
                     reservation,
@@ -13296,8 +13299,11 @@ async def anthropic_messages(
                     lease = wait_item
                     break
                 _llama_admission_log(
-                    "granted-after-wait", reservation, request = request,
-                    mode = _anthropic_admission_mode, wait_started_at = wait_started_at,
+                    "granted-after-wait",
+                    reservation,
+                    request = request,
+                    mode = _anthropic_admission_mode,
+                    wait_started_at = wait_started_at,
                 )
             if lease is None:
                 return
@@ -13312,8 +13318,12 @@ async def anthropic_messages(
         except LlamaAdmissionTimeout as exc:
             api_monitor.fail(monitor_id, str(exc))
             _llama_admission_log(
-                "timeout", reservation, request = request, mode = _anthropic_admission_mode,
-                wait_started_at = wait_started_at, level = "warning",
+                "timeout",
+                reservation,
+                request = request,
+                mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at,
+                level = "warning",
             )
             yield build_anthropic_sse_event(
                 "error",
@@ -13321,8 +13331,11 @@ async def anthropic_messages(
             )
         except LlamaAdmissionCancelled:
             _llama_admission_log(
-                "cancelled-before-upstream", reservation, request = request,
-                mode = _anthropic_admission_mode, wait_started_at = wait_started_at,
+                "cancelled-before-upstream",
+                reservation,
+                request = request,
+                mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at,
             )
             return
         finally:

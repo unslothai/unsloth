@@ -521,6 +521,7 @@ def test_grant_reclaims_the_slot_when_the_waiters_loop_is_gone():
 
     dead = asyncio.new_event_loop()
     try:
+
         async def _fill_and_queue():
             nonlocal held
             held = queue.reserve(capacity = 1, config = config).lease_nowait()
@@ -544,6 +545,7 @@ def test_cancel_returns_the_granted_slot_when_the_waiters_loop_is_gone():
 
     dead = asyncio.new_event_loop()
     try:
+
         async def _fill_and_queue():
             nonlocal held, reservation
             held = queue.reserve(capacity = 1, config = config).lease_nowait()
@@ -573,10 +575,10 @@ def test_delivery_to_an_already_finished_waiter_releases_the_slot():
         reservation = queue.reserve(capacity = 1, config = config)
         waiter = reservation._waiter
 
-        held.release()             # schedules _deliver_lease, sets granted_lease
-        waiter.future.cancel()     # finishes the future before the callback runs
+        held.release()  # schedules _deliver_lease, sets granted_lease
+        waiter.future.cancel()  # finishes the future before the callback runs
         assert waiter.granted_lease is not None
-        await asyncio.sleep(0)     # let the callback run
+        await asyncio.sleep(0)  # let the callback run
 
         assert queue.snapshot().active == 0
         assert queue.is_idle()

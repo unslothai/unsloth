@@ -197,9 +197,15 @@ def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
     def _record(level):
         return lambda fmt, *args: records.append((level, fmt % args))
 
-    monkeypatch.setattr(inf_mod, "logger", SimpleNamespace(
-        debug = _record("debug"), info = _record("info"), warning = _record("warning"),
-    ))
+    monkeypatch.setattr(
+        inf_mod,
+        "logger",
+        SimpleNamespace(
+            debug = _record("debug"),
+            info = _record("info"),
+            warning = _record("warning"),
+        ),
+    )
     monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "1")
     _install_backend(monkeypatch, slots = 1)
 
@@ -733,15 +739,11 @@ def test_stream_setup_failure_returns_the_slot(monkeypatch):
 
     async def _run():
         with pytest.raises(RuntimeError):
-            await anthropic_messages(
-                _payload(stream = True), request = _Request(), current_subject = "t"
-            )
+            await anthropic_messages(_payload(stream = True), request = _Request(), current_subject = "t")
         snap = _snapshot()
         assert snap.active == 0, f"slot leaked after stream setup failed: {snap}"
         # And the pool still serves the next caller.
-        again = get_llama_admission_queue(_KEY).reserve(
-            capacity = 1, config = LlamaAdmissionConfig()
-        )
+        again = get_llama_admission_queue(_KEY).reserve(capacity = 1, config = LlamaAdmissionConfig())
         assert again.lease_nowait() is not None
 
     asyncio.run(_run())
@@ -799,7 +801,12 @@ def test_stream_timeout_marks_the_monitor_entry_as_error(monkeypatch):
 class _RespawnBackend:
     """Backend whose base_url moves to a new port once respawned."""
 
-    def __init__(self, *, mtp_handled = False, fallback_in_progress = False):
+    def __init__(
+        self,
+        *,
+        mtp_handled = False,
+        fallback_in_progress = False,
+    ):
         self.base_url = "http://127.0.0.1:57953"
         self.context_length = 4096
         self.respawn_calls = 0
