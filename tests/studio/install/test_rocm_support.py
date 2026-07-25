@@ -3857,9 +3857,8 @@ class TestStrixRocm71Override:
         infer = body.find("grep -qiE 'Ryzen AI Max")
         assert pci >= 0 and infer >= 0
         assert pci < infer, "the PCI evidence check must run before the cpuinfo inference"
-        assert (
-            body.count("grep -qiE")
-            == body.count('[ -n "$_gpu_evidence" ] && grep -qiE')
+        assert body.count("grep -qiE") == body.count(
+            '[ -n "$_gpu_evidence" ] && grep -qiE'
         ), "every cpuinfo grep (gfx1151/gfx1150/gfx1152) must be gated on _gpu_evidence"
 
     def test_lspci_scan_covers_all_display_controllers(self):
@@ -4216,7 +4215,10 @@ class TestStrixRocm71Override:
         # $TORCH_INDEX_URL (a */gfx* match false-positives on a mirror base path). Only the
         # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150 / gfx1152) go to 2.11;
         # a bare gfx* would also floor gfx110X-all/gfx90a/gfx908, left bare on purpose.
-        assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)' in source, (
+        assert (
+            'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)'
+            in source
+        ), (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
             "it (rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152), not a bare gfx* or the URL"
         )
