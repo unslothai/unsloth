@@ -32,6 +32,23 @@ def _canonical(value: str | Path) -> Path:
     return Path(value).expanduser().resolve(strict = False)
 
 
+def notebook_browse_roots() -> list[Path]:
+    """Trusted notebook workspace roots that folder pickers may browse.
+
+    These are platform-owned data workspaces, not arbitrary filesystem roots.
+    Only return roots for a detected platform and only when they actually exist.
+    """
+
+    candidates: list[Path] = []
+    is_colab = bool(os.environ.get("COLAB_BACKEND_URL") or os.environ.get("COLAB_JUPYTER_IP"))
+    if is_colab or Path("/content").is_dir():
+        candidates.append(Path("/content"))
+        candidates.append(Path("/content/drive/MyDrive"))
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or Path("/kaggle/working").is_dir():
+        candidates.append(Path("/kaggle/working"))
+    return [path for path in candidates if path.is_dir()]
+
+
 def _detected_default() -> CheckpointLocation:
     override = (os.environ.get("UNSLOTH_OUTPUTS_DIR") or "").strip()
     if override:

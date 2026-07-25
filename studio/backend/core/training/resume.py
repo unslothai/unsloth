@@ -171,7 +171,13 @@ def is_resume_checkpoint_valid(
 def get_resume_checkpoint_path(
     path_value: str, expected_step: Optional[int] = None
 ) -> Optional[str]:
-    path = resolve_output_dir(path_value)
+    # Changing the configured checkpoint root can leave historical runs
+    # pointing at the previous root. History must remain browseable; such a run
+    # is simply no longer resumable from the active storage location.
+    try:
+        path = resolve_output_dir(path_value)
+    except ValueError:
+        return None
     if not _is_under_outputs(path) or not path.is_dir():
         return None
     if is_resume_checkpoint_valid(path, expected_step):

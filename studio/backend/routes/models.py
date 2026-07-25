@@ -1243,6 +1243,16 @@ def _build_browse_allowlist(
             candidates.append(resolved)
 
     _add(Path.home())
+    # Colab and Kaggle workspaces commonly live outside HOME. Trust only their
+    # detected data roots so the checkpoint picker can select sibling folders
+    # without registering a model scan folder first.
+    try:
+        from utils.checkpoint_settings import notebook_browse_roots
+
+        for notebook_root in notebook_browse_roots():
+            _add(notebook_root)
+    except Exception as exc:  # noqa: BLE001 -- best-effort
+        logger.debug("browse-folders: notebook roots unavailable: %s", exc)
     if media_roots is None:
         media_roots = [
             *external_media.linux_run_media_mount_roots(),

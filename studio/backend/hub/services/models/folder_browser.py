@@ -187,6 +187,15 @@ def _build_browse_allowlist(
             candidates.append(resolved)
 
     _add(Path.home())
+    # Keep the Hub picker aligned with the legacy picker: hosted notebook data
+    # workspaces are safe browse roots even though they sit outside HOME.
+    try:
+        from utils.checkpoint_settings import notebook_browse_roots
+
+        for notebook_root in notebook_browse_roots():
+            _add(notebook_root)
+    except Exception as exc:  # noqa: BLE001 -- best-effort
+        logger.debug("browse-folders: notebook roots unavailable: %s", exc)
     if media_roots is None:
         media_roots = [*linux_run_media_mount_roots(), *macos_volume_roots()]
     if drive_roots is None:

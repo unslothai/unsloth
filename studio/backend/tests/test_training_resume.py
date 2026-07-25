@@ -192,6 +192,19 @@ def test_checkpoint_discovery_skips_malformed_newest(monkeypatch, tmp_path):
     assert resume.get_resume_checkpoint_path(str(out)) == str(valid)
 
 
+def test_historical_run_outside_current_checkpoint_root_is_not_resumable(monkeypatch):
+    """Changing Storage settings must not make training history return HTTP 500."""
+
+    def outside_current_root(_path):
+        raise ValueError("path escapes root")
+
+    monkeypatch.setattr(resume, "resolve_output_dir", outside_current_root)
+    run = _stopped_run(output_dir = "/content/previous-checkpoint-folder")
+
+    assert resume.get_resume_checkpoint_path(run["output_dir"]) is None
+    assert resume.can_resume_run(run) is False
+
+
 def test_completed_run_keeps_output_dir_and_rejects_stale_cancel(monkeypatch, tmp_path):
     from storage import studio_db
 
