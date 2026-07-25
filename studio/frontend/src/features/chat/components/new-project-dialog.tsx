@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -45,6 +45,15 @@ export function NewProjectDialog({
   const [name, setName] = useState("");
   const [staged, setStaged] = useState<StagedSource[]>([]);
   const [busy, setBusy] = useState(false);
+  // Uploads outlive this component, so a slow one must not yank the user to the
+  // new project after they have navigated away.
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
 
   function reset() {
     setName("");
@@ -67,6 +76,7 @@ export function NewProjectDialog({
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
       await uploadStagedSources(project.id, staged);
+      if (!mounted.current) return;
       onOpenChange(false);
       reset();
       if (onCreated) {
@@ -134,12 +144,7 @@ export function NewProjectDialog({
           disabled={busy}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={busy}
-            onClick={close}
-          >
+          <Button type="button" variant="ghost" disabled={busy} onClick={close}>
             Cancel
           </Button>
           <Button

@@ -54,29 +54,33 @@ function isSupported(file: File): boolean {
   return ACCEPTED_EXTS.has(file.name.slice(dot).toLowerCase());
 }
 
-/** Merge a selection into the staged list, dropping duplicates and unsupported
- * entries. Returns the skipped names so the caller can explain them once. */
+/** Merge a selection into the staged list. Returns the names it would not take,
+ * so the caller can say so once instead of dropping them silently. */
 function addStagedSources(
   staged: StagedSource[],
   incoming: FileList | File[],
-): { next: StagedSource[]; skipped: string[] } {
+): { next: StagedSource[]; unsupported: string[]; duplicates: string[] } {
   const seen = new Set(staged.map((entry) => fileSignature(entry.file)));
   const next = [...staged];
-  const skipped: string[] = [];
+  const unsupported: string[] = [];
+  const duplicates: string[] = [];
   for (const file of Array.from(incoming)) {
     if (!isSupported(file)) {
-      skipped.push(file.name);
+      unsupported.push(file.name);
       continue;
     }
     const signature = fileSignature(file);
-    if (seen.has(signature)) continue;
+    if (seen.has(signature)) {
+      duplicates.push(file.name);
+      continue;
+    }
     seen.add(signature);
     next.push({
       id: `staged_${Math.random().toString(36).slice(2)}`,
       file,
     });
   }
-  return { next, skipped };
+  return { next, unsupported, duplicates };
 }
 
 // Projects created with staged files, so the landing can open on Sources.
@@ -130,14 +134,23 @@ export function ProjectSourceDropzone({
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
-      const { next, skipped } = addStagedSources(staged, files);
+      const { next, unsupported, duplicates } = addStagedSources(staged, files);
       if (next.length !== staged.length) onChange(next);
-      if (skipped.length > 0) {
+      if (unsupported.length > 0) {
         toast.info(
-          skipped.length === 1
-            ? `Can't add ${skipped[0]}`
-            : `Can't add ${skipped.length} files`,
+          unsupported.length === 1
+            ? `Can't add ${unsupported[0]}`
+            : `Can't add ${unsupported.length} files`,
           { description: `Supported types: ${RAG_UPLOAD_ACCEPT}` },
+        );
+      }
+      // Name, size and mtime can in principle match for two different files, so
+      // never drop one without saying so.
+      if (duplicates.length > 0) {
+        toast.info(
+          duplicates.length === 1
+            ? `${duplicates[0]} is already added`
+            : `${duplicates.length} files were already added`,
         );
       }
     },
@@ -155,15 +168,18 @@ export function ProjectSourceDropzone({
       {/* Panel is the drop target; the inner button owns the click so staged
           rows can carry their own remove buttons. */}
       <div
+        // preventDefault runs even while disabled: nothing else on the page
+        // cancels a file drop, so the browser would navigate to the file and
+        // kill the uploads in flight.
         onDragEnter={(e) => {
-          if (disabled) return;
           e.preventDefault();
+          if (disabled) return;
           dragDepth.current += 1;
           setDragging(true);
         }}
         onDragOver={(e) => {
-          if (disabled) return;
           e.preventDefault();
+          if (disabled) return;
           e.dataTransfer.dropEffect = "copy";
         }}
         onDragLeave={() => {
@@ -171,15 +187,15 @@ export function ProjectSourceDropzone({
           if (dragDepth.current === 0) setDragging(false);
         }}
         onDrop={(e) => {
-          if (disabled) return;
           e.preventDefault();
+          if (disabled) return;
           endDrag();
           addFiles(Array.from(e.dataTransfer.files ?? []));
         }}
         className={cn(
           "rounded-[22px] border border-border transition-colors dark:border-white/10",
           dragging && "border-primary/60 bg-primary/5",
-          disabled && "pointer-events-none opacity-60",
+          disabled && "opacity-60",
         )}
       >
         <input
