@@ -18,6 +18,8 @@ const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 // Real tags only: a name character must follow "<", so a version constraint
 // like "Support Python <3.15 and >3.9" keeps its operators.
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
+// <https://x> and <a@b.c> are Markdown autolinks: keep the text they render.
+const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
 const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1/g;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
@@ -32,7 +34,31 @@ const CODE_SPAN = /`+([^`\n]+)`+/g;
 const PARKED = /\uE000(\d+)\uE001/g;
 const WHITESPACE = /\s+/g;
 // Sentence end followed by something that actually starts a sentence.
-const SENTENCE_BREAK = /[.!?]\s+(?=["'“‘]?[A-Z0-9])/;
+const SENTENCE_BREAK = /[.!?]\s+(?=["'“‘]?[A-Z0-9])/g;
+const TRAILING_WORD = /(\S+)$/;
+// A period here ends an abbreviation, not the sentence.
+const ABBREVIATIONS = new Set([
+  "e.g.",
+  "i.e.",
+  "etc.",
+  "vs.",
+  "cf.",
+  "approx.",
+  "no.",
+  "fig.",
+  "al.",
+  "dr.",
+  "mr.",
+  "mrs.",
+  "ms.",
+  "prof.",
+  "inc.",
+  "ltd.",
+  "st.",
+  "jr.",
+  "sr.",
+]);
+const INITIAL = /^[A-Za-z]\.$/;
 const MIN_LEAD_CHARS = 12;
 
 /**
@@ -55,7 +81,7 @@ function toPlainText(markdown: string): string {
   // them back after: `__version__` must survive intact.
   const codes: string[] = [];
   const parked = stripHtmlTags(
-    markdown.replace(IMAGE, "").replace(LINK, "$1"),
+    markdown.replace(AUTOLINK, "$1").replace(IMAGE, "").replace(LINK, "$1"),
   ).replace(CODE_SPAN, (_match, code: string) => {
     codes.push(code);
     return `\uE000${codes.length - 1}\uE001`;
@@ -191,12 +217,19 @@ export interface ReleaseNotesPreview {
  * sentence must start like one, so "CHANGELOG.md in the repo" is not a break.
  */
 function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
-  const match = SENTENCE_BREAK.exec(text);
-  if (!match || match.index + 1 < MIN_LEAD_CHARS) {
-    return { lead: text, rest: "" };
+  SENTENCE_BREAK.lastIndex = 0;
+  let match = SENTENCE_BREAK.exec(text);
+  while (match) {
+    const cut = match.index + 1;
+    const word =
+      TRAILING_WORD.exec(text.slice(0, cut))?.[1]?.toLowerCase() ?? "";
+    const isAbbreviation = ABBREVIATIONS.has(word) || INITIAL.test(word);
+    if (!isAbbreviation && cut >= MIN_LEAD_CHARS) {
+      return { lead: text.slice(0, cut).trim(), rest: text.slice(cut).trim() };
+    }
+    match = SENTENCE_BREAK.exec(text);
   }
-  const cut = match.index + 1;
-  return { lead: text.slice(0, cut).trim(), rest: text.slice(cut).trim() };
+  return { lead: text, rest: "" };
 }
 
 interface Bullet {
@@ -213,12 +246,17 @@ function collectBullets(markdown: string): {
   const prose: string[] = [];
   // Wrapped bullets continue on following lines and belong to one item.
   let current: Bullet | null = null;
+  let paragraph = "";
 
   const flush = () => {
     if (current?.text) {
       bullets.push({ text: truncate(current.text), indent: current.indent });
     }
     current = null;
+    if (paragraph) {
+      prose.push(truncate(paragraph));
+      paragraph = "";
+    }
   };
 
   for (const line of contentLines(markdown)) {
@@ -235,11 +273,13 @@ function collectBullets(markdown: string): {
     }
 
     const text = toPlainText(line.text);
+    if (!text) {
+      continue;
+    }
     if (current === null) {
-      if (text) {
-        prose.push(truncate(text));
-      }
-    } else if (text) {
+      // Wrapped paragraphs render as one block, so preview them as one item.
+      paragraph = paragraph ? `${paragraph} ${text}` : text;
+    } else {
       current = { text: `${current.text} ${text}`, indent: current.indent };
     }
   }

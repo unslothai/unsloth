@@ -379,6 +379,19 @@ def test_desktop_notes_link_to_the_release_page_on_every_platform():
     assert "releasePageUrl={update.releasePageUrl}" in provider
 
 
+def test_preview_matches_how_markdown_renders_prose_and_links():
+    """Three rendering mismatches the preview must not reintroduce: wrapped
+    paragraphs split into fragments, autolinks eaten as tags, and a lead cut
+    at an abbreviation."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    # Contiguous prose lines accumulate and flush at a paragraph boundary.
+    assert "paragraph = paragraph ?" in src
+    # <https://x> renders as link text, so it is not a tag.
+    assert "AUTOLINK" in src
+    # "e.g. GGUF" is not a sentence boundary.
+    assert "ABBREVIATIONS" in src and "INITIAL" in src
+
+
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""
