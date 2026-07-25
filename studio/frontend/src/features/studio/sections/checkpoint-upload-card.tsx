@@ -58,8 +58,12 @@ export function CheckpointUploadCard({
       : null;
   const active = upload.state === "preparing" || upload.state === "uploading";
   const repositoryUrl = upload.repository_url?.startsWith("https://huggingface.co/")
-    ? upload.repository_url
+    ? upload.repository_url.replace(/\/+$/, "")
     : null;
+  const checkpointUrl =
+    repositoryUrl && upload.checkpoint
+      ? `${repositoryUrl}/tree/main/${encodeURIComponent(upload.checkpoint)}`
+      : null;
   const transferred = transferText(upload);
   const StateIcon =
     upload.state === "completed"
@@ -78,11 +82,21 @@ export function CheckpointUploadCard({
     <aside
       aria-label={t("studio.checkpointUpload.title")}
       className={cn(
-        "rounded-xl border bg-card px-3 py-2.5 shadow-xs",
+        "relative rounded-xl border bg-card px-3 py-2.5 shadow-xs",
+        checkpointUrl && upload.state === "completed" && "transition-colors hover:bg-muted/40",
         upload.state === "error" && "border-destructive/30 bg-destructive/[0.03]",
       )}
     >
-      <div className="flex min-w-0 items-center gap-2.5">
+      {checkpointUrl && upload.state === "completed" ? (
+        <a
+          href={checkpointUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`${t("studio.checkpointUpload.checkpoint")}: ${upload.checkpoint}`}
+          className="absolute inset-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        />
+      ) : null}
+      <div className="pointer-events-none relative flex min-w-0 items-center gap-2.5">
         <div
           className={cn(
             "grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground",
@@ -133,23 +147,17 @@ export function CheckpointUploadCard({
           </div>
         </div>
 
-        {repositoryUrl && upload.state === "completed" ? (
-          <a
-            href={repositoryUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`${t("studio.checkpointUpload.destination")}: ${upload.repository_id ?? "Hugging Face"}`}
-            className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
+        {checkpointUrl && upload.state === "completed" ? (
+          <span className="grid size-7 shrink-0 place-items-center text-muted-foreground">
             <ExternalLink className="size-3.5" />
-          </a>
+          </span>
         ) : null}
         <button
           type="button"
           onClick={() => setDismissed(true)}
           aria-label={t("common.close")}
           title={t("common.close")}
-          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="pointer-events-auto grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <X className="size-3.5" />
         </button>
