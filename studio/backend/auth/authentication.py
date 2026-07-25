@@ -199,12 +199,22 @@ def _link_token_key(subject: str) -> Optional[bytes]:
 
 
 def _decode_link_payload(payload_b64: str) -> Optional[dict]:
+    """Parse the (still unverified) payload, or None for anything unparseable.
+
+    RecursionError is caught alongside the parse errors: on Python 3.10/3.11 the
+    json scanner raises it at ~1000 nesting levels, and 1000 nested arrays encode
+    to well under LINK_TOKEN_MAX_LENGTH, so an unauthenticated caller could
+    otherwise turn every /link-exchange POST into a 500 that never reaches the
+    failure counter and so is never rate limited. Both are rejected here as a
+    plain bad token instead. (3.12+ raises no error for that depth; the catch
+    keeps every supported version on the same path.)
+    """
     raw = _b64url_decode_canonical(payload_b64)
     if raw is None:
         return None
     try:
         return json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return None
 
 

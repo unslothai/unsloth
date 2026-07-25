@@ -487,10 +487,17 @@ def _display_admin_credentials(username: str, password: str) -> bool:
 
     Renders a branded HTML card with a plain-text fallback. Both paths publish
     through the IPython display channel (iopub display_data), NOT sys.stdout, so
-    the credential is never written to the server's tee'd session log on disk
-    (see run._setup_server_disk_logging). It is never logged or persisted; if no
-    display channel is available we intentionally show nothing rather than fall
-    back to stdout/logging, which would retain the password in the log file.
+    the credential never reaches the server's tee'd session log on disk (see
+    run._setup_server_disk_logging) and is never logged; if no display channel is
+    available we intentionally show nothing rather than fall back to
+    stdout/logging, which would retain the password in the log file.
+
+    The cell is the only surface a notebook has, and a notebook SAVES its cell
+    output: Colab autosaves to Drive, and an exported or shared .ipynb carries the
+    output with it, so this password lives in the notebook document until the
+    output is cleared or the password is changed. The card says exactly that
+    instead of promising the value is never written to disk -- readers who get the
+    notebook must be assumed to have the credential.
 
     Returns True only when the credential was published to the display channel, and
     False when no channel is available or every publish raised, so the caller can
@@ -509,7 +516,10 @@ def _display_admin_credentials(username: str, password: str) -> bool:
         <p style="margin:2px 0;font-size:14px;color:#000;">Username: <b style="font-family:monospace;">{username}</b></p>
         <p style="margin:2px 0;font-size:14px;color:#000;">Password: <b style="font-family:monospace;">{password}</b></p>
         <p style="margin:10px 0 0 0;font-size:12px;color:#333;">
-            Auto-generated for this public launch and shown once. Save it now; it is not written to disk.
+            Auto-generated for this public launch. The server never writes it to its logs, but
+            this notebook saves cell output: copy the password now, then clear this cell's output
+            before you share, export or download the notebook. Change it any time in Settings, or
+            with <b style="font-family:monospace;">unsloth studio reset-password</b>.
         </p>
     </div>
     """)
@@ -517,14 +527,15 @@ def _display_admin_credentials(username: str, password: str) -> bool:
         return True
     except Exception:
         # HTML render failed; show a plain-text copy through the SAME display
-        # channel (still iopub, never sys.stdout, so still not written to disk).
+        # channel (still iopub, never sys.stdout, so still out of the server log).
         try:
             display(
                 {
                     "text/plain": (
                         "Unsloth Studio admin login  "
                         f"username: {username}  password: {password}  "
-                        "(auto-generated for this public launch, shown once, not saved to disk)"
+                        "(auto-generated for this public launch; this cell's output is saved "
+                        "with the notebook, so clear it before sharing or exporting)"
                     )
                 },
                 raw = True,
@@ -861,9 +872,10 @@ def start(
             real Colab because the in-cell proxy embed is often blank; pass ``False`` to
             skip the tunnel or ``True`` to force it on other runtimes. The shared link is
             protected: when the admin still owes its bootstrap password one is
-            auto-generated and shown once in the cell, and the tunnel fails closed if that
+            auto-generated and shown in the cell, and the tunnel fails closed if that
             credential cannot be surfaced, so the link is never published under the
-            default credential.
+            default credential. The cell output is saved with the notebook, so clear
+            it before sharing or exporting (the card says so too).
         link_token: Opt in (default OFF; also enabled by
             ``UNSLOTH_STUDIO_COLAB_LINK_TOKEN=1``) to append a ONE-TIME, short-TTL
             link token to the SAME-TAB proxy URL for a one-click login handoff. The

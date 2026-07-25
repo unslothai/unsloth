@@ -255,6 +255,38 @@ def test_link_token_malformed_is_rejected():
         assert authentication.exchange_link_token(bad) is None
 
 
+def _deeply_nested_token(depth: int = 1000) -> str:
+    nested = ("[" * depth + "]" * depth).encode("ascii")
+    return f"{authentication._b64url_encode(nested)}.{authentication._b64url_encode(b'x' * 32)}"
+
+
+def test_link_token_deeply_nested_payload_is_rejected():
+    # An unauthenticated caller can craft a canonical payload of ~1000 nested
+    # arrays that still fits under LINK_TOKEN_MAX_LENGTH. On Python 3.10/3.11 the
+    # json scanner raises RecursionError (not a ValueError) at that depth, which
+    # used to escape the decoder and turn the request into a 500 that never
+    # reached the failure counter, so it was repeatable without throttling.
+    from models.auth import LINK_TOKEN_MAX_LENGTH
+
+    _seed_admin()
+    token = _deeply_nested_token()
+    assert len(token) < LINK_TOKEN_MAX_LENGTH
+    assert authentication.exchange_link_token(token) is None
+
+
+def test_decode_link_payload_treats_recursion_error_as_a_bad_token(monkeypatch):
+    # Version-independent form of the above: whatever depth the running
+    # interpreter draws the line at, a RecursionError from the parser must be a
+    # rejected token, never an exception that escapes to the route.
+    import json as _json
+
+    def _boom(*_a, **_k):
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON object")
+
+    monkeypatch.setattr(_json, "loads", _boom)
+    assert authentication._decode_link_payload(authentication._b64url_encode(b"{}")) is None
+
+
 # ── /api/auth/link-exchange route ────────────────────────────────────
 
 
@@ -420,6 +452,17 @@ def test_link_token_schema_caps_length():
 
     with pytest.raises(ValidationError):
         LinkTokenRequest(link_token = "x" * (LINK_TOKEN_MAX_LENGTH + 1))
+
+
+def test_link_exchange_route_rejects_deeply_nested_payload():
+    # Route level: a nesting bomb that fits under the length cap must come back as
+    # a plain 401 (and count as a failure for the limiter), not a 500. The
+    # TestClient re-raises server exceptions, so a RecursionError escaping the
+    # decoder fails this test on the affected interpreters.
+    _seed_admin()
+    client = _auth_client()
+    resp = client.post("/api/auth/link-exchange", json = {"link_token": _deeply_nested_token()})
+    assert resp.status_code == 401, resp.text
 
 
 def test_link_exchange_route_rejects_oversized_token():

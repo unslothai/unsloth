@@ -295,6 +295,42 @@ def ipython_display(monkeypatch):
     return module
 
 
+def test_display_admin_credentials_warns_that_output_is_saved(monkeypatch, ipython_display):
+    # The cell is the only surface a notebook has, and a notebook SAVES its output:
+    # Colab autosaves to Drive and an exported/shared .ipynb carries the password
+    # with it. The card must say so rather than claim the value is never written to
+    # disk, so the operator knows to clear the output (or change the password).
+    captured = []
+    monkeypatch.setattr(ipython_display, "display", lambda *a, **k: captured.append((a, k)))
+
+    colab._display_admin_credentials("unsloth", "Saved-Output-Pw-42")
+
+    rendered = "".join(str(getattr(obj, "data", obj)) for args, _k in captured for obj in args)
+    assert "saves cell output" in rendered
+    assert "clear this cell's output" in rendered
+    assert "not written to disk" not in rendered  # the old, false promise
+    assert "reset-password" in rendered
+
+
+def test_display_admin_credentials_plaintext_fallback_warns_too(monkeypatch, ipython_display):
+    # The text/plain fallback carries the same warning; it is the branch a broken
+    # HTML renderer falls back to.
+    published = []
+
+    def _display(*args, **kwargs):
+        if not kwargs.get("raw"):
+            raise RuntimeError("HTML render failed")
+        published.append(args)
+
+    monkeypatch.setattr(ipython_display, "display", _display)
+
+    assert colab._display_admin_credentials("unsloth", "Fallback-Pw-7") is True
+    rendered = "".join(str(a) for args in published for a in args)
+    assert "Fallback-Pw-7" in rendered
+    assert "saved" in rendered and "clear it before sharing" in rendered
+    assert "not saved to disk" not in rendered
+
+
 def test_display_admin_credentials_never_writes_to_stdout(monkeypatch, capsys, ipython_display):
     # The auto-generated password must reach the notebook cell only through the
     # IPython display channel (iopub display_data), never sys.stdout/stderr or a
