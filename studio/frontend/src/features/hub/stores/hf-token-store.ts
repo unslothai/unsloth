@@ -103,6 +103,20 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
   };
 });
 
+// Colab and Kaggle secrets live in the notebook kernel and cannot be read by
+// browser JavaScript. Ask the authenticated backend to resolve HF_TOKEN, then
+// hydrate the shared store so every token field and operation sees it.
+if (canUseStorage() && !useHfTokenStore.getState().token) {
+  import("../api/notebook-token")
+    .then(({ loadNotebookHfToken }) => loadNotebookHfToken())
+    .then((token) => {
+      if (token && !useHfTokenStore.getState().token) {
+        useHfTokenStore.getState().setToken(token);
+      }
+    })
+    .catch(() => undefined);
+}
+
 export function getHfToken(): string {
   return useHfTokenStore.getState().token;
 }
@@ -127,5 +141,5 @@ export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
 export function hfApiToken(
   token: string | undefined | null,
 ): string | undefined {
-  return token && token.startsWith("hf_") ? token : undefined;
+  return token?.startsWith("hf_") ? token : undefined;
 }

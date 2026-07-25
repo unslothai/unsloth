@@ -62,6 +62,7 @@ from utils.embedding_model_settings import (
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 from utils.checkpoint_settings import get_checkpoint_location, set_checkpoint_location
+from utils.notebook_token import resolve_notebook_hf_token
 
 router = APIRouter()
 
@@ -93,6 +94,11 @@ class HelperPrecacheResponse(BaseModel):
 
 class HuggingFaceCachePayload(BaseModel):
     cache_home: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class NotebookHuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    source: Optional[Literal["colab", "kaggle"]] = None
 
 
 class HuggingFaceCacheResponse(BaseModel):
@@ -203,6 +209,14 @@ def get_hugging_face_cache(
     current_subject: str = Depends(get_current_subject),
 ) -> HuggingFaceCacheResponse:
     return _hugging_face_cache_response()
+
+
+@router.post("/notebook-hf-token", response_model = NotebookHuggingFaceTokenResponse)
+def get_notebook_hf_token(
+    current_subject: str = Depends(get_current_subject),
+) -> NotebookHuggingFaceTokenResponse:
+    token, source = resolve_notebook_hf_token()
+    return NotebookHuggingFaceTokenResponse(token = token, source = source)
 
 
 @router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
