@@ -108,6 +108,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     // ("unsloth start", the agent names); the section titles below do not.
     "settings.agents.title",
     "settings.agents.description",
+    "settings.agents.intro",
     "settings.agents.quickstart.title",
     "settings.agents.supportedAgents.title",
     "settings.agents.models.title",

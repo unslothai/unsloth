@@ -125,9 +125,11 @@ function InlineCommand({ command }: { command: string }) {
         aria-label={`${
           copied ? t("settings.agents.copied") : t("settings.agents.copy")
         }: ${command}`}
-        className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2.5 pr-2 font-mono text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.04]"
+        className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-md border border-border bg-muted/40 py-1.5 pl-2.5 pr-2 font-mono text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.04]"
       >
-        <span className="whitespace-nowrap">{command}</span>
+        {/* A remote base adds the origin and key placeholder, so truncate
+            rather than pushing the copy icon out of a narrow panel. */}
+        <span className="truncate whitespace-nowrap">{command}</span>
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
           strokeWidth={2}
