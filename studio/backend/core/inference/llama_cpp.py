@@ -306,6 +306,10 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
+# A transport error can arrive a beat before the child is reapable. Wait this long
+# for poll() before calling it alive; the MTP reload affords 5s because it runs in the
+# background, a request path cannot.
+_RESPAWN_REAP_GRACE_S = 1.0
 
 
 def _finalize_reasoning_only_cumulative(
@@ -10552,6 +10556,13 @@ class LlamaCppBackend:
             proc = self._process
             if proc is None:
                 return False
+            if proc.poll() is None:
+                # A closing server can beat its own exit status here. Reporting "alive"
+                # then hands back the stale _healthy, and the caller spends its single
+                # retry on the corpse instead of on a replacement.
+                deadline = time.monotonic() + _RESPAWN_REAP_GRACE_S
+                while proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
             if proc.poll() is None:
                 # Process is alive: either a concurrent caller already respawned
                 # it (healthy), or this connection error wasn't a dead server.

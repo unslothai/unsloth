@@ -14,6 +14,7 @@ import contextlib
 import copy
 import json
 import sys
+import threading
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -2442,6 +2443,78 @@ def test_pre_header_transport_errors_also_respawn(monkeypatch):
         assert respawn_calls == [True], type(exc).__name__
         assert len(payloads) == 2, type(exc).__name__
         assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
+    """A closing server can beat its own exit status, so poll() briefly reports it
+    alive. Without a grace wait _respawn_if_dead hands back the stale _healthy and the
+    single retry is spent on the corpse rather than on a replacement."""
+    import httpx
+
+    class _Dying:
+        # reapable only from the 4th poll, mimicking teardown lagging the socket close
+        def __init__(self):
+            self.polls = 0
+            self.returncode = None
+
+        def poll(self):
+            self.polls += 1
+            if self.polls > 3:
+                self.returncode = -9
+                return -9
+            return None
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [], payloads)
+    backend._process = _Dying()
+    backend._healthy = True
+    backend._respawn_lock = threading.RLock()
+    backend._lock = threading.RLock()
+    backend._mtp_runtime_fallback_lock = threading.Lock()
+    backend._mtp_runtime_fallback_in_progress = False
+    backend._mtp_runtime_fallback_active = False
+    backend._last_load_kwargs = {"gguf_path": "/m.gguf"}
+    backend._model_identifier = "m"
+    dying = backend._process
+    loads: list[dict] = []
+
+    @contextlib.contextmanager
+    def dead_until_respawned(
+        _c,
+        _url,
+        payload,
+        _ce,
+        headers = None,
+        first_token_deadline = None,
+    ):
+        payloads.append(copy.deepcopy(payload))
+        if backend._process is dying:
+            raise httpx.ReadError("connection reset while shutting down")
+        yield type(
+            "FakeResponse",
+            (),
+            {"status_code": 200, "chunks": [_sse({"content": "Recovered."}), _done()]},
+        )()
+
+    def fake_load(**kwargs):
+        loads.append(kwargs)
+        backend._process = type("Live", (), {"poll": lambda self: None, "returncode": None})()
+        backend._healthy = True
+        return True
+
+    monkeypatch.setattr(backend, "_stream_with_retry", dead_until_respawned)
+    monkeypatch.setattr(backend, "load_model", fake_load)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "hello"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(loads) == 1
+    assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
 
 
 def test_prefill_timeout_is_not_retried(monkeypatch):
