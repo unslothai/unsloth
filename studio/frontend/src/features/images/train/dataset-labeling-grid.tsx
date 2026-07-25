@@ -259,7 +259,7 @@ export function DatasetLabelingGrid({
           </div>
         )}
       </div>
-      <div className="group grid max-h-[420px] grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
+      <div className="hover-scrollbar group grid max-h-[420px] grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
         {pageRecords.map((r) => (
           <LabelTile
             key={r.filename}

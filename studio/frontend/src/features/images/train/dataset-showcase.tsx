@@ -103,7 +103,7 @@ export function DatasetShowcase({
       type="button"
       onClick={onBrowse}
       title="Browse and caption these images"
-      className="flex w-full items-center gap-1.5 overflow-x-auto rounded-lg border border-border bg-muted/20 p-1.5 text-left transition-colors hover:border-foreground/20"
+      className="hover-scrollbar flex w-full items-center gap-1.5 overflow-x-auto rounded-lg border border-border bg-muted/20 p-1.5 text-left transition-colors hover:border-foreground/20"
     >
       {names === null ? (
         <div className="flex h-14 items-center gap-2 px-2 text-[11px] text-muted-foreground">

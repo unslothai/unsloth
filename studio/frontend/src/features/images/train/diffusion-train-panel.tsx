@@ -53,7 +53,11 @@ import {
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
 import { DatasetShowcase } from "./dataset-showcase";
 import { DiffusionCharts } from "./diffusion-charts";
-import { ExampleDatasetCards, runExampleImport } from "./example-dataset-cards";
+import {
+  ExampleDatasetCards,
+  runExampleImport,
+  shortExampleLabel,
+} from "./example-dataset-cards";
 
 // The families the Train tab can train, in the popularity order the user asked for. This is
 // the fallback used when the backend's /info does not yet report families (older backend);
@@ -1020,10 +1024,12 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
-      {/* Left: configure */}
-      <div className="bg-card corner-squircle flex w-[380px] min-w-0 shrink-0 flex-col overflow-hidden rounded-3xl panel-soft-surface">
-        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden p-5">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
+      {/* Left: configure. No card here or on the right: both panes sit on the page
+          background like the Hub, divided by a rule. */}
+      <div className="flex w-[370px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
+        {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
+        <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pb-1 pl-0.5 pr-6">
           <div>
             <h2 className="text-sm font-semibold">Train a LoRA</h2>
             <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
@@ -1098,18 +1104,19 @@ export function DiffusionTrainPanel({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                {/* Rows stay short: name plus image count. Caption counts show under the
+                    picker, and an example's license shows on its card below. */}
                 {(info?.datasets ?? []).map((d) => (
                   <SelectItem key={d.name} value={d.name}>
-                    {d.name} ({d.image_count} image{d.image_count === 1 ? "" : "s"}
-                    {d.caption_count > 0 ? `, ${d.caption_count} captions` : ""})
+                    {d.name} - {d.image_count} image{d.image_count === 1 ? "" : "s"}
                   </SelectItem>
                 ))}
                 {pendingExamples.length > 0 && (
                   <SelectGroup>
-                    <SelectLabel>Examples (one-click import)</SelectLabel>
+                    <SelectLabel>Examples</SelectLabel>
                     {pendingExamples.map((ex) => (
                       <SelectItem key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
-                        {ex.label} ({ex.image_cap} images, {ex.license})
+                        {shortExampleLabel(ex.label)} - {ex.image_cap} images
                       </SelectItem>
                     ))}
                   </SelectGroup>
@@ -1124,7 +1131,7 @@ export function DiffusionTrainPanel({
             )}
 
             {dataset === UPLOAD_DATASET ? (
-              <div className="grid gap-1.5 rounded-md border border-dashed border-border p-2">
+              <div className="grid gap-1.5">
                 <Input
                   value={uploadName}
                   placeholder="my-style-photos"
@@ -1149,29 +1156,33 @@ export function DiffusionTrainPanel({
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="h-8 shrink-0"
+                    className="h-7 shrink-0 px-3 text-xs"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={uploading}
                   >
                     Choose images
                   </Button>
-                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                    {pickedFileCount > 0
-                      ? `${pickedFileCount} file${pickedFileCount === 1 ? "" : "s"} selected`
-                      : "No files selected"}
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    className="h-8 shrink-0"
-                    onClick={onUpload}
-                    disabled={uploading}
-                  >
-                    {uploading ? "Uploading..." : "Upload"}
-                  </Button>
+                  {/* Nothing to upload until files are picked, so the count and Upload
+                      only appear then. */}
+                  {pickedFileCount > 0 && (
+                    <>
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                        {pickedFileCount} file{pickedFileCount === 1 ? "" : "s"} selected
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 shrink-0 px-3 text-xs"
+                        onClick={onUpload}
+                        disabled={uploading}
+                      >
+                        {uploading ? "Uploading..." : "Upload"}
+                      </Button>
+                    </>
+                  )}
                 </div>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-[11px] leading-snug text-muted-foreground">
                   10-50 images are plenty. Captions are optional: without them, the trigger
                   prompt below describes every image.
                 </p>
@@ -1271,12 +1282,12 @@ export function DiffusionTrainPanel({
           front) plus the previous-runs history; during/after a run the live view takes
           over (progress with Stop, then the saved-adapter card ABOVE the charts).
           Selecting a previous run re-plots its persisted logs read-only. */}
-      {/* p-1.5 so the cards' shadow (drawn outside the box) isn't clipped by this
-          scroll container. */}
-      <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-1.5">
+      {/* Sections here carry no card of their own: spacing and a rule separate them.
+          p-1.5 keeps the chart cards' outer ring from being clipped. */}
+      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pl-6">
         {viewRun && !hasRun ? (
           <>
-            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 panel-soft-surface">
+            <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold">
                   Previous run: {viewRun.adapter || viewRun.job_id.slice(0, 8)}
@@ -1339,7 +1350,7 @@ export function DiffusionTrainPanel({
           </>
         ) : !hasRun ? (
           <>
-            <div className="bg-card corner-squircle flex flex-col gap-4 rounded-3xl p-5 panel-soft-surface">
+            <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-sm font-semibold">
                   <HugeiconsIcon icon={Settings02Icon} className="size-4" />
@@ -1357,7 +1368,7 @@ export function DiffusionTrainPanel({
             </div>
 
             {prevRuns.length > 0 && (
-              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 panel-soft-surface">
+              <div className="flex flex-col gap-2 border-t border-border/60 pt-4">
                 <span className="text-sm font-semibold">Previous runs</span>
                 <div className="flex flex-col divide-y divide-border/60">
                   {prevRuns.map((r) => (
@@ -1397,7 +1408,7 @@ export function DiffusionTrainPanel({
           </>
         ) : (
           <>
-            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 panel-soft-surface">
+            <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold capitalize">
                   {status?.status === "completed" ? "Training complete \u{1F389}" : status?.status}
@@ -1473,7 +1484,7 @@ export function DiffusionTrainPanel({
             </div>
 
             {(completed || stoppedWithAdapter) && (
-              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 panel-soft-surface">
+              <div className="flex flex-col gap-2 border-t border-border/60 pt-4">
                 <span className="text-sm font-semibold">
                   {completed ? "Adapter ready" : "Partial adapter saved"}
                 </span>

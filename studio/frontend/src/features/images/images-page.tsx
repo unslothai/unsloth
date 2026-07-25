@@ -11,6 +11,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  Image03Icon,
   ImageAdd02Icon,
   ImageUpload01Icon,
   InformationCircleIcon,
@@ -22,6 +23,9 @@ import {
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+// The raw Radix trigger: the app's TooltipTrigger adds a click-to-toggle handler that
+// has no business inside a menu row.
+import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { Button } from "@/components/ui/button";
@@ -48,6 +52,7 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -120,42 +125,42 @@ const WORKFLOW_TABS: Array<{
     label: "Transform",
     icon: MagicWand01Icon,
     requires: "img2img",
-    hint: "Redraw an uploaded image guided by your prompt (img2img)",
+    hint: "Redraw an image from your prompt",
   },
   {
     id: "inpaint",
     label: "Inpaint",
     icon: PaintBrush02Icon,
     requires: "inpaint",
-    hint: "Paint over a region to regenerate just that area, keeping the rest",
+    hint: "Regenerate a painted region",
   },
   {
     id: "extend",
     label: "Extend",
     icon: ArrowExpand01Icon,
     requires: "outpaint",
-    hint: "Outpaint: grow the canvas and fill the new edges from your prompt",
+    hint: "Grow the canvas and fill the edges",
   },
   {
     id: "upscale",
     label: "Upscale",
     icon: ZoomInAreaIcon,
     requires: "upscale",
-    hint: "Hires fix: enlarge an uploaded image and re-detail it at higher resolution",
+    hint: "Enlarge and re-detail an image",
   },
   {
     id: "reference",
     label: "Reference",
     icon: ImageUpload01Icon,
     requires: "reference",
-    hint: "Generate a new image guided by a reference image + your prompt (FLUX.2)",
+    hint: "Generate guided by a reference image",
   },
   {
     id: "edit",
     label: "Edit",
     icon: Edit03Icon,
     requires: "edit",
-    hint: "Instruction editing: change an image with a prompt (Qwen-Image-Edit)",
+    hint: "Change an image with an instruction",
   },
 ];
 
@@ -2312,20 +2317,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onDeploy={handleDeployAdapter}
         />
       ) : (
-      /* ── Controls rail + preview canvas. Padding mirrors the other tabs
-          (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. pt-3 keeps the
-          cards off the model selector row. ── */
-      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
-        {/* Controls and preview share one card, split by a divider, so the page
-            reads as a single surface instead of two floating boxes. */}
-        <div className="bg-card corner-squircle flex min-h-0 min-w-0 flex-1 overflow-hidden rounded-3xl panel-soft-surface">
-        <div className="flex w-[340px] shrink-0 flex-col overflow-hidden border-r border-border/60">
-          <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-5">
-            {/* Workflow picker. Seven workflows don't fit a segmented strip in a 340px
-                rail, so it's a dropdown: the trigger carries the current workflow and
-                its hint, and each row explains itself. A row is disabled until the
-                loaded model supports it (status.workflows), with the reason in place of
-                the hint. New workflows slot in without shrinking anything. */}
+      /* ── Controls rail + preview canvas. No card: both sit on the page background
+          like the Hub, divided by a rule, so nothing is spent on box chrome. Padding
+          mirrors the other tabs (Export, Data Recipes): px-5 / sm:px-9. ── */
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
+        <div className="flex w-[330px] shrink-0 flex-col overflow-hidden border-r border-border/60">
+          {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
+          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-1 pl-0.5 pr-6">
+            {/* Workflow picker. Seven workflows don't fit a segmented strip in this rail,
+                so it's a dropdown; a row stays disabled until the loaded model supports
+                it (status.workflows). New workflows slot in without shrinking anything. */}
             <div className="grid gap-1.5">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild={true}>
@@ -2347,40 +2348,45 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     />
                   </button>
                 </DropdownMenuTrigger>
-                {/* DropdownMenuContent already tracks the trigger width, so the rows get
-                    the full rail width for their hints. */}
                 <DropdownMenuContent align="start">
                   {WORKFLOW_TABS.map((t) => {
                     const enabled = workflowEnabled(t);
                     return (
-                      <DropdownMenuItem
-                        key={t.id}
-                        disabled={!enabled}
-                        onSelect={() => setWorkflow(t.id)}
-                        // The selected row's description shows under the trigger, and a
-                        // disabled row explains itself on hover, so rows stay one line.
-                        title={
-                          enabled
+                      // Rows stay one line; what the workflow does (or why it is
+                      // unavailable) arrives as a tooltip after a short hover. The
+                      // trigger wraps the row rather than being the row: a disabled item
+                      // has pointer-events: none, so it would never hover.
+                      <Tooltip key={t.id} delayDuration={550}>
+                        <TooltipPrimitive.Trigger asChild={true}>
+                          <div>
+                            <DropdownMenuItem
+                              disabled={!enabled}
+                              onSelect={() => setWorkflow(t.id)}
+                              className="gap-2"
+                            >
+                              <HugeiconsIcon
+                                icon={t.icon}
+                                className="size-4 shrink-0 text-muted-foreground"
+                              />
+                              <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                                {t.label}
+                              </span>
+                              <HugeiconsIcon
+                                icon={CheckmarkCircle02Icon}
+                                className={cn(
+                                  "size-3.5 shrink-0",
+                                  workflow === t.id ? "text-foreground" : "invisible",
+                                )}
+                              />
+                            </DropdownMenuItem>
+                          </div>
+                        </TooltipPrimitive.Trigger>
+                        <TooltipContent side="right" sideOffset={6}>
+                          {enabled
                             ? t.hint
-                            : `Needs a loaded model that supports ${t.label.toLowerCase()}`
-                        }
-                        className="gap-2"
-                      >
-                        <HugeiconsIcon
-                          icon={t.icon}
-                          className="size-4 shrink-0 text-muted-foreground"
-                        />
-                        <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                          {t.label}
-                        </span>
-                        <HugeiconsIcon
-                          icon={CheckmarkCircle02Icon}
-                          className={cn(
-                            "size-3.5 shrink-0",
-                            workflow === t.id ? "text-foreground" : "invisible",
-                          )}
-                        />
-                      </DropdownMenuItem>
+                            : `Needs a loaded model that supports ${t.label.toLowerCase()}`}
+                        </TooltipContent>
+                      </Tooltip>
                     );
                   })}
                 </DropdownMenuContent>
@@ -2881,8 +2887,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
                 <img
@@ -2940,7 +2946,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               </div>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={ImageAdd02Icon} className="size-12" strokeWidth={1.5} />
+                {/* Same icon as the Images nav item. */}
+                <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded
                     ? "Enter a prompt and hit Generate."
@@ -2980,7 +2987,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
           {(images.length > 0 || busy === "generating") && (
             <div
-              className="flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -3028,21 +3035,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             </div>
           )}
         </div>
-        </div>
 
         {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default,
             opened by the single fixed top-bar toggle above (which never moves between states,
             like Chat's run-settings toggle), so the optimisation controls are discoverable
             without being docked open or buried at the bottom of the left rail. */}
         {advancedOpen && (
-          <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl panel-soft-surface">
-            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60 px-4">
+          <div className="ml-4 flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border/60 pl-4">
+            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60">
               <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
                 <HugeiconsIcon icon={Settings02Icon} className="size-4" />
                 Advanced
               </span>
             </div>
-            <div className="flex flex-col gap-3 overflow-y-auto p-4">
+            <div className="hover-scrollbar flex flex-col gap-3 overflow-y-auto py-4 pr-2">
               <p className="text-xs text-muted-foreground">
                 Load-time tuning. Changes apply on the next load; Reapply reloads the current model.
               </p>

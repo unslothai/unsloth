@@ -50,6 +50,12 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   return p;
 }
 
+// "Dog (DreamBooth subject)" -> "Dog". The parenthetical is context, not a name, so
+// one-line picker rows and card titles drop it.
+export function shortExampleLabel(label: string): string {
+  return label.replace(/\s*\(.*$/, "");
+}
+
 function ExamplePreviews({ repo }: { repo: string }) {
   const [urls, setUrls] = useState<string[] | null>(null);
   useEffect(() => {
@@ -105,7 +111,12 @@ export function ExampleDatasetCards({
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium">{ex.label}</span>
+                  <span
+                    className="min-w-0 flex-1 truncate text-xs font-medium"
+                    title={ex.label}
+                  >
+                    {shortExampleLabel(ex.label)}
+                  </span>
                   <span
                     className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground"
                     title={ex.license}
