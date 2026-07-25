@@ -1194,6 +1194,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
 
         self.assertEqual(exc.exception.status_code, 400)
         self.assertIn("draft-model device", exc.exception.detail)
+        self.assertIn("set it to none", exc.exception.detail)
         self.assertEqual(captured, [])
         inf.unload_model.assert_not_called()
         llama.unload_model.assert_not_called()

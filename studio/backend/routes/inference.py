@@ -3959,7 +3959,7 @@ def _reject_draft_device_with_gpu_ids(
                 f"A draft-model device override ('{draft_device}') cannot be combined "
                 "with explicit gpu_ids: it would place the speculative drafter outside "
                 "the pinned GPUs the training guard budgeted. Remove the draft-device "
-                "flag to follow gpu_ids, or set it to cpu."
+                "flag to follow gpu_ids, or set it to none."
             ),
         )
 
