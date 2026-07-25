@@ -6,6 +6,7 @@
 import importlib
 import importlib.util
 import os
+from pathlib import Path
 
 
 def _read_colab_secret(name: str) -> str | None:
@@ -24,8 +25,16 @@ def _read_kaggle_secret(name: str) -> str | None:
 
 def resolve_notebook_hf_token(secret_name: str = "HF_TOKEN") -> tuple[str | None, str | None]:
     """Return ``(token, source)`` and install a notebook secret into the environment."""
-    is_colab = bool(os.environ.get("COLAB_RELEASE_TAG") or os.environ.get("COLAB_BACKEND_VERSION"))
-    is_kaggle = bool(os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"))
+    is_colab = bool(
+        os.environ.get("COLAB_BACKEND_URL")
+        or os.environ.get("COLAB_JUPYTER_IP")
+        or Path("/content").is_dir()
+    )
+    is_kaggle = bool(
+        os.environ.get("KAGGLE_KERNEL_RUN_TYPE")
+        or os.environ.get("KAGGLE_URL_BASE")
+        or Path("/kaggle/working").is_dir()
+    )
     existing = os.environ.get("HF_TOKEN")
     if existing:
         # This endpoint is allowed to return credentials only in a hosted notebook.

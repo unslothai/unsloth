@@ -8,6 +8,7 @@
 import importlib
 import importlib.util
 import os
+from pathlib import Path
 
 
 HF_TOKEN_SECRET_NAME = "HF_TOKEN"
@@ -38,9 +39,17 @@ def detect_notebook_hf_token(secret_name = HF_TOKEN_SECRET_NAME):
         return existing
 
     readers = []
-    if os.environ.get("COLAB_RELEASE_TAG") or os.environ.get("COLAB_BACKEND_VERSION"):
+    if (
+        os.environ.get("COLAB_BACKEND_URL")
+        or os.environ.get("COLAB_JUPYTER_IP")
+        or Path("/content").is_dir()
+    ):
         readers.append(_read_colab_secret)
-    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"):
+    if (
+        os.environ.get("KAGGLE_KERNEL_RUN_TYPE")
+        or os.environ.get("KAGGLE_URL_BASE")
+        or Path("/kaggle/working").is_dir()
+    ):
         readers.append(_read_kaggle_secret)
 
     for reader in readers:

@@ -501,6 +501,15 @@ async def lifespan(app: FastAPI):
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
 
+    # Request the notebook service's HF_TOKEN secret while Studio starts. In
+    # particular, Colab must service userdata.get() from the notebook runtime;
+    # waiting for a later browser request is too late and may run before login.
+    from utils.notebook_token import resolve_notebook_hf_token
+
+    _notebook_hf_token, _notebook_hf_source = resolve_notebook_hf_token()
+    if _notebook_hf_token:
+        _lifespan_log.info("loaded HF_TOKEN from %s notebook secrets", _notebook_hf_source)
+
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():

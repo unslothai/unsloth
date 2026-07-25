@@ -15,7 +15,7 @@ def _load_module():
 def test_detects_colab_hf_token(monkeypatch):
     module = _load_module()
     monkeypatch.delenv("HF_TOKEN", raising = False)
-    monkeypatch.setenv("COLAB_RELEASE_TAG", "release")
+    monkeypatch.setenv("COLAB_BACKEND_URL", "https://colab.invalid")
     monkeypatch.delenv("KAGGLE_KERNEL_RUN_TYPE", raising = False)
     monkeypatch.delenv("KAGGLE_URL_BASE", raising = False)
     monkeypatch.setattr(module, "_read_colab_secret", lambda name: f"  {name}-value  ")
@@ -27,7 +27,7 @@ def test_detects_colab_hf_token(monkeypatch):
 def test_detects_kaggle_hf_token_after_missing_colab_secret(monkeypatch):
     module = _load_module()
     monkeypatch.delenv("HF_TOKEN", raising = False)
-    monkeypatch.setenv("COLAB_BACKEND_VERSION", "version")
+    monkeypatch.setenv("COLAB_JUPYTER_IP", "127.0.0.1")
     monkeypatch.setenv("KAGGLE_KERNEL_RUN_TYPE", "Interactive")
     monkeypatch.setattr(module, "_read_colab_secret", lambda _name: None)
     monkeypatch.setattr(module, "_read_kaggle_secret", lambda name: f"{name}-kaggle")
@@ -38,7 +38,7 @@ def test_detects_kaggle_hf_token_after_missing_colab_secret(monkeypatch):
 def test_explicit_hf_token_is_not_overridden(monkeypatch):
     module = _load_module()
     monkeypatch.setenv("HF_TOKEN", "explicit")
-    monkeypatch.setenv("COLAB_RELEASE_TAG", "release")
+    monkeypatch.setenv("COLAB_BACKEND_URL", "https://colab.invalid")
     monkeypatch.setattr(
         module,
         "_read_colab_secret",

@@ -4,8 +4,8 @@ from utils import notebook_token
 def _clear_platform(monkeypatch):
     for name in (
         "HF_TOKEN",
-        "COLAB_RELEASE_TAG",
-        "COLAB_BACKEND_VERSION",
+        "COLAB_BACKEND_URL",
+        "COLAB_JUPYTER_IP",
         "KAGGLE_KERNEL_RUN_TYPE",
         "KAGGLE_URL_BASE",
     ):
@@ -23,7 +23,7 @@ def test_resolves_kaggle_secret_into_backend_environment(monkeypatch):
 
 def test_existing_notebook_token_is_returned_without_secret_lookup(monkeypatch):
     _clear_platform(monkeypatch)
-    monkeypatch.setenv("COLAB_RELEASE_TAG", "release")
+    monkeypatch.setenv("COLAB_BACKEND_URL", "https://colab.invalid")
     monkeypatch.setenv("HF_TOKEN", "existing")
     monkeypatch.setattr(
         notebook_token,
