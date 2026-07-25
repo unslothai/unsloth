@@ -3042,6 +3042,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
             format_type = config.get("format_type", ""),
             local_datasets = config.get("local_datasets") or None,
+            training_datasets = config.get("training_datasets") or None,
             local_eval_datasets = config.get("local_eval_datasets") or None,
             custom_format_mapping = config.get("custom_format_mapping"),
             subset = config.get("subset"),
@@ -3053,6 +3054,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_slice_end = config.get("dataset_slice_end"),
             is_cpt = _is_cpt_for_dataset,
             s3_config = config.get("s3_config"),
+            training_seed = config.get("random_seed", 3407),
         )
 
         if isinstance(dataset_result, tuple):

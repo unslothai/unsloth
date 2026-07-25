@@ -150,6 +150,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "max_seq_length": values.get("max_seq_length", 2048),
         "vision_image_size": values.get("vision_image_size"),
         "hf_dataset": values.get("hf_dataset", ""),
+        "training_datasets": values.get("training_datasets") or [],
         "local_datasets": values.get("local_datasets"),
         "local_eval_datasets": values.get("local_eval_datasets"),
         "format_type": values.get("format_type", ""),
@@ -487,6 +488,7 @@ class _MLXTrainerAdapter:
         dataset_source: Optional[str],
         format_type: str = "auto",
         local_datasets: Optional[list[str]] = None,
+        training_datasets: Optional[list[dict[str, Any]]] = None,
         local_eval_datasets: Optional[list[str]] = None,
         custom_format_mapping: Optional[dict[str, Any]] = None,
         subset: Optional[str] = None,
@@ -498,8 +500,10 @@ class _MLXTrainerAdapter:
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
         s3_config: dict = None,
+        training_seed: int = 3407,
     ) -> Optional[tuple]:
         self._dataset_config = {
+            "training_datasets": training_datasets or [],
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,
             "local_eval_datasets": local_eval_datasets,
