@@ -7,6 +7,8 @@ const PREVIEW_ITEM_MAX_CHARS = 120;
 // Bullets indented past the shallowest one are nested detail, not headlines.
 const NESTED_INDENT_TOLERANCE = 1;
 const TAB_WIDTH = 4;
+// Four spaces starts an indented code block in Markdown.
+const INDENTED_CODE_INDENT = 4;
 
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -77,17 +79,17 @@ function stripHtmlTags(text: string): string {
 
 /** Inline markdown stripped to plain text. */
 function toPlainText(markdown: string): string {
-  // Code spans are literal, so park them before emphasis stripping and put
-  // them back after: `__version__` must survive intact.
+  // Park code spans first: their contents are literal, so tags, links and
+  // emphasis inside them must survive every transformation below.
   const codes: string[] = [];
-  const parked = stripHtmlTags(
-    markdown.replace(AUTOLINK, "$1").replace(IMAGE, "").replace(LINK, "$1"),
-  ).replace(CODE_SPAN, (_match, code: string) => {
+  const parked = markdown.replace(CODE_SPAN, (_match, code: string) => {
     codes.push(code);
     return `\uE000${codes.length - 1}\uE001`;
   });
 
-  return parked
+  return stripHtmlTags(
+    parked.replace(AUTOLINK, "$1").replace(IMAGE, "").replace(LINK, "$1"),
+  )
     .replace(BOLD_STAR, "$1")
     .replace(BOLD_UNDERSCORE, "$1$2")
     .replace(ITALIC_STAR, "$1")
@@ -262,6 +264,12 @@ function collectBullets(markdown: string): {
   for (const line of contentLines(markdown)) {
     if (!line.text || HEADING.test(line.text)) {
       flush();
+      continue;
+    }
+
+    // An indented code block renders as code, so a "- cmd" line inside one is
+    // not a bullet. Continuation lines of an open bullet still belong to it.
+    if (current === null && line.indent >= INDENTED_CODE_INDENT) {
       continue;
     }
 

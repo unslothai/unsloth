@@ -392,6 +392,17 @@ def test_preview_matches_how_markdown_renders_prose_and_links():
     assert "ABBREVIATIONS" in src and "INITIAL" in src
 
 
+def test_preview_treats_code_as_literal():
+    """Inside a code span, and inside an indented code block, Markdown renders
+    the text literally, so the preview must not transform or promote it."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    # Code spans are parked before any other inline transformation.
+    park = src.index("markdown.replace(CODE_SPAN")
+    assert park < src.index("stripHtmlTags(\n    parked")
+    # A "- cmd" line inside an indented code block is not a headline bullet.
+    assert "INDENTED_CODE_INDENT" in src
+
+
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""
