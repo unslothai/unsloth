@@ -346,6 +346,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
 
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
+  const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -368,6 +369,17 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
+  // Keep the streaming height cap until the automatic close finishes. Removing
+  // it on the completion frame expands long reasoning to its full height before
+  // the collapsible can close, which makes the entire chat jump.
+  useEffect(() => {
+    const timeout = window.setTimeout(
+      () => setRetainStreamingHeight(isReasoningStreaming),
+      isReasoningStreaming ? 0 : ANIMATION_DURATION,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [isReasoningStreaming]);
+
   // Open while streaming (unless dismissed), or once manually opened.
   const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
   const variant = isOpen ? "outline" : "ghost";
@@ -378,6 +390,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       if (isReasoningStreaming) {
         setDismissedWhileStreaming(!open);
       } else {
+        if (open) {
+          setRetainStreamingHeight(false);
+        }
         setManualOpen(open);
       }
     },
@@ -407,7 +422,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
       >
-        <ReasoningText streaming={isReasoningStreaming}>
+        <ReasoningText
+          streaming={isReasoningStreaming || retainStreamingHeight}
+        >
           {children}
         </ReasoningText>
       </ReasoningContent>

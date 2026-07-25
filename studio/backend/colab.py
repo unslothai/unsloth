@@ -218,11 +218,10 @@ def _colab_login_html(username: str, password: str) -> str:
             Unsloth Studio Login (Colab)
         </h2>
         <p style="color: #333333; margin: 0 0 12px 0; font-size: 14px; font-weight: bold;">
-            Log in to Studio with the Cloudflare link above using these credentials. This cell
-            is visible only in your notebook session.
+            Log in as <code>{username}</code> with this password. This cell is visible only in
+            your notebook session.
         </p>
         <p style="color: #333333; margin: 0; font-size: 14px; font-family: monospace; font-weight: bold;">
-            Username: <code>{username}</code><br>
             Password: <code>{password}</code>
         </p>
     </div>
@@ -441,8 +440,29 @@ def _is_studio_healthy(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def _shareable_link_html(cloudflare_url: str) -> str:
-    """Branded card for the shareable Cloudflare link, styled like the show_link banner."""
+def _shareable_link_html(
+    cloudflare_url: str,
+    password: "str | None" = None,
+    username: "str | None" = None,
+) -> str:
+    """Branded card for the shareable Cloudflare link, styled like the show_link banner.
+
+    *password* renders under the link so the credential sits in the card with the button
+    it unlocks. The username is always the default admin, so it reads inline.
+    """
+    login_block = ""
+    if password:
+        login_block = f"""
+        <p style="color: #000000; margin: 16px 0 0 0; font-size: 20px; font-weight: 800;">
+            Password
+        </p>
+        <p style="margin: 6px 0 0 0;"><code style="display: inline-block; font-size: 24px;
+            font-weight: 800; text-decoration: underline; background: #f3f3f3;
+            padding: 4px 10px; border-radius: 6px;">{password}</code></p>
+        <p style="color: #666666; margin: 6px 0 0 0; font-size: 12px;">
+            Log in as <code>{username}</code> with this password. Shown only in your
+            notebook session, and never included in the shared link.
+        </p>"""
     return f"""
     <div style="display: inline-block; padding: 20px; background: #ffffff; border: 2px solid #000000;
                 border-radius: 12px; margin: 10px 0; font-family: system-ui, -apple-system, sans-serif;">
@@ -460,11 +480,12 @@ def _shareable_link_html(cloudflare_url: str) -> str:
             Open Unsloth Studio
         </a>
         <p style="color: #333333; margin: 12px 0 0 0; font-size: 14px; font-weight: bold;">
-            This Cloudflare HTTPS link works from any device — share it with anyone. The Colab view below only works in this tab.
+            This Cloudflare HTTPS link works from any device, so you can share it with anyone.
         </p>
         <p style="color: #333333; margin: 16px 0 0 0; font-size: 13px; font-family: monospace; font-weight: bold;">
-            🔗 {cloudflare_url}
-        </p>
+            🔗 <a href="{cloudflare_url}" onclick="var w=window.open(this.href,'_blank');if(!w){{return true;}}return false;"
+                  style="color: #000000; text-decoration: underline; cursor: pointer;">{cloudflare_url}</a>
+        </p>{login_block}
     </div>
     """
 
@@ -555,28 +576,37 @@ def _show_and_embed(
         cloudflare_url = cloudflare_url,
     )
 
+    # Fold the credentials into the link card rather than a second card below it.
+    credentials_shown = False
     if cloudflare_url:
         try:
             from IPython.display import HTML, display
-            display(HTML(_shareable_link_html(cloudflare_url)))
+
+            username, password = colab_login if colab_login else (None, None)
+            display(HTML(_shareable_link_html(cloudflare_url, password, username)))
+            credentials_shown = bool(colab_login)
         except Exception as e:
             logger.info(f"Could not render Cloudflare link card ({e}).")
 
-    if colab_login:
+    if colab_login and not credentials_shown:
         try:
             _show_colab_login_credentials(*colab_login)
         except Exception as e:
             logger.info(f"Could not render Colab login card ({e}).")
 
-    try:
-        show_link(
-            port,
-            _url = url,
-            has_cloudflare_link = bool(cloudflare_url),
-            cloudflare_requested = cloudflare_requested,
-        )
-    except Exception as e:
-        logger.info(f"Could not render Unsloth link card ({e}).")
+    # With a tunnel up the embed below is skipped, so the ready card would only restate
+    # the link card and print a proxy URL that 404s outside this tab.
+    skip_ready_card = _is_colab_runtime() and bool(cloudflare_url)
+    if not skip_ready_card:
+        try:
+            show_link(
+                port,
+                _url = url,
+                has_cloudflare_link = bool(cloudflare_url),
+                cloudflare_requested = cloudflare_requested,
+            )
+        except Exception as e:
+            logger.info(f"Could not render Unsloth link card ({e}).")
 
     # On Colab with a working tunnel, skip the in-cell proxy embed (often blank).
     if _is_colab_runtime() and cloudflare_url:
