@@ -9,10 +9,14 @@ No GPU, network, or subprocesses are required.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import logging
 import sys
 import threading
 import types as _types
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -28,6 +32,10 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
+# routes/inference.py pulls in core.inference.external_provider, which binds a
+# structlog logger at import time; give the stub a working factory so the route
+# module is importable when structlog is not installed.
+_structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
 try:
@@ -118,6 +126,22 @@ def _fail_download(*_args, **_kwargs):
 
 def _fail_get_paths_info(*_args, **_kwargs):
     raise AssertionError("cached reuse must return before the sizing preflight")
+
+
+def _load_route_module(name: str, relative_path: str):
+    """Import a route module under a private name so patches can't leak."""
+    spec = importlib.util.spec_from_file_location(name, Path(_BACKEND_DIR) / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
+async def _no_gguf_gpu_ids(*_args, **_kwargs):
+    return None
 
 
 class TestLoadReusesCachedCopy:
@@ -785,16 +809,16 @@ class TestLoadHubDownloadExclusion:
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
-        gguf_branch = source[source.index("if config.is_gguf:") :]
+        # Slice the GGUF *load* branch, i.e. the "if config.is_gguf:" nearest
+        # above the in-flight marker. _load_model_impl has earlier
+        # "if config.is_gguf:" statements (the GPU-pool validation added by
+        # #7239), so a plain first-match index anchors on the wrong statement.
+        marker = source.index("enter_context(gguf_load_in_flight")
+        gguf_branch = source[source.rindex("if config.is_gguf:", 0, marker) :]
 
         # The gguf_load_in_flight marker must be entered before the hub-download
         # guard and the unload so a concurrent load can't race the download
-        # manager. The llama_extra_args inheritance moved out of the branch into
-        # _resolve_inherited_extra_args, which must still run BEFORE it: the
-        # inherited value (e.g. a carried --no-mmproj) shapes the guard's
-        # require_mmproj. Anchor on the call form so the assertion pins the
-        # endpoint's call site, not the function definition.
-        assert source.index("= _resolve_inherited_extra_args(") < source.index("if config.is_gguf:")
+        # manager.
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
@@ -804,3 +828,121 @@ class TestLoadHubDownloadExclusion:
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text()
         assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
+
+    def _capture_hub_guard_require_mmproj(
+        self,
+        stored_extra_args,
+        request_extra_args = None,
+    ):
+        """Drive /load's GGUF path and return the hub guard's require_mmproj.
+
+        Stops at the guard by making it report a conflicting download, so the
+        409 is the observation point and no llama-server is ever started.
+        """
+        import core.inference.llama_cpp as llama_cpp_module
+
+        from fastapi import HTTPException
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_inherited_extra_args_test",
+            "routes/inference.py",
+        )
+        captured = {}
+
+        def _fake_blocks(
+            repo,
+            variant,
+            *,
+            require_mmproj,
+            hf_token = None,
+        ):
+            captured["repo"] = repo
+            captured["variant"] = variant
+            captured["require_mmproj"] = require_mmproj
+            return True
+
+        # A vision GGUF: require_mmproj is True unless the effective extras
+        # carry --no-mmproj.
+        config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            is_vision = True,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+            gguf_hf_repo = REPO,
+            gguf_variant = VARIANT,
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            identifier = REPO,
+            display_name = REPO,
+        )
+        # Previous same-model load's pass-through extras, as the running
+        # llama.cpp backend records them.
+        llama_backend = SimpleNamespace(
+            is_loaded = False,
+            extra_args = list(stored_extra_args),
+            extra_args_source = (REPO, VARIANT),
+            hf_variant = VARIANT,
+            model_identifier = REPO,
+        )
+        request = LoadRequest(
+            model_path = REPO,
+            gguf_variant = VARIANT,
+            llama_extra_args = request_extra_args,
+        )
+
+        with (
+            patch.object(
+                route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: config),
+            ),
+            patch.object(route, "get_llama_cpp_backend", lambda: llama_backend),
+            patch.object(
+                route,
+                "get_inference_backend",
+                lambda: SimpleNamespace(active_model_name = None),
+            ),
+            patch.object(route, "_resolve_gguf_gpu_ids_for_request", _no_gguf_gpu_ids),
+            patch.object(route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(route, "_effective_load_in_4bit", return_value = False),
+            patch.object(route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(llama_cpp_module, "_hub_download_blocks_gguf_load", _fake_blocks),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                asyncio.run(
+                    route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+
+        assert exc_info.value.status_code == 409
+        assert captured["repo"] == REPO
+        return captured["require_mmproj"]
+
+    def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
+        # llama_extra_args inheritance must resolve before the hub-download
+        # guard runs: the inherited value (a carried --no-mmproj) decides the
+        # guard's require_mmproj, so resolving it later would reject a load
+        # over an mmproj download the effective arguments disable (#7251).
+        # Asserted behaviourally rather than by source offsets, which silently
+        # re-anchored onto an unrelated "if config.is_gguf:" (#7239).
+        assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
+        # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
+        assert self._capture_hub_guard_require_mmproj([]) is True
+        # An explicit request list wins over the stored one, both ways.
+        assert (
+            self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"]) is False
+        )
+        assert (
+            self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
+        )
