@@ -160,6 +160,10 @@ export function DatasetSection() {
   const sourcePillLayoutId = useId();
   const {
     dataset,
+    trainingDatasets,
+    addTrainingDataset,
+    removeTrainingDataset,
+    updateTrainingDataset,
     datasetSource,
     selectHfDataset,
     selectLocalDataset,
@@ -194,6 +198,10 @@ export function DatasetSection() {
   } = useTrainingConfigStore(
     useShallow((s) => ({
       dataset: s.dataset,
+      trainingDatasets: s.trainingDatasets,
+      addTrainingDataset: s.addTrainingDataset,
+      removeTrainingDataset: s.removeTrainingDataset,
+      updateTrainingDataset: s.updateTrainingDataset,
       datasetSource: s.datasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
@@ -348,12 +356,24 @@ export function DatasetSection() {
   function handleDatasetSelect(id: string | null) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "huggingface";
+    if (id && isAddingDataset) {
+      addTrainingDataset({ source: "huggingface", path: id });
+      setIsAddingDataset(false);
+      setSearchQuery("");
+      return;
+    }
     selectHfDataset(id);
   }
 
   function handleLocalDatasetSelect(path: string) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "local";
+    if (isAddingDataset) {
+      addTrainingDataset({ source: "upload", path });
+      setIsAddingDataset(false);
+      setSearchQuery("");
+      return;
+    }
     selectLocalDataset(path);
   }
 
@@ -515,6 +535,7 @@ export function DatasetSection() {
   );
 
   const [isUploading, setIsUploading] = useState(false);
+  const [isAddingDataset, setIsAddingDataset] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
   const [uploadLimitBytes, setUploadLimitBytes] = useState(
     getCachedUploadLimitBytes,
@@ -615,7 +636,7 @@ export function DatasetSection() {
 
     await handleFileUpload(
       file,
-      selectLocalDataset,
+      handleLocalDatasetSelect,
       t("studio.dataset.datasetUploaded"),
     );
   };
@@ -763,7 +784,9 @@ export function DatasetSection() {
           {datasetSource !== "s3" && (
             <div className="flex min-w-0 flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {t("studio.dataset.chooseDataset")}
+                {isAddingDataset
+                  ? "Choose another dataset"
+                  : t("studio.dataset.chooseDataset")}
                 <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-ui-10 font-medium text-foreground/80">
                   {datasetSource === "upload"
                     ? t("studio.dataset.localTab")
@@ -1046,7 +1069,8 @@ export function DatasetSection() {
             </div>
           )}
 
-          {datasetSource !== "s3" &&
+          {trainingDatasets.length === 0 &&
+            datasetSource !== "s3" &&
             (isHfDatasetSelected ? (
               <HfDatasetSubsetSplitSelectors
                 variant="studio"
@@ -1364,52 +1388,83 @@ export function DatasetSection() {
 
           {datasetSource !== "s3" && (
             <div className="flex flex-col gap-3">
-              {selectedDatasetName ? (
-                <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
-                  <div className="rounded-md bg-indigo-500/10 p-1.5">
-                    <HugeiconsIcon
-                      icon={FileAttachmentIcon}
-                      className="size-4 text-indigo-500"
-                    />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-mono text-sm font-medium truncate">
-                      {datasetSource === "upload"
-                        ? (selectedLocalDataset?.label ??
-                          deriveLocalDatasetName(selectedDatasetName))
-                        : selectedDatasetName}
+              {trainingDatasets.length > 0 ? (
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Training datasets ({trainingDatasets.length})
                     </p>
-                    <p className="text-ui-10 text-muted-foreground">
-                      {datasetSource === "upload" ? (
-                        uploadedFile ? (
-                          <>
-                            {t("studio.dataset.localDataset")}
-                            {selectedLocalRows != null
-                              ? t("studio.dataset.localDatasetRows", {
-                                  count: selectedLocalRows.toLocaleString(),
-                                })
-                              : ""}
-                          </>
-                        ) : (
-                          t("studio.dataset.localDataset")
-                        )
-                      ) : (
-                        <>
-                          {t("studio.dataset.huggingFaceDataset")}
-                          {datasetSubset && ` / ${datasetSubset}`}
-                          {datasetSplit && ` / ${datasetSplit}`}
-                        </>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 cursor-pointer text-xs"
+                      onClick={() => {
+                        setIsAddingDataset((value) => !value);
+                        setSearchQuery("");
+                      }}
+                    >
+                      {isAddingDataset ? "Cancel" : "Add dataset"}
+                    </Button>
+                  </div>
+                  {trainingDatasets.map((entry, index) => (
+                    <div
+                      key={`${entry.source}:${entry.path}:${index}`}
+                      className="rounded-lg border bg-muted/30 p-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-indigo-500/10 text-ui-10 font-semibold text-indigo-500">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-mono text-xs font-medium">
+                            {entry.path}
+                          </p>
+                          <p className="text-ui-10 text-muted-foreground">
+                            {entry.source === "huggingface"
+                              ? "Hugging Face"
+                              : "Local dataset"}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 shrink-0 cursor-pointer text-xs text-destructive"
+                          onClick={() => removeTrainingDataset(index)}
+                        >
+                          Remove
+                        </Button>
+                      </div>
+                      {entry.source === "huggingface" && (
+                        <div className="mt-3 border-t pt-3">
+                          <HfDatasetSubsetSplitSelectors
+                            variant="studio"
+                            enabled={true}
+                            datasetName={entry.path}
+                            accessToken={hfToken || undefined}
+                            datasetSubset={entry.subset ?? null}
+                            setDatasetSubset={(subset) =>
+                              updateTrainingDataset(index, {
+                                subset,
+                                split: null,
+                              })
+                            }
+                            datasetSplit={entry.split ?? null}
+                            setDatasetSplit={(split) =>
+                              updateTrainingDataset(index, { split })
+                            }
+                            datasetEvalSplit={null}
+                            setDatasetEvalSplit={() => undefined}
+                          />
+                        </div>
                       )}
+                    </div>
+                  ))}
+                  {isAddingDataset && (
+                    <p className="rounded-md border border-dashed border-indigo-500/50 bg-indigo-500/5 px-3 py-2 text-xs text-muted-foreground">
+                      Select a Hugging Face or local dataset above to add it to
+                      this list.
                     </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="shrink-0 text-xs"
-                    onClick={() => clearSelectionForTab(activeSourceTab)}
-                  >
-                    {t("studio.dataset.clear")}
-                  </Button>
+                  )}
                 </div>
               ) : (
                 <button
