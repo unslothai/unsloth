@@ -111,45 +111,46 @@ export function ExampleDatasetCards({
         {examples.map((ex) => (
           <div
             key={ex.id}
-            className="flex min-w-0 flex-col gap-2 rounded-lg border border-border p-2.5"
+            className="flex min-w-0 flex-col gap-2.5 rounded-lg border border-border px-4 py-3"
           >
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  {/* Both are truncated, so the full text lives in a tooltip. */}
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                        {shortExampleLabel(ex.label)}
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>{ex.label}</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <span className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground">
-                        {ex.license}
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>{ex.license}</TooltipContent>
-                  </Tooltip>
-                </div>
-                <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-                  {ex.description}
-                </p>
-              </div>
+            <div className="flex min-w-0 items-center gap-1.5">
+              {/* Both are truncated, so the full text lives in a tooltip. */}
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                    {shortExampleLabel(ex.label)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{ex.label}</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <span className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground">
+                    {ex.license}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{ex.license}</TooltipContent>
+              </Tooltip>
+            </div>
+            <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+              {ex.description}
+            </p>
+            {/* Import is the card's action, so it sits at the bottom right, on the
+                thumbnail row, instead of floating beside the text. */}
+            <div className="flex min-w-0 items-end justify-between gap-3">
+              <ExamplePreviews repo={ex.repo} />
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-7 shrink-0 self-center px-3 text-xs"
+                // ml-auto keeps it right-aligned even when the previews are missing.
+                className="ml-auto h-7 shrink-0 px-3 text-xs"
                 onClick={() => onImport(ex)}
                 disabled={busyId !== null}
               >
                 {busyId === ex.id ? "Importing..." : "Import"}
               </Button>
             </div>
-            <ExamplePreviews repo={ex.repo} />
           </div>
         ))}
       </div>
