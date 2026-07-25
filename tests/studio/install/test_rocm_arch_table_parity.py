@@ -3,7 +3,7 @@
 
 """Drift guards for the AMD gfx tables that are duplicated across the installers.
 
-The same three tables are hand-copied into up to six places each:
+The same three tables are hand-copied into up to seven places each:
 
   gfx -> AMD index family   install.sh (_amd_arch_index_family_for_gfx)
                             install.ps1 ($archFamilyMap)
