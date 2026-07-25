@@ -654,9 +654,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             samplingWeight: dataset.samplingWeight ?? null,
           }],
         })),
-        removeTrainingDataset: (index) => set((state) => ({
-          trainingDatasets: state.trainingDatasets.filter((_, i) => i !== index),
-        })),
+        removeTrainingDataset: (index) => set((state) => {
+          const trainingDatasets = state.trainingDatasets.filter((_, i) => i !== index);
+          if (trainingDatasets.length > 0) return { trainingDatasets };
+          return {
+            trainingDatasets,
+            dataset: null,
+            uploadedFile: null,
+            datasetSubset: null,
+            datasetSplit: null,
+          };
+        }),
         updateTrainingDataset: (index, patch) => set((state) => ({
           trainingDatasets: state.trainingDatasets.map((entry, i) =>
             i === index ? { ...entry, ...patch } : entry),
