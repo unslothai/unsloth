@@ -87,6 +87,8 @@ export type SelectedModelInput = {
   /** Direct local .gguf file (no HF variant / native token) — still a GGUF
    *  source, so the staging flow treats it as one. */
   isGguf?: boolean;
+  /** Staged metadata confirmed the separate DiffusionGemma runner. */
+  isDiffusion?: boolean;
   throwOnError?: boolean;
   /** Keep the current speculative-decoding choice across the model switch
    *  instead of resetting it to the standing preference. */
@@ -487,15 +489,23 @@ export function useChatModelRuntime() {
           : selection.nativePathExpiresAtMs ?? null;
       const explicitIsGguf =
         typeof selection === "string" ? undefined : selection.isGguf;
+      const isDiffusion =
+        typeof selection === "string" ? false : selection.isDiffusion === true;
+      const restorePreviousConfig = () => {
+        if (typeof selection !== "string" && selection.previousConfig) {
+          applyPerModelConfigToRuntime(selection.previousConfig, {
+            isDiffusion:
+              useChatRuntimeStore.getState().loadedIsDiffusion,
+          });
+        }
+      };
       const throwOnError =
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        restorePreviousConfig();
         return;
       }
       // A load is already in flight. If it's this exact pick (id + variant + token),
@@ -508,9 +518,7 @@ export function useChatModelRuntime() {
         loadingModelRef.current ??
         useChatRuntimeStore.getState().loadingModelPick;
       if (inFlightLoad) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        restorePreviousConfig();
         const loadingSamePick =
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
@@ -669,6 +677,7 @@ export function useChatModelRuntime() {
           let loadSelectedGpuIds = reconcilePersistedGpuIds(
             stateBeforeUnload.selectedGpuIds,
             stateBeforeUnload.selectedGpuIndexKind,
+            isDiffusion,
           );
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
@@ -1473,9 +1482,7 @@ export function useChatModelRuntime() {
           resetLoadingUi();
         }
       } catch (error) {
-        if (typeof selection !== "string" && selection.previousConfig) {
-          applyPerModelConfigToRuntime(selection.previousConfig);
-        }
+        restorePreviousConfig();
         if (abortCtrl.signal.aborted) return; // User cancelled, nothing to report
         resetLoadingUi();
         const message =

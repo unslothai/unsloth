@@ -24,6 +24,8 @@ export interface SystemGpuDevice {
   memoryFreeGb: number;
   /** Whether `index` is safe to send as gpu_ids. */
   pinnable: boolean;
+  /** Whether the separate DiffusionGemma runner can use this physical ID. */
+  diffusionPinnable: boolean;
 }
 
 export type GpuIndexKind = "physical" | "vulkan";
@@ -84,6 +86,8 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
 function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
   // GGUF placement may use a different namespace from the global torch view.
   const pinnableBackend = data?.gpu?.gguf_gpu_ids_supported !== false;
+  const diffusionBackend =
+    data?.device_backend === "cuda" || data?.device_backend === "rocm";
   return (data?.gpu?.gguf_devices ?? data?.gpu?.devices ?? [])
     .filter((d) => typeof d.index === "number")
     .map((d) => ({
@@ -98,6 +102,8 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
       pinnable:
         pinnableBackend &&
         (d.index_kind === "physical" || d.index_kind === "vulkan"),
+      diffusionPinnable:
+        diffusionBackend && d.index_kind === "physical",
     }));
 }
 
@@ -145,19 +151,24 @@ export async function ensureGpuDeviceCache(): Promise<void> {
 }
 
 /** Cached pinnable IDs, null before fetch, or [] when pinning is unavailable. */
-export function cachedPinnableGpuIndices(): number[] | null {
+export function cachedPinnableGpuIndices(
+  forDiffusion = false,
+): number[] | null {
   if (!cachedSystem) return null;
-  const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
+  const pinnable = toGpuDevices(cachedSystem).filter((d) =>
+    forDiffusion ? d.diffusionPinnable : d.pinnable,
+  );
   return pinnable.length > 1 ? pinnable.map((d) => d.index) : [];
 }
 
 /** Cached index namespace, undefined before fetch and null when unavailable. */
-export function cachedPinnableGpuIndexKind():
-  | GpuIndexKind
-  | null
-  | undefined {
+export function cachedPinnableGpuIndexKind(
+  forDiffusion = false,
+): GpuIndexKind | null | undefined {
   if (!cachedSystem) return undefined;
-  const pinnable = toGpuDevices(cachedSystem).filter((d) => d.pinnable);
+  const pinnable = toGpuDevices(cachedSystem).filter((d) =>
+    forDiffusion ? d.diffusionPinnable : d.pinnable,
+  );
   const kinds = new Set(pinnable.map((d) => d.indexKind).filter((k) => k));
   return pinnable.length > 1 && kinds.size === 1
     ? ([...kinds][0] as GpuIndexKind)

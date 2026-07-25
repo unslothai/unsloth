@@ -2337,6 +2337,7 @@ export function ChatPage({
       });
       const hasAppliedConfig = applyModelLoadConfigToRuntime(
         selection.config ?? rememberedConfigFor(selection),
+        { isDiffusion: selection.isDiffusion },
       );
       await selectModel({
         ...selection,
@@ -2676,6 +2677,7 @@ export function ChatPage({
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
+          isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
@@ -2718,6 +2720,7 @@ export function ChatPage({
         nativePathToken: nativeToken ?? undefined,
         nativePathExpiresAtMs: nativeExpiry,
         isGguf: activeModelIsGguf,
+        isDiffusion: activeModelIsDiffusion,
         isDownloaded: true,
         config,
         forceReload: true,
@@ -2728,6 +2731,7 @@ export function ChatPage({
       activeGgufVariant,
       activeModelIsLora,
       activeModelIsGguf,
+      activeModelIsDiffusion,
       handleCheckpointChange,
     ],
   );

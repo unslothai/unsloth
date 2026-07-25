@@ -593,10 +593,11 @@ export function rebalanceSplit(
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
   savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
 ): number[] | null {
   if (ids == null) return ids;
   if (arguments.length >= 2) {
-    const currentIndexKind = cachedPinnableGpuIndexKind();
+    const currentIndexKind = cachedPinnableGpuIndexKind(forDiffusion);
     const expectedIndexKind =
       savedIndexKind === undefined ? "physical" : savedIndexKind;
     if (
@@ -607,7 +608,7 @@ export function reconcilePersistedGpuIds(
       return null;
     }
   }
-  const pinnable = cachedPinnableGpuIndices();
+  const pinnable = cachedPinnableGpuIndices(forDiffusion);
   if (pinnable === null) return ids; // cache not ready: can't validate, keep it
   const kept = ids.filter((i) => pinnable.includes(i));
   return kept.length > 0 ? kept : null;
@@ -666,7 +667,9 @@ export function loadedGpuMemoryFields(resp: {
   // gpu_ids remains the effective fitted subset for diagnostics.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
   const gpuIndexKind =
-    reportedGpuIds == null ? null : cachedPinnableGpuIndexKind();
+    reportedGpuIds == null
+      ? null
+      : cachedPinnableGpuIndexKind(resp.is_diffusion === true);
   // A numeric ID is unsafe to adopt or persist until discovery says whether it
   // is a physical CUDA/ROCm ID or a Vulkan ordinal. A later status refresh can
   // restore the requested pool after the shared system cache is warm.

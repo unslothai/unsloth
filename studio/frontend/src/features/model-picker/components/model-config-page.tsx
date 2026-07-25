@@ -19,7 +19,11 @@ import {
   readPersistedSpeculativeType,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useGpuDevices } from "@/hooks/use-gpu-info";
+import {
+  type GpuIndexKind,
+  type SystemGpuDevice,
+  useGpuDevices,
+} from "@/hooks/use-gpu-info";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
@@ -88,15 +92,17 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
 
 function withoutUnsupportedDiffusionSettings(
   config: PerModelConfig,
+  currentGpuIndexKind: GpuIndexKind | null = null,
 ): PerModelConfig {
-  const hasVulkanGpuPick =
+  const hasUnsupportedGpuPick =
     config.selectedGpuIds != null &&
-    config.selectedGpuIndexKind === "vulkan";
+    (config.selectedGpuIndexKind === "vulkan" ||
+      currentGpuIndexKind === "vulkan");
   if (
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
-    !hasVulkanGpuPick
+    !hasUnsupportedGpuPick
   ) {
     return config;
   }
@@ -105,13 +111,23 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
-    ...(hasVulkanGpuPick
+    ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
           selectedGpuIndexKind: undefined,
         }
       : {}),
   };
+}
+
+function gpuIndexKindOf(
+  gpuDevices: SystemGpuDevice[],
+): GpuIndexKind | null {
+  return gpuDevices.length > 0 &&
+    gpuDevices[0].indexKind !== null &&
+    gpuDevices.every((device) => device.indexKind === gpuDevices[0].indexKind)
+    ? gpuDevices[0].indexKind
+    : null;
 }
 
 function ChatTemplateSetting({
@@ -260,14 +276,15 @@ function GpuMemorySettings({
   layerCount,
   moeLayerCount,
   isDiffusion,
+  gpuDevices,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   layerCount: number | null;
   moeLayerCount: number | null;
   isDiffusion: boolean;
+  gpuDevices: SystemGpuDevice[];
 }) {
-  const gpuDevices = useGpuDevices();
   const mode = config.gpuMemoryMode ?? "auto";
   const isManual = mode === "manual";
   const gpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
@@ -280,20 +297,16 @@ function GpuMemorySettings({
   const moeLayersMax = moeLayerCount ?? 0;
   const showMoeSlider = isManual && !autoLayers && moeLayersMax > 0;
   const selectedGpuIds = config.selectedGpuIds ?? null;
-  const gpuIndexKind =
-    gpuDevices.length > 0 &&
-    gpuDevices[0].indexKind !== null &&
-    gpuDevices.every((device) => device.indexKind === gpuDevices[0].indexKind)
-      ? gpuDevices[0].indexKind
-      : null;
+  const gpuIndexKind = gpuIndexKindOf(gpuDevices);
   const singleGpuInUse =
     (selectedGpuIds ?? gpuDevices.map((device) => device.index)).length <= 1;
   // Multi-GPU only, with one backend-declared index namespace. null = all.
   const showGpuPicker =
-    !(isDiffusion && gpuIndexKind === "vulkan") &&
     gpuDevices.length > 1 &&
     gpuIndexKind !== null &&
-    gpuDevices.every((d) => d.pinnable);
+    gpuDevices.every((d) =>
+      isDiffusion ? d.diffusionPinnable : d.pinnable,
+    );
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
   const toggleGpu = (index: number) => {
@@ -440,6 +453,7 @@ function GgufAdvancedSettings({
   layerCount,
   moeLayerCount,
   isDiffusion,
+  gpuDevices,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -449,6 +463,7 @@ function GgufAdvancedSettings({
   layerCount: number | null;
   moeLayerCount: number | null;
   isDiffusion: boolean;
+  gpuDevices: SystemGpuDevice[];
 }) {
   return (
     <>
@@ -578,6 +593,7 @@ function GgufAdvancedSettings({
         layerCount={layerCount}
         moeLayerCount={moeLayerCount}
         isDiffusion={isDiffusion}
+        gpuDevices={gpuDevices}
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -588,7 +604,7 @@ function GgufAdvancedSettings({
 interface ModelConfigPageProps {
   target: ModelPickTarget;
   onBack?: () => void;
-  onRun: (config: PerModelConfig) => void;
+  onRun: (config: PerModelConfig, isDiffusion: boolean) => void;
   loadedConfig?: PerModelConfig | null;
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
@@ -618,6 +634,8 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
+  const gpuDevices = useGpuDevices();
+  const gpuIndexKind = gpuIndexKindOf(gpuDevices);
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
     if (loadedConfig) {
@@ -636,7 +654,7 @@ export function ModelConfigPage({
   const [initial] = useState(resolveInitial);
   const [config, setConfig] = useState<PerModelConfig>(() =>
     isDiffusion
-      ? withoutUnsupportedDiffusionSettings(initial.config)
+      ? withoutUnsupportedDiffusionSettings(initial.config, gpuIndexKind)
       : initial.config,
   );
   const [remember, setRemember] = useState(() => initial.remembered);
@@ -732,6 +750,13 @@ export function ModelConfigPage({
       config.selectedGpuIds != null);
   const resolvedIsDiffusion =
     isDiffusion || stagedDims?.isDiffusion === true;
+  useEffect(() => {
+    if (resolvedIsDiffusion && gpuIndexKind === "vulkan") {
+      setConfig((current) =>
+        withoutUnsupportedDiffusionSettings(current, gpuIndexKind),
+      );
+    }
+  }, [resolvedIsDiffusion, gpuIndexKind]);
 
   const isMtp =
     config.speculativeType != null &&
@@ -763,7 +788,7 @@ export function ModelConfigPage({
     update({ customContextLength: v });
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
-    ? withoutUnsupportedDiffusionSettings(rawBaseline)
+    ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
   const atBaseline = perModelConfigsEqual(config, baseline);
   // An explicit customContextLength equal to the native ceiling is still an
@@ -794,7 +819,7 @@ export function ModelConfigPage({
   // remembers, pin that shown context so a later fresh load keeps the fitted
   // placement instead of sending native/0 for fixed layers and recreating the OOM.
   const loadableConfig = resolvedIsDiffusion
-    ? withoutUnsupportedDiffusionSettings(config)
+    ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
   const pinFixedLayerContext =
     target.isGguf &&
@@ -858,7 +883,7 @@ export function ModelConfigPage({
     if (saveFailed) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    onRun(loadConfig);
+    onRun(loadConfig, resolvedIsDiffusion);
   };
 
   return (
@@ -954,6 +979,7 @@ export function ModelConfigPage({
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
                 isDiffusion={resolvedIsDiffusion}
+                gpuDevices={gpuDevices}
               />
             )}
 

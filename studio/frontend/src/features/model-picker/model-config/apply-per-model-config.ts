@@ -20,7 +20,10 @@ function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
 }
 
-export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
+export function applyPerModelConfigToRuntime(
+  config: PerModelConfig,
+  options: { isDiffusion?: boolean } = {},
+): void {
   // Fall back to the standing default when the model has no saved
   // maxSeqLength. maxSeqLength is the only per-model field carried on
   // params (the rest are reset below), so without this a model with no
@@ -37,6 +40,7 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
       ? reconcilePersistedGpuIds(
           config.selectedGpuIds,
           config.selectedGpuIndexKind,
+          options.isDiffusion,
         )
       : null;
   useChatRuntimeStore.setState({
@@ -69,9 +73,10 @@ export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
 
 export function applyModelLoadConfigToRuntime(
   config: PerModelConfig | null | undefined,
+  options: { isDiffusion?: boolean } = {},
 ): boolean {
   const hasConfig = config != null;
-  applyPerModelConfigToRuntime(config ?? DEFAULT_PER_MODEL_CONFIG);
+  applyPerModelConfigToRuntime(config ?? DEFAULT_PER_MODEL_CONFIG, options);
   return hasConfig;
 }
 
