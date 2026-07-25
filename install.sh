@@ -685,6 +685,30 @@ _smart_apt_install() {
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
     if command -v sudo >/dev/null 2>&1; then
+        # `sudo -n` succeeds only when no password is required. Without a
+        # terminal we cannot supply one, and every sudo call below closes stdin,
+        # so probe first rather than letting sudo die on its own prompt (#7307).
+        if sudo -n true >/dev/null 2>&1; then
+            _sudo_unattended=true
+        else
+            _sudo_unattended=false
+        fi
+
+        # Nothing to prompt on and sudo wants a password: this cannot succeed.
+        # Exit with the same actionable message as the no-sudo path instead of
+        # assuming consent and failing inside sudo.
+        if [ ! -r /dev/tty ] && [ "$_sudo_unattended" != true ]; then
+            echo ""
+            echo "    These packages are missing and need sudo to install:"
+            echo "    $_STILL_MISSING"
+            echo "    Detected $(_apt_distro_description)."
+            echo "    No terminal is available to confirm on and sudo requires a"
+            echo "    password here, so this cannot be done unattended."
+            echo "    Please install them first, then re-run Unsloth Studio setup:"
+            echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+            exit 1
+        fi
+
         _ad_desc="$(_apt_distro_description)"
         echo ""
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
@@ -695,10 +719,13 @@ _smart_apt_install() {
         echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
         if [ -r /dev/tty ]; then
+            printf "    Accept? [Y/n] "
             read -r REPLY </dev/tty || REPLY="y"
         else
+            # Unattended with passwordless sudo: no one can answer, and asking
+            # would only leave a dangling prompt in the log.
+            echo "    No terminal to confirm on; proceeding with passwordless sudo."
             REPLY="y"
         fi
         case "$REPLY" in

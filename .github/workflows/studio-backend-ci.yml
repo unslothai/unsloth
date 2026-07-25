@@ -223,6 +223,7 @@ jobs:
         run: |
           set -e
           for s in \
+              tests/sh/test_apt_distro_prompt.sh \
               tests/sh/test_get_torch_index_url.sh \
               tests/sh/test_mac_intel_compat.sh \
               tests/sh/test_node_decision.sh \

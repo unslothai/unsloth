@@ -89,6 +89,79 @@ assert_contains "mentions apt-get" "$_smart" 'sudo apt-get'
 assert_contains "mentions official repos" "$_smart" "official repositories"
 assert_contains "rejects tarball worry" "$_smart" "not a third-party tarball"
 
+# ── No-TTY sudo escalation (#7307 Problem 7) ────────────────────────
+# The old code assumed consent when /dev/tty was unreadable, then ran sudo with
+# stdin closed, so a password-requiring host died on a raw sudo error instead of
+# printing the actionable "install these first" message. Drive the real function
+# with /dev/tty rewritten to a fixture path, the same trick used for
+# /etc/os-release above, so both TTY states are reachable hermetically.
+echo "=== _smart_apt_install no-TTY escalation ==="
+
+# $1 tty: "tty" | "notty"   $2 sudo: "nopasswd" | "needspasswd" | "absent"
+run_smart() {
+    _tty_mode="$1"; _sudo_mode="$2"
+    _d=$(mktemp -d -p "$_TMP_ROOT")
+    [ "$_tty_mode" = tty ] && printf 'y\n' > "$_d/tty"
+
+    _f=$(mktemp -p "$_TMP_ROOT")
+    sed -n '/^_smart_apt_install()/,/^}/p' "$INSTALL_SH" \
+        | sed -e "s#/dev/tty#$_d/tty#g" > "$_f"
+
+    (
+        TAURI_MODE=false
+        _apt_distro_description() { echo "TestOS 1.0 (debian-like)"; }
+        _is_pkg_installed() { return 1; }          # nothing ever installs
+        apt-get() { return 1; }                    # unprivileged attempt fails
+        command() {
+            if [ "$1" = -v ] && [ "$2" = sudo ]; then
+                [ "$_sudo_mode" != absent ]; return $?
+            fi
+            builtin command "$@"
+        }
+        sudo() {
+            if [ "$1" = -n ]; then
+                [ "$_sudo_mode" = nopasswd ]; return $?
+            fi
+            echo "SUDO_RAN: $*"
+        }
+        # shellcheck disable=SC1090
+        . "$_f"
+        _smart_apt_install cmake 2>&1
+        echo "EXIT:$?"
+    ) || true
+}
+
+_out=$(run_smart notty needspasswd)
+assert_contains "no tty + password sudo: says it cannot run unattended" \
+    "$_out" "cannot be done unattended"
+assert_contains "no tty + password sudo: gives the manual command" \
+    "$_out" "sudo apt-get update -y && sudo apt-get install -y cmake"
+assert_contains "no tty + password sudo: names the distro" \
+    "$_out" "TestOS 1.0 (debian-like)"
+case "$_out" in
+    *SUDO_RAN*) echo "  FAIL: no tty + password sudo must not invoke sudo"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: no tty + password sudo does not invoke sudo"; PASS=$((PASS + 1)) ;;
+esac
+case "$_out" in
+    *"Accept? [Y/n]"*) echo "  FAIL: must not print an unanswerable prompt"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: no dangling Accept? prompt without a tty"; PASS=$((PASS + 1)) ;;
+esac
+
+# Passwordless sudo is the one case where unattended escalation is legitimate.
+_out=$(run_smart notty nopasswd)
+assert_contains "no tty + passwordless sudo: still installs" "$_out" "SUDO_RAN: apt-get install -y cmake"
+assert_contains "no tty + passwordless sudo: says why it proceeded" \
+    "$_out" "proceeding with passwordless sudo"
+
+# A readable tty must behave exactly as before: prompt, then honour the answer.
+_out=$(run_smart tty needspasswd)
+assert_contains "tty present: still prompts" "$_out" "Accept? [Y/n]"
+assert_contains "tty present: accepts and installs" "$_out" "SUDO_RAN: apt-get install -y cmake"
+
+# No sudo at all keeps its own message.
+_out=$(run_smart notty absent)
+assert_contains "no sudo binary: unchanged message" "$_out" "sudo is not available on this system"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
