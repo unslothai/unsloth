@@ -96,9 +96,7 @@ def resolve_batch_jobs(
     return list(zip(job_prompts, job_seeds)), base_seed
 
 
-def chunk_jobs(
-    jobs: list[tuple[str, int]], batch_size: int
-) -> list[list[tuple[str, int]]]:
+def chunk_jobs(jobs: list[tuple[str, int]], batch_size: int) -> list[list[tuple[str, int]]]:
     """Split the jobs into per-forward chunks.
 
     ``batch_size`` doubles as the per-forward cap when a prompt/seed list drives

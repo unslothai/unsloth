@@ -57,7 +57,9 @@ def test_family_repo_by_scheme_and_component():
     assert family_te_prequant_repo(fam, "fp8", "text_encoder_3") is None
     assert family_te_prequant_repo(fam, "int8", "text_encoder") is None
     # A malformed entry is skipped, not fatal.
-    assert family_te_prequant_repo(_fam(te_prequant_repos = (("bad",),)), "fp8", "text_encoder") is None
+    assert (
+        family_te_prequant_repo(_fam(te_prequant_repos = (("bad",),)), "fp8", "text_encoder") is None
+    )
     # Families without the field resolve to None (both dataclasses default it, but a fake
     # or an older family object must not break).
     assert family_te_prequant_repo(types.SimpleNamespace(name = "x"), "fp8", "text_encoder") is None
@@ -80,7 +82,11 @@ def test_resolve_priority_and_scheme_gate():
 
 
 # ── checkpoint validation ────────────────────────────────────────────────────
-def _good_ckpt(scheme = "fp8", component = "text_encoder", base = "Lightricks/LTX-2"):
+def _good_ckpt(
+    scheme = "fp8",
+    component = "text_encoder",
+    base = "Lightricks/LTX-2",
+):
     return {
         "format": TE_PREQUANT_FORMAT,
         "metadata": {
@@ -155,18 +161,23 @@ def _target():
 def test_pipe_kwargs_empty_when_mode_not_fp8(monkeypatch):
     fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
     for mode in (None, "", "off", "int8", "fp8_dynamic"):
-        assert te_prequant_pipe_kwargs(
-            fam, "Lightricks/LTX-2", te_quant_mode = mode, target = _target(), dtype = None
-        ) == {}
+        assert (
+            te_prequant_pipe_kwargs(
+                fam, "Lightricks/LTX-2", te_quant_mode = mode, target = _target(), dtype = None
+            )
+            == {}
+        )
 
 
 def test_pipe_kwargs_empty_without_hosted_entry(monkeypatch):
     import core.inference.diffusion_precision as precision
-
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
-    assert te_prequant_pipe_kwargs(
-        _fam(), "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
-    ) == {}
+    assert (
+        te_prequant_pipe_kwargs(
+            _fam(), "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+        )
+        == {}
+    )
 
 
 def test_pipe_kwargs_empty_when_device_unsupported(monkeypatch):
@@ -174,9 +185,12 @@ def test_pipe_kwargs_empty_when_device_unsupported(monkeypatch):
 
     fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: False)
-    assert te_prequant_pipe_kwargs(
-        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
-    ) == {}
+    assert (
+        te_prequant_pipe_kwargs(
+            fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+        )
+        == {}
+    )
 
 
 def test_pipe_kwargs_respects_family_deny(monkeypatch):
@@ -188,9 +202,12 @@ def test_pipe_kwargs_respects_family_deny(monkeypatch):
     monkeypatch.setattr(
         precision, "_te_family_denied", lambda family, mode: family == "ltx-2", raising = False
     )
-    assert te_prequant_pipe_kwargs(
-        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
-    ) == {}
+    assert (
+        te_prequant_pipe_kwargs(
+            fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+        )
+        == {}
+    )
 
 
 def test_pipe_kwargs_injects_loaded_encoder(monkeypatch):
@@ -220,9 +237,12 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
     monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
     monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
-    assert te_prequant_pipe_kwargs(
-        fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
-    ) == {}
+    assert (
+        te_prequant_pipe_kwargs(
+            fam, "Lightricks/LTX-2", te_quant_mode = "fp8", target = _target(), dtype = None
+        )
+        == {}
+    )
 
 
 def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
@@ -259,9 +279,7 @@ def test_te_base_equivalent_groups():
     assert te_base_equivalent(
         "Qwen/Qwen-Image", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
     )
-    assert te_base_equivalent(
-        "black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"
-    )
+    assert te_base_equivalent("black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev")
     assert te_base_equivalent(
         "black-forest-labs/FLUX.1-Krea-dev", "black-forest-labs/FLUX.1-schnell"
     )
@@ -281,8 +299,11 @@ def test_validate_accepts_equivalent_base():
         },
     }
     assert tpq._validate_checkpoint(
-        ckpt, "fp8", "text_encoder",
-        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", None,
+        ckpt,
+        "fp8",
+        "text_encoder",
+        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+        None,
     )
     assert not tpq._validate_checkpoint(
         ckpt, "fp8", "text_encoder", "black-forest-labs/FLUX.1-schnell", None
@@ -317,31 +338,36 @@ def test_hosted_te_prequant_entries():
         ("fp8", "text_encoder", "unsloth/LTX-2-FP8"),
     )
     # The hosted filenames follow the repo naming convention the resolver derives.
-    assert te_prequant_repo_filename(
-        "unsloth/Qwen-Image-FP8", "text_encoder", "fp8"
-    ) == "Qwen-Image-text_encoder-FP8.pt"
-    assert te_prequant_repo_filename(
-        "unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8"
-    ) == "FLUX.2-dev-text_encoder-FP8.pt"
-    assert te_prequant_repo_filename(
-        "unsloth/LTX-2-FP8", "text_encoder", "fp8"
-    ) == "LTX-2-text_encoder-FP8.pt"
+    assert (
+        te_prequant_repo_filename("unsloth/Qwen-Image-FP8", "text_encoder", "fp8")
+        == "Qwen-Image-text_encoder-FP8.pt"
+    )
+    assert (
+        te_prequant_repo_filename("unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8")
+        == "FLUX.2-dev-text_encoder-FP8.pt"
+    )
+    assert (
+        te_prequant_repo_filename("unsloth/LTX-2-FP8", "text_encoder", "fp8")
+        == "LTX-2-text_encoder-FP8.pt"
+    )
     # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs because
     # the generic quantize_text_encoders pass only covers text_encoder.._3.
     assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
         ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
     )
-    assert te_prequant_repo_filename(
-        "unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8"
-    ) == "HiDream-I1-Full-text_encoder_4-FP8.pt"
+    assert (
+        te_prequant_repo_filename("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8")
+        == "HiDream-I1-Full-text_encoder_4-FP8.pt"
+    )
     # Round 2: T5-XXL for every flux.1 base (byte-identical weights, one artifact),
     # Gemma2-2B, Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
     assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
         ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
     )
-    assert te_prequant_repo_filename(
-        "unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8"
-    ) == "FLUX.1-schnell-text_encoder_2-FP8.pt"
+    assert (
+        te_prequant_repo_filename("unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8")
+        == "FLUX.1-schnell-text_encoder_2-FP8.pt"
+    )
     assert detect_family("Alpha-VLLM/Lumina-Image-2.0").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),
     )
@@ -351,9 +377,9 @@ def test_hosted_te_prequant_entries():
     assert detect_family("krea/Krea-2-Turbo").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),
     )
-    assert detect_family(
-        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
-    ).te_prequant_repos == (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),)
+    assert detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers").te_prequant_repos == (
+        ("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),
+    )
     # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the
     # z-image artifact must not serve it (verified tensor diff, maxdiff 0.86).
     assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == ()
@@ -422,18 +448,13 @@ def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
         name = "hidream-i1",
     )
-    out = dh.hidream_te4_kwargs(
-        None, None, fam = fam, te_quant_mode = "fp8", target = _target()
-    )
+    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
     assert out["text_encoder_4"] is precast
     assert calls["base"] == "unsloth/Meta-Llama-3.1-8B-Instruct"
     assert calls["component"] == "text_encoder_4"
     # Standalone repo: config at the root, forward flags the pipeline needs applied.
     assert calls["config_subfolder"] == ""
-    assert calls["config_overrides"] == {
-        "output_hidden_states": True,
-        "output_attentions": True,
-    }
+    assert calls["config_overrides"] == {"output_hidden_states": True, "output_attentions": True}
     # The dense Llama download never ran.
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") not in recorder
 
@@ -452,9 +473,7 @@ def test_hidream_te4_falls_back_to_dense_cast(monkeypatch):
         te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
         name = "hidream-i1",
     )
-    out = dh.hidream_te4_kwargs(
-        None, None, fam = fam, te_quant_mode = "fp8", target = _target()
-    )
+    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
     assert cast == [out["text_encoder_4"]]
     assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") in recorder
 
@@ -473,9 +492,7 @@ def test_hidream_te4_partial_cast_reloads_dense(monkeypatch):
 
     monkeypatch.setattr(precision, "_cast_fp8", _boom)
     fam = _fam(name = "hidream-i1")  # no hosted entry -> dense + cast path
-    out = dh.hidream_te4_kwargs(
-        None, None, fam = fam, te_quant_mode = "fp8", target = _target()
-    )
+    out = dh.hidream_te4_kwargs(None, None, fam = fam, te_quant_mode = "fp8", target = _target())
     dense_loads = [r for r in recorder if r[0] == "llama_from_pretrained"]
     assert len(dense_loads) == 2  # initial load + the fail-safe reload
     assert getattr(out["text_encoder_4"], "tag", "").startswith("dense")
@@ -498,18 +515,31 @@ def test_assemble_pipe_injects_precast_te(monkeypatch):
             seen.update(kw)
             return FakePipe()
 
-    monkeypatch.setattr(
-        dif, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": "PRECAST"}
-    )
+    monkeypatch.setattr(dif, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": "PRECAST"})
     dif.DiffusionBackend._assemble_pipe(
-        FakePipelineCls, "org/base", "TR", None, None, "cpu", None,
-        fam = None, te_quant_mode = "fp8", target = object(),
+        FakePipelineCls,
+        "org/base",
+        "TR",
+        None,
+        None,
+        "cpu",
+        None,
+        fam = None,
+        te_quant_mode = "fp8",
+        target = object(),
     )
     assert seen["text_encoder"] == "PRECAST"
     seen.clear()
     # No target (defensive default) keeps the assembly unchanged.
     dif.DiffusionBackend._assemble_pipe(
-        FakePipelineCls, "org/base", "TR", None, None, "cpu", None, fam = None,
+        FakePipelineCls,
+        "org/base",
+        "TR",
+        None,
+        None,
+        "cpu",
+        None,
+        fam = None,
     )
     assert "text_encoder" not in seen
 

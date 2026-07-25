@@ -149,7 +149,9 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
 
 
 def settled_snapshot_device_memory(
-    target: Any, attempts: int = 3, delay_s: float = 1.0
+    target: Any,
+    attempts: int = 3,
+    delay_s: float = 1.0,
 ) -> DeviceMemory:
     """``snapshot_device_memory`` hardened against TRANSIENT free-VRAM undercounts on cuda.
 
@@ -165,7 +167,6 @@ def settled_snapshot_device_memory(
         return snapshot_device_memory(target)
     try:
         import torch
-
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
@@ -178,7 +179,6 @@ def settled_snapshot_device_memory(
                 break
         try:
             import time
-
             time.sleep(delay_s)
         except Exception:  # noqa: BLE001
             break

@@ -127,7 +127,6 @@ def test_lumina2_generation_defaults():
 def test_lumina2_prequant_wiring():
     # Hosted int8/fp8 checkpoints (gate-validated) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
-
     fam = detect_family("Alpha-VLLM/Lumina-Image-2.0")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/Lumina-Image-2.0-FP8"
@@ -186,15 +185,15 @@ def test_hunyuanimage21_is_trusted_non_gguf():
 def test_hunyuanimage21_generation_defaults():
     # Card recipe: 50 steps; guidance feeds the call's distilled_guidance_scale (3.25
     # default), while classifier-free guidance runs inside the repo's guider components.
-    assert default_generation_params(
-        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
-    ) == (50, 3.25)
+    assert default_generation_params("hunyuanvideo-community/HunyuanImage-2.1-Diffusers") == (
+        50,
+        3.25,
+    )
 
 
 def test_hunyuanimage21_prequant_wiring():
     # Hosted int8/fp8 checkpoints, verified bit-identical to on-the-fly quantize.
     from core.inference.diffusion_families import family_prequant_repo
-
     fam = detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/HunyuanImage-2.1-FP8"
@@ -300,7 +299,6 @@ def test_hidream_prequant_wiring():
     # Hosted int8/fp8 checkpoints (28/28 per-case gate pairs per scheme; int8 verified
     # bit-identical to on-the-fly quantize) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
-
     fam = detect_family("HiDream-ai/HiDream-I1-Full")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/HiDream-I1-Full-FP8"

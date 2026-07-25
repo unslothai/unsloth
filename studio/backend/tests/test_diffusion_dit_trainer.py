@@ -40,7 +40,12 @@ from core.training.diffusion_train_common import (
 
 def test_specs_cover_the_dit_families():
     assert set(_SPECS) == {
-        "flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"
+        "flux.1",
+        "qwen-image",
+        "z-image",
+        "krea-2",
+        "flux.2-klein",
+        "flux.2-dev",
     }
     # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are
     # single-stream.
@@ -132,9 +137,7 @@ def test_flux2_rejects_fp16_before_loading():
     ).normalized()
     assert ok.resolved_family == "flux.2-klein"
     assert (
-        DiffusionLoraConfig(
-            base_model = "black-forest-labs/FLUX.2-dev", data_dir = "d", output_dir = "o"
-        )
+        DiffusionLoraConfig(base_model = "black-forest-labs/FLUX.2-dev", data_dir = "d", output_dir = "o")
         .normalized()
         .resolved_family
         == "flux.2-dev"

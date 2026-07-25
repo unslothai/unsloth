@@ -355,7 +355,14 @@ def checkpoint_variant(checkpoint_path: Path | str) -> str:
 # (measured second sigma 0.945-0.981 vs 0.99375, and a 0.37-0.61 -> 0.1 tail vs 0.725 -> 0.42),
 # so the distilled default of 8 steps must pass this list verbatim.
 LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
-    1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875,
+    1.0,
+    0.99375,
+    0.9875,
+    0.98125,
+    0.975,
+    0.909375,
+    0.725,
+    0.421875,
 )
 
 
@@ -393,8 +400,6 @@ def ltx23_verbatim_sigmas(pipe: Any) -> Any:
             register(**saved)
 
     return _ctx()
-
-
 
 
 # ── component builders ───────────────────────────────────────────────────────

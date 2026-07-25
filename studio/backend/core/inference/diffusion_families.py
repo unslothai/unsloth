@@ -623,7 +623,9 @@ def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
 
 
 def family_prequant_repo(
-    fam: DiffusionFamily, scheme: str, base_repo: Optional[str] = None
+    fam: DiffusionFamily,
+    scheme: str,
+    base_repo: Optional[str] = None,
 ) -> Optional[str]:
     """The hosted pre-quantized transformer repo for ``scheme`` in this family, or None.
 

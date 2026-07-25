@@ -414,6 +414,7 @@ def test_diffusers_apply_rejects_unsupported_quant():
     # selection. nvfp4/mxfp8 are never baked, so the same reload error is unreachable there
     # via the API (supports_lora blocks the load), but the backend path is shared.
     import threading
+
     pipe = _FakePipe()
     with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
         _backend()._apply_loras(

@@ -363,6 +363,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # (torchao >= 0.13); older versions keep today's behaviour via the signature check.
         import inspect
         from torchao.quantization import PerRow
+
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
@@ -378,7 +379,6 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
                 from torchao.quantization.quantize_.common.kernel_preference import (
                     KernelPreference,
                 )
-
                 fp8_kwargs["kernel_preference"] = KernelPreference.TORCH
             except Exception:  # noqa: BLE001 — enum moved: keep the library default
                 pass

@@ -135,7 +135,12 @@ def test_lora_attached_bypasses_the_cache(cache_env):
 class _ListEncodePipe(_EncodePipe):
     """Returns per-prompt embedding LISTS like Z-Image's ``encode_prompt``."""
 
-    def encode_prompt(self, prompt, device = None, do_classifier_free_guidance = True):
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+        do_classifier_free_guidance = True,
+    ):
         self.calls += 1
         prompts = prompt if isinstance(prompt, list) else [prompt]
         embeds = [torch.full((1, 4), float(sum(map(ord, p)))) for p in prompts]

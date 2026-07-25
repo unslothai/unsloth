@@ -2427,14 +2427,17 @@ class DiffusionGenerateRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _prompts_seeds_lengths_match(self) -> "DiffusionGenerateRequest":
-        if self.prompts is not None and self.seeds is not None and len(self.prompts) != len(
-            self.seeds
+        if (
+            self.prompts is not None
+            and self.seeds is not None
+            and len(self.prompts) != len(self.seeds)
         ):
             raise ValueError(
                 f"prompts and seeds must have the same length (got {len(self.prompts)} "
                 f"prompts, {len(self.seeds)} seeds)"
             )
         return self
+
     # Image-conditioned workflows (base64 or data-URL): init_image alone runs img2img,
     # init_image + mask_image runs inpaint. Both require a family with the matching pipeline or
     # the load is rejected. Cap each base64 string so one request can't buffer a multi-GB payload

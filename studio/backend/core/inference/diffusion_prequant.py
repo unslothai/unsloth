@@ -159,9 +159,7 @@ def usable_prequant_source(
     memory planning falls back to dense-fit checks up front, instead of the loader refusing
     the path only after the resident pipeline was evicted and dense bf16 materialises under
     a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
-    src = resolve_prequant_source(
-        fam, scheme, path_override = path_override, base_repo = base_repo
-    )
+    src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
         return None
     return src
@@ -271,10 +269,14 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
         try:
             from huggingface_hub.errors import EntryNotFoundError
         except Exception:  # noqa: BLE001 — older hub layouts; fall back to a private marker
+
             class EntryNotFoundError(Exception):  # type: ignore[no-redef]
                 pass
+
         try:
-            return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
+            return hf_hub_download(
+                repo_id = source.location, filename = source.filename, token = hf_token
+            )
         except EntryNotFoundError:
             if not source.fallback_filename or source.fallback_filename == source.filename:
                 raise

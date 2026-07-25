@@ -75,7 +75,6 @@ def hidream_te4_kwargs(
             load_prequant_text_encoder,
             resolve_te_prequant_source,
         )
-
         source = resolve_te_prequant_source(fam, "text_encoder_4", "fp8")
         if source is not None:
             encoder = load_prequant_text_encoder(

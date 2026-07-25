@@ -30,7 +30,6 @@ def _qwen_scheduler():
     # use_dynamic_shifting is true, base_shift = max_shift = log 3 (constant inference mu),
     # exponential time shift, terminal stretch to 0.02.
     from diffusers import FlowMatchEulerDiscreteScheduler
-
     return FlowMatchEulerDiscreteScheduler(
         num_train_timesteps = 1000,
         shift = 1.0,
@@ -45,7 +44,6 @@ def _qwen_scheduler():
 def _flux_static_scheduler():
     # A static-shift scheduler (shift baked into sigmas at init, no dynamic shifting).
     from diffusers import FlowMatchEulerDiscreteScheduler
-
     return FlowMatchEulerDiscreteScheduler(num_train_timesteps = 1000, shift = 3.0)
 
 
@@ -73,17 +71,13 @@ def test_flow_shift_explicit_values_and_validation():
     assert cfg.flow_shift == 2.2
     # String numerics from the Studio config path coerce; "auto" passes through.
     assert (
-        DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "3.0"
-        )
+        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "3.0")
         .normalized()
         .flow_shift
         == 3.0
     )
     assert (
-        DiffusionLoraConfig(
-            base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "AUTO"
-        )
+        DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "AUTO")
         .normalized()
         .flow_shift
         == "auto"

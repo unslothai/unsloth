@@ -135,7 +135,6 @@ def install(
         # Lazy: core.training imports parts of core.inference, so the module-level
         # import would be circular; the extras module itself is stdlib-only.
         from core.training.diffusion_train_extras import PersistentConditioningCache
-
         signature = inspect.signature(encode)
         cache = PersistentConditioningCache(root, family, 0)
     except Exception as exc:  # noqa: BLE001 — cache is best-effort
@@ -167,9 +166,7 @@ def install(
             if not all(_json_safe(v) for v in keyed.values()):
                 # Tensor/object arguments (pre-supplied embeds, images) are not keyable.
                 return encode(*args, **kwargs)
-            payload = json.dumps(
-                {"load": load_fp, "args": keyed}, sort_keys = True, default = str
-            )
+            payload = json.dumps({"load": load_fp, "args": keyed}, sort_keys = True, default = str)
             key = cache.text_key(
                 f"inference::{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
             )
@@ -217,7 +214,6 @@ def _target_device(pipe: Any, bound: inspect.BoundArguments) -> Any:
 def _diffusers_version() -> Optional[str]:
     try:
         import diffusers  # noqa: PLC0415
-
         return str(getattr(diffusers, "__version__", None))
     except Exception:  # noqa: BLE001
         return None

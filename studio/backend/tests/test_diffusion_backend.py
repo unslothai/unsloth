@@ -2673,7 +2673,9 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     assert _FakeTransformer.last["path"]  # GGUF path used
 
 
-def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(fake_runtime, tmp_path, monkeypatch):
+def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
+    fake_runtime, tmp_path, monkeypatch
+):
     # With a prequant checkpoint, the fast path loads the small quantized file, so a dense
     # misfit must NOT decline the fast path -- but the dense re-check still runs to gate the
     # in-loader fallback: if the prequant later fails, the loader must raise to GGUF instead of
@@ -2756,7 +2758,12 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     replan_calls = []
     orig_plan = DiffusionBackend._plan_memory
 
-    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
         real = orig_plan(
             self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
         )
@@ -2797,9 +2804,7 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     assert attempted == [False]  # fast path attempted; prequant-sized plan forbids dense fallback
 
 
-def test_dense_quant_replan_no_retry_when_capacity_truly_short(
-    fake_runtime, tmp_path, monkeypatch
-):
+def test_dense_quant_replan_no_retry_when_capacity_truly_short(fake_runtime, tmp_path, monkeypatch):
     # When the candidate does NOT fit total capacity, the decline is real: no retry.
     import dataclasses
 
@@ -2821,7 +2826,12 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
     replan_calls = []
     orig_plan = DiffusionBackend._plan_memory
 
-    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
         real = orig_plan(
             self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
         )
@@ -2869,7 +2879,12 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
     )
     orig_plan = DiffusionBackend._plan_memory
 
-    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
         real = orig_plan(
             self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
         )
@@ -2906,9 +2921,7 @@ def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
         )
 
 
-def test_declined_dense_without_loras_still_falls_back_to_gguf(
-    fake_runtime, tmp_path, monkeypatch
-):
+def test_declined_dense_without_loras_still_falls_back_to_gguf(fake_runtime, tmp_path, monkeypatch):
     # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0
     # adapters count as "none" (an explicit disable is not a bake request).
     backend = DiffusionBackend()
@@ -2928,10 +2941,18 @@ class _BakePipe:
     def __init__(self):
         self.calls: list = []
 
-    def load_lora_weights(self, path, adapter_name = None):
+    def load_lora_weights(
+        self,
+        path,
+        adapter_name = None,
+    ):
         self.calls.append(("load", path, adapter_name))
 
-    def set_adapters(self, names, adapter_weights = None):
+    def set_adapters(
+        self,
+        names,
+        adapter_weights = None,
+    ):
         self.calls.append(("set", tuple(names), tuple(adapter_weights)))
 
 
@@ -2960,9 +2981,7 @@ def test_dense_quant_lora_bake_attaches_before_quantize(fake_runtime, monkeypatc
             return object()
 
     pipe = _BakePipe()
-    monkeypatch.setattr(
-        DiffusionBackend, "_assemble_pipe", staticmethod(lambda *a, **k: pipe)
-    )
+    monkeypatch.setattr(DiffusionBackend, "_assemble_pipe", staticmethod(lambda *a, **k: pipe))
     monkeypatch.setattr(
         DiffusionBackend,
         "_resolve_lora_set",
@@ -3013,9 +3032,7 @@ def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
     backend = DiffusionBackend()
     pipe = _BakePipe()
     with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
-        backend._apply_loras(
-            _quant_lora_state(pipe), [("sloth", 1.0)], threading.Event()
-        )
+        backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.0)], threading.Event())
     # ...but a no-adapter generation on the same pipe stays a plain no-op.
     backend._apply_loras(_quant_lora_state(pipe), [], threading.Event())
     assert pipe.calls == []
@@ -3030,9 +3047,7 @@ def test_apply_loras_quant_baked_matrix(monkeypatch):
         DiffusionBackend,
         "_resolve_lora_set",
         staticmethod(
-            lambda specs, **k: tuple(
-                (i, f"/adapters/{i}.safetensors", w) for (i, w) in specs
-            )
+            lambda specs, **k: tuple((i, f"/adapters/{i}.safetensors", w) for (i, w) in specs)
         ),
     )
 
@@ -3079,7 +3094,13 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
             calls["device"] = device
             return self
 
-    def fake_loader(base, dtype, hf_token = None, transformer = None, text_encoder = None):
+    def fake_loader(
+        base,
+        dtype,
+        hf_token = None,
+        transformer = None,
+        text_encoder = None,
+    ):
         calls["base"] = base
         calls["transformer"] = transformer
         return Pipe()
@@ -3632,9 +3653,7 @@ def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
 def test_generate_prompt_list_rejected_off_txt2img(fake_runtime, tmp_path):
     backend = _load_zimage_backend(tmp_path)
     with pytest.raises(ValueError, match = "text-to-image only"):
-        backend.generate(
-            prompt = "x", prompts = ["a", "b"], init_image = _tiny_png_b64()
-        )
+        backend.generate(prompt = "x", prompts = ["a", "b"], init_image = _tiny_png_b64())
 
 
 class _CountingPipe(_FakePipe):
@@ -3645,7 +3664,12 @@ class _CountingPipe(_FakePipe):
         self.batch_attempts = []
         self.max_images = max_images
 
-    def __call__(self, *, prompt = None, **kwargs):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        **kwargs,
+    ):
         n = kwargs.get("num_images_per_prompt", 1)
         if isinstance(prompt, list):
             n *= len(prompt)
@@ -3683,7 +3707,12 @@ def test_generate_oom_backoff_halves_the_batch(fake_runtime, tmp_path):
 class _BoomPipe(_CountingPipe):
     """Fails every forward with a NON-OOM error (must not trigger backoff)."""
 
-    def __call__(self, *, prompt = None, **kwargs):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        **kwargs,
+    ):
         self.batch_attempts.append(kwargs.get("num_images_per_prompt", 1))
         raise RuntimeError("shape mismatch")
 

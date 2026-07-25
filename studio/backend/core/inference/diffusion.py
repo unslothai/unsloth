@@ -506,7 +506,7 @@ def _install_gguf_prefix_strip(transformer_cls: Any, logger: Any) -> None:
 
         def _stripped_mapping_fn(checkpoint = None, **kwargs):
             checkpoint = {
-                (key[len(prefix):] if key.startswith(prefix) else key): value
+                (key[len(prefix) :] if key.startswith(prefix) else key): value
                 for key, value in (checkpoint or {}).items()
             }
             return original(checkpoint = checkpoint, **kwargs)
@@ -1303,6 +1303,7 @@ class DiffusionBackend:
                             logger = logger,
                         )
                         if candidate is not None:
+
                             def _replan_candidate():
                                 return self._plan_memory(
                                     target,
@@ -1982,8 +1983,16 @@ class DiffusionBackend:
                 )
                 if transformer is not None:
                     pipe = self._assemble_pipe(
-                        pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir,
-                        fam = fam, te_quant_mode = text_encoder_quant, target = target,
+                        pipeline_cls,
+                        base,
+                        transformer,
+                        dtype,
+                        hf_token,
+                        device,
+                        base_local_dir,
+                        fam = fam,
+                        te_quant_mode = text_encoder_quant,
+                        target = target,
                     )
                     return pipe, scheme
 
@@ -1998,8 +2007,16 @@ class DiffusionBackend:
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
         pipe = self._assemble_pipe(
-            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir,
-            fam = fam, te_quant_mode = text_encoder_quant, target = target,
+            pipeline_cls,
+            base,
+            transformer,
+            dtype,
+            hf_token,
+            device,
+            base_local_dir,
+            fam = fam,
+            te_quant_mode = text_encoder_quant,
+            target = target,
         )
         if lora_specs:
             # Bake the adapters BEFORE quantize_: peft injects its wrappers on the dense
@@ -3032,8 +3049,7 @@ class DiffusionBackend:
                     chunk_kwargs = dict(kwargs)
                     shared = uniform_prompt(chunk)
                     generators = [
-                        torch.Generator(device = state.device).manual_seed(s)
-                        for _, s in chunk
+                        torch.Generator(device = state.device).manual_seed(s) for _, s in chunk
                     ]
                     if len(jobs) == 1:
                         # Single image: scalar prompt + generator, exactly the pre-batching
@@ -3060,9 +3076,7 @@ class DiffusionBackend:
                             raise
                         # OOM backoff: halve the failed chunk and retry; finished chunks keep
                         # their images and per-image seeds keep every retry reproducible.
-                        empty_cache = getattr(
-                            getattr(torch, "cuda", None), "empty_cache", None
-                        )
+                        empty_cache = getattr(getattr(torch, "cuda", None), "empty_cache", None)
                         if callable(empty_cache):
                             empty_cache()
                         first_half, second_half = split_chunk(chunk)

@@ -201,6 +201,7 @@ def _bell_loss_weights(num_train_timesteps):
     centered mid-schedule, floored at 0 and normalized to mean 1 (so the expected loss
     scale is unchanged). Indexed by round(sigma * num_train_timesteps)."""
     import torch
+
     steps = num_train_timesteps
     t = torch.arange(steps, dtype = torch.float32)
     w = torch.exp(-2.0 * ((t - steps / 2) / steps) ** 2)
@@ -370,7 +371,6 @@ def _fp8_training_config():
     dim never aborts the scaled_mm (the rowwise recipe manages its own padding rules and
     rejects the knob, hence the split)."""
     from torchao.float8 import Float8LinearConfig
-
     try:
         return Float8LinearConfig.from_recipe_name("rowwise")
     except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
@@ -1218,9 +1218,7 @@ _SPECS: dict[str, _FamilySpec] = {
 # HF repos that gate access behind a license acceptance: training needs a token whose account
 # accepted the license. Checked by name (no network) so a missing token fails fast with an
 # actionable message instead of a confusing 401 mid-load.
-_GATED_TRAIN_REPOS = frozenset(
-    {"black-forest-labs/flux.1-dev", "black-forest-labs/flux.2-dev"}
-)
+_GATED_TRAIN_REPOS = frozenset({"black-forest-labs/flux.1-dev", "black-forest-labs/flux.2-dev"})
 
 
 def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
@@ -1290,8 +1288,16 @@ def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, fli
 
 
 def _build_latent_cache(
-    spec, vae, image_paths, cfg, device, weight_dtype, on_event, check_stop,
-    pcache = None, plan = None,
+    spec,
+    vae,
+    image_paths,
+    cfg,
+    device,
+    weight_dtype,
+    on_event,
+    check_stop,
+    pcache = None,
+    plan = None,
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
     encode once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The
@@ -1688,8 +1694,13 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             pcache, image_paths, plan, to_encode, device
         )
         if caption_embeds is not None:
-            _emit(on_event, "preparing", stage = "cache_latents",
-                  done = len(image_paths), total = len(image_paths))
+            _emit(
+                on_event,
+                "preparing",
+                stage = "cache_latents",
+                done = len(image_paths),
+                total = len(image_paths),
+            )
     if caption_embeds is None:
         # Phase 1 (cold): conditioning only. The pipeline loads WITHOUT its transformer, so
         # the text encoders + VAE never share VRAM with the multi-GB denoiser. Caption
@@ -1709,8 +1720,16 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         # preserved).
         if use_cache:
             latent_cache = _build_latent_cache(
-                spec, vae, image_paths, cfg, device, weight_dtype, on_event, _check_stop,
-                pcache = pcache, plan = plan,
+                spec,
+                vae,
+                image_paths,
+                cfg,
+                device,
+                weight_dtype,
+                on_event,
+                _check_stop,
+                pcache = pcache,
+                plan = plan,
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
                 # The estimated cache exceeded the host-memory budget; keep the VAE resident
@@ -1900,9 +1919,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                 else:
                     per = F.mse_loss(model_pred.float(), target.float(), reduction = "none")
                     w_idx = (
-                        (sigmas.flatten().float() * num_train_ts)
-                        .long()
-                        .clamp(0, num_train_ts - 1)
+                        (sigmas.flatten().float() * num_train_ts).long().clamp(0, num_train_ts - 1)
                     )
                     w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
                     loss = (per * w).mean()

@@ -588,9 +588,7 @@ def test_settled_snapshot_stops_early_when_device_already_idle(monkeypatch):
 
     def fake_snapshot(target):
         calls.append(1)
-        return DeviceMemory(
-            "cuda", "cuda", "discrete_vram", free_mib = 170_000, total_mib = 183_359
-        )
+        return DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 170_000, total_mib = 183_359)
 
     monkeypatch.setattr(dm, "snapshot_device_memory", fake_snapshot)
     snap = dm.settled_snapshot_device_memory(_target(device = "cuda"), attempts = 3, delay_s = 0)
@@ -619,7 +617,11 @@ def test_plan_fits_total_capacity():
     # stem from the instantaneous free reading, so a settled retry is worthwhile.
     from core.inference.diffusion_memory import plan_fits_total_capacity
 
-    def plan(required, total, kind = "discrete_vram"):
+    def plan(
+        required,
+        total,
+        kind = "discrete_vram",
+    ):
         return types.SimpleNamespace(
             estimates = {"resident_required_mib": required},
             device_memory = DeviceMemory("cuda", "cuda", kind, free_mib = 1, total_mib = total),

@@ -252,7 +252,10 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     # mid-schedule); the small warmups below are scaled for Studio's short-run step budgets.
     "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20},
     "qwen-image": {
-        "lora_rank": 16, "learning_rate": 5e-5, "resolution": 512, "lr_warmup_steps": 20,
+        "lora_rank": 16,
+        "learning_rate": 5e-5,
+        "resolution": 512,
+        "lr_warmup_steps": 20,
     },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth script defaults):
@@ -261,10 +264,16 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     # The upstream FLUX.2 DreamBooth references default to rank 16 / lr 1e-4; FLUX.2's
     # uniform timestep draw benefits most from a warmup ramp.
     "flux.2-klein": {
-        "lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20,
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_warmup_steps": 20,
     },
     "flux.2-dev": {
-        "lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20,
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_warmup_steps": 20,
     },
 }
 

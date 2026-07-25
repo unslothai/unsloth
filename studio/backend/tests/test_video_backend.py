@@ -897,9 +897,7 @@ def test_ltx23_verbatim_sigmas_restores_scheduler_config():
 
     class _Sched:
         def __init__(self):
-            self.config = _Cfg(
-                use_dynamic_shifting = True, shift = 1.0, shift_terminal = 0.1
-            )
+            self.config = _Cfg(use_dynamic_shifting = True, shift = 1.0, shift_terminal = 0.1)
 
         def register_to_config(self, **kw):
             self.config.update(kw)
@@ -1094,11 +1092,7 @@ def test_generate_progress_and_cancel_idle(fake_runtime):
     backend = VideoBackend()
     # Idle shape carries the image-endpoint-compatible aliases (total_steps / fraction)
     # so one poller works against both generate-progress APIs.
-    assert backend.generate_progress() == {
-        "active": False,
-        "total_steps": 0,
-        "fraction": 0.0,
-    }
+    assert backend.generate_progress() == {"active": False, "total_steps": 0, "fraction": 0.0}
     assert backend.cancel_generate() is False
 
 

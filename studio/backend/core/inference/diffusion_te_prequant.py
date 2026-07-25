@@ -334,15 +334,11 @@ def _resolve_checkpoint_path(source: TePrequantSource, hf_token: Optional[str]) 
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
-
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
-
-        return hf_hub_download(
-            repo_id = source.location, filename = source.filename, token = hf_token
-        )
+        return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
     return None
 
 
@@ -391,7 +387,6 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
 def _has_meta_tensors(module: Any) -> bool:
     """True if any parameter or buffer is still on the meta device after loading."""
     from itertools import chain
-
     try:
         return any(
             getattr(t, "is_meta", False) for t in chain(module.parameters(), module.buffers())

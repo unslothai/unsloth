@@ -54,9 +54,12 @@ def test_resolve_family_repo_by_scheme():
 
 def test_prequant_repo_filename_convention():
     from core.inference.diffusion_prequant import prequant_repo_filename
+
     assert prequant_repo_filename("unsloth/Z-Image-Turbo-FP8", "int8") == "Z-Image-Turbo-INT8.pt"
     assert prequant_repo_filename("unsloth/Z-Image-Turbo-FP8", "fp8") == "Z-Image-Turbo-FP8.pt"
-    assert prequant_repo_filename("unsloth/Qwen-Image-2512-INT8", "int8") == "Qwen-Image-2512-INT8.pt"
+    assert (
+        prequant_repo_filename("unsloth/Qwen-Image-2512-INT8", "int8") == "Qwen-Image-2512-INT8.pt"
+    )
     assert prequant_repo_filename("org/Some-Model-quantized", "fp8") == "Some-Model-FP8.pt"
     assert prequant_repo_filename("org/PlainRepo", "int8") == "PlainRepo-INT8.pt"
 
@@ -85,29 +88,21 @@ def test_resolve_variant_base_falls_back_to_default():
         == "org/default-fp8"
     )
     # Scheme still has to match within the variant table.
-    assert (
-        resolve_prequant_source(fam, "int8", base_repo = "org/model-dev").location
-        == "org/dev-fp8"
-    )
+    assert resolve_prequant_source(fam, "int8", base_repo = "org/model-dev").location == "org/dev-fp8"
 
 
 def test_flux1_variant_prequant_wiring():
     # The real flux.1 entry serves schnell by default and dev / Krea-dev via variants.
     from core.inference.diffusion_families import detect_family, family_prequant_repo
-
     fam = detect_family("black-forest-labs/FLUX.1-schnell")
     for scheme in ("int8", "fp8"):
         assert family_prequant_repo(fam, scheme) == "unsloth/FLUX.1-schnell-FP8"
         assert (
-            family_prequant_repo(
-                fam, scheme, base_repo = "black-forest-labs/FLUX.1-dev"
-            )
+            family_prequant_repo(fam, scheme, base_repo = "black-forest-labs/FLUX.1-dev")
             == "unsloth/FLUX.1-dev-FP8"
         )
         assert (
-            family_prequant_repo(
-                fam, scheme, base_repo = "black-forest-labs/FLUX.1-Krea-dev"
-            )
+            family_prequant_repo(fam, scheme, base_repo = "black-forest-labs/FLUX.1-Krea-dev")
             == "unsloth/FLUX.1-Krea-dev-FP8"
         )
 
@@ -540,7 +535,11 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
     errors.EntryNotFoundError = _NotFound
     requested = []
 
-    def _dl(repo_id, filename, token = None):
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+    ):
         requested.append(filename)
         if filename != "transformer_fp8.pt":
             raise _NotFound(filename)
@@ -553,8 +552,10 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
 
     source = PrequantSource(
-        kind = "repo", location = "org/Z-Image-Turbo-FP8",
-        filename = "Z-Image-Turbo-FP8.pt", fallback_filename = "transformer_fp8.pt",
+        kind = "repo",
+        location = "org/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
     )
     result = load_prequantized_transformer(
         _FakeTransformer,

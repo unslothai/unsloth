@@ -1607,7 +1607,6 @@ class VideoBackend:
                         ltx2_distilled_ids,
                         ltx23_verbatim_sigmas,
                     )
-
                     if steps == len(LTX23_DISTILLED_SIGMAS) and ltx2_distilled_ids(
                         state.gguf_filename, state.repo_id, state.base_repo
                     ):

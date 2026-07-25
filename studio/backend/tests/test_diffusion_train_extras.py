@@ -95,7 +95,11 @@ def test_ema_rejects_bad_decay():
 
 
 # ── persistent conditioning cache ─────────────────────────────────────────────
-def _make_image(tmp_path, name = "a.png", color = (255, 0, 0)):
+def _make_image(
+    tmp_path,
+    name = "a.png",
+    color = (255, 0, 0),
+):
     from PIL import Image
 
     p = tmp_path / name

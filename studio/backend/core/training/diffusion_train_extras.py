@@ -61,7 +61,12 @@ class LoRAEMA:
         shadow = decay * shadow + (1 - decay) * param
     """
 
-    def __init__(self, model: Any, decay: float = 0.99, warmup: bool = True):
+    def __init__(
+        self,
+        model: Any,
+        decay: float = 0.99,
+        warmup: bool = True,
+    ):
         if not 0.0 <= float(decay) < 1.0:
             raise ValueError(f"ema decay must be in [0, 1), got {decay}")
         self.decay = float(decay)
@@ -115,7 +120,6 @@ class LoRAEMA:
 
     def restore(self, model: Any, backup: dict[str, Any]) -> None:
         import torch
-
         with torch.no_grad():
             for name, p in model.named_parameters():
                 if name in backup:
@@ -194,8 +198,7 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_CACHE_VERSION}_{self.family}_{geom}_"
-            f"{_file_content_hash(image_path)}_{var}"
+            f"lat_v{_CACHE_VERSION}_{self.family}_{geom}_" f"{_file_content_hash(image_path)}_{var}"
         )
 
     def text_key(self, caption: str) -> str:
@@ -237,7 +240,6 @@ class PersistentConditioningCache:
             return None
         try:
             from safetensors import safe_open
-
             with safe_open(str(path), framework = "pt", device = "cpu") as f:
                 meta = f.metadata() or {}
                 count = int(meta.get("count", "0"))
