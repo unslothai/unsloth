@@ -37,6 +37,13 @@ _structlog_stub = _types.ModuleType("structlog")
 # module is importable when structlog is not installed.
 _structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
+# An earlier test module in the same session (e.g. test_checkpoints_scan.py) may
+# already have parked a bare ModuleType("structlog") in sys.modules, in which
+# case the setdefault above kept that one and get_logger is missing. Repair it
+# so the route import stays order-independent. The real structlog always has
+# get_logger, so this never shadows the installed package.
+if not hasattr(sys.modules["structlog"], "get_logger"):
+    sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
 try:
     import httpx  # noqa: F401
