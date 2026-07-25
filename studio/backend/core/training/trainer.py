@@ -65,7 +65,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 import pandas as pd
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
 from core.inference.llama_cpp import _hf_offline_if_dns_dead
@@ -2339,6 +2339,7 @@ class UnslothTrainer:
         dataset_source: Optional[str],
         format_type: str = "auto",
         local_datasets: Optional[List[str]] = None,
+        training_datasets: Optional[List[Dict[str, Any]]] = None,
         local_eval_datasets: Optional[List[str]] = None,
         custom_format_mapping: Optional[Dict[str, Any]] = None,
         subset: Optional[str] = None,
@@ -2350,6 +2351,7 @@ class UnslothTrainer:
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
         s3_config: dict = None,
+        training_seed: int = 3407,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2414,7 +2416,28 @@ class UnslothTrainer:
                     return None
                 logger.info(f"Downloaded {len(local_datasets)} file(s) from S3\n")
 
-            if local_datasets:
+            if training_datasets:
+                if dataset_streaming and len(training_datasets) > 1:
+                    raise ValueError("Streaming multiple datasets is not supported")
+                loaded, labels = [], []
+                for entry in training_datasets:
+                    label = entry.get("hf_dataset") or entry.get("local_path")
+                    labels.append(label)
+                    try:
+                        if entry.get("hf_dataset"):
+                            kwargs = {"path": entry["hf_dataset"], "split": entry.get("split") or "train"}
+                            if entry.get("subset"): kwargs["name"] = entry["subset"]
+                            loaded.append(load_dataset(**kwargs, streaming = dataset_streaming))
+                        else:
+                            files = self._resolve_local_files([entry["local_path"]])
+                            loaded.append(load_dataset(self._loader_for_files(files), data_files = files, split = "train"))
+                    except Exception as exc:
+                        raise ValueError(f"Failed to load training dataset '{label}': {exc}") from exc
+                try:
+                    dataset = loaded[0] if len(loaded) == 1 else concatenate_datasets(loaded).shuffle(seed = training_seed)
+                except Exception as exc:
+                    raise ValueError(f"Training dataset schemas cannot be reconciled for {labels}: {exc}") from exc
+            elif local_datasets:
                 # Use load_dataset() for an Arrow-backed result; in-memory
                 # Dataset.from_list() has no cache and forces num_proc=1 during
                 # tokenization/map (sharding needs Arrow files).
