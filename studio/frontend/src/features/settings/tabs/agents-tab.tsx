@@ -726,7 +726,12 @@ export function AgentsTab() {
       };
     }
 
-    listGgufVariants(selectedModel, hfToken || undefined)
+    // Offer the quants from the same place the command loads from: a snapshot
+    // outside the active cache would otherwise list remote-only variants.
+    listGgufVariants(selectedModel, hfToken || undefined, {
+      preferLocalCache: cachedLoadIds[selectedModel] != null,
+      localPath: cachedLoadIds[selectedModel] ?? null,
+    })
       .then((info) => {
         if (cancelled) {
           return;
@@ -783,7 +788,7 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-  }, [hfToken, preferredVariant, selectedModel]);
+  }, [cachedLoadIds, hfToken, preferredVariant, selectedModel]);
 
   // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits
   // otherwise), so flag its row when the loaded model doesn't qualify rather
