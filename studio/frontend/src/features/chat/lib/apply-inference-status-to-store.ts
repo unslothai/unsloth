@@ -322,6 +322,16 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    // Baseline only, never the nParallel control: the echo is the RESOLVED
+    // slot count, and adopting it would pin a blank "follow the server
+    // default" control to an explicit number. The baseline is what the
+    // failed-switch rollback re-sends, so without this seed a rollback after
+    // a tab reload would restore the model at the server default slots.
+    ...(seedLoadParams &&
+      status.requested_parallel_slots != null &&
+      (prevState.loadedNParallel === null || hydratingExistingModel) && {
+        loadedNParallel: status.requested_parallel_slots,
+      }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last
     // case while advancing their loaded baselines.
