@@ -587,6 +587,14 @@ def test_terminal_classifier(command, unsafe):
         ("cat notes.profile.bak", False),
         ("cat my.zshrc.template", False),
         ("cat ~/.zshrc", True),
+        # --- bash expands a command-position glob after the scan ---
+        ("/bin/r[m] -rf /tmp/victim", True),
+        ("/bin/r? -rf x", True),
+        # the test builtins are not patterns, and a glob in argument position
+        # belongs to the command that already ran the checks
+        ("[[ -f x ]] && echo ok", False),
+        ("[ -f x ] && echo ok", False),
+        ("cp build/*.o out/", False),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),
@@ -776,6 +784,9 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # a file handle's truncate zeroes the file; pandas truncate does not
         ("f = open('a', 'r+')\nf.truncate(0)", True),
         ("with open('important.py', 'r+') as f:\n    f.truncate(0)", True),
+        # a getattr name assembled from literals resolves to the real attribute
+        ("import os\ngetattr(os, 'un' + 'link')('/tmp/victim')", True),
+        ("import os\nname = input()\ngetattr(os, name)('/tmp/victim')", True),
         # a dynamically imported side-effecting module is screened like a static one
         ("s = __import__('socket')\ns.socket()", True),
         # an annotated binding is the same alias as a plain one
@@ -858,6 +869,14 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_roles", {}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}iam__promote_user", {"u": "x"}) is True
     # Money movement is irreversible for the operator, so it asks.
+    # An execution name with no separators still runs a payload on the server.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__runcommand", {"command": "ls"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__executecommand", {"command": "ls"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__shellexec", {"command": "ls"}) is True
+    # ... while a name that merely starts with those letters is ordinary.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__runtime_info", {}) is False
+    # Pub/sub is not a billing subscription and must not prompt.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}events__subscribe_topic", {"t": "a"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}stripe__transfer_funds", {"a": 1}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}stripe__create_charge", {"a": 1}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}bank__wire_payment", {"a": 1}) is True

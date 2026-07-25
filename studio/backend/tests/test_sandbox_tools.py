@@ -709,6 +709,21 @@ class TestBashBlocklistPosition:
         assert "ssh" in self._find()("$'ssh' user@host")
         assert "source" in self._find()("$'source' ./payload")
 
+    def test_ansi_c_data_with_newline_is_not_a_command(self):
+        # Bash expands $'...' to a single word, so a newline inside it is data
+        # for printf, not a separator that starts a second command.
+        payload = "printf '%s' $'hello\\n" + "rm" + " -rf x\\n'"
+        assert self._find()(payload) == set()
+
+    def test_command_position_glob_matches_blocked_name(self):
+        # Bash expands the pattern to the blocked name after this scan runs.
+        assert "rm" in self._find()("/bin/r[m] -rf /tmp/victim")
+        assert "rm" in self._find()("/bin/r? -rf /tmp/victim")
+
+    def test_glob_without_literal_character_allowed(self):
+        # A bracket expression in argument position is not a command word.
+        assert self._find()("echo '[a]'") == set()
+
 
 class TestHfUploadImportGate:
     """Upload-method blocking requires an HF import in scope, so paramiko /

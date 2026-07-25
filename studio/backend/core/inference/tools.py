@@ -215,6 +215,25 @@ def _env_assignment_is_unsafe(name: str) -> bool:
 
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
+# `[` and `[[` are the test builtins, not patterns.
+_TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
+
+
+def _is_unresolved_command_glob(base: str) -> bool:
+    """Whether a command word is a glob bash will expand to some other name
+    (`/bin/r[m]` runs rm). A pattern with no literal character (a bare `*`)
+    is not treated as one, and the test builtins are not patterns."""
+    if base in _TEST_BUILTINS or not any(ch in base for ch in "*?["):
+        return False
+    return any(ch.isalnum() for ch in base)
+
+
+def _blocked_matching_glob(base: str) -> "set[str]":
+    """Blocked command names a command-position glob can expand to."""
+    if not _is_unresolved_command_glob(base):
+        return set()
+    return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
+
 
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
@@ -230,7 +249,7 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Decode ANSI-C quoting first ($'ssh' -> ssh, $'\x73\x73\x68' -> ssh) so a
     # blocked command name hidden behind it is still detected at command position.
-    command = _decode_ansi_c(command)
+    command = _decode_ansi_c(command, keep_one_word = True)
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace).
@@ -278,6 +297,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         base = _token_basename(token)
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
+        else:
+            blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
@@ -292,6 +313,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = _token_basename(tokens[i + 1])
             if base in _BLOCKED_COMMANDS:
                 blocked.add(base)
+            else:
+                blocked |= _blocked_matching_glob(base)
 
     # Regex catches blocked words at command boundaries shlex misses: inside
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
@@ -616,6 +639,19 @@ _AUTO_DESTRUCTIVE_MCP_VERB_RE = re.compile(
 # An unambiguous privilege verb (grant/authorize/elevate/impersonate) matches on
 # its own; the softer verbs (assign/add/set/attach/bind) only count next to a
 # privilege noun, so assign_issue / add_label keep running.
+# A name without separators (mcp__srv__runcommand, __executecommand,
+# __shellexec) never reaches the segment boundaries above, and the previous
+# classifier failed closed on every non-read name, so match the verb+object
+# compounds directly rather than losing them.
+_MCP_EXEC_VERBS = r"execute|exec|run|eval|spawn|invoke|launch|start"
+_MCP_EXEC_OBJECTS = r"command|cmd|shell|script|code|process|program|bash|terminal|proc|task|job"
+_AUTO_EXEC_MCP_COMPOUND_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    rf"(?:{_MCP_EXEC_VERBS})(?:{_MCP_EXEC_OBJECTS})"
+    rf"|(?:{_MCP_EXEC_OBJECTS})(?:{_MCP_EXEC_VERBS})"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
     r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
     re.IGNORECASE,
@@ -625,7 +661,7 @@ _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
 # operator, so it asks even though it is not "destructive" in the fs sense.
 _AUTO_HIGH_IMPACT_MCP_RE = re.compile(
     r"(?:^|[_\-])(?:transfer|payout|payment|pay|charge|refund|wire|remit|"
-    r"withdraw|deposit|invoice|subscribe|unsubscribe|publish|deploy|release)(?:[_\-]|$)",
+    r"withdraw|deposit|invoice|publish|deploy|release)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 _AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
@@ -1168,16 +1204,47 @@ def _expand_param_defaults(command: str) -> str:
     return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
 
 
-def _decode_ansi_c(command: str) -> str:
+# Bash expands $'...' to a single word, so a separator inside it is data.
+# Callers that tokenize the decoded text neutralize these first, otherwise
+# `printf '%s' $'a\\nrm -rf x'` reads as two commands and the printf is refused.
+_ANSI_C_SEPARATOR_RE = re.compile(r"[\s;&|()<>`]")
+
+
+def _folded_str_literal(node) -> "str | None":
+    """The string an expression evaluates to when it is built only from string
+    literals ("un" + "link", f"un{'link'}"), else None. Used to resolve a name
+    that is spelled dynamically but is fully known at parse time."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_str_literal(node.left)
+        right = _folded_str_literal(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            piece = _folded_str_literal(value)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return "".join(parts)
+    if isinstance(node, ast.FormattedValue) and node.format_spec is None:
+        return _folded_str_literal(node.value)
+    return None
+
+
+def _decode_ansi_c(command: str, *, keep_one_word: bool = False) -> str:
     """Decode bash ANSI-C quoted words (cat $'/etc/pass\\x77d' -> cat /etc/passwd)
     so an escape-obfuscated path is visible to the scan. Fail-open: only adds
-    detections."""
+    detections. With ``keep_one_word`` the decoded text cannot introduce new
+    shell syntax, which is what bash does with it."""
 
     def dec(m):
         try:
-            return bytes(m.group(1), "utf-8").decode("unicode_escape")
+            text = bytes(m.group(1), "utf-8").decode("unicode_escape")
         except (UnicodeDecodeError, ValueError):
             return m.group(0)
+        return _ANSI_C_SEPARATOR_RE.sub("_", text) if keep_one_word else text
 
     return _ANSI_C_RE.sub(dec, command)
 
@@ -3167,7 +3234,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     # Newlines separate commands in a shell but read as whitespace to shlex.
     # Decode ANSI-C quoting ($'rm' -> rm, $'\x72\x6d' -> rm) so a command name
     # hidden behind it is classified as the real command Bash will run.
-    normalized = _decode_ansi_c(command).replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+    normalized = (
+        _decode_ansi_c(command, keep_one_word = True)
+        .replace("\r\n", ";")
+        .replace("\n", ";")
+        .replace("\r", ";")
+    )
     # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
     # (${c:-rm}) is expanded so the resolved token is scanned too.
     expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
@@ -3429,6 +3501,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if expect_command or prefix_pending or scan_forward:
                 if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
                     return True
+                # Bash expands a command-position glob after this scan, so the
+                # name here is not the one that runs (`/bin/r[m] -rf x`). It
+                # cannot be screened, so it asks.
+                if _is_unresolved_command_glob(base):
+                    return True
                 # A server binary resolved here covers the wrapped and absolute
                 # forms (env uvicorn app:api, timeout 60 gunicorn, /usr/bin/uvicorn).
                 if base in _LISTENER_BINARIES:
@@ -3576,6 +3653,12 @@ def _python_is_high_risk(code: str) -> bool:
                 if isinstance(tgt, ast.Name):
                     os_module_aliases.add(tgt.id)
 
+    def _is_fs_module_ref(value) -> bool:
+        # os/posix/nt (including aliases), or a literal shutil/pathlib name.
+        if _is_os_module_ref(value):
+            return True
+        return isinstance(value, ast.Name) and value.id in _PY_DESTRUCTIVE_FS_MODULES
+
     def _is_destructive_attr(attr: str, value) -> bool:
         # A destructive-name attribute (unlink/rmtree/...) on any receiver, or
         # `remove` specifically on the os module (or an alias of it).
@@ -3646,17 +3729,21 @@ def _python_is_high_risk(code: str) -> bool:
         elif isinstance(func, ast.Name) and func.id in destructive_fs_aliases:
             return True
         # getattr(os, "remove")(x) resolves the attribute at runtime; screen the
-        # literal attribute name against the same destructive test.
+        # attribute name against the same destructive test. The name is folded
+        # first ("un" + "link"), and a name that cannot be folded at all on a
+        # filesystem module fails closed, since there is nothing left to screen.
         if (
             isinstance(func, ast.Call)
             and isinstance(func.func, ast.Name)
             and func.func.id == "getattr"
             and len(func.args) >= 2
-            and isinstance(func.args[1], ast.Constant)
-            and isinstance(func.args[1].value, str)
-            and _is_destructive_attr(func.args[1].value, func.args[0])
         ):
-            return True
+            attr_name = _folded_str_literal(func.args[1])
+            if attr_name is None:
+                if _is_fs_module_ref(func.args[0]):
+                    return True
+            elif _is_destructive_attr(attr_name, func.args[0]):
+                return True
     # A sensitive path split across names or joins (p = "/etc"; open(p + "/shadow"),
     # os.path.join("/etc", "shadow"), f"{base}/shadow", Path("/etc") / "shadow") is
     # not a contiguous literal above, so fold the string-literal variables and reuse
@@ -3773,7 +3860,7 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # list_tokens) discloses secrets, and a read/write pointed at a sensitive
         # path is a sensitive access; all prompt. Ordinary create/update/delete
         # MCP calls run in auto.
-        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name):
+        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) or _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
             return True
         if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
             return True
