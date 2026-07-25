@@ -11204,6 +11204,10 @@ def _should_hold_quoted_think_close(
     atomic token, so a quoted mention normally arrives as the three deltas
     ``"`` / ``</think>`` / ``"``; reading only ``buffer`` would then miss the
     opening quote and split the mention out of reasoning (#7066).
+
+    A lone trailing backslash counts as "not arrived" too: the escaped quote of
+    ``\\"</think>\\"`` can split right after the backslash, and classifying then
+    would call the mention structural and emit the rest as answer text (#7334).
     """
     if close_idx < 0:
         return False
@@ -11212,7 +11216,9 @@ def _should_hold_quoted_think_close(
     if not before or before not in "\"'`":
         return False
     end = close_idx + len(_RESPONSES_THINK_CLOSE)
-    return end >= len(buffer)
+    if end >= len(buffer):
+        return True
+    return buffer[end] == "\\" and end + 1 >= len(buffer)
 
 
 def _is_word_char(ch: str) -> bool:

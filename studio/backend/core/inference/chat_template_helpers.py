@@ -63,6 +63,15 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     ("<|eot_id|>", f"<|{_THINK_NEUTRAL_ZW}eot_id|>"),
     ("<|start_header_id|>", f"<|{_THINK_NEUTRAL_ZW}start_header_id|>"),
     ("<|end_header_id|>", f"<|{_THINK_NEUTRAL_ZW}end_header_id|>"),
+    # The remaining canonical turn-end tokens from chat_eos (Llama tool turns,
+    # Gemma, Phi, OpenChat) plus Gemma's turn opener. Same hole as <|eot_id|>:
+    # raw in a non-assistant turn, they end that turn and can open a model one.
+    # test_neutralize_covers_every_turn_end_token pins this against chat_eos.
+    ("<|eom_id|>", f"<|{_THINK_NEUTRAL_ZW}eom_id|>"),
+    ("<end_of_turn>", f"<{_THINK_NEUTRAL_ZW}end_of_turn>"),
+    ("<start_of_turn>", f"<{_THINK_NEUTRAL_ZW}start_of_turn>"),
+    ("<|end_of_turn|>", f"<|{_THINK_NEUTRAL_ZW}end_of_turn|>"),
+    ("<|end|>", f"<|{_THINK_NEUTRAL_ZW}end|>"),
 )
 
 
@@ -146,14 +155,31 @@ def _is_schema_name_reference(key, item) -> bool:
         return False
     if key in _SCHEMA_REF_KEYS:
         return isinstance(item, str)
-    if key in _SCHEMA_NAME_LIST_KEYS:
-        return _is_schema_name_list(item)
-    return (
-        key in _SCHEMA_NAME_MAP_KEYS
-        and isinstance(item, dict)
-        and bool(item)
-        and all(_is_schema_name_list(entry) for entry in item.values())
-    )
+    return key in _SCHEMA_NAME_LIST_KEYS and _is_schema_name_list(item)
+
+
+def _is_schema_dependency_map(key, item) -> bool:
+    """True for ``dependencies`` / ``dependentRequired``: name -> names or schema."""
+    return isinstance(key, str) and key in _SCHEMA_NAME_MAP_KEYS and isinstance(item, dict)
+
+
+def _neutralize_schema_dependency_map(value):
+    """Walk a dependency map, preserving its name-list entries individually.
+
+    Draft-7 ``dependencies`` may mix name arrays with sub-schemas, so the arrays
+    are kept as references while the sub-schemas still go through the walk.
+    """
+    changed = False
+    out = {}
+    for key, item in value.items():
+        if _is_schema_name_list(item):
+            out[key] = item
+            continue
+        new_item = neutralize_control_markup_deep(item, schema = True)
+        if new_item is not item and new_item != item:
+            changed = True
+        out[key] = new_item
+    return out if changed else value
 
 
 def neutralize_control_markup_deep(value, *, schema: bool = False):
@@ -178,7 +204,10 @@ def neutralize_control_markup_deep(value, *, schema: bool = False):
             if schema and _is_schema_name_reference(key, item):
                 out[key] = item
                 continue
-            new_item = neutralize_control_markup_deep(item, schema = schema)
+            if schema and _is_schema_dependency_map(key, item):
+                new_item = _neutralize_schema_dependency_map(item)
+            else:
+                new_item = neutralize_control_markup_deep(item, schema = schema)
             if new_item is not item and new_item != item:
                 changed = True
             out[key] = new_item

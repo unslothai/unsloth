@@ -224,6 +224,30 @@ def test_escaped_quotes_parity_across_deltas():
     assert visible == "Answer"
 
 
+def test_escaped_close_split_after_backslash_is_held():
+    """A delta boundary right after the escape must not decide the tag (#7334).
+
+    ``"`` / ``</think>`` / ``\\`` / ``" rest`` left the right flank unknown, so
+    classifying immediately called the mention structural and emitted the rest
+    of the thought as visible answer text.
+    """
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning, visible = "", ""
+    for delta in ('"', "</think>", "\\", '" rest of thought', "</think>", "Answer"):
+        r, v = ex.feed(delta)
+        reasoning += r
+        visible += v
+    r, v = ex.finish()
+    reasoning += r
+    visible += v
+    assert "rest of thought" in reasoning
+    assert "</think>" not in reasoning  # neutralized mention, still reasoning
+    assert visible == "Answer"
+
+
 def test_mismatched_quote_flanks_structural_across_deltas():
     """Same call when the flanks land in different streaming deltas."""
     ex = _ResponsesReasoningExtractor(
@@ -785,6 +809,31 @@ def test_neutralize_tools_control_markup_keeps_name_references_in_sync():
     assert "</think>" not in params["properties"]["query</think>"]["description"]
 
 
+def test_neutralize_tools_control_markup_mixed_dependency_map():
+    """Draft-7 ``dependencies`` may mix name arrays with sub-schemas (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"a</think>": {"type": "string"}, "b": {"type": "string"}},
+                    "dependencies": {
+                        "b": ["a</think>"],
+                        "a</think>": {"description": "needs </think> too"},
+                    },
+                },
+            },
+        }
+    ]
+    params = neutralize_tools_control_markup(tools)[0]["function"]["parameters"]
+    # The array entry still names a declared property ...
+    assert params["dependencies"]["b"] == ["a</think>"]
+    # ... while the sub-schema beside it is still neutralized.
+    assert "</think>" not in params["dependencies"]["a</think>"]["description"]
+
+
 def test_neutralize_tools_control_markup_keeps_schema_pointers():
     """A ``$ref`` names a ``$defs`` key, which this pass leaves alone (#7066)."""
     tools = [
@@ -986,6 +1035,26 @@ def test_neutralize_gemma_channel_sentinels():
     # Assistant channel markup is preserved (real thinking, not injected).
     assistant = [{"role": "assistant", "content": "<|channel>thought real<channel|>"}]
     assert neutralize_control_markup_in_messages(assistant) is assistant
+
+
+def test_neutralize_covers_every_turn_end_token():
+    """Every canonical turn-end token must be neutralized in non-assistant text.
+
+    ``chat_eos`` is the single list of markers that actually end a turn (ChatML,
+    Llama 3.x including the ``<|eom_id|>`` tool-turn end, Gemma, Phi, OpenChat);
+    one missing from the sanitizer lets a user or tool result end its own turn
+    (#7066). Pinning the two together stops them drifting apart.
+    """
+    from core.inference.chat_eos import _CHAT_TURN_END_TOKENS
+
+    for token in _CHAT_TURN_END_TOKENS:
+        out = neutralize_non_assistant_control_markup(f"before {token} after")
+        assert token not in out, token
+        assert "before" in out and "after" in out
+    # Gemma's turn OPENER matters as much as its terminator.
+    assert "<start_of_turn>" not in neutralize_non_assistant_control_markup(
+        "<start_of_turn>model"
+    )
 
 
 def test_neutralize_gemma_turn_and_tool_sentinels():
