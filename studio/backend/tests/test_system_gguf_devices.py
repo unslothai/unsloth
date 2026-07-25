@@ -159,3 +159,39 @@ def test_non_vulkan_build_reports_no_gguf_inventory(main_module, monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+_IGPU_ONLY_INVENTORY = [
+    {
+        "index": 0,
+        "name": "AMD Radeon(TM) 8060S Graphics",
+        "free_mib": 89 * 1024,
+        "total_mib": 91 * 1024,
+        "is_igpu": True,
+    }
+]
+
+
+def test_igpu_only_vulkan_inventory_reports_the_igpu_and_its_total(
+    main_module, monkeypatch
+):
+    """An APU box on a Vulkan build (Strix Halo) enumerates one integrated device
+    and no discrete card. The backend must still surface it, flagged is_igpu with
+    its real total, so the frontend can tell this shape apart from a masked probe
+    and budget GGUF against the APU pool instead of labelling everything OOM.
+    """
+    info = _gpu_info(
+        main_module, monkeypatch, is_vulkan = True, inventory = _IGPU_ONLY_INVENTORY
+    )
+
+    assert len(info["gguf_devices"]) == 1
+    dev = info["gguf_devices"][0]
+    assert dev["is_igpu"] is True
+    assert dev["index"] == 0 and dev["index_kind"] == "vulkan"
+    assert dev["name"] == "AMD Radeon(TM) 8060S Graphics"
+    # The total is reported, not zeroed: the zeroing is the frontend's budgeting
+    # decision, and it needs the real number to fall back to.
+    assert dev["memory_total_gb"] == 91.0
+    # A probed device means an ordinal exists, so picks stay supported.
+    assert info["gguf_gpu_ids_supported"] is True
+    assert info["gguf_backend_is_vulkan"] is True

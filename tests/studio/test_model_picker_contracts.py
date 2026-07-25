@@ -508,3 +508,23 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_igpu_only_vulkan_budget_falls_back_to_the_torch_total():
+    """An APU on a Vulkan build (Strix Halo, Radeon 890M) enumerates one iGPU and
+    nothing else. The iGPU exclusion in the GGUF budget would make that 0, so the
+    Hub renders "0 GiB" and every GGUF row labels OOM against a box whose pool is
+    real and reported by torch. Fall back to the torch total for that shape only;
+    a masked-to-iGPU-beside-a-dGPU host (torch sees more devices than the probe
+    enumerated) must stay on 0, which is what the exclusion exists for.
+    """
+    src = " ".join(_read("hooks/use-gpu-info.ts").split())
+    # All-iGPU inventory detection, and the device-count guard that keeps the
+    # mixed masked host on the conservative 0.
+    assert (
+        "const ggufIgpuOnly = ggufDevices.length > 0 && "
+        "ggufDevices.every((d) => d.is_igpu === true);" in src
+    )
+    assert "ggufIgpuOnly && devices.length <= ggufDevices.length" in src
+    # Training/safetensors budgets must stay on the torch total regardless.
+    assert "memoryTotalGb," in src

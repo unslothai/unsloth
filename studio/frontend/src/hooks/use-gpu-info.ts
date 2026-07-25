@@ -136,6 +136,13 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
   // see a dGPU llama-server never enumerated, and reusing that total would let
   // fit checks pass against VRAM /load can't actually place.
   const isVulkanBuild = gpuData?.gguf_backend_is_vulkan === true;
+  // An all-iGPU inventory that torch sees no extra device beyond means there is
+  // no discrete card anywhere (an APU box, e.g. Strix Halo on a Vulkan build).
+  // The exclusion above would budget 0 and label it "0 GiB"; the APU's pool is
+  // real and torch reports it, so use that. The device-count check keeps the
+  // masked-to-iGPU-beside-a-dGPU case on 0, which is what the exclusion is for.
+  const ggufIgpuOnly =
+    ggufDevices.length > 0 && ggufDevices.every((d) => d.is_igpu === true);
   if (!gpuData?.available || !devices.length) {
     // Torch sees no GPU (training stays CPU-bound / unavailable), but a Vulkan
     // llama.cpp build may still drive GPUs for GGUF: surface that budget alone.
@@ -151,7 +158,9 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb,
     ggufMemoryTotalGb: ggufDevices.length
-      ? ggufDeviceTotalGb
+      ? ggufIgpuOnly && devices.length <= ggufDevices.length
+        ? memoryTotalGb
+        : ggufDeviceTotalGb
       : isVulkanBuild
         ? 0
         : memoryTotalGb,
