@@ -55,9 +55,9 @@ def test_admission_config_defaults(monkeypatch):
     # Literals, not the module constants: comparing a default to itself would let
     # any future value change through silently.
     assert config.enabled is True
-    assert config.queue_timeout_s is None          # wait forever
+    assert config.queue_timeout_s is None  # wait forever
     assert config.keepalive_interval_s == 5.0
-    assert config.max_queue is None                # no absolute cap
+    assert config.max_queue is None  # no absolute cap
     assert config.queue_per_slot == 16
     assert (DEFAULT_ADMISSION_QUEUE_TIMEOUT_S, DEFAULT_ADMISSION_MAX_QUEUE) == (None, None)
     assert DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S == 5.0
@@ -516,7 +516,7 @@ def test_capacity_shrink_never_admits_past_the_new_ceiling():
         assert all(lease is not None for lease in held)
         waiter = queue.reserve(capacity = 4, config = config)
 
-        queue.reserve(capacity = 1, config = config)   # capacity collapses to 1
+        queue.reserve(capacity = 1, config = config)  # capacity collapses to 1
         # Release the one id that still falls inside the shrunk pool, so it goes
         # back on the free list; ids at or above capacity retire instead.
         low = min(held, key = lambda lease: lease.slot)

@@ -396,13 +396,13 @@ def test_streaming_midstream_cancel_finalizes_the_monitor(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)   # stream started
+        await asyncio.wait_for(body.__anext__(), timeout = 2)  # stream started
         assert inf_mod.api_monitor.active_count() == 1
 
         # Propagates back out, as the un-admitted path did; what matters is that
         # the monitored body saw it on the way through.
         with pytest.raises(asyncio.CancelledError):
-            await body.athrow(asyncio.CancelledError())         # client vanished
+            await body.athrow(asyncio.CancelledError())  # client vanished
 
         assert inf_mod.api_monitor.active_count() == 0
         assert _snapshot().active == 0 and _snapshot().queued == 0
@@ -422,10 +422,10 @@ def test_streaming_give_up_while_queued_finalizes_the_monitor(monkeypatch):
             _payload(stream = True), request = _Request(), current_subject = "t"
         )
         body = response.body_iterator
-        await asyncio.wait_for(body.__anext__(), timeout = 2)   # keep-alive, still queued
+        await asyncio.wait_for(body.__anext__(), timeout = 2)  # keep-alive, still queued
         assert inf_mod.api_monitor.active_count() == 1
 
-        await body.aclose()                                     # give up while waiting
+        await body.aclose()  # give up while waiting
 
         assert inf_mod.api_monitor.active_count() == 0
         for lease in held:
@@ -447,12 +447,14 @@ def test_every_dispatch_site_goes_through_admission():
 
     tree = ast.parse(inspect.getsource(inf_mod).replace("\t", "    "))
     handler = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "anthropic_messages"
     )
     # The wrappers themselves call _monitored_anthropic; only the dispatch sites count.
     nested = {
-        node for node in ast.walk(handler)
+        node
+        for node in ast.walk(handler)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name.startswith("_admitted_anthropic")
     }
