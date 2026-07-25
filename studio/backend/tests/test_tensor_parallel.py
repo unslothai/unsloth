@@ -688,7 +688,12 @@ def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
 class _DyingChild(_FakeProcess):
     """Alive for the first polls, then reapable: what a terminate() looks like."""
 
-    def __init__(self, code = -15, alive_polls = 2, on_death = None):
+    def __init__(
+        self,
+        code = -15,
+        alive_polls = 2,
+        on_death = None,
+    ):
         self.polls = 0
         self.returncode = None
         self._code = code
@@ -739,7 +744,7 @@ def test_respawn_does_not_revert_a_newer_load(monkeypatch):
     # would swap the user's new model back out.
     b = _recovery_backend()
     b._healthy = True
-    replacement = _DyingChild(alive_polls = 10 ** 6)
+    replacement = _DyingChild(alive_polls = 10**6)
     b._process = _DyingChild(on_death = lambda: setattr(b, "_process", replacement))
     loads: list[dict] = []
     monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
