@@ -229,6 +229,8 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert command[:3] == ["/usr/local/bin/claude", "--model", "unsloth/model-GGUF:Q4_K_M"]
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
+    disallowed = command[command.index("--disallowedTools") + 1]
+    assert disallowed == "AskUserQuestion,EnterPlanMode,ExitPlanMode"
     assert captured["cwd"] == str(tmp_path)
     assert captured["stdin"] is bridge.subprocess.DEVNULL
     assert captured["stdout"] is bridge.subprocess.PIPE
@@ -275,6 +277,8 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     assert bridge.run_local_agent("plan this", read_only = True) == "PLAN_OK"
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
+    disallowed = command[command.index("--disallowedTools") + 1]
+    assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit"
     prompt = command[command.index("--append-system-prompt") + 1]
     assert "read-only local coding subagent" in prompt
 

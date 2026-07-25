@@ -2007,6 +2007,27 @@ def _opencode_subagent_inline_config(path: Path, permission: dict) -> dict:
     return inline
 
 
+_CLAUDE_PLAN_GATE_SCRIPT = '''\
+"""Deny the editing agent while the parent session is in plan mode."""
+import json, sys
+
+try:
+    mode = (json.load(sys.stdin) or {}).get("permission_mode")
+except Exception:
+    sys.exit(0)  # fail open: a hook error must never block the parent session
+if mode == "plan":
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": (
+            "Plan mode is active. Call the read-only Unsloth plan agent "
+            "(unsloth_plan_agent) instead of unsloth_agent."
+        ),
+    }}))
+sys.exit(0)
+'''
+
+
 def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     """Write a session plugin that exposes the local Claude child through MCP."""
     plugin = path / "unsloth-local-agent"
@@ -2049,6 +2070,31 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             }
         },
     )
+    # Plan mode must not reach the editing agent. SKILL.md only asks the parent
+    # model to pick the read-only tool; this PreToolUse hook reads permission_mode
+    # itself, so the routing holds even when the model forgets. Skipped under the
+    # WSL bridge, where a Windows interpreter path is not runnable in the distro.
+    if command != "wsl.exe":
+        gate = plugin / "hooks" / "plan_gate.py"
+        _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
+        _write_private_json(
+            plugin / "hooks" / "hooks.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": _CLAUDE_SUBAGENT_TOOL,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": f'"{sys.executable}" "{gate}"',
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
     skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
     skill.write_text(

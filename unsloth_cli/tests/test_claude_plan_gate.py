@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Deterministic plan-mode routing for the local Claude subagent.
+
+SKILL.md asks the parent model to pick the read-only tool in plan mode, which a
+small local model can forget. The generated plugin also ships a PreToolUse hook
+that reads permission_mode directly, so the editing agent is denied by rule.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+
+import pytest
+
+from unsloth_cli.commands import start
+
+
+def _plugin(tmp_path):
+    return start.write_claude_subagent_plugin(tmp_path, {"UNSLOTH_CLAUDE_SUBAGENT_MODEL": "m"})
+
+
+def _run_gate(script, payload):
+    return subprocess.run(
+        [sys.executable, str(script)],
+        input = payload,
+        capture_output = True,
+        text = True,
+        timeout = 30,
+    )
+
+
+def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path):
+    plugin = _plugin(tmp_path)
+
+    hooks = json.loads((plugin / "hooks" / "hooks.json").read_text())["hooks"]["PreToolUse"]
+
+    [entry] = hooks
+    # Only the destructive tool is gated; the read-only agent stays reachable.
+    assert entry["matcher"] == start._CLAUDE_SUBAGENT_TOOL
+    assert start._CLAUDE_SUBAGENT_PLAN_TOOL not in json.dumps(hooks)
+    [hook] = entry["hooks"]
+    assert hook["type"] == "command"
+    assert str(plugin / "hooks" / "plan_gate.py") in hook["command"]
+    assert sys.executable in hook["command"]
+
+
+def test_gate_script_is_written_and_compiles(tmp_path):
+    plugin = _plugin(tmp_path)
+    gate = plugin / "hooks" / "plan_gate.py"
+
+    compile(gate.read_text(), str(gate), "exec")  # syntax-valid as shipped
+
+
+def test_gate_denies_the_editing_tool_in_plan_mode(tmp_path):
+    gate = _plugin(tmp_path) / "hooks" / "plan_gate.py"
+
+    result = _run_gate(gate, json.dumps({"permission_mode": "plan"}))
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)["hookSpecificOutput"]
+    assert output["hookEventName"] == "PreToolUse"
+    assert output["permissionDecision"] == "deny"
+    # The reason is shown to the model, so it must name the tool to call instead.
+    assert "unsloth_plan_agent" in output["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions", "dontAsk"])
+def test_gate_allows_every_non_plan_mode(tmp_path, mode):
+    gate = _plugin(tmp_path) / "hooks" / "plan_gate.py"
+
+    result = _run_gate(gate, json.dumps({"permission_mode": mode}))
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""  # no decision -> normal permission flow
+
+
+@pytest.mark.parametrize("payload", ["", "not json", "[]", "null", "{}"])
+def test_gate_fails_open_on_unusable_input(tmp_path, payload):
+    # A hook crash would block the parent session, so anything unparsable allows.
+    gate = _plugin(tmp_path) / "hooks" / "plan_gate.py"
+
+    result = _run_gate(gate, payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_plugin_still_writes_the_mcp_server_and_skill(tmp_path):
+    # The hook is additive; the existing wiring must be untouched.
+    plugin = _plugin(tmp_path)
+
+    assert (plugin / ".mcp.json").exists()
+    assert (plugin / "skills" / "local-agent" / "SKILL.md").exists()
+    assert (plugin / ".claude-plugin" / "plugin.json").exists()

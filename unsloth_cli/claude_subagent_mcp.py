@@ -153,6 +153,14 @@ def run_local_agent(
         "--output-format",
         "json",
         "--no-session-persistence",
+        # Strip human-blocking tools so the child runs unattended. The read-only child
+        # also drops file writers; it keeps ExitPlanMode, as Claude does under plan mode.
+        "--disallowedTools",
+        (
+            "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit"
+            if read_only
+            else "AskUserQuestion,EnterPlanMode,ExitPlanMode"
+        ),
         "--append-system-prompt",
         _SUBAGENT_PLAN_INSTRUCTIONS if read_only else _SUBAGENT_INSTRUCTIONS,
         f"Task: {task}",
