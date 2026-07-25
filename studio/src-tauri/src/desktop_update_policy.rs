@@ -34,8 +34,12 @@ pub(crate) struct ManualUpdateInfo {
 #[derive(Debug, serde::Deserialize)]
 struct ChannelMetadata {
     version: String,
-    body: Option<String>,
-    date: Option<String>,
+    // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older
+    // `body`/`date` metadata working.
+    #[serde(alias = "body")]
+    notes: Option<String>,
+    #[serde(alias = "date")]
+    pub_date: Option<String>,
     platforms: HashMap<String, ChannelPlatform>,
 }
 
@@ -99,8 +103,8 @@ pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateI
     Ok(Some(ManualUpdateInfo {
         version: latest_version,
         current_version: current_version.to_string(),
-        body: metadata.body,
-        date: metadata.date,
+        body: metadata.notes,
+        date: metadata.pub_date,
     }))
 }
 

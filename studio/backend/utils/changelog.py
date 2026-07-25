@@ -38,7 +38,7 @@ CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
 _HEADING_PATTERN = re.compile(r"^##\s+(?P<title>.*?)\s*$")
-_FENCE_PATTERN = re.compile(r"^\s*(?:```|~~~)")
+_FENCE_PATTERN = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})")
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
@@ -90,11 +90,13 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     Headings whose first token is not a version (`## Unreleased`, `## Format`)
     end the previous section but are not indexed.
     """
+    # A Windows editor can leave a BOM on the first line, hiding a heading.
+    text = text.lstrip("﻿")
     entries: list[ChangelogEntry] = []
     heading: str | None = None
     version: str | None = None
     body: list[str] = []
-    in_fence = False
+    open_fence: str | None = None
 
     def flush() -> None:
         if version is not None and heading is not None:
@@ -107,10 +109,11 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             )
 
     for line in text.splitlines():
-        if _FENCE_PATTERN.match(line):
-            in_fence = not in_fence
+        fence = _FENCE_PATTERN.match(line)
+        if fence:
+            open_fence = _next_fence_state(open_fence, fence.group("marker"))
         # A `##` inside a fenced block is sample markdown, not a real heading.
-        match = None if in_fence else _HEADING_PATTERN.match(line)
+        match = None if open_fence else _HEADING_PATTERN.match(line)
         if match is None:
             if version is not None:
                 body.append(line)
@@ -265,6 +268,19 @@ def _local_changelog_candidates() -> list[Path]:
             seen.add(candidate)
             unique.append(candidate)
     return unique
+
+
+def _next_fence_state(open_fence: str | None, marker: str) -> str | None:
+    """Track the open fence marker.
+
+    Only a same-character run at least as long closes it, so a ``` sample
+    inside a ```` block does not end the block early.
+    """
+    if open_fence is None:
+        return marker
+    if marker[0] == open_fence[0] and len(marker) >= len(open_fence):
+        return None
+    return open_fence
 
 
 def _version_from_heading(heading: str) -> str | None:

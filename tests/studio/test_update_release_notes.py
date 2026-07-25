@@ -171,6 +171,43 @@ def test_repo_changelog_exists_and_parses(changelog_module):
     assert entries, "CHANGELOG.md needs at least one `## <version>` section"
 
 
+def test_longer_outer_fence_does_not_leak_a_fake_section(changelog_module):
+    """A ``` sample inside a ```` block must not close the block and let the
+    sample's heading be indexed as a real release."""
+    text = "## 1.0\n\n````md\n```\n## 9.9.9\n```\n````\n\n- real note\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    assert changelog_module.find_release_notes(text, "9.9.9") is None
+
+
+def test_tilde_fence_is_not_closed_by_backticks(changelog_module):
+    text = "## 1.0\n\n~~~\n```\n## 9.9.9\n~~~\n\n- real\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+
+
+def test_utf8_bom_does_not_hide_the_first_section(changelog_module):
+    """Editors on Windows can leave a BOM on the first line."""
+    assert [e.version for e in changelog_module.parse_changelog("\ufeff## 1.0\n\n- x\n")] == ["1.0"]
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\r"])
+def test_non_unix_line_endings(changelog_module, newline):
+    text = f"## 1.0{newline}{newline}- windows note{newline}"
+    entry = changelog_module.find_release_notes(text, "1.0")
+    assert entry is not None and "windows note" in entry.body
+    assert "\r" not in entry.body
+
+
+def test_desktop_updater_metadata_maps_published_field_names():
+    """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
+    must read those, not `body`/`date`, or its release notes are always empty."""
+    rust = (REPO / "studio/src-tauri/src/desktop_update_policy.rs").read_text(encoding = "utf-8")
+    assert 'alias = "body"' in rust and "notes: Option<String>" in rust
+    assert 'alias = "date"' in rust and "pub_date: Option<String>" in rust
+    assert "body: metadata.notes" in rust and "date: metadata.pub_date" in rust
+    workflow = (REPO / ".github/workflows/release-desktop.yml").read_text(encoding = "utf-8")
+    assert "'notes': notes," in workflow, "workflow no longer publishes `notes`"
+
+
 def test_backend_exposes_release_notes_route():
     src = (BACKEND / "main.py").read_text(encoding = "utf-8")
     assert '@app.get("/api/studio/release-notes")' in src
@@ -208,8 +245,12 @@ def test_collapsed_panel_previews_the_top_bullets():
     """Collapsed popups show the headline changes without an extra click."""
     preview = PREVIEW.read_text(encoding = "utf-8")
     assert "RELEASE_NOTES_PREVIEW_ITEMS = 4" in preview
-    # Wrapped changelog bullets must join, or a preview ends mid-sentence.
-    assert "current = `${current} ${text}`" in preview
+    # Wrapped bullets join into one item, or a preview ends mid-sentence.
+    assert "collectBullets" in preview and "flush" in preview
+    # Nested list items are detail, not headline changes.
+    assert "NESTED_INDENT_TOLERANCE" in preview
+    # Tag stripping repeats: one pass turns `<<b>b>` back into a live tag.
+    assert "while (out !== previous)" in preview
 
     panel = PANEL.read_text(encoding = "utf-8")
     assert "releaseNotesPreview" in panel

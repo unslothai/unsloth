@@ -4,26 +4,40 @@
 // Top changelog bullets, shown in the collapsed update popup.
 export const RELEASE_NOTES_PREVIEW_ITEMS = 4;
 const PREVIEW_ITEM_MAX_CHARS = 120;
+// Bullets indented past the shallowest one are nested detail, not headlines.
+const NESTED_INDENT_TOLERANCE = 1;
+const TAB_WIDTH = 4;
 
-const FENCE = /^\s*(?:```|~~~)/;
-const HEADING = /^\s{0,3}#{1,6}\s+/;
-const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+(.*)$/;
+const FENCE = /^\s*(`{3,}|~{3,})/;
+const HEADING = /^#{1,6}\s+/;
+const BULLET = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
 const BLOCKQUOTE = /^\s*>\s?/;
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK = /\[([^\]]*)\]\([^)]*\)/g;
-const HTML_TAG = /<[^>]+>/g;
+const HTML_TAG = /<[^>]*>/g;
 const EMPHASIS = /(\*\*|__|\*|_|`)/g;
 const WHITESPACE = /\s+/g;
 // Sentence end followed by something that actually starts a sentence.
 const SENTENCE_BREAK = /[.!?]\s+(?=["'“‘]?[A-Z0-9])/;
 const MIN_LEAD_CHARS = 12;
 
+/**
+ * Strip tags until stable. The result is rendered as text, never as HTML, so
+ * this is defence in depth against a removal re-forming a tag.
+ */
+function stripHtmlTags(text: string): string {
+  let out = text;
+  let previous: string;
+  do {
+    previous = out;
+    out = out.replace(HTML_TAG, "");
+  } while (out !== previous);
+  return out;
+}
+
 /** Inline markdown stripped to plain text. */
 function toPlainText(markdown: string): string {
-  return markdown
-    .replace(IMAGE, "")
-    .replace(LINK, "$1")
-    .replace(HTML_TAG, "")
+  return stripHtmlTags(markdown.replace(IMAGE, "").replace(LINK, "$1"))
     .replace(EMPHASIS, "")
     .replace(WHITESPACE, " ")
     .trim();
@@ -38,20 +52,44 @@ function truncate(text: string): string {
   return `${(lastSpace > 40 ? clipped.slice(0, lastSpace) : clipped).trimEnd()}...`;
 }
 
-/** Trimmed lines outside fenced code blocks; fences act as item boundaries. */
-function contentLines(markdown: string): string[] {
-  const lines: string[] = [];
-  let inFence = false;
+interface ContentLine {
+  text: string;
+  indent: number;
+}
+
+/**
+ * Lines outside fenced code blocks, with list indentation preserved. Only a
+ * same-character run at least as long closes a fence, so a ``` sample inside a
+ * ```` block does not end it early.
+ */
+function contentLines(markdown: string): ContentLine[] {
+  const lines: ContentLine[] = [];
+  let openFence: string | null = null;
 
   for (const rawLine of markdown.split("\n")) {
-    if (FENCE.test(rawLine)) {
-      inFence = !inFence;
-      lines.push("");
+    const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
+    const fence = FENCE.exec(line);
+    if (fence) {
+      const marker = fence[1] ?? "";
+      if (openFence === null) {
+        openFence = marker;
+      } else if (
+        marker[0] === openFence[0] &&
+        marker.length >= openFence.length
+      ) {
+        openFence = null;
+      }
+      lines.push({ text: "", indent: 0 });
       continue;
     }
-    if (!inFence) {
-      lines.push(rawLine.replace(BLOCKQUOTE, "").trim());
+    if (openFence !== null) {
+      continue;
     }
+    const stripped = line.replace(BLOCKQUOTE, "");
+    lines.push({
+      text: stripped.trim(),
+      indent: stripped.length - stripped.trimStart().length,
+    });
   }
   return lines;
 }
@@ -82,9 +120,58 @@ function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
   return { lead: text.slice(0, cut).trim(), rest: text.slice(cut).trim() };
 }
 
+interface Bullet {
+  text: string;
+  indent: number;
+}
+
+/** Bullets in document order, plus prose for changelogs written as paragraphs. */
+function collectBullets(markdown: string): {
+  bullets: Bullet[];
+  prose: string[];
+} {
+  const bullets: Bullet[] = [];
+  const prose: string[] = [];
+  // Wrapped bullets continue on following lines and belong to one item.
+  let current: Bullet | null = null;
+
+  const flush = () => {
+    if (current?.text) {
+      bullets.push({ text: truncate(current.text), indent: current.indent });
+    }
+    current = null;
+  };
+
+  for (const line of contentLines(markdown)) {
+    if (!line.text || HEADING.test(line.text)) {
+      flush();
+      continue;
+    }
+
+    const bullet = BULLET.exec(line.text);
+    if (bullet) {
+      flush();
+      current = { text: toPlainText(bullet[1] ?? ""), indent: line.indent };
+      continue;
+    }
+
+    const text = toPlainText(line.text);
+    if (current === null) {
+      if (text) {
+        prose.push(truncate(text));
+      }
+    } else if (text) {
+      current = { text: `${current.text} ${text}`, indent: current.indent };
+    }
+  }
+  flush();
+
+  return { bullets, prose };
+}
+
 /**
- * Top-level bullets of a release section, in document order. Falls back to
- * prose when a release has no bullets.
+ * Top-level bullets of a release section, in document order. Nested bullets are
+ * detail and are skipped; prose is used when a release has no bullets.
  */
 export function releaseNotesPreview(
   markdown: string | null | undefined,
@@ -94,43 +181,18 @@ export function releaseNotesPreview(
     return { items: [], remaining: 0 };
   }
 
-  const bullets: string[] = [];
-  const prose: string[] = [];
-  // Wrapped bullets continue on following lines and belong to one item.
-  let current: string | null = null;
+  const { bullets, prose } = collectBullets(markdown);
+  // Shallowest bullet defines top level, so a uniformly indented list still
+  // previews instead of being read as all-nested.
+  const baseIndent = bullets.reduce(
+    (min, bullet) => Math.min(min, bullet.indent),
+    Number.POSITIVE_INFINITY,
+  );
+  const topLevel = bullets
+    .filter((bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE)
+    .map((bullet) => bullet.text);
 
-  const flush = () => {
-    if (current) {
-      bullets.push(truncate(current));
-    }
-    current = null;
-  };
-
-  for (const line of contentLines(markdown)) {
-    if (!line || HEADING.test(line)) {
-      flush();
-      continue;
-    }
-
-    const bullet = BULLET.exec(line);
-    if (bullet) {
-      flush();
-      current = toPlainText(bullet[1] ?? "") || null;
-      continue;
-    }
-
-    const text = toPlainText(line);
-    if (current === null) {
-      if (text) {
-        prose.push(truncate(text));
-      }
-    } else if (text) {
-      current = `${current} ${text}`;
-    }
-  }
-  flush();
-
-  const source = bullets.length > 0 ? bullets : prose;
+  const source = topLevel.length > 0 ? topLevel : prose;
   return {
     items: source.slice(0, limit).map(splitLeadSentence),
     remaining: Math.max(source.length - limit, 0),
