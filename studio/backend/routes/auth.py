@@ -455,8 +455,15 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
     )
 
 
+# Sync def (not async), like /identity: every step here is blocking SQLite work
+# (token lookup, single-use consume, refresh-token insert) that can wait out the
+# connection busy timeout while another writer holds the auth DB. On an async
+# handler that wait pins the event loop and stalls every other request; FastAPI
+# runs a sync handler in its threadpool instead. The failure buckets this route
+# shares with /login are guarded by _LOGIN_BUCKETS_LOCK, so threadpool execution
+# is safe.
 @router.post("/link-exchange", response_model = Token)
-async def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
+def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
     """Exchange a one-time, short-TTL link token for normal session tokens.
 
     Powers the opt-in Colab same-tab handoff: the same-tab URL carries a
@@ -466,7 +473,7 @@ async def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
 
     Per-IP failure rate-limited like /login. This endpoint is unauthenticated and
     each attempt performs a SQLite lookup plus HMAC/base64 processing, so without a
-    limiter an attacker could spray invalid tokens and pin the async event loop on
+    limiter an attacker could spray invalid tokens and saturate the threadpool with
     that work. There is no username here (the token is the credential), so failures
     fold into the per-IP aggregate bucket; the bound is checked BEFORE any storage
     work, and a successful exchange clears the bucket (mirrors /login).

@@ -33,6 +33,19 @@ def isolated_auth_db(tmp_path, monkeypatch):
     yield
 
 
+# Captured before the autouse stub below replaces it, so the probe itself can be
+# exercised for real.
+_REAL_DISPLAY_CHANNEL_ACTIVE = colab._display_channel_active
+
+
+@pytest.fixture(autouse = True)
+def _display_channel_available(monkeypatch):
+    # Rotation is now gated on a real notebook display channel (pytest has none),
+    # so default it to available; the dedicated tests below flip it to exercise the
+    # fail-closed refusal.
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: True)
+
+
 def _seed_admin(*, must_change_password: bool) -> str:
     storage.create_initial_user(
         username = storage.DEFAULT_ADMIN_USERNAME,
@@ -167,6 +180,89 @@ def test_start_cloudflare_tunnel_autogenerates_then_proceeds(monkeypatch):
     assert url == "https://example.trycloudflare.com"
     assert shown["user"] == admin
     assert storage.requires_password_change(admin) is False
+
+
+def test_auto_generate_refuses_without_a_display_channel(monkeypatch):
+    # display() does not raise outside a notebook: with no InteractiveShell it
+    # prints repr(obj) and a terminal shell renders only text/plain, so the HTML
+    # card degrades to "<IPython.core.display.HTML object>" and the password is
+    # never seen. start(cloudflare=True) is documented to work on any runtime, so
+    # resolve the channel BEFORE rotating -- otherwise the seeded recovery
+    # credential is destroyed for a password nobody could read.
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: False)
+    rotations = []
+    monkeypatch.setattr(storage, "update_password", lambda *a, **k: rotations.append(a) or True)
+
+    assert colab._auto_generate_colab_admin_password() is None
+
+    assert rotations == []  # nothing was rotated
+    assert storage.requires_password_change(admin) is True
+
+
+def test_start_cloudflare_tunnel_refuses_without_a_display_channel(monkeypatch):
+    # End to end: no display channel -> no rotation, and the pending-bootstrap
+    # backstop then refuses to publish the shared link.
+    admin = _seed_admin(must_change_password = True)
+    monkeypatch.setattr(colab, "_display_channel_active", lambda: False)
+    import cloudflare_tunnel
+
+    started = {"called": False}
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "start_studio_tunnel",
+        lambda port: started.update(called = True) or "https://example.trycloudflare.com",
+    )
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert started["called"] is False
+    assert storage.requires_password_change(admin) is True
+
+
+def test_display_channel_active_false_without_a_kernel():
+    # The real probe under pytest: IPython may be importable, but there is no
+    # ipykernel-backed shell, so the channel must read as inactive.
+    assert _REAL_DISPLAY_CHANNEL_ACTIVE() is False
+
+
+def test_auto_generate_keeps_credential_when_post_commit_cleanup_raises(monkeypatch):
+    # update_password commits the row and only then runs its best-effort cleanup
+    # (clear_bootstrap_password, clear_desktop_secret -- the latter opens a second
+    # SQLite connection that can hit a lock). A raise there used to discard the
+    # generated password even though it was already live, and the caller would then
+    # publish the link (must_change is 0) under a credential nobody holds.
+    admin = _seed_admin(must_change_password = True)
+    real_update = storage.update_password
+
+    def _update_then_explode(username, new_password, **kwargs):
+        real_update(username, new_password, **kwargs)
+        raise OSError("database is locked")  # post-commit cleanup failure
+
+    monkeypatch.setattr(storage, "update_password", _update_then_explode)
+
+    generated = colab._auto_generate_colab_admin_password()
+
+    assert isinstance(generated, str) and generated
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    # The returned value is exactly the committed one, so the card shows a
+    # password that actually authenticates.
+    assert hashing.verify_password(generated, salt, pwd_hash) is True
+
+
+def test_auto_generate_drops_credential_when_the_commit_itself_fails(monkeypatch):
+    # The converse: the write never landed, so nothing may be displayed -- showing
+    # it would publish the link under a password that does not authenticate.
+    admin = _seed_admin(must_change_password = True)
+
+    def _explode(username, new_password, **kwargs):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr(storage, "update_password", _explode)
+
+    assert colab._auto_generate_colab_admin_password() is None
+    assert storage.requires_password_change(admin) is True
 
 
 def test_start_cloudflare_tunnel_refuses_if_autogen_fails(monkeypatch):

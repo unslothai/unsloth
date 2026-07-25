@@ -295,6 +295,16 @@ def test_link_exchange_route_issues_jwt_once():
     assert replay.status_code == 401, replay.text
 
 
+def test_link_exchange_route_is_sync_so_fastapi_offloads_it():
+    # Every step of the handler is blocking SQLite work (token lookup, single-use
+    # consume, refresh-token insert) that can wait out the connection busy timeout
+    # while another writer holds the auth DB. FastAPI runs `async def` handlers on
+    # the event loop, so that wait would stall every other request; a `def` handler
+    # is dispatched to the threadpool instead (same reason /identity is sync).
+    import inspect
+    assert not inspect.iscoroutinefunction(_load_auth_route().link_exchange)
+
+
 def test_link_exchange_route_rejects_garbage():
     _seed_admin()
     client = _auth_client()

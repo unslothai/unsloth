@@ -368,6 +368,38 @@ def _bootstrap_password_pending() -> bool:
         return True
 
 
+def _display_channel_active() -> bool:
+    """True only where IPython.display actually renders a card to the operator.
+
+    display() does NOT raise outside a notebook, so a non-raising call is no proof
+    the credential was seen: with no InteractiveShell it just prints repr(obj)
+    ("<IPython.core.display.HTML object>") and a terminal shell renders only the
+    text/plain repr. Treating that as success would publish the shared link after
+    rotating to a password nobody ever read. Only an ipykernel-backed shell
+    (Jupyter, and Colab whose google.colab._shell.Shell subclasses it) publishes
+    display_data out of band on iopub, so require one: the `kernel` attribute is
+    set on the shell by ipykernel and, unlike comparing __class__.__name__ to
+    "ZMQInteractiveShell", it is also true under Colab's subclass.
+    """
+    try:
+        from IPython import get_ipython
+    except Exception:
+        return False
+    try:
+        shell = get_ipython()
+    except Exception:
+        return False
+    if shell is None:
+        return False
+    if getattr(shell, "kernel", None) is not None:
+        return True
+    try:
+        from ipykernel.zmqshell import ZMQInteractiveShell
+    except Exception:
+        return False
+    return isinstance(shell, ZMQInteractiveShell)
+
+
 def _auto_generate_colab_admin_password() -> "str | None":
     """Secure a Colab public (Cloudflare) launch that has no admin password set.
 
@@ -390,6 +422,10 @@ def _auto_generate_colab_admin_password() -> "str | None":
     the removed finalize flow wrote the admin username and password there in
     plaintext, and an upgraded runtime must not keep a readable copy of a
     credential this flow promises is never persisted (CWE-256).
+
+    The display channel is resolved BEFORE rotating (mirroring run.py's
+    _one_time_secret_stream preflight): a runtime that cannot render the card is
+    refused here, while the seeded recovery credential is still intact.
     """
     try:
         from auth.storage import (
@@ -406,15 +442,35 @@ def _auto_generate_colab_admin_password() -> "str | None":
         ensure_default_admin()
         if not requires_password_change(DEFAULT_ADMIN_USERNAME):
             return None
+        if not _display_channel_active():
+            # Nowhere to render the one-time card, so rotating would destroy the
+            # only recovery credential for a password nobody could read. Refuse
+            # BEFORE the write; the caller's pending check then blocks the link.
+            logger.warning(
+                "No notebook display channel to show a one-time admin password, so the "
+                "admin password is left unchanged. Set one with `unsloth studio "
+                "reset-password` (or log in locally and change it), then re-run start()."
+            )
+            return None
         import secrets
 
         generated = secrets.token_urlsafe(24)
-        committed = update_password(
-            DEFAULT_ADMIN_USERNAME,
-            generated,
-            revoke_refresh_tokens = True,
-            require_must_change = True,
-        )
+        try:
+            committed = update_password(
+                DEFAULT_ADMIN_USERNAME,
+                generated,
+                revoke_refresh_tokens = True,
+                require_must_change = True,
+            )
+        except Exception as e:
+            # update_password commits the row BEFORE its best-effort cleanup
+            # (clear_bootstrap_password, then clear_desktop_secret, which opens a
+            # second SQLite connection that can hit a lock or I/O error). A raise
+            # there leaves the new password live, and discarding it would publish
+            # the link -- must_change is already 0 -- under a credential nobody
+            # holds. Ask the stored hash which password actually won.
+            logger.warning(f"Admin password commit reported an error ({e}); checking what landed.")
+            committed = _colab_credentials_still_valid(DEFAULT_ADMIN_USERNAME, generated)
         if not committed:
             # Lost the race: a password was set elsewhere, so ours was never
             # written. Never show it -- it would not authenticate.
