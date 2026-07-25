@@ -659,9 +659,7 @@ def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
     async def _run():
         held = _occupy(_KEY, 1, 1)
         task = asyncio.create_task(
-            anthropic_messages(
-                _passthrough_payload(), request = _Request(), current_subject = "t"
-            )
+            anthropic_messages(_passthrough_payload(), request = _Request(), current_subject = "t")
         )
         await asyncio.sleep(0.1)
         assert _snapshot().queued == 1  # queued behind the busy slot, not bypassing
