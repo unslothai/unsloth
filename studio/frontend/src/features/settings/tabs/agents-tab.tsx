@@ -176,7 +176,6 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
 ];
 
 const QUICKSTART_AGENT = "claude";
-const REMOTE_API_KEY_PLACEHOLDER = "sk-unsloth-...";
 
 // Single line so the copied command pastes as-is in POSIX, PowerShell and cmd.
 const MODEL_SUFFIX_CMD =
@@ -297,16 +296,14 @@ export function AgentsTab() {
   // /api/health reports the backend's own URL (the user's localhost behind a
   // tunnel), while the desktop has no reachable window origin. buildAgentCommand
   // keeps the bare form for the default local server, and a non-loopback base
-  // needs the key placeholder so the copied command shows --api-key.
+  // keeps the bare form for the default local server. No key is passed: the CLI
+  // treats an explicit one as authoritative and caches it per base, so a
+  // placeholder would overwrite a working saved key. Omitting the flag lets it
+  // replay the saved key; the remote section below covers first-time setup.
   const commandBase = isTauri ? serverUrl : origin;
   const commandOs = isWindowsClient ? "windows" : "unix";
   const agentCommand = (agentId: string) =>
-    buildAgentCommand(
-      commandBase,
-      REMOTE_API_KEY_PLACEHOLDER,
-      commandOs,
-      agentId,
-    );
+    buildAgentCommand(commandBase, null, commandOs, agentId);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
