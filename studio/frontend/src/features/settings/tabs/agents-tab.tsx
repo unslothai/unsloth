@@ -28,14 +28,17 @@ import { SettingsSection } from "../components/settings-section";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 
-// Desktop-only: a browser loopback URL may be an SSH/port forward to another host.
-function canUseLocalAgentDetection(base: string): boolean {
-  if (!isTauri) return false;
+function isLoopbackBase(base: string): boolean {
   try {
     return isLoopbackHost(normalizeHost(new URL(base).hostname));
   } catch {
     return false;
   }
+}
+
+// Desktop-only: a browser loopback URL may be an SSH/port forward to another host.
+function canUseLocalAgentDetection(base: string): boolean {
+  return isTauri && isLoopbackBase(base);
 }
 
 // One timeout, reset on re-click and cleared on unmount, so the tick never leaks.
@@ -287,12 +290,14 @@ export function AgentsTab() {
   // No --api-key: the CLI caches an explicit key per base, so a placeholder would overwrite a
   // working saved one. Omitting it replays the saved key; the remote section covers first setup.
   const commandBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  // These commands run where the CLI is, i.e. this Studio's host, so take the
-  // shell from the server-reported deviceType like the API usage panel does.
-  // The browser OS would say Windows for a WSL Studio viewed from Windows and
-  // emit PowerShell $env: syntax that WSL's bash rejects; any non-windows
-  // deviceType (wsl included) is POSIX.
-  const commandOs = deviceType === "windows" ? "windows" : "unix";
+  // The command runs wherever the CLI is. For a loopback base that is this Studio's
+  // own host, so use deviceType, which reports wsl where the browser would claim
+  // Windows and emit $env: syntax bash rejects. A remote base is reached from the
+  // viewer's machine instead, so only the client platform describes that shell.
+  const commandOs =
+    (isLoopbackBase(commandBase) ? deviceType === "windows" : isWindowsClient)
+      ? "windows"
+      : "unix";
   const agentCommand = (agentId: string) =>
     buildAgentCommand(commandBase, null, commandOs, agentId);
   const example = (agentId: string, flags: string) =>
