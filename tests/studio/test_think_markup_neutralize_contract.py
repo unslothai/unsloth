@@ -45,6 +45,8 @@ const cases = {
   quoted_literal: '<think>user wrote "</think>" here</think>answer',
   // Mismatched flanks are not a quote span (#7334).
   mismatched_flanks: '<think>I\\'ll answer with `</think>"yes" is the answer',
+  // The apostrophe in "It's" is punctuation, not an opening quote (#7334).
+  contraction_quoted: "<think>It's discussing '</think>' here</think>answer",
   closed_fence_literal: "<think>see ```\\n</think>\\n``` example</think>real answer",
   unclosed_fence: "<think>unclosed ```python\\n</think>\\nthe answer",
   // Unclosed reasoning fence + a fenced code block in the ANSWER (#7334).
@@ -235,6 +237,15 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     ]
     assert closed["mismatched_flanks"] is True
 
+    # A contraction before a single-quoted mention must not flip the parity:
+    # counting it read the quoted tag as the block end and leaked the rest of
+    # the thought into the visible answer (#7334).
+    assert parsed["contraction_quoted"] == [
+        {"type": "reasoning", "text": "It's discussing '</think>' here"},
+        {"type": "text", "text": "answer"},
+    ]
+    assert closed["contraction_quoted"] is True
+
     # A literal mention alone never closes the block (reasoning timer stays live).
     assert [part["type"] for part in parsed["literal_only"]] == ["reasoning"]
     assert closed["literal_only"] is False
@@ -338,6 +349,21 @@ def test_chat_adapter_marks_its_own_reasoning_close_as_known(tmp_path):
     assert "syntheticCloses" in src
     assert "syntheticCloses.add(cumulativeText.length)" in src
     assert "isKnownClose" in src
+
+
+def test_structured_content_wrapper_closes_are_known(tmp_path):
+    """The `<think>` wrapper around a structured thinking part is ours too.
+
+    A provider streaming reasoning as a `delta.content` thinking part that ends
+    inside an unfinished ``` fence had its inserted `</think>` re-derived by the
+    raw-marker heuristics, keeping every answer delta in the drawer until the
+    stream ended (#7334).
+    """
+    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    assert "closeOffsets" in src
+    assert "syntheticCloses.add(cumulativeText.length + offset)" in src
+    # The wrapper close must be emitted separately so its offset is recorded.
+    assert '`<think>${neutralizeThinkMarkup(thinking)}</think>`' not in src
 
 
 def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):

@@ -622,8 +622,16 @@ function estimateTokenCount(text: string): number | undefined {
  *
  * Unknown part types are skipped — better to drop a stray field than
  * stringify an object into the rendered chat.
+ *
+ * `closeOffsets` reports where in the returned text each wrapper `</think>`
+ * starts, so the caller can register them as known boundaries. They are ours,
+ * not model markers: leaving them to the raw-marker heuristics kept every
+ * answer delta in the drawer when a thinking part ended in an open ``` (#7334).
  */
-function extractDeltaText(delta: unknown): string {
+function extractDeltaText(delta: unknown): {
+  text: string;
+  closeOffsets: number[];
+} {
   const extractReasoningText = (payload: unknown): string => {
     if (typeof payload === "string") return payload;
     if (Array.isArray(payload)) {
@@ -641,9 +649,10 @@ function extractDeltaText(delta: unknown): string {
     return "";
   };
 
-  if (typeof delta === "string") return delta;
-  if (!Array.isArray(delta)) return "";
+  if (typeof delta === "string") return { text: delta, closeOffsets: [] };
+  if (!Array.isArray(delta)) return { text: "", closeOffsets: [] };
   let out = "";
+  const closeOffsets: number[] = [];
   for (const part of delta) {
     if (typeof part === "string") {
       out += part;
@@ -663,10 +672,14 @@ function extractDeltaText(delta: unknown): string {
       const thinking = extractReasoningText(obj);
       // Neutralize literal </think> inside provider thinking parts so the
       // synthetic wrapper cannot close early (#7066).
-      if (thinking) out += `<think>${neutralizeThinkMarkup(thinking)}</think>`;
+      if (thinking) {
+        out += `<think>${neutralizeThinkMarkup(thinking)}`;
+        closeOffsets.push(out.length);
+        out += "</think>";
+      }
     }
   }
-  return out;
+  return { text: out, closeOffsets };
 }
 
 function buildTiming(
@@ -3797,8 +3810,11 @@ export function createOpenAIStreamAdapter(
                 }
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
-              // Normalize structured delta.content (mistral magistral).
-              const delta = extractDeltaText(rawDelta);
+              // Normalize structured delta.content (mistral magistral). The
+              // wrapper closes it inserts are known boundaries; their offsets
+              // are rebased onto cumulativeText where the delta is appended.
+              const { text: delta, closeOffsets: deltaCloseOffsets } =
+                extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -3988,6 +4004,9 @@ export function createOpenAIStreamAdapter(
               }
               if (delta) {
                 closeReasoningContent();
+                for (const offset of deltaCloseOffsets) {
+                  syntheticCloses.add(cumulativeText.length + offset);
+                }
                 cumulativeText += delta;
               }
               // Strip a trailing ${...} template-literal fragment from

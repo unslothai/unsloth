@@ -146,6 +146,49 @@ def test_mismatched_quote_flanks_are_a_structural_close():
     assert _think_close_is_literal_in_span('with "</think>"yes', len('with "')) is True
 
 
+def test_intra_word_apostrophe_does_not_flip_quote_parity():
+    """A contraction is punctuation, not an opening quote (#7334).
+
+    ``It's discussing '</think>'`` counted the apostrophe in "It's", made the
+    opening quote even, and read the quoted mention as the structural close, so
+    the rest of the thought leaked into the visible answer.
+    """
+    reasoning, visible = _extract_responses_reasoning(
+        "It's discussing '</think>' here</think>answer",
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert "here" in reasoning
+    assert "</think>" not in reasoning  # neutralized mention, still reasoning
+    assert visible == "answer"
+    # A quoted span that CLOSES still leaves the next mention odd/literal.
+    reasoning, visible = _extract_responses_reasoning(
+        "He said 'yes' and '</think>' too</think>final",
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert "too" in reasoning
+    assert visible == "final"
+
+
+def test_intra_word_apostrophe_parity_across_deltas():
+    """Same call when the contraction and the quote land in different deltas."""
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning, visible = "", ""
+    for delta in ("It'", "s discussing '", "</think>", "' here", "</think>", "answer"):
+        r, v = ex.feed(delta)
+        reasoning += r
+        visible += v
+    r, v = ex.finish()
+    reasoning += r
+    visible += v
+    assert "here" in reasoning
+    assert visible == "answer"
+
+
 def test_mismatched_quote_flanks_structural_across_deltas():
     """Same call when the flanks land in different streaming deltas."""
     ex = _ResponsesReasoningExtractor(

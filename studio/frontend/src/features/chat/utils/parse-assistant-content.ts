@@ -80,6 +80,14 @@ export function drainThinkMarkupBuffer(
   };
 }
 
+/** Letters and digits, so "l'annee" and "It's" read as one word. */
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+const isIntraWordApostrophe = (text: string, at: number): boolean =>
+  at > 0 &&
+  WORD_CHAR.test(text[at - 1] ?? "") &&
+  WORD_CHAR.test(text[at + 1] ?? "");
+
 export type ParseOptions = {
   /** The response is still streaming, so `raw` can still grow. */
   streaming?: boolean;
@@ -148,7 +156,10 @@ function findStructuralThinkClose(
     let n = ch === '"' ? dq : ch === "'" ? sq : bt;
     const cursor = ch === '"' ? dqFrom : ch === "'" ? sqFrom : btFrom;
     for (let at = raw.indexOf(ch, cursor); at !== -1 && at < end; ) {
-      n += 1;
+      // An apostrophe inside a word is punctuation, not an opening quote:
+      // counting the one in "It's" flipped the parity of a genuinely quoted
+      // tag, so "It's discussing '</think>'" read as the block end (#7334).
+      if (ch !== "'" || !isIntraWordApostrophe(raw, at)) n += 1;
       at = raw.indexOf(ch, at + 1);
     }
     if (ch === '"') {

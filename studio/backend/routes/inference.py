@@ -11215,6 +11215,32 @@ def _should_hold_quoted_think_close(
     return end >= len(buffer)
 
 
+def _is_word_char(ch: str) -> bool:
+    return bool(ch) and ch.isalnum()
+
+
+def _count_quote_delimiters(text: str, ch: str, prev: str = "", nxt: str = "") -> int:
+    """Occurrences of ``ch`` in *text* that act as quote DELIMITERS.
+
+    An apostrophe between two word chars is punctuation, not an opening quote:
+    counting the one in "It's" flipped the parity of a genuinely quoted tag, so
+    ``It's discussing '</think>'`` read as the structural close and leaked the
+    rest of the thought into the visible answer (#7334). ``prev`` / ``nxt`` are
+    the chars flanking *text*, which carry the context across streaming chunks.
+    """
+    if ch != "'":
+        return text.count(ch)
+    count = 0
+    idx = text.find(ch)
+    while idx != -1:
+        left = text[idx - 1] if idx else prev
+        right = text[idx + 1] if idx + 1 < len(text) else nxt
+        if not (_is_word_char(left) and _is_word_char(right)):
+            count += 1
+        idx = text.find(ch, idx + 1)
+    return count
+
+
 def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     """True when ``</think>`` looks like quoted/code content, not a block end.
 
@@ -11238,7 +11264,8 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
         # Only literal when the leading quote OPENS a span (odd count of that
         # quote char before the tag). An even count means the quote closed a
         # prior span, so this close tag is structural.
-        if buffer.count(before, 0, close_idx) % 2 == 1:
+        count = _count_quote_delimiters(buffer[:close_idx], before, nxt = buffer[close_idx])
+        if count % 2 == 1:
             return True
     return False
 
@@ -11289,6 +11316,11 @@ class _ResponsesReasoningExtractor:
         # Single-char quote counts over the consumed span (backtick doubles as a
         # quote flank, mirroring the old ``span.count(before, ...)``).
         self._quote_counts = {'"': 0, "'": 0, "`": 0}
+        # An apostrophe is only a delimiter when it is not inside a word, so one
+        # sitting at the very end of the consumed span waits for its right
+        # neighbour (the next chunk, or the live buffer). Holds the char to its
+        # LEFT while it waits, else None (#7334).
+        self._pending_apostrophe_prev = None
         # Last char of the consumed span, needed as ``before`` when a close tag
         # sits at buffer start (index 0) so its flank is the span's last char.
         self._span_last_char = ""
@@ -11304,8 +11336,22 @@ class _ResponsesReasoningExtractor:
         if not chunk:
             return
         self._quote_counts['"'] += chunk.count('"')
-        self._quote_counts["'"] += chunk.count("'")
         self._quote_counts["`"] += chunk.count("`")
+        # Resolve the apostrophe held at the previous chunk's edge, now that its
+        # right neighbour has arrived, then count this chunk minus its own edge.
+        if self._pending_apostrophe_prev is not None:
+            if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(chunk[0])):
+                self._quote_counts["'"] += 1
+            self._pending_apostrophe_prev = None
+        if chunk.endswith("'"):
+            body = chunk[:-1]
+            self._pending_apostrophe_prev = body[-1] if body else self._span_last_char
+            nxt = "'"
+        else:
+            body, nxt = chunk, ""
+        self._quote_counts["'"] += _count_quote_delimiters(
+            body, "'", prev = self._span_last_char, nxt = nxt
+        )
         # Carry the pending backticks so a fence straddling the chunk boundary is
         # counted exactly as ``str.count("```")`` over the full concatenation.
         combined = "`" * self._fence_state + chunk
@@ -11389,7 +11435,20 @@ class _ResponsesReasoningExtractor:
             # span, so the close tag is quoted content (not a structural close).
             # Mismatched flanks are not a quoted mention (see
             # _is_literal_think_close), so they fall through as structural.
-            count = self._quote_counts[before] + buffer.count(before, 0, close_idx)
+            count = self._quote_counts[before] + _count_quote_delimiters(
+                buffer[:close_idx],
+                before,
+                prev = self._span_last_char,
+                nxt = buffer[close_idx],
+            )
+            if before == "'" and self._pending_apostrophe_prev is not None:
+                # The span's held apostrophe: the live buffer supplies the right
+                # neighbour it was waiting for.
+                if not (
+                    _is_word_char(self._pending_apostrophe_prev)
+                    and _is_word_char(buffer[0])
+                ):
+                    count += 1
             if count % 2 == 1:
                 return True
         return False
