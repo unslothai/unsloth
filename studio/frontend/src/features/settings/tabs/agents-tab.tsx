@@ -46,7 +46,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useChatRuntimeStore } from "@/features/chat";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
@@ -449,7 +448,10 @@ function SubagentSection({
   return (
     <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-muted/10 p-3">
       <div className="flex flex-col gap-1">
-        <span className="text-xs font-medium text-foreground">
+        <span
+          data-settings-label={t("settings.agents.subagent.title")}
+          className="text-xs font-medium text-foreground"
+        >
           {t("settings.agents.subagent.title")}
         </span>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -797,20 +799,8 @@ export function AgentsTab() {
   }, [cachedLoadIds, hfToken, preferredVariant, selectedModel]);
 
   // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits
-  // otherwise), so flag its row when the loaded model doesn't qualify rather
-  // than offering a command that fails. Mirrors the same three-signal check the
-  // API usage panel uses: activeGgufVariant covers an HF-repo GGUF pick,
-  // activeNativePathToken a direct local .gguf file, and ggufContextLength is
-  // only set when /api/inference/status reported is_gguf for the active model.
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeNativePathToken = useChatRuntimeStore(
-    (s) => s.activeNativePathToken,
-  );
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
-  const isGguf =
-    activeGgufVariant != null ||
-    activeNativePathToken != null ||
-    ggufContextLength != null;
+  // otherwise), but the picker below only offers GGUFs and the command names
+  // the one it built, so there is nothing left to warn about here.
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
@@ -857,7 +847,10 @@ export function AgentsTab() {
       >
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-xs font-medium text-foreground">
+            <span
+              data-settings-label={t("settings.agents.agent")}
+              className="text-xs font-medium text-foreground"
+            >
               {t("settings.agents.agent")}
             </span>
             <a
@@ -921,14 +914,6 @@ export function AgentsTab() {
                           {t("settings.agents.quickstart.installed")}
                         </span>
                       ) : null}
-                      {/* codex needs a GGUF model (unsloth_cli's
-                          _require_gguf_for_codex exits otherwise), so flag it
-                          when the loaded model doesn't qualify. */}
-                      {agent.id === "codex" && !isGguf ? (
-                        <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-[10px] leading-none font-semibold text-muted-foreground">
-                          {t("settings.agents.supportedAgents.requiresGguf")}
-                        </span>
-                      ) : null}
                     </span>
                   </SelectItem>
                 );
@@ -939,7 +924,10 @@ export function AgentsTab() {
 
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(10rem,0.4fr)] items-start gap-3 max-md:grid-cols-1">
           <div className="flex min-w-0 flex-col gap-1.5">
-            <span className="text-xs font-medium text-foreground">
+            <span
+              data-settings-label={t("settings.agents.model")}
+              className="text-xs font-medium text-foreground"
+            >
               {t("settings.agents.model")}
             </span>
             <Popover
@@ -1024,7 +1012,10 @@ export function AgentsTab() {
           </div>
 
           <div className="flex min-w-0 flex-col gap-1.5">
-            <span className="text-xs font-medium text-foreground">
+            <span
+              data-settings-label={t("settings.agents.quantization")}
+              className="text-xs font-medium text-foreground"
+            >
               {t("settings.agents.quantization")}
             </span>
             <Select

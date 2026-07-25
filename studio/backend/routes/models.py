@@ -3016,11 +3016,42 @@ def _repo_gguf_last_modified(repo_info) -> float:
     return latest
 
 
+def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
+    """Snapshot dir to load a cached GGUF repo by, when its id will not do.
+
+    A repo outside the active hub cache does not resolve by id, so it loads by
+    the snapshot holding its newest primary GGUF, as
+    ``hub.services.models.cache_inventory`` already does. ``None`` when the id
+    works or no snapshot is recorded, since the repo dir itself is not loadable.
+    """
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is None or active_root is None:
+        return None
+    try:
+        if repo_path.parent.resolve(strict = False) == active_root:
+            return None
+    except (OSError, RuntimeError, ValueError):
+        pass
+    newest_snapshot, newest_mtime = None, -1.0
+    for revision in repo_info.revisions:
+        snapshot = getattr(revision, "snapshot_path", None)
+        if snapshot is None:
+            continue
+        for f in revision.files:
+            if _is_main_gguf_filename(f.file_name) and _blob_mtime(f) > newest_mtime:
+                newest_snapshot, newest_mtime = snapshot, _blob_mtime(f)
+    return str(newest_snapshot) if newest_snapshot is not None else None
+
+
 @router.get("/cached-gguf")
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         cache_scans = _all_hf_cache_scans()
+        try:
+            active_root = _resolve_hf_cache_dir().resolve(strict = False)
+        except Exception:
+            active_root = None
 
         seen_lower: dict[str, dict] = {}
         for hf_cache in cache_scans:
@@ -3046,6 +3077,9 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "cache_path": str(repo_info.repo_path),
                             "has_vision": _repo_has_mmproj(repo_info),
                         }
+                        load_id = _repo_gguf_load_id(repo_info, active_root)
+                        if load_id:
+                            row["load_id"] = load_id
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))

@@ -105,7 +105,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   agents: [
     // Heading, intro and builder labels carry the terms users search for
-    // ("unsloth start", the agent names); section titles alone do not.
+    // ("unsloth start", the agent names). Every key here must be rendered with
+    // a matching data-settings-label, or the result has nothing to scroll to.
     "settings.agents.title",
     "settings.agents.description",
     "settings.agents.intro",
@@ -113,9 +114,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.agents.model",
     "settings.agents.quantization",
     "settings.agents.subagent.title",
-    "settings.agents.quickstart.title",
-    "settings.agents.supportedAgents.title",
-    "settings.agents.models.title",
     "settings.agents.options.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",

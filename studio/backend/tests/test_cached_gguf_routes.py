@@ -126,6 +126,32 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
     assert row.active_cache is False
 
 
+def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatch, tmp_path):
+    """A repo outside the active cache carries the snapshot path to load by;
+    one inside it is loadable by id, so no load_id is sent."""
+    active = tmp_path / "active"
+    snapshot = tmp_path / "legacy" / "models--Org--Away" / "snapshots" / "rev"
+    away = _repo(
+        "Org/Away",
+        [],
+        tmp_path / "legacy" / "models--Org--Away",
+        revisions = [
+            SimpleNamespace(files = [_file("Q4_K_M.gguf", 5_000)], snapshot_path = snapshot),
+        ],
+    )
+    here = _repo("Org/Here", [_file("Q4_K_M.gguf", 6_000)], active / "models--Org--Here")
+
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [away, here])])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = {c["repo_id"]: c for c in asyncio.run(
+        models_route.list_cached_gguf(current_subject = "test-user")
+    )["cached"]}
+
+    assert rows["Org/Away"]["load_id"] == str(snapshot)
+    assert "load_id" not in rows["Org/Here"]
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
