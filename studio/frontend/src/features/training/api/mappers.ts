@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { TrainingConfigState } from "../types/config";
+import type {
+  TrainingConfigState,
+  TrainingDatasetSelection,
+} from "../types/config";
 import type { TrainingStartRequest } from "../types/api";
 import {
   isRawTextDatasetFormat,
@@ -53,11 +56,17 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
+  const legacyDatasets: TrainingDatasetSelection[] = hfDataset
+    ? [{
+        source: "huggingface",
+        path: hfDataset,
+        subset: config.datasetSubset,
+        split: config.datasetSplit,
+      }]
+    : localDatasets.map((path) => ({ source: "upload", path }));
   const structuredDatasets = config.trainingDatasets.length > 0
     ? config.trainingDatasets
-    : hfDataset
-      ? [{ source: "huggingface" as const, path: hfDataset, subset: config.datasetSubset, split: config.datasetSplit }]
-      : localDatasets.map((path) => ({ source: "upload" as const, path }));
+    : legacyDatasets;
   let customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
