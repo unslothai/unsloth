@@ -3183,7 +3183,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
-        """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
         GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
         hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
         selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
@@ -3213,7 +3213,9 @@ class LlamaCppBackend:
                 )
                 arch_by_id[pid] = _arch.split(":")[0].strip().lower()
             for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
-                if arch_by_id.get(_i) in {"gfx1150", "gfx1151"}:
+                # gfx1152 is Krackan Point (Radeon 860M/840M), the third RDNA 3.5
+                # APU: same shared GPU/system-RAM pool as Strix Point/Halo.
+                if arch_by_id.get(_i) in {"gfx1150", "gfx1151", "gfx1152"}:
                     return True
         except Exception:
             return False
