@@ -6,6 +6,7 @@ import {
   type GpuIndexKind,
   cachedPinnableGpuIndices,
   currentGpuIndexKind,
+  ensureGpuDeviceCache,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
@@ -699,6 +700,27 @@ export function loadedGpuMemoryFields(resp: {
     loadedGpuIds: gpuIds,
     ...manualKnobs,
   };
+}
+
+/** Self-heal a cold-cache GPU-kind stamp. A live pick stamped while the
+ *  /api/system GPU cache was still cold (a /status hydration that beat the first
+ *  fetch, or an eager picker edit) lands with selectedGpuIdsKind === null, which
+ *  imperative snapshots (currentRuntimePerModelConfig) then serialize as an
+ *  unstamped -- i.e. legacy physical -- pick, dropping a real Vulkan selection on
+ *  the next reconcile. Warm the cache and stamp the now-known kind so any
+ *  snapshot taken after (a model-switch rollback) carries the true index space.
+ *  No-op when the pick is already stamped or cleared. */
+export function warmSelectedGpuIdsKind(): void {
+  const { selectedGpuIds, selectedGpuIdsKind } = useChatRuntimeStore.getState();
+  if (selectedGpuIds == null || selectedGpuIdsKind != null) return;
+  void ensureGpuDeviceCache().then(() => {
+    // Re-read: a swap/clear during the await gap must not resurrect a stamp for a
+    // pick that is gone, and a pick already stamped by its own action is left be.
+    const s = useChatRuntimeStore.getState();
+    if (s.selectedGpuIds == null || s.selectedGpuIdsKind != null) return;
+    const kind = currentGpuIndexKind();
+    if (kind != null) useChatRuntimeStore.setState({ selectedGpuIdsKind: kind });
+  });
 }
 
 /** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
@@ -1937,14 +1959,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSplitRatio: (splitRatio) => set({ splitRatio }),
-  setSelectedGpuIds: (selectedGpuIds) =>
+  setSelectedGpuIds: (selectedGpuIds) => {
     set({
       selectedGpuIds,
       // A live picker selection is by definition in the current backend's index
       // space; stamp it so a later reconcile keeps it (and drops it only after
       // an actual backend swap). null pick carries no space.
       selectedGpuIdsKind: selectedGpuIds == null ? null : currentGpuIndexKind(),
-    }),
+    });
+    // If the cache was cold the stamp above is null; warm and backfill it so a
+    // later rollback snapshot serializes the true space, not a physical default.
+    warmSelectedGpuIdsKind();
+  },
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

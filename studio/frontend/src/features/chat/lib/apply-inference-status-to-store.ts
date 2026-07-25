@@ -15,6 +15,7 @@ import {
   loadedGpuMemoryFields,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
+  warmSelectedGpuIdsKind,
 } from "../stores/chat-runtime-store";
 import {
   type InferenceStatusResponse,
@@ -337,6 +338,11 @@ export function applyActiveModelStatusToStore(
         loadedChatTemplateOverride: status.chat_template_override,
       }),
   });
+
+  // A /status hydration can beat the first /api/system fetch, stamping the
+  // loaded pick's index kind null; backfill it once the GPU cache warms so a
+  // subsequent rollback snapshot doesn't serialize it as a physical default.
+  warmSelectedGpuIdsKind();
 
   ensureActiveModelInStoreList(status, checkpointId);
 

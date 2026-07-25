@@ -3,6 +3,7 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
+import { invalidateGpuInfoCache } from "@/hooks/use-gpu-info";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -212,6 +213,11 @@ export function useLlamaUpdateCheck({
         if (s.job.state === "success") {
           setVisible(false);
           void refreshHardwareInfo();
+          // A llama.cpp update can swap the backend (e.g. ROCm -> Vulkan), which
+          // flips the gpu_ids index space. Drop the separate /api/system GPU
+          // cache too so currentGpuIndexKind()/the next reconcile re-probe the
+          // new space instead of stranding pins stamped under the old one.
+          invalidateGpuInfoCache();
           // The update unloads the running model server-side, so the chat
           // runtime still points at a model that now 400s on send. Let the
           // consumer drop the selector to "select model" instead of waiting for

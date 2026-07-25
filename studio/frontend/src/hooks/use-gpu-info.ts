@@ -77,6 +77,19 @@ export function currentGpuIndexKind(): GpuIndexKind | null {
   return systemGpuIndexKind(cachedSystem);
 }
 
+/** Drop the cached /api/system snapshot so the next read refetches it. Call
+ * after an in-session llama.cpp backend swap (update / MTP rebuild): the swap
+ * flips the gpu_ids index space (physical CUDA/ROCm ids <-> ggml Vulkan
+ * ordinals), and because this module caches the first fetch forever,
+ * currentGpuIndexKind() and the load-boundary reconcile would otherwise keep
+ * reporting the pre-swap space -- stranding stale physical pins on a now-Vulkan
+ * backend, or dropping valid Vulkan pins after a swap back -- until a full page
+ * reload. Invalidating here lets the next ensureGpuDeviceCache() re-probe. */
+export function invalidateGpuInfoCache(): void {
+  cachedSystem = null;
+  systemPromise = null;
+}
+
 async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
   if (cachedSystem) return cachedSystem;
   if (systemPromise) return systemPromise;
