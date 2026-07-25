@@ -447,9 +447,8 @@ def _shareable_link_html(
 ) -> str:
     """Branded card for the shareable Cloudflare link, styled like the show_link banner.
 
-    When *password* is given it is shown directly under the link, so the credential the
-    user needs sits in the same card as the button they click. The username is always the
-    default admin, so it is stated inline in prose rather than as its own labelled field.
+    *password* renders under the link so the credential sits in the card with the button
+    it unlocks. The username is always the default admin, so it reads inline.
     """
     login_block = ""
     if password:
@@ -573,8 +572,7 @@ def _show_and_embed(
         cloudflare_url = cloudflare_url,
     )
 
-    # The credentials belong next to the button they unlock, so fold them into the
-    # shareable-link card instead of rendering a separate login card below it.
+    # Fold the credentials into the link card rather than a second card below it.
     credentials_shown = False
     if cloudflare_url:
         try:
@@ -591,10 +589,8 @@ def _show_and_embed(
         except Exception as e:
             logger.info(f"Could not render Colab login card ({e}).")
 
-    # On Colab with a working tunnel the in-cell proxy embed is skipped below (it usually
-    # renders blank), so the ready card would only restate the link card above and print a
-    # proxy URL that 404s outside this tab. Skip it and keep the tunnel card as the one
-    # entry point.
+    # With a tunnel up the embed below is skipped, so the ready card would only restate
+    # the link card and print a proxy URL that 404s outside this tab.
     skip_ready_card = _is_colab_runtime() and bool(cloudflare_url)
     if not skip_ready_card:
         try:

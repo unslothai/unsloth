@@ -341,7 +341,7 @@ def test_colab_login_html_includes_credentials():
 
 
 def test_shareable_link_html_embeds_password_under_the_link():
-    """The credential belongs in the same card as the button it unlocks (#7404 follow-up)."""
+    """The credential belongs in the same card as the button it unlocks."""
     html = colab._shareable_link_html(
         "https://share.trycloudflare.com", "secret-pass", "unsloth"
     )
