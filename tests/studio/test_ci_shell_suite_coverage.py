@@ -134,6 +134,18 @@ class TestRunAllMatchesCi:
         source = _RUN_ALL.read_text(encoding = "utf-8")
         assert 'for _t in "$TESTS_DIR"/sh/test_*.sh; do' in source
 
+    def test_run_all_invokes_the_tests_with_bash(self):
+        """Both runners must use the interpreter the tests declare. Every file
+        under tests/sh/ has a bash shebang, and on Debian/Ubuntu /bin/sh is
+        dash, under which three of them fail on bashisms. Running them with sh
+        would fail the suite locally for reasons CI never reproduces."""
+        source = _RUN_ALL.read_text(encoding = "utf-8")
+        assert 'bash "$_t"' in source, "tests/run_all.sh must run tests/sh/ with bash"
+        assert 'sh "$_t"' not in source.replace('bash "$_t"', ""), (
+            "tests/run_all.sh still invokes a discovered test with sh"
+        )
+        assert 'bash "$s"' in _shell_step_script(), "Backend CI must run tests/sh/ with bash"
+
     def test_run_all_skips_are_a_subset_of_ci_skips(self):
         local = _skip_list(_RUN_ALL.read_text(encoding = "utf-8"))
         unexpected = local - set(_EXPECTED_CI_SKIPS)

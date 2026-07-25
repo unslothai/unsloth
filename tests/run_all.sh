@@ -20,7 +20,13 @@ for _t in "$TESTS_DIR"/sh/test_*.sh; do
     case " $SH_SKIP " in
         *" $(basename "$_t") "*) echo "skipping $(basename "$_t")"; continue ;;
     esac
-    sh "$_t"
+    # bash, not sh: every file under sh/ declares a bash shebang, and three of
+    # them fail on bashisms under dash, which is /bin/sh on Debian and Ubuntu
+    # (test_apt_distro_prompt, test_studio_home_node_dir, and
+    # test_with_llama_cpp_dir_link_behavior). The old hand-written list happened
+    # to name only dash-clean files, so discovering the directory is what
+    # exposed this. Backend CI already invokes them with bash.
+    bash "$_t"
 done
 
 echo ""
