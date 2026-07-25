@@ -816,6 +816,14 @@ export const de = {
         "Erhöht die Lernrate zu Trainingsbeginn schrittweise für mehr Stabilität.",
       scheduleEpochsTooltip:
         "Anzahl vollständiger Durchläufe über den Datensatz. Auf 0 setzen, um nach max. Schritten zu laufen.",
+      checkpoints: "Checkpoints",
+      saveTotalLimit: "Checkpoint Retention",
+      saveTotalLimitTooltip: "Maximum checkpoints to retain. 0 means unlimited.",
+      enableAutoCheckpointUpload: "Automatic Hub Uploads",
+      enableAutoCheckpointUploadTooltip: "Automatically upload saved checkpoints to the Hugging Face Hub.",
+      checkpointRepoId: "Checkpoint Repository",
+      checkpointRepoIdTooltip: "Required Hub repository ID in owner/repository format.",
+      checkpointRepoIdRequired: "Enter a valid owner/repository ID to enable automatic uploads.",
       saveSteps: "Speicher-Schritte",
       saveStepsTooltip:
         "Speichert alle N Schritte einen Checkpoint. 0 zum Deaktivieren.",

@@ -57,6 +57,9 @@ export interface TrainingConfigState {
   warmupSteps: number;
   maxSteps: number;
   saveSteps: number;
+  saveTotalLimit: number;
+  enableAutoCheckpointUpload: boolean;
+  checkpointRepoId: string;
   evalSteps: number;
   packing: boolean;
   trainOnCompletions: boolean;
@@ -139,6 +142,9 @@ export interface TrainingConfigActions {
   setWarmupSteps: (value: number) => void;
   setMaxSteps: (value: number) => void;
   setSaveSteps: (value: number) => void;
+  setSaveTotalLimit: (value: number) => void;
+  setEnableAutoCheckpointUpload: (value: boolean) => void;
+  setCheckpointRepoId: (value: string) => void;
   setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;

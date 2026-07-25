@@ -365,6 +365,9 @@ class UnslothTrainer:
         if save_steps_val and save_steps_val > 0:
             config["save_steps"] = save_steps_val
             config["save_strategy"] = "steps"
+        config["save_total_limit"] = training_args.get("save_total_limit") or None
+        config["push_to_hub"] = bool(save_steps_val and training_args.get("push_to_hub", False))
+        config["hub_model_id"] = training_args.get("hub_model_id") if config["push_to_hub"] else None
 
         # Apply per-branch overrides
         if extra_args:
@@ -3272,6 +3275,9 @@ class UnslothTrainer:
             if save_steps_val and save_steps_val > 0:
                 config_args["save_steps"] = save_steps_val
                 config_args["save_strategy"] = "steps"
+            config_args["save_total_limit"] = training_args.get("save_total_limit") or None
+            config_args["push_to_hub"] = bool(save_steps_val and training_args.get("push_to_hub", False))
+            config_args["hub_model_id"] = training_args.get("hub_model_id") if config_args["push_to_hub"] else None
 
             # If max_steps is specified, use it instead of epochs
             max_steps_val = training_args.get("max_steps", 0)

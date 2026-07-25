@@ -1982,6 +1982,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         packing = bool(config.get("packing", False)),
         output_dir = output_dir,
         save_steps = int(config.get("save_steps", 0) or 0),
+        save_total_limit = config.get("save_total_limit") or None,
+        push_to_hub = bool(config.get("save_steps", 0) and config.get("push_to_hub", False)),
+        hub_model_id = config.get("hub_model_id") if config.get("push_to_hub", False) else None,
         eval_steps = eval_steps_val,
     )
 
@@ -3301,6 +3304,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
+            save_total_limit = config.get("save_total_limit") or None,
+            push_to_hub = bool(save_steps and config.get("push_to_hub", False)),
+            hub_model_id = config.get("hub_model_id") if save_steps and config.get("push_to_hub", False) else None,
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
@@ -3838,6 +3844,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "optim": config.get("optim", "adamw_8bit"),
         "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
+        "save_total_limit": config.get("save_total_limit") or None,
+        "push_to_hub": bool(save_steps_val and config.get("push_to_hub", False)),
+        "hub_model_id": config.get("hub_model_id") if save_steps_val and config.get("push_to_hub", False) else None,
     }
 
     # max_steps vs epochs

@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
@@ -796,6 +797,12 @@ export function ParamsSection(): ReactElement {
                     {t("studio.params.schedule")}
                   </TabsTrigger>
                   <TabsTrigger
+                    value="checkpoints"
+                    className="flex-1 text-xs cursor-pointer"
+                  >
+                    {t("studio.params.checkpoints")}
+                  </TabsTrigger>
+                  <TabsTrigger
                     value="memory"
                     className="flex-1 text-xs cursor-pointer"
                   >
@@ -994,31 +1001,6 @@ export function ParamsSection(): ReactElement {
                     />
                   )}
                   <Row
-                    label={t("studio.params.saveSteps")}
-                    tooltip={
-                      <>
-                        {t("studio.params.saveStepsTooltip")}{" "}
-                        <a
-                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary underline"
-                        >
-                          {t("studio.params.readMore")}
-                        </a>
-                      </>
-                    }
-                  >
-                    <Input
-                      type="number"
-                      value={store.saveSteps}
-                      onChange={(e) =>
-                        store.setSaveSteps(Number(e.target.value))
-                      }
-                      className="w-28 font-mono"
-                    />
-                  </Row>
-                  <Row
                     label={t("studio.params.evalSteps")}
                     tooltip={t("studio.params.evalStepsTooltip")}
                   >
@@ -1047,6 +1029,23 @@ export function ParamsSection(): ReactElement {
                       className="w-28 font-mono"
                     />
                   </Row>
+                </TabsContent>
+
+                <TabsContent value="checkpoints" className="mt-3 flex flex-col gap-3">
+                  <Row label={t("studio.params.saveSteps")} tooltip={t("studio.params.saveStepsTooltip")}>
+                    <Input type="number" min="0" value={store.saveSteps} onChange={(e) => store.setSaveSteps(Math.max(0, Number(e.target.value)))} className="w-28 font-mono" />
+                  </Row>
+                  <Row label={t("studio.params.saveTotalLimit")} tooltip={t("studio.params.saveTotalLimitTooltip")}>
+                    <Input type="number" min="0" value={store.saveTotalLimit} onChange={(e) => store.setSaveTotalLimit(Math.max(0, Number(e.target.value)))} className="w-28 font-mono" />
+                  </Row>
+                  <Row label={t("studio.params.enableAutoCheckpointUpload")} tooltip={t("studio.params.enableAutoCheckpointUploadTooltip")}>
+                    <Switch checked={store.enableAutoCheckpointUpload} disabled={store.saveSteps === 0} onCheckedChange={store.setEnableAutoCheckpointUpload} />
+                  </Row>
+                  {store.enableAutoCheckpointUpload && store.saveSteps > 0 && (
+                    <Row label={t("studio.params.checkpointRepoId")} tooltip={t("studio.params.checkpointRepoIdTooltip")}>
+                      <Input required value={store.checkpointRepoId} placeholder="owner/repository" onChange={(e) => store.setCheckpointRepoId(e.target.value)} className="w-48 font-mono" aria-invalid={!store.checkpointRepoId.trim()} />
+                    </Row>
+                  )}
                 </TabsContent>
 
                 <TabsContent

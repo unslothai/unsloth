@@ -111,6 +111,12 @@ export function buildTrainingStartPayload(
     warmup_ratio: isEmbedding ? 0.03 : null,
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
+    save_total_limit: config.saveTotalLimit > 0 ? config.saveTotalLimit : null,
+    push_to_hub: config.saveSteps > 0 && config.enableAutoCheckpointUpload,
+    hub_model_id:
+      config.saveSteps > 0 && config.enableAutoCheckpointUpload
+        ? config.checkpointRepoId.trim() || null
+        : null,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     max_grad_norm: 0.0,

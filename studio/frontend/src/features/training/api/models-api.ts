@@ -25,6 +25,9 @@ interface BackendTrainingDefaults {
   warmup_steps?: number;
   max_steps?: number;
   save_steps?: number;
+  save_total_limit?: number | null;
+  push_to_hub?: boolean;
+  hub_model_id?: string | null;
   eval_steps?: number;
   weight_decay?: number;
   random_seed?: number;

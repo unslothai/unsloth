@@ -38,6 +38,9 @@ export interface TrainingStartRequest {
   warmup_ratio: number | null;
   max_steps: number | null;
   save_steps: number;
+  save_total_limit: number | null;
+  push_to_hub: boolean;
+  hub_model_id: string | null;
   eval_steps: number;
   weight_decay: number;
   max_grad_norm: number;

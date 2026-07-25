@@ -23,6 +23,9 @@ type ModelDefaultsPatch = Partial<
     | "warmupSteps"
     | "maxSteps"
     | "saveSteps"
+    | "saveTotalLimit"
+    | "enableAutoCheckpointUpload"
+    | "checkpointRepoId"
     | "evalSteps"
     | "packing"
     | "trainOnCompletions"
@@ -120,6 +123,14 @@ export function mapBackendModelConfigToTrainingPatch(
 
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;
+
+  const saveTotalLimit = toNumber(training?.save_total_limit);
+  if (saveTotalLimit !== undefined) patch.saveTotalLimit = saveTotalLimit;
+  const pushToHub = toBoolean(training?.push_to_hub);
+  if (pushToHub !== undefined) patch.enableAutoCheckpointUpload = pushToHub;
+  if (Object.hasOwn(training ?? {}, "hub_model_id")) {
+    patch.checkpointRepoId = toStringValue(training?.hub_model_id) ?? "";
+  }
 
   const evalSteps = toNumber(training?.eval_steps);
   if (evalSteps !== undefined) patch.evalSteps = evalSteps;

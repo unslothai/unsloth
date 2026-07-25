@@ -13,6 +13,10 @@ export interface RunConfigOverride {
   maxSteps?: number;
   contextLength?: number;
   warmupSteps?: number;
+  saveSteps?: number;
+  saveTotalLimit?: number;
+  enableAutoCheckpointUpload?: boolean;
+  checkpointRepoId?: string;
   optimizerType?: string;
   loraRank?: number;
   loraAlpha?: number;
@@ -41,6 +45,10 @@ export function mapRunConfigToOverride(
     maxSteps: config.max_steps as number | undefined,
     contextLength: config.max_seq_length as number | undefined,
     warmupSteps: config.warmup_steps as number | undefined,
+    saveSteps: config.save_steps as number | undefined,
+    saveTotalLimit: config.save_total_limit as number | undefined,
+    enableAutoCheckpointUpload: config.push_to_hub as boolean | undefined,
+    checkpointRepoId: config.hub_model_id as string | undefined,
     optimizerType: config.optim as string | undefined,
     loraRank: config.lora_r as number | undefined,
     loraAlpha: config.lora_alpha as number | undefined,
