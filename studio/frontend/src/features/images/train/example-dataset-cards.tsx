@@ -4,6 +4,11 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { toast } from "@/lib/toast";
 
 import {
@@ -111,18 +116,23 @@ export function ExampleDatasetCards({
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span
-                    className="min-w-0 flex-1 truncate text-xs font-medium"
-                    title={ex.label}
-                  >
-                    {shortExampleLabel(ex.label)}
-                  </span>
-                  <span
-                    className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground"
-                    title={ex.license}
-                  >
-                    {ex.license}
-                  </span>
+                  {/* Both are truncated, so the full text lives in a tooltip. */}
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                        {shortExampleLabel(ex.label)}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{ex.label}</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <span className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground">
+                        {ex.license}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{ex.license}</TooltipContent>
+                  </Tooltip>
                 </div>
                 <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
                   {ex.description}

@@ -4,6 +4,11 @@
 import { useEffect, useState } from "react";
 
 import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 import {
   diffusionDatasetImageUrl,
@@ -99,29 +104,33 @@ export function DatasetShowcase({
   const remaining = imageCount - (names?.length ?? 0);
 
   return (
-    <button
-      type="button"
-      onClick={onBrowse}
-      title="Browse and caption these images"
-      className="hover-scrollbar flex w-full items-center gap-1.5 overflow-x-auto rounded-lg border border-border bg-muted/20 p-1.5 text-left transition-colors hover:border-foreground/20"
-    >
-      {names === null ? (
-        <div className="flex h-14 items-center gap-2 px-2 text-[11px] text-muted-foreground">
-          <Spinner className="size-3.5" /> Loading preview...
-        </div>
-      ) : (
-        <>
-          {names.map((n) => (
-            <ShowcaseTile key={n} dataset={dataset} filename={n} />
-          ))}
-          {remaining > 0 && (
-            <div className="flex size-14 shrink-0 flex-col items-center justify-center rounded-md bg-muted text-muted-foreground">
-              <span className="text-sm font-medium">+{remaining}</span>
-              <span className="text-[9px]">more</span>
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          onClick={onBrowse}
+          className="hover-scrollbar flex w-full items-center gap-1.5 overflow-x-auto rounded-lg border border-border bg-muted/20 p-1.5 text-left transition-colors hover:border-foreground/20"
+        >
+          {names === null ? (
+            <div className="flex h-14 items-center gap-2 px-2 text-[11px] text-muted-foreground">
+              <Spinner className="size-3.5" /> Loading preview...
             </div>
+          ) : (
+            <>
+              {names.map((n) => (
+                <ShowcaseTile key={n} dataset={dataset} filename={n} />
+              ))}
+              {remaining > 0 && (
+                <div className="flex size-14 shrink-0 flex-col items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <span className="text-sm font-medium">+{remaining}</span>
+                  <span className="text-[9px]">more</span>
+                </div>
+              )}
+            </>
           )}
-        </>
-      )}
-    </button>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>Browse and caption these images</TooltipContent>
+    </Tooltip>
   );
 }

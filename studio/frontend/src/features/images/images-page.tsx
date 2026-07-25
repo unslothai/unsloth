@@ -52,7 +52,11 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -508,13 +512,17 @@ function ResolvedBadge({
 }) {
   const resolved = status?.resolved?.[controlKey];
   if (!resolved || resolved.source !== "auto") return null;
-  return (
-    <span
-      title={resolved.reason || undefined}
-      className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground"
-    >
+  const badge = (
+    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
       Auto: {formatResolvedValue(controlKey, resolved.value)}
     </span>
+  );
+  if (!resolved.reason) return badge;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{badge}</TooltipTrigger>
+      <TooltipContent>{resolved.reason}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -596,20 +604,24 @@ function ImageDropzone({
     return (
       <div className="relative overflow-hidden rounded-[10px] border border-border">
         <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon"
-          aria-label="Remove source image"
-          title="Remove"
-          className="absolute right-1.5 top-1.5 size-7"
-          onClick={() => {
-            onChange(null);
-            if (inputRef.current) inputRef.current.value = "";
-          }}
-        >
-          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              aria-label="Remove source image"
+              className="absolute right-1.5 top-1.5 size-7"
+              onClick={() => {
+                onChange(null);
+                if (inputRef.current) inputRef.current.value = "";
+              }}
+            >
+              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Remove</TooltipContent>
+        </Tooltip>
       </div>
     );
   }
@@ -2214,16 +2226,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           wires lastLoad for it), so it keeps Reapply even before any user-initiated
           load; GGUF/single_file residents have no reload target and hide the button. */}
       {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={busy !== null}
-          onClick={handleReapply}
-          title="Reload the current model with these advanced options"
-        >
-          <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
-          Reapply to loaded model
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy !== null}
+              onClick={handleReapply}
+            >
+              <HugeiconsIcon icon={ArrowReloadHorizontalIcon} className="mr-2 size-3.5" />
+              Reapply to loaded model
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
+        </Tooltip>
       )}
     </>
   );
@@ -2233,7 +2249,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       {/* ── Top: the model selector, kept at the chat tab's exact position so the
           shared element matches. The load progress shows in a chat-style toast,
           not here. ── */}
-      <div className="flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
+      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
           <ModelSelector
             models={MODELS}
@@ -2248,17 +2264,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />
-          {/* Create | Train page-mode switch, next to the model selector (which stays
-              leftmost: its position is shared with Chat's). PillTabs is the app's
-              segmented control, so this matches the picker and Hub toggles. Icons match
-              the sidebar's New chat / Train rows. Height pinned to the row's 34px. */}
+        </div>
+        {/* Create | Train page-mode switch, centered on the page rather than tied to the
+            selector's width (the selector stays leftmost: its position is shared with
+            Chat's). PillTabs is the app's segmented control, so this matches the picker
+            and Hub toggles. Icons match the sidebar's New chat / Train rows. */}
+        <div className="pointer-events-none absolute inset-x-0 top-[11px] flex justify-center">
           <PillTabs
             ariaLabel="Page mode"
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            // ml-5 sets it off from the selector rather than sitting against it.
-            className="ml-5 h-[34px] [&>button]:h-[34px] [&>button]:px-4"
+            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-7"
             tabs={[
               {
                 value: "create",
@@ -2285,21 +2302,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               toggle, same icon in both states so it never moves). Highlighted when open.
               Only meaningful in Create mode (load-time tuning), so hidden while training. */}
           {pageMode === "create" && (
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((o) => !o)}
-              aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-              aria-pressed={advancedOpen}
-              title="Advanced options"
-              className={cn(
-                "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                advancedOpen
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-            >
-              <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={() => setAdvancedOpen((o) => !o)}
+                  aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
+                  aria-pressed={advancedOpen}
+                  className={cn(
+                    "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    advancedOpen
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                >
+                  <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Advanced options</TooltipContent>
+            </Tooltip>
           )}
         </div>
       </div>
@@ -2821,16 +2842,30 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                     ))}
                   </SelectContent>
                 </Select>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="icon"
-                  aria-label="Flip width and height"
-                  title="Flip orientation"
-                  onClick={flipDimensions}
-                >
-                  <HugeiconsIcon icon={ArrowLeftRightIcon} className="size-4" />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="icon"
+                      aria-label="Flip width and height"
+                      onClick={flipDimensions}
+                    >
+                      {/* The arrows turn with the orientation, so the button shows
+                          which way the flip goes. */}
+                      <HugeiconsIcon
+                        icon={ArrowLeftRightIcon}
+                        className={cn(
+                          "size-4 transition-transform duration-200",
+                          portrait && "rotate-90",
+                        )}
+                      />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {portrait ? "Switch to landscape" : "Switch to portrait"}
+                  </TooltipContent>
+                </Tooltip>
               </div>
             </Field>
             <SliderField label="Width" value={width} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeWidth} />
@@ -2929,16 +2964,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label="Delete image"
-                    title="Delete"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => void handleDelete(selected.id)}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label="Delete image"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => void handleDelete(selected.id)}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete</TooltipContent>
+                  </Tooltip>
                 </div>
               </>
             ) : selected ? (

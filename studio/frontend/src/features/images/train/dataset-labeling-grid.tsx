@@ -9,6 +9,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
@@ -114,15 +119,19 @@ function LabelTile({
             <Spinner className="size-4 text-muted-foreground" />
           </div>
         )}
-        <button
-          type="button"
-          onClick={remove}
-          disabled={deleting}
-          title="Remove this image from the dataset"
-          className="absolute right-1 top-1 rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
-        >
-          {deleting ? "..." : "Remove"}
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              onClick={remove}
+              disabled={deleting}
+              className="absolute right-1 top-1 rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
+            >
+              {deleting ? "..." : "Remove"}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>Remove this image from the dataset</TooltipContent>
+        </Tooltip>
       </div>
       <Textarea
         value={caption}
@@ -135,9 +144,12 @@ function LabelTile({
         aria-label={`Caption for ${record.filename}`}
       />
       <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-        <span className="truncate" title={record.filename}>
-          {record.filename}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span className="truncate">{record.filename}</span>
+          </TooltipTrigger>
+          <TooltipContent>{record.filename}</TooltipContent>
+        </Tooltip>
         {saving ? (
           <span>Saving...</span>
         ) : savedTick ? (
