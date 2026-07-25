@@ -132,6 +132,32 @@ class TestHardenConsoleClose:
         with pytest.raises(ValueError):
             stream.close()
 
+    def test_unrelated_attributeerror_still_propagates(self):
+        # Only #867 is neutralized; a genuine missing attribute during teardown
+        # must still surface instead of looking like a clean close.
+        class _Console:
+            def close(self):
+                return self.not_a_real_attribute
+
+        stream = _Console()
+        run_mod._harden_console_close(stream)
+        with pytest.raises(AttributeError, match = "not_a_real_attribute"):
+            stream.close()
+
+    def test_swallowed_across_attributeerror_message_shapes(self):
+        # Python 3.12 appends a "Did you mean" tail; the match must survive it,
+        # and pre-3.10 AttributeErrors carry no ``name``, only the message.
+        class _Suggesting:
+            def close(self):
+                raise AttributeError(
+                    "'OutStream' object has no attribute 'watch_fd_thread'. "
+                    "Did you mean: '_watch_pipe_fd'?"
+                )
+
+        stream = _Suggesting()
+        run_mod._harden_console_close(stream)
+        assert stream.close() is None
+
     def test_unsettable_close_is_left_alone(self):
         # A stream whose close cannot be reassigned must not raise from hardening.
         class _Frozen:

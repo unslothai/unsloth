@@ -1010,6 +1010,21 @@ class _TeeStream:
         return getattr(self._stream, name)
 
 
+_WATCH_FD_THREAD_ATTR = "watch_fd_thread"
+
+
+def _is_missing_watch_fd_thread(exc):
+    """True only for ipython/ipykernel#867's missing-``watch_fd_thread`` error.
+
+    ``AttributeError.name`` exists from Python 3.10; the message carries the
+    attribute name on every version (possibly with a "Did you mean" tail), so
+    check both and let every other AttributeError through.
+    """
+    if getattr(exc, "name", None) == _WATCH_FD_THREAD_ATTR:
+        return True
+    return _WATCH_FD_THREAD_ATTR in str(exc)
+
+
 def _harden_console_close(stream):
     """Stop a displaced console stream's close() from aborting Studio startup.
 
@@ -1043,7 +1058,10 @@ def _harden_console_close(stream):
     def _safe_close(*args, **kwargs):
         try:
             return _orig_close(*args, **kwargs)
-        except AttributeError:
+        except AttributeError as exc:
+            if not _is_missing_watch_fd_thread(exc):
+                # A real teardown failure; never hide it.
+                raise
             # ipython/ipykernel#867: watchfd=False OutStream.close() joins a
             # thread that was never created. Nothing to clean up; keep going.
             return None
