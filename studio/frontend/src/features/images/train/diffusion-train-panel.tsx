@@ -123,7 +123,12 @@ function repoIsPrequantized(baseModel: string): boolean {
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
 const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
-const selectClass = "h-8 w-full text-xs";
+// min-w-0 + a truncating value: without them a long option ("nf4 (4-bit QLoRA,
+// lowest VRAM)") sets the grid column's min width and pushes into its neighbour.
+const selectClass =
+  "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
+// Every settings cell is a grid item, so it needs min-w-0 to be allowed to shrink.
+const fieldClass = "grid min-w-0 gap-1.5";
 
 // Merge the backend's reported families (if any) over the presets, keeping the preset
 // ordering (popularity) and filling labels/notes/defaults the backend omits.
@@ -803,7 +808,7 @@ export function DiffusionTrainPanel({
     fallback: number,
     extra?: { min?: number; step?: number },
   ) => (
-    <div className="grid gap-1.5">
+    <div className={fieldClass}>
       <Label className="text-xs">{label}</Label>
       <Input
         type="number"
@@ -825,7 +830,7 @@ export function DiffusionTrainPanel({
   // Run length: a number paired with a compact unit select (Steps / Epochs). Epochs mode
   // trains for that many full passes over the dataset; the backend resolves it to steps.
   const durationField = (
-    <div className="grid gap-1.5">
+    <div className={fieldClass}>
       <Label className="text-xs">{durationUnit === "epochs" ? "Epochs" : "Steps"}</Label>
       <div className="flex gap-1.5">
         <Input
@@ -889,7 +894,7 @@ export function DiffusionTrainPanel({
           min: 0,
           step: 0.00001,
         })}
-        <div className="grid gap-1.5">
+        <div className={fieldClass}>
           <Label className="text-xs">LR schedule</Label>
           <Select
             value={lrScheduler}
@@ -914,7 +919,7 @@ export function DiffusionTrainPanel({
       </div>
 
       <div className="grid grid-cols-2 items-start gap-x-6 gap-y-4 lg:grid-cols-3">
-        <div className="grid gap-1.5">
+        <div className={fieldClass}>
           <Label className="text-xs">Gradient checkpointing</Label>
           <Select
             value={gradCheckpoint ? "on" : "off"}
@@ -934,7 +939,7 @@ export function DiffusionTrainPanel({
         </div>
 
         {isDiT ? (
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Base precision</Label>
             <Select
               value={basePrecision}
@@ -976,7 +981,7 @@ export function DiffusionTrainPanel({
             </p>
           </div>
         ) : (
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Precision</Label>
             <Select
               value={precision}
@@ -997,7 +1002,7 @@ export function DiffusionTrainPanel({
           </div>
         )}
         {supportsCompile && (
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Compile transformer</Label>
             <Select
               value={compileTransformer}
@@ -1039,7 +1044,7 @@ export function DiffusionTrainPanel({
           </div>
 
           {/* Family + base */}
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Model family</Label>
             <Select value={familyName} onValueChange={setFamilyName}>
               <SelectTrigger className={selectClass} aria-label="Model family">
@@ -1058,7 +1063,7 @@ export function DiffusionTrainPanel({
             )}
           </div>
 
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Base model</Label>
             <Select value={effectiveBase} onValueChange={setBaseChoice}>
               <SelectTrigger className={selectClass} aria-label="Base model">
@@ -1076,7 +1081,7 @@ export function DiffusionTrainPanel({
             {effectiveBase === CUSTOM_BASE && (
               <Input
                 value={customBase}
-                placeholder="my-org/my-base or /path/to/pipeline"
+                placeholder="Hugging Face repo id, or a folder on this machine"
                 spellCheck={false}
                 onChange={(e) => setCustomBase(e.target.value)}
                 className="h-8 text-xs"
@@ -1085,7 +1090,7 @@ export function DiffusionTrainPanel({
           </div>
 
           {/* Dataset */}
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Training images</Label>
             <Select
               value={dataset}
@@ -1131,10 +1136,13 @@ export function DiffusionTrainPanel({
             )}
 
             {dataset === UPLOAD_DATASET ? (
-              <div className="grid gap-1.5">
+              <div className={fieldClass}>
+                <Label className="text-xs font-normal text-muted-foreground">
+                  Name for this set of images
+                </Label>
                 <Input
                   value={uploadName}
-                  placeholder="my-style-photos"
+                  placeholder="my-photos"
                   spellCheck={false}
                   onChange={(e) => setUploadName(e.target.value)}
                   className="h-8 text-xs"
@@ -1172,7 +1180,7 @@ export function DiffusionTrainPanel({
                       <Button
                         type="button"
                         size="sm"
-                        variant="secondary"
+                        variant="outline"
                         className="h-7 shrink-0 px-3 text-xs"
                         onClick={onUpload}
                         disabled={uploading}
@@ -1235,27 +1243,32 @@ export function DiffusionTrainPanel({
               The style applies to any prompt after training.
             </p>
           ) : (
-            <div className="grid gap-1.5">
-              <Label className="text-xs">
-                Trigger prompt (how you&apos;ll invoke the style later)
-              </Label>
+            <div className={fieldClass}>
+              <Label className="text-xs">Trigger prompt</Label>
               <Input
                 value={instancePrompt}
-                placeholder="a photo in SKS style"
+                placeholder="a photo in mystyle"
                 onChange={(e) => setInstancePrompt(e.target.value)}
                 className="h-8 text-xs"
               />
+              <p className="text-[11px] leading-snug text-muted-foreground">
+                What every image is described as while training. Put these words in a
+                prompt later to get the style back.
+              </p>
             </div>
           )}
-          <div className="grid gap-1.5">
+          <div className={fieldClass}>
             <Label className="text-xs">Adapter name</Label>
             <Input
               value={outputDir}
-              placeholder="my-style-lora"
+              placeholder="my-style"
               spellCheck={false}
               onChange={(e) => setOutputDir(e.target.value)}
               className="h-8 text-xs"
             />
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              The name this LoRA gets in the Create tab's picker.
+            </p>
           </div>
 
           {/* Start lives here; Stop lives in the run card next to the live stats. */}
@@ -1295,7 +1308,7 @@ export function DiffusionTrainPanel({
                 <Button
                   type="button"
                   size="sm"
-                  variant="secondary"
+                  variant="outline"
                   onClick={() => setViewRun(null)}
                 >
                   Back
@@ -1474,7 +1487,7 @@ export function DiffusionTrainPanel({
                 !stoppedWithAdapter && (
                   <Button
                     type="button"
-                    variant="secondary"
+                    variant="outline"
                     className="w-full"
                     onClick={() => setDismissedJobId(status.job_id)}
                   >
@@ -1504,7 +1517,7 @@ export function DiffusionTrainPanel({
                   <Button
                     type="button"
                     size="sm"
-                    variant="secondary"
+                    variant="outline"
                     onClick={() => status && setDismissedJobId(status.job_id)}
                   >
                     Train another

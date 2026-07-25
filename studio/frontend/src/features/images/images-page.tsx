@@ -2275,7 +2275,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-7"
+            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-10"
             tabs={[
               {
                 value: "create",

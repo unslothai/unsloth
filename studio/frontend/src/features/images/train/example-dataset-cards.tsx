@@ -77,7 +77,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
   return (
     <div className="flex gap-1">
       {urls.map((u) => (
-        <div key={u} className="size-10 shrink-0 overflow-hidden rounded-[8px] bg-muted">
+        <div key={u} className="h-9 w-12 shrink-0 overflow-hidden rounded-[8px] bg-muted">
           <img src={u} alt="" loading="lazy" className="size-full object-cover" />
         </div>
       ))}
@@ -141,7 +141,7 @@ export function ExampleDatasetCards({
               <Button
                 type="button"
                 size="sm"
-                variant="secondary"
+                variant="outline"
                 className="h-7 shrink-0 self-center px-3 text-xs"
                 onClick={() => onImport(ex)}
                 disabled={busyId !== null}
