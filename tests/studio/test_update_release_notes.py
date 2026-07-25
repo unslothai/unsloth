@@ -357,12 +357,15 @@ def test_headings_and_fences_allow_commonmark_indentation(changelog_module, inde
 
 def test_four_space_indentation_is_code_not_structure(changelog_module):
     """At four spaces Markdown switches to indented code, for both forms."""
-    assert [e.version for e in changelog_module.parse_changelog(
-        "    ## 9.9.9\n\n## 1.0\n\n- real\n"
-    )] == ["1.0"]
-    assert [e.version for e in changelog_module.parse_changelog(
-        "## 1.0\n\n    ```\n    sample\n\n## 2.0\n\n- two\n"
-    )] == ["1.0", "2.0"]
+    assert [
+        e.version for e in changelog_module.parse_changelog("    ## 9.9.9\n\n## 1.0\n\n- real\n")
+    ] == ["1.0"]
+    assert [
+        e.version
+        for e in changelog_module.parse_changelog(
+            "## 1.0\n\n    ```\n    sample\n\n## 2.0\n\n- two\n"
+        )
+    ] == ["1.0", "2.0"]
 
 
 def test_desktop_notes_link_to_the_release_page_on_every_platform():
