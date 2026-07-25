@@ -1952,7 +1952,14 @@ else
                     --validate-install "$_BUILD_TMP"
                 )
                 [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
-                if ! run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}"; then
+                _SMOKE_RC=0
+                run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
+                # Exit 4 is a full disk, not a bad GPU build: the CPU rebuild needs
+                # more of the space that just ran out, so keep what we already have.
+                if [ "$_SMOKE_RC" -eq 4 ]; then
+                    substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
+                    _LLAMA_CPP_NO_SPACE=true
+                elif [ "$_SMOKE_RC" -ne 0 ]; then
                     substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
                     _TRY_METAL_CPU_FALLBACK=false
                     rm -rf "$_BUILD_TMP/build"

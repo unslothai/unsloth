@@ -6182,6 +6182,15 @@ def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
 # ENOSPC but has no case for 39, so it arrives as EINVAL: check winerror too or
 # a Windows os.replace() onto a full disk reads as an ordinary failure.
 _WINDOWS_DISK_FULL = (39, 112)
+# EDQUOT means the volume has blocks this user may not have (NFS/XFS project
+# quota, container quota). The source build wants more of the same allowance, so
+# it is just as doomed as a full disk and has to stop the retry too. Reported
+# apart from ENOSPC because a user told "no space" would check df, see free
+# blocks, and be misled. Read defensively: the MSVC CRT has no EDQUOT, so on
+# Windows CPython aliases it to WSAEDQUOT (10069), which no file write raises.
+_DISK_FULL_ERRNOS = {errno.ENOSPC: "no space left on device"}
+if hasattr(errno, "EDQUOT"):
+    _DISK_FULL_ERRNOS[errno.EDQUOT] = "disk quota exceeded"
 
 
 def _winerror_of(exc: OSError) -> Any:
@@ -6195,22 +6204,34 @@ def _winerror_of(exc: OSError) -> Any:
         return None
 
 
-def _is_enospc(exc: BaseException) -> bool:
+def _out_of_space_reason(exc: BaseException) -> str | None:
+    """Why `exc` means the install cannot fit, or None if it means something else."""
     if isinstance(exc, OSError):
-        if exc.errno == errno.ENOSPC:
-            return True
+        reason = _DISK_FULL_ERRNOS.get(exc.errno)
+        if reason is not None:
+            return reason
         if _winerror_of(exc) in _WINDOWS_DISK_FULL:
-            return True
+            return "no space left on device"
     # shutil.copytree stringifies each per-file OSError and raises Error(errors)
     # outside the except block, so errno and the whole chain are gone: the only
-    # surviving evidence is the message text.
-    return isinstance(exc, shutil.Error) and f"Errno {errno.ENOSPC}" in str(exc)
+    # surviving evidence is the message text. Windows prints "[WinError 112] There
+    # is not enough space on the disk" and never "[Errno 28]" (CPython
+    # OSError_str prefers winerror), so match both spellings.
+    if isinstance(exc, shutil.Error):
+        text = str(exc)
+        for code, reason in _DISK_FULL_ERRNOS.items():
+            if f"[Errno {code}]" in text:
+                return reason
+        if any(f"[WinError {code}]" in text for code in _WINDOWS_DISK_FULL):
+            return "no space left on device"
+    return None
 
 
 def _environment_fatal_reason(exc: BaseException) -> str | None:
     for cause in _causal_chain(exc):
-        if _is_enospc(cause):
-            return "no space left on device"
+        reason = _out_of_space_reason(cause)
+        if reason is not None:
+            return reason
     return None
 
 
@@ -6593,6 +6614,11 @@ def main() -> int:
                 install_kind = args.install_kind,
             )
         except PrebuiltFallback as exc:
+            # A full disk here is not a bad build: retrying it as a CPU source
+            # build needs more of the space that just ran out.
+            fatal = _environment_fatal_reason(exc)
+            if fatal:
+                _fail_no_space(f"install validation failed: {fatal}")
             print(str(exc), file = sys.stderr)
             raise SystemExit(EXIT_FALLBACK) from exc
         return EXIT_SUCCESS
