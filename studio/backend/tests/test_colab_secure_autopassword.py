@@ -105,16 +105,33 @@ def test_start_cloudflare_tunnel_refuses_if_autogen_fails(monkeypatch):
 # ── credential display never persists to disk ────────────────────────
 
 
-def test_display_admin_credentials_never_writes_to_stdout(monkeypatch, capsys):
+@pytest.fixture
+def ipython_display(monkeypatch):
+    """Stub IPython.display: CI has no IPython, so importing it would error out.
+
+    Mocks the `IPython` parent too, since `from IPython.display import ...`
+    resolves the package first.
+    """
+    import types
+
+    module = types.ModuleType("IPython.display")
+    module.HTML = lambda html: types.SimpleNamespace(data = html)
+    module.display = lambda *a, **k: None
+    package = types.ModuleType("IPython")
+    package.display = module
+    monkeypatch.setitem(sys.modules, "IPython", package)
+    monkeypatch.setitem(sys.modules, "IPython.display", module)
+    return module
+
+
+def test_display_admin_credentials_never_writes_to_stdout(monkeypatch, capsys, ipython_display):
     # The auto-generated password must reach the notebook cell only through the
     # IPython display channel (iopub display_data), never sys.stdout/stderr or a
     # logger, because the server tees stdout/stderr to a retained on-disk session
     # log (run._setup_server_disk_logging). Writing it there would persist the
     # credential, contradicting the one-time / non-persistent flow.
-    import IPython.display as ipd
-
     captured = []
-    monkeypatch.setattr(ipd, "display", lambda *a, **k: captured.append((a, k)))
+    monkeypatch.setattr(ipython_display, "display", lambda *a, **k: captured.append((a, k)))
 
     secret_pw = "Sup3r-Secret-Pw-Token-xyz"
     colab._display_admin_credentials("unsloth", secret_pw)
@@ -154,23 +171,20 @@ def test_display_admin_credentials_no_display_channel_is_silent(monkeypatch, cap
     assert "Another-Secret-Pw-999" not in out.err
 
 
-def test_display_admin_credentials_returns_true_on_success(monkeypatch):
+def test_display_admin_credentials_returns_true_on_success(monkeypatch, ipython_display):
     # A successful publish through the display channel reports True so the caller
     # may proceed to publish the shared link.
-    import IPython.display as ipd
-    monkeypatch.setattr(ipd, "display", lambda *a, **k: None)
+    monkeypatch.setattr(ipython_display, "display", lambda *a, **k: None)
     assert colab._display_admin_credentials("unsloth", "Shown-Pw-123") is True
 
 
-def test_display_admin_credentials_returns_false_when_display_raises(monkeypatch):
+def test_display_admin_credentials_returns_false_when_display_raises(monkeypatch, ipython_display):
     # Both the HTML and the plain-text publish raise (e.g. a broken display hook):
     # nothing was shown, so report False and never fall back to stdout/logging.
-    import IPython.display as ipd
-
     def _boom(*_a, **_k):
         raise RuntimeError("display channel is broken")
 
-    monkeypatch.setattr(ipd, "display", _boom)
+    monkeypatch.setattr(ipython_display, "display", _boom)
     assert colab._display_admin_credentials("unsloth", "Never-Shown-Pw-9") is False
 
 
