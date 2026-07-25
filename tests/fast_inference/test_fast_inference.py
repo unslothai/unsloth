@@ -42,8 +42,8 @@ MAX_COMPLETION_LENGTH = 16
 MAX_STEPS = 3
 GPU_MEMORY_UTILIZATION = 0.3
 COMPILATION_CONFIG = 0
-# TRL forwards this to vLLM's SamplingParams as well as to torch, so pinning it
-# makes the rollout and every metric below reproducible.
+# Pins torch's global RNG (via the Trainer's set_seed), which the colocated vLLM
+# sampler draws from, so the rollout and every metric below is reproducible.
 SEED = 42
 
 # Loose sanity bounds, not fitted values: they catch divergence and degenerate
@@ -181,7 +181,6 @@ def test_fast_inference():
         assert kl is None or abs(kl) < MAX_KL, f"step {i}: kl diverged ({kl})"
 
     print("fast_inference GRPO rollout completed:", trainer_stats)
-    return trainer_stats
 
 
 if __name__ == "__main__":
