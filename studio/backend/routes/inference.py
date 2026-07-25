@@ -11374,12 +11374,8 @@ class _ResponsesReasoningExtractor:
         if not chunk:
             return
         escapes = self._trailing_backslashes
-        self._quote_counts['"'] += _count_quote_delimiters(
-            chunk, '"', prev_escapes = escapes
-        )
-        self._quote_counts["`"] += _count_quote_delimiters(
-            chunk, "`", prev_escapes = escapes
-        )
+        self._quote_counts['"'] += _count_quote_delimiters(chunk, '"', prev_escapes = escapes)
+        self._quote_counts["`"] += _count_quote_delimiters(chunk, "`", prev_escapes = escapes)
         # Resolve the apostrophe held at the previous chunk's edge, now that its
         # right neighbour has arrived, then count this chunk minus its own edge.
         if self._pending_apostrophe_prev is not None:
