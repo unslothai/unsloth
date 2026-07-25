@@ -7,8 +7,8 @@ import {
   Download01Icon,
   InformationCircleIcon,
   LayoutAlignRightIcon,
+  FlimSlateIcon,
   Settings02Icon,
-  Video01Icon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -33,9 +33,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -48,6 +52,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
@@ -263,8 +268,8 @@ const IDLE_PROGRESS: VideoLoadProgress = {
   error: null,
 };
 
-// Mirrors the Train page's SliderRow: label + Slider + number input, same classes as the
-// images page's SliderField.
+// The chat composer's slider, so Video, Create and Chat all read the same. The
+// {label, hint, ...} signature is kept for the call sites below.
 function SliderField({
   label,
   hint,
@@ -283,31 +288,15 @@ function SliderField({
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-        {label}
-        {hint && <InfoHint>{hint}</InfoHint>}
-      </span>
-      <div className="flex items-center gap-3">
-        <Slider
-          value={[value]}
-          onValueChange={([v]) => onChange(v)}
-          min={min}
-          max={max}
-          step={step}
-          className="w-32"
-        />
-        <input
-          type="number"
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          min={min}
-          max={max}
-          step={step}
-          className="w-14 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [appearance:textfield] [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none"
-        />
-      </div>
-    </div>
+    <ParamSlider
+      label={label}
+      info={hint}
+      value={value}
+      min={min}
+      max={max}
+      step={step}
+      onChange={onChange}
+    />
   );
 }
 
@@ -355,13 +344,17 @@ function ResolvedBadge({
 }) {
   const resolved = status?.resolved?.[controlKey];
   if (!resolved || resolved.source !== "auto") return null;
-  return (
-    <span
-      title={resolved.reason || undefined}
-      className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground"
-    >
+  const badge = (
+    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
       Auto: {formatResolvedValue(resolved.value)}
     </span>
+  );
+  if (!resolved.reason) return badge;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{badge}</TooltipTrigger>
+      <TooltipContent>{resolved.reason}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -1370,15 +1363,19 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         ]}
       />
       {status?.loaded && canReapply && (
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={busy !== null}
-          onClick={handleReapply}
-          title="Reload the current model with these advanced options"
-        >
-          Reapply to loaded model
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy !== null}
+              onClick={handleReapply}
+            >
+              Reapply to loaded model
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
+        </Tooltip>
       )}
     </>
   );
@@ -1418,29 +1415,34 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         <div className="flex items-center gap-2">
           {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
               toggle, same icon in both states so it never moves). Highlighted when open. */}
-          <button
-            type="button"
-            onClick={() => setAdvancedOpen((o) => !o)}
-            aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-            aria-pressed={advancedOpen}
-            title="Advanced options"
-            className={cn(
-              "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              advancedOpen
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground",
-            )}
-          >
-            <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((o) => !o)}
+                aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
+                aria-pressed={advancedOpen}
+                className={cn(
+                  "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  advancedOpen
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+              >
+                <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Advanced options</TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
-      {/* ── Controls rail + preview canvas. Padding mirrors the other tabs. ── */}
-      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 sm:px-9">
-        {/* The controls rail. Plain card with no header -- the prompt + Generate button make
-            the panel self-explanatory. */}
-        <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
+      {/* ── Controls rail + preview canvas, matching the Images tabs: no cards, the Hub's
+          centered measure, and a rule that runs the full page height. ── */}
+      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
+        <div className="flex w-[392px] shrink-0 flex-col overflow-hidden border-r border-border/60">
+          {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
+          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
           <Field label="Prompt">
             <Textarea
               rows={4}
@@ -1543,7 +1545,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           </Field>
 
           {busy === "generating" ? (
-            <Button variant="secondary" onClick={handleCancelGenerate}>
+            <Button variant="outline" onClick={handleCancelGenerate}>
               <Spinner className="mr-2 size-4" />
               Cancel
             </Button>
@@ -1552,10 +1554,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               Generate
             </Button>
           )}
+          </div>
         </div>
 
-        <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
-          <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
+        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
                 {/* The first video element in the app. autoPlay + muted + playsInline so
@@ -1615,16 +1618,20 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label="Delete video"
-                    title="Delete"
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => void handleDelete(selected.id)}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-label="Delete video"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => void handleDelete(selected.id)}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete</TooltipContent>
+                  </Tooltip>
                 </div>
               </>
             ) : selected ? (
@@ -1635,7 +1642,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               </div>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Video01Icon} className="size-12" strokeWidth={1.5} />
+                {/* Same icon as the Video nav item. */}
+                <HugeiconsIcon icon={FlimSlateIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded
                     ? "Enter a prompt and hit Generate."
@@ -1670,7 +1678,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
           {(videos.length > 0 || busy === "generating") && (
             <div
-              className="flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-foreground/10 p-3"
+              className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-foreground/10 p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
@@ -1680,17 +1688,17 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               {/* In-progress generation: a placeholder tile at the front so past clips stay
                   visible and browsable while the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
                   <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
               {videos.map((video) => (
+                <Tooltip key={video.id}>
+                <TooltipTrigger asChild={true}>
                 <button
-                  key={video.id}
                   type="button"
                   onClick={() => setSelectedId(video.id)}
-                  title={`${video.prompt}\nseed ${video.seed} · ${clipMeta(video)}`}
-                  className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {srcById[video.id] ? (
                     // Muted, preload="metadata" so the first frame renders as a poster
@@ -1715,9 +1723,17 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-lg border-2 border-primary" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border-2 border-primary" />
                   )}
                 </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  {video.prompt}
+                  <span className="mt-0.5 block opacity-70">
+                    seed {video.seed} - {clipMeta(video)}
+                  </span>
+                </TooltipContent>
+                </Tooltip>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (
@@ -1727,15 +1743,19 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               )}
               {/* Clear-all, tucked at the end so it never sits under a hover. */}
               {videos.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => void handleClearAll()}
-                  title="Clear all videos"
-                  className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground ring-1 ring-border transition-colors hover:text-destructive hover:ring-destructive/40"
-                >
-                  <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                  <span className="text-[9px] font-medium">Clear all</span>
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      onClick={() => void handleClearAll()}
+                      className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-[10px] text-muted-foreground ring-1 ring-border transition-colors hover:text-destructive hover:ring-destructive/40"
+                    >
+                      <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      <span className="text-[9px] font-medium">Clear all</span>
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>Clear all videos</TooltipContent>
+                </Tooltip>
               )}
             </div>
           )}
@@ -1744,14 +1764,14 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default,
             opened by the single fixed top-bar toggle above. */}
         {advancedOpen && (
-          <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
-            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60 px-4">
+          <div className="ml-4 flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border/60 pl-4">
+            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60">
               <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
                 <HugeiconsIcon icon={Settings02Icon} className="size-4" />
                 Advanced
               </span>
             </div>
-            <div className="flex flex-col gap-3 overflow-y-auto p-4">
+            <div className="hover-scrollbar flex flex-col gap-3 overflow-y-auto py-4 pr-2">
               <p className="text-xs text-muted-foreground">
                 Load-time tuning. Changes apply on the next load; Reapply reloads the current model.
               </p>
