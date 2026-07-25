@@ -54,6 +54,9 @@ _NON_ASSISTANT_CONTROL_MARKERS: tuple[tuple[str, str], ...] = (
     ("<tool_response|>", f"<{_THINK_NEUTRAL_ZW}tool_response|>"),
     ("<|tool>", f"<|{_THINK_NEUTRAL_ZW}tool>"),
     ("<tool|>", f"<{_THINK_NEUTRAL_ZW}tool|>"),
+    # gemma-4.jinja opens the first system turn with <|think|> to turn thinking
+    # on, so a raw one in non-assistant text could switch reasoning mode.
+    ("<|think|>", f"<|{_THINK_NEUTRAL_ZW}think|>"),
     ('<|"|>', f'<|{_THINK_NEUTRAL_ZW}"|>'),
     # Llama-3 family templates delimit every turn with these header/eot
     # sentinels (chat_eos.py / tool_call_parser.py already treat them as turn

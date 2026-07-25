@@ -1070,6 +1070,8 @@ def test_neutralize_gemma_turn_and_tool_sentinels():
     delimiters = [
         "<|turn>",
         "<turn|>",
+        # Emitted at the top of the first system turn to enable thinking.
+        "<|think|>",
         "<|tool_call>",
         "<tool_call|>",
         "<|tool_response>",
