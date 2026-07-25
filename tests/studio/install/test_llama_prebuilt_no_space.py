@@ -236,12 +236,18 @@ def test_a_bare_oserror_never_matches():
 
 def test_flattened_markers_are_not_matched_as_prefixes():
     """Bare "WinError 112" would also match WinError 1120; the brackets pin it."""
-    assert M._environment_fatal_reason(
-        shutil.Error("[('a', 'b', '[WinError 1120] a serial write completed')]")
-    ) is None
-    assert M._environment_fatal_reason(
-        shutil.Error(f"[('a', 'b', '[Errno {errno.ENOSPC}0] not a real code')]")
-    ) is None
+    assert (
+        M._environment_fatal_reason(
+            shutil.Error("[('a', 'b', '[WinError 1120] a serial write completed')]")
+        )
+        is None
+    )
+    assert (
+        M._environment_fatal_reason(
+            shutil.Error(f"[('a', 'b', '[Errno {errno.ENOSPC}0] not a real code')]")
+        )
+        is None
+    )
 
 
 def test_windows_flattened_disk_full_text_is_classified():
@@ -255,14 +261,16 @@ def test_windows_flattened_disk_full_text_is_classified():
     assert M._environment_fatal_reason(
         shutil.Error("[('a', 'b', '[WinError 39] The disk is full')]")
     )
-    assert M._environment_fatal_reason(
-        shutil.Error("[('a', 'b', '[WinError 32] sharing violation')]")
-    ) is None
+    assert (
+        M._environment_fatal_reason(shutil.Error("[('a', 'b', '[WinError 32] sharing violation')]"))
+        is None
+    )
 
 
 def test_validate_install_mode_exits_no_space(tmp_path, monkeypatch):
     """setup.sh reacts to a failed staged validation by deleting the finished GPU
     build and starting a CPU rebuild, which needs more of the space that ran out."""
+
     def boom(*args, **kwargs):
         try:
             raise OSError(errno.ENOSPC, "No space left on device")
@@ -270,7 +278,9 @@ def test_validate_install_mode_exits_no_space(tmp_path, monkeypatch):
             raise PrebuiltFallback("validation model unavailable") from inner
 
     monkeypatch.setattr(M, "validate_existing_install", boom)
-    monkeypatch.setattr(sys, "argv", ["install_llama_prebuilt.py", "--validate-install", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["install_llama_prebuilt.py", "--validate-install", str(tmp_path)]
+    )
 
     with pytest.raises(SystemExit) as caught:
         M.main()
@@ -283,7 +293,9 @@ def test_validate_install_mode_still_falls_back_on_ordinary_failure(tmp_path, mo
         "validate_existing_install",
         lambda *a, **k: (_ for _ in ()).throw(PrebuiltFallback("llama-server crashed")),
     )
-    monkeypatch.setattr(sys, "argv", ["install_llama_prebuilt.py", "--validate-install", str(tmp_path)])
+    monkeypatch.setattr(
+        sys, "argv", ["install_llama_prebuilt.py", "--validate-install", str(tmp_path)]
+    )
 
     with pytest.raises(SystemExit) as caught:
         M.main()
