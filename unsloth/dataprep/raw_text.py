@@ -220,23 +220,20 @@ class RawTextDataLoader:
             if file_format == "plain_text" or file_format == "markdown":
                 return f.read()
             elif file_format == "json_lines":
-                content = f.read()
-                try:
+                if Path(file_path).suffix.lower() == ".json":
                     # A .json file is a single JSON document (commonly a list
-                    # of records); parse it whole.
-                    parsed = json.loads(content)
-                    records = parsed if isinstance(parsed, list) else [parsed]
-                except json.JSONDecodeError:
-                    # A .jsonl file is one JSON value per line.
-                    records = []
-                    for line in content.splitlines():
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
+                    # of records), so parsing it per line drops the whole file.
+                    try:
+                        parsed = json.load(f)
+                        records = parsed if isinstance(parsed, list) else [parsed]
+                    except json.JSONDecodeError:
+                        # Some files carry JSON Lines under a .json name.
+                        f.seek(0)
+                        records = self._iter_json_lines(f)
+                else:
+                    # A .jsonl file is one JSON value per line: stay streaming so
+                    # a large file is never held in memory all at once.
+                    records = self._iter_json_lines(f)
                 lines = []
                 for data in records:
                     text = self._extract_text_from_json(data)
@@ -256,6 +253,17 @@ class RawTextDataLoader:
     # Cache text fields/columns for better performance
     _TEXT_FIELDS = ("text", "content", "message", "body", "description", "prompt")
     _TEXT_COLUMNS = _TEXT_FIELDS
+
+    def _iter_json_lines(self, handle):
+        """Yield one parsed JSON value per line, skipping blank and malformed lines."""
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""

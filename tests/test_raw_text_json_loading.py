@@ -43,3 +43,46 @@ def test_jsonl_is_still_parsed_line_by_line(tmp_path):
     path = tmp_path / "data.jsonl"
     path.write_text('{"text": "a"}\n{"text": "b"}\n', encoding = "utf-8")
     assert loader._read_file_by_format(str(path), "json_lines") == "a\n\nb"
+
+
+def test_jsonl_is_never_materialized(tmp_path):
+    """A .jsonl file must keep streaming, whole-document parsing is only for .json."""
+    real_open = open
+
+    class _StreamOnlyFile:
+        """File wrapper that fails the test if the whole file is pulled into memory."""
+
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self.handle.close()
+            return False
+
+        def __iter__(self):
+            return iter(self.handle)
+
+        def read(self, *args, **kwargs):
+            raise AssertionError(".jsonl was read whole instead of streamed line by line")
+
+        def seek(self, *args, **kwargs):
+            raise AssertionError(".jsonl was re-read instead of streamed line by line")
+
+    module = _load_raw_text()
+    module.open = lambda *args, **kwargs: _StreamOnlyFile(real_open(*args, **kwargs))
+
+    path = tmp_path / "big.jsonl"
+    path.write_text('{"text": "a"}\n\n{"text": "b"}\nnot json at all\n', encoding = "utf-8")
+    loader = module.RawTextDataLoader(tokenizer = object())
+    assert loader._read_file_by_format(str(path), "json_lines") == "a\n\nb"
+
+
+def test_json_holding_json_lines_still_falls_back(tmp_path):
+    """A .json file that actually holds JSON Lines still parses, via the per-line fallback."""
+    loader = _load_raw_text().RawTextDataLoader(tokenizer = object())
+    path = tmp_path / "mislabelled.json"
+    path.write_text('{"text": "a"}\n{"text": "b"}\n', encoding = "utf-8")
+    assert loader._read_file_by_format(str(path), "json_lines") == "a\n\nb"
