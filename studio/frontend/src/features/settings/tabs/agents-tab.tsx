@@ -172,12 +172,13 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
 
 const QUICKSTART_AGENT = "claude";
 
-// Single line so the copied command pastes as-is in POSIX, PowerShell and cmd.
-const MODEL_SUFFIX_CMD =
-  "unsloth start codex --model unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL --context-length 32768";
+// Flags only: agentCommand supplies the prefix so every example targets the Studio
+// this tab shows. Kept single line so the copy pastes as-is.
+const MODEL_SUFFIX_FLAGS =
+  "--model unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL --context-length 32768";
 
-const MODEL_VARIANT_CMD =
-  "unsloth start codex --model unsloth/gemma-4-E2B-it-GGUF --gguf-variant UD-Q4_K_XL --context-length 32768";
+const MODEL_VARIANT_FLAGS =
+  "--model unsloth/gemma-4-E2B-it-GGUF --gguf-variant UD-Q4_K_XL --context-length 32768";
 
 const REMOTE_CMD_UNIX = `export UNSLOTH_STUDIO_URL=https://studio.example.com
 export UNSLOTH_API_KEY=sk-unsloth-...
@@ -189,12 +190,12 @@ $env:UNSLOTH_API_KEY = "sk-unsloth-..."
 unsloth start claude`;
 
 // Independent alternatives, each with its own copy button (not one script).
-const PASSTHROUGH_COMMANDS = [
-  "unsloth start claude --continue",
-  "unsloth start codex --persist resume --last",
+const PASSTHROUGH_EXAMPLES = [
+  { agent: "claude", flags: "--continue" },
+  { agent: "codex", flags: "--persist resume --last" },
 ];
 
-const DRY_RUN_CMD = "unsloth start claude --no-launch";
+const DRY_RUN_FLAGS = "--no-launch";
 
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
@@ -288,6 +289,8 @@ export function AgentsTab() {
   const commandOs = isWindowsClient ? "windows" : "unix";
   const agentCommand = (agentId: string) =>
     buildAgentCommand(commandBase, null, commandOs, agentId);
+  const example = (agentId: string, flags: string) =>
+    `${agentCommand(agentId)} ${flags}`;
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
@@ -387,13 +390,13 @@ export function AgentsTab() {
             <span className="text-xs font-medium text-foreground">
               {t("settings.agents.models.suffixLabel")}
             </span>
-            <CommandBlock command={MODEL_SUFFIX_CMD} />
+            <CommandBlock command={example("codex", MODEL_SUFFIX_FLAGS)} />
           </div>
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-foreground">
               {t("settings.agents.models.variantLabel")}
             </span>
-            <CommandBlock command={MODEL_VARIANT_CMD} />
+            <CommandBlock command={example("codex", MODEL_VARIANT_FLAGS)} />
           </div>
         </div>
       </SettingsSection>
@@ -433,8 +436,8 @@ export function AgentsTab() {
         description={t("settings.agents.passthrough.description")}
       >
         <div className="flex flex-col gap-2 pt-2">
-          {PASSTHROUGH_COMMANDS.map((command) => (
-            <CommandBlock key={command} command={command} />
+          {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
+            <CommandBlock key={flags} command={example(agent, flags)} />
           ))}
         </div>
       </SettingsSection>
@@ -444,7 +447,7 @@ export function AgentsTab() {
         description={t("settings.agents.dryRun.description")}
       >
         <div className="pt-2">
-          <CommandBlock command={DRY_RUN_CMD} />
+          <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
         </div>
       </SettingsSection>
     </div>
