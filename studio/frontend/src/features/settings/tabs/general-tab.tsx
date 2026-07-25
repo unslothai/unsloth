@@ -196,6 +196,15 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
+  // The notebook token arrives asynchronously from the kernel-backed API.
+  // Populate this already-open field unless the user has started typing.
+  useEffect(() => {
+    if (hfToken && !draftRef.current) {
+      draftRef.current = hfToken;
+      setDraftToken(hfToken);
+    }
+  }, [hfToken]);
+
   // Commit on unmount (dialog close / tab switch). Skip during reset-prefs
   // flow so we don't re-persist the draft after localStorage was cleared.
   useEffect(() => {

@@ -636,6 +636,12 @@ def start(port: int = 8888, *, cloudflare: "bool | None" = None):
     import time
 
     logger.info("🦥 Starting Unsloth Studio...")
+    # Resolve userdata from the active notebook cell before starting (or
+    # reconnecting to) the server. This is the point where Colab can present
+    # and service its notebook-secret access request reliably.
+    from utils.notebook_token import resolve_notebook_hf_token
+
+    resolve_notebook_hf_token()
     use_cloudflare = _colab_wants_cloudflare(cloudflare)
 
     # Fast path: already running (cell re-run); re-show link/iframe instead of rebinding the port.

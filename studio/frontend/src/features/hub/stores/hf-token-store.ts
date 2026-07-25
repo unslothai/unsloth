@@ -6,8 +6,11 @@ import { bumpInventoryVersion } from "./inventory-events";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
+const AUTH_SESSION_CHANGED_EVENT = "unsloth-auth-session-changed";
 let storageSyncStarted = false;
 let storageSyncListener: ((event: StorageEvent) => void) | null = null;
+let authSessionListener: (() => void) | null = null;
+let notebookHydration: Promise<void> | null = null;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -61,6 +64,10 @@ function stopStorageSync(): void {
     window.removeEventListener("storage", storageSyncListener);
     storageSyncListener = null;
   }
+  if (authSessionListener !== null) {
+    window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, authSessionListener);
+    authSessionListener = null;
+  }
   storageSyncStarted = false;
 }
 
@@ -103,6 +110,41 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
   };
 });
 
+// Colab and Kaggle secrets live in the notebook kernel and cannot be read by
+// browser JavaScript. Ask the authenticated backend to resolve HF_TOKEN, then
+// hydrate the shared store so every token field and operation sees it.
+function hydrateNotebookHfToken(): Promise<void> {
+  if (useHfTokenStore.getState().token) {
+    return Promise.resolve();
+  }
+  if (notebookHydration) {
+    return notebookHydration;
+  }
+  notebookHydration = import("../api/notebook-token")
+    .then(({ loadNotebookHfToken }) => loadNotebookHfToken())
+    .then((token) => {
+      if (token && !useHfTokenStore.getState().token) {
+        useHfTokenStore.getState().setToken(token);
+      }
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      notebookHydration = null;
+    });
+  return notebookHydration;
+}
+
+if (canUseStorage() && !useHfTokenStore.getState().token) {
+  // The first request handles returning sessions. A fresh login dispatches the
+  // event below, retrying after credentials exist instead of losing the token
+  // to an early 401 during application module initialization.
+  authSessionListener = () => {
+    hydrateNotebookHfToken().catch(() => undefined);
+  };
+  window.addEventListener(AUTH_SESSION_CHANGED_EVENT, authSessionListener);
+  hydrateNotebookHfToken().catch(() => undefined);
+}
+
 export function getHfToken(): string {
   return useHfTokenStore.getState().token;
 }
@@ -127,5 +169,5 @@ export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
 export function hfApiToken(
   token: string | undefined | null,
 ): string | undefined {
-  return token && token.startsWith("hf_") ? token : undefined;
+  return token?.startsWith("hf_") ? token : undefined;
 }

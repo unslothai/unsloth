@@ -8,6 +8,7 @@ export const AUTH_TOKEN_KEY = "unsloth_auth_token";
 export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
+export const AUTH_SESSION_CHANGED_EVENT = "unsloth-auth-session-changed";
 
 type PostAuthRoute = "/change-password" | "/chat";
 
@@ -45,6 +46,7 @@ export function storeAuthTokens(
   if (!canUseStorage()) return;
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
+  window.dispatchEvent(new Event(AUTH_SESSION_CHANGED_EVENT));
 }
 
 export function clearAuthTokens(): void {
