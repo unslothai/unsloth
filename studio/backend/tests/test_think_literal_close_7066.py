@@ -305,6 +305,54 @@ def test_trailing_quote_flushes_as_visible_immediately():
     assert visible == 'the answer is "'
 
 
+def test_quoted_close_split_at_token_boundaries_stays_in_reasoning():
+    """`"`, `</think>`, `"` as three deltas is the NORMAL split (#7334 item).
+
+    Providers emit ``</think>`` as one atomic token, so the opening quote is
+    routinely consumed in an earlier delta. The quoted-close hold must then read
+    the flank from the consumed span, not only from the live buffer, or the
+    mention splits the block and leaks the rest of the thought as visible text.
+    """
+    ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+    parts = [
+        ex.feed(chunk)
+        for chunk in ("user echoed ", '"', _RESPONSES_THINK_CLOSE, '"', " verbatim.")
+    ]
+    parts.append(ex.finish())
+    reasoning = "".join(r for r, _ in parts)
+    visible = "".join(v for _, v in parts)
+    assert visible == ""
+    assert "verbatim." in reasoning
+    assert _RESPONSES_THINK_CLOSE not in reasoning
+
+
+def test_streaming_split_matches_single_delta_parse():
+    """Every chunking of a transcript must parse like the single-delta one."""
+    texts = [
+        'user echoed "</think>" verbatim, so keep thinking.</think>answer',
+        "say `</think>` inline</think>done",
+        "quote '</think>' here",
+        "bare </think>answer",
+        "see ```\n</think>\n``` sample</think>real answer",
+    ]
+    for text in texts:
+        ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+        oracle = ex.feed(text), ex.finish()
+        expected = (
+            "".join(r for r, _ in oracle),
+            "".join(v for _, v in oracle),
+        )
+        for split in range(1, len(text)):
+            for second in range(split + 1, len(text) + 1):
+                chunks = [text[:split], text[split:second], text[second:]]
+                ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
+                got = [ex.feed(chunk) for chunk in chunks] + [ex.finish()]
+                assert (
+                    "".join(r for r, _ in got),
+                    "".join(v for _, v in got),
+                ) == expected, (text, chunks)
+
+
 def test_unclosed_fence_falls_back_to_structural_at_eof():
     """An unclosed ``` fence must not swallow the answer as reasoning (#7334)."""
     reasoning, visible = _extract_responses_reasoning(

@@ -11192,12 +11192,20 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
     return 0
 
 
-def _should_hold_quoted_think_close(buffer: str, close_idx: int) -> bool:
-    """Wait for a closing quote when a close tag follows an opening quote."""
-    if close_idx <= 0:
+def _should_hold_quoted_think_close(buffer: str, close_idx: int, prev_char: str = "") -> bool:
+    """Wait for a closing quote when a close tag follows an opening quote.
+
+    ``prev_char`` is the last char of the already-consumed span and supplies the
+    flank when the tag sits at buffer start. Providers emit ``</think>`` as one
+    atomic token, so a quoted mention normally arrives as the three deltas
+    ``"`` / ``</think>`` / ``"``; reading only ``buffer`` would then miss the
+    opening quote and split the mention out of reasoning (#7066).
+    """
+    if close_idx < 0:
         return False
-    before = buffer[close_idx - 1]
-    if before not in "\"'`":
+    before = buffer[close_idx - 1] if close_idx > 0 else prev_char
+    # ``"" in "\"'`"`` is True, so an empty flank must be rejected explicitly.
+    if not before or before not in "\"'`":
         return False
     end = close_idx + len(_RESPONSES_THINK_CLOSE)
     return end >= len(buffer)
@@ -11397,8 +11405,13 @@ class _ResponsesReasoningExtractor:
             if self._in_reasoning:
                 close_idx = self._buffer.find(_RESPONSES_THINK_CLOSE)
                 if close_idx != -1:
-                    if _should_hold_quoted_think_close(self._buffer, close_idx):
-                        hold_start = close_idx - 1
+                    if _should_hold_quoted_think_close(
+                        self._buffer, close_idx, self._span_last_char
+                    ):
+                        # The opening quote may already be consumed (tag at index
+                        # 0), in which case nothing is emitted and the tag alone
+                        # is held until the next delta reveals its right flank.
+                        hold_start = close_idx - 1 if close_idx > 0 else 0
                         reasoning_parts.append(
                             self._buffer[:hold_start].replace(_RESPONSES_THINK_OPEN, "")
                         )
