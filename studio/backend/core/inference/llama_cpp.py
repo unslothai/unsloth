@@ -8153,8 +8153,8 @@ class LlamaCppBackend:
                             ", ".join(unsupported_cache_flags),
                         )
 
-                # Vulkan pins via --device (a cmd arg), before user extras so a user
-                # --device wins. Fall back to raw ids when the fit did not narrow.
+                # Vulkan pins via --device. Fall back to the requested IDs when
+                # the fit did not narrow the selection.
                 _vulkan_pin_ids = gpu_indices if gpu_indices is not None else (gpu_ids or None)
 
                 # Record the pin actually applied (fit-narrowed gpu_indices, else the raw
@@ -8193,9 +8193,8 @@ class LlamaCppBackend:
                 if is_vulkan_backend and _vulkan_pin_ids is not None:
                     cmd += LlamaCppBackend._vulkan_pin_args(_vulkan_pin_ids)
 
-                # User pass-through args go last so llama.cpp's last-wins parsing
-                # lets the user override Unsloth's auto-set flags. Already
-                # validated by the route via validate_extra_args().
+                # User pass-through args go last. Placement flags are removed
+                # below when the Studio picker owns the GPU selection.
                 if extra_args:
                     _emit_extra_args = list(extra_args)
                     if gpu_ids is not None:
