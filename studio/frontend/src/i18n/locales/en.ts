@@ -162,7 +162,8 @@ export const en = {
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
-        sectionDescription: "Set how dictation spells specific words or phrases",
+        sectionDescription:
+          "Set how dictation spells specific words or phrases",
         manageLabel: "Custom spellings",
         manage: "Manage",
         backToVoice: "Back to Voice",
@@ -466,7 +467,8 @@ export const en = {
             "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
           errorTooLarge: "Font file is too large (max 1.5 MB).",
           errorLimit: "You can import up to 3 fonts.",
-          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
+          errorStorageFull:
+            "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
         },
         uiFontSize: {
@@ -552,6 +554,19 @@ export const en = {
         diskFree: "{free} free",
         modelsFolder: "Model downloads",
         modelsFolderDescription: "Hugging Face cache used for model downloads.",
+        checkpointFolder: "Checkpoint saving location",
+        checkpointFolderDescription:
+          "Where training runs and their checkpoints are saved.",
+        checkpointSaved: "Checkpoint location saved",
+        checkpointSaveError: "Couldn't save the checkpoint location",
+        checkpointChooseTitle: "Choose checkpoint folder",
+        checkpointSource: {
+          default: "Default Studio location",
+          studio: "Custom location",
+          environment: "Managed by UNSLOTH_OUTPUTS_DIR",
+          colab: "Detected Google Colab location",
+          kaggle: "Detected Kaggle working location",
+        },
         futureDownloads: "New downloads only",
         environmentManaged: "Managed by the {variable} environment variable.",
         locationFree: "{free} free",
