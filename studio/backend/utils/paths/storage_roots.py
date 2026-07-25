@@ -88,7 +88,11 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    # Imported lazily to avoid the settings module's fallback studio_root import
+    # forming a cycle during backend bootstrap.
+    from utils.checkpoint_settings import get_checkpoint_location
+
+    return get_checkpoint_location().path
 
 
 def exports_root() -> Path:
