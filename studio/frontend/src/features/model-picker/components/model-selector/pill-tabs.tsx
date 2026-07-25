@@ -29,7 +29,8 @@ export function PillTabs({
   className?: string;
   compact?: boolean;
   /** Size each tab to its label instead of equal widths. The active tab carries
-   * the pill background directly (the toggle never animates). */
+   * the pill background directly (the toggle never animates). Tabs only shrink
+   * when their combined intrinsic width exceeds the available space. */
   fit?: boolean;
 }) {
   const activeIndex = Math.max(
@@ -84,7 +85,7 @@ export function PillTabs({
           onClick={() => onValueChange(tab.value)}
           className={cn(
             "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
-            fit ? "shrink-0" : "min-w-0 flex-1",
+            fit ? "min-w-0 shrink" : "min-w-0 flex-1",
             compact ? "h-7 px-2.5 text-ui-11" : "h-9 px-3 text-ui-12p5",
             value === tab.value
               ? "text-foreground"
@@ -97,7 +98,7 @@ export function PillTabs({
           )}
         >
           {tab.icon}
-          {tab.label}
+          <span className="min-w-0 truncate">{tab.label}</span>
         </button>
       ))}
     </div>

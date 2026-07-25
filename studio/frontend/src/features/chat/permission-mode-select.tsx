@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ChevronDown,
-  CircleAlert,
-  CircleOff,
-  Hand,
-  ShieldCheck,
-} from "lucide-react";
+import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import type { ComponentType } from "react";
 import { useState } from "react";
 
 import {
@@ -29,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -45,7 +41,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
   description: string;
-  icon: typeof Hand;
+  icon: ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
   {
     value: "ask",
@@ -63,7 +59,7 @@ export const PERMISSION_MODE_OPTIONS: readonly {
     value: "off",
     label: "Run automatically",
     description: "Run tool calls without approval prompts inside the sandbox",
-    icon: CircleOff,
+    icon: SparklesGlyph,
   },
   {
     value: "full",

@@ -89,6 +89,7 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -4093,7 +4094,15 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof StreamInterruptedError) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {
