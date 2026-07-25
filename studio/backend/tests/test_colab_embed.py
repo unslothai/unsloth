@@ -342,9 +342,7 @@ def test_colab_login_html_includes_credentials():
 
 def test_shareable_link_html_embeds_password_under_the_link():
     """The credential belongs in the same card as the button it unlocks (#7404 follow-up)."""
-    html = colab._shareable_link_html(
-        "https://share.trycloudflare.com", "secret-pass", "unsloth"
-    )
+    html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
     assert "share.trycloudflare.com" in html
     assert "secret-pass" in html
     # Username is stated inline, not as its own labelled field.
@@ -425,7 +423,11 @@ def test_show_and_embed_skips_ready_card_when_tunnel_is_up(monkeypatch):
     monkeypatch.setattr(
         colab,
         "show_link",
-        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: calls.append("show_link"),
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
     )
     monkeypatch.setattr(colab, "_embed_kernel_port_iframe", lambda port: True)
     colab._show_and_embed(8888, cloudflare_url = "https://share.trycloudflare.com")
@@ -442,7 +444,11 @@ def test_show_and_embed_keeps_ready_card_without_tunnel(monkeypatch):
     monkeypatch.setattr(
         colab,
         "show_link",
-        lambda port, *, _url = None, has_cloudflare_link = False, cloudflare_requested = False: calls.append("show_link"),
+        lambda port,
+        *,
+        _url = None,
+        has_cloudflare_link = False,
+        cloudflare_requested = False: calls.append("show_link"),
     )
     monkeypatch.setattr(colab, "_embed_kernel_port_iframe", lambda port: True)
     colab._show_and_embed(8888)
