@@ -631,7 +631,8 @@ def test_module_imports_on_python_39(monkeypatch):
         seen += 1
         assert "slots" not in {kw.arg for kw in node.keywords}
         assert [
-            kw for kw in node.keywords
+            kw
+            for kw in node.keywords
             if kw.arg is None and getattr(kw.value, "id", None) == "_SLOTS"
         ], ast.dump(node)
     assert seen
