@@ -735,8 +735,7 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 }
 
 # Navigable sidebar rows the user can pin/reorder; the boolean is each id's
-# default pin state, matching the shipped layout. Unpinned rows collect in the
-# "More" flyout client-side; a single unpinned row is hidden there instead.
+# default pin state, matching the shipped layout.
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "projects": True,
     "hub": True,
@@ -840,8 +839,7 @@ class PersonalizationCustomization(BaseModel):
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
     )
-    # Order matters here: it is the sidebar's render order, so the validator
-    # preserves the client's sequence and only appends ids it didn't send.
+    # Order is the sidebar's render order, so the validator keeps the client's.
     sidebarNav: list[PersonalizationSidebarNavItem] = Field(
         default_factory = _default_sidebar_nav,
         max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
@@ -866,9 +864,7 @@ class PersonalizationCustomization(BaseModel):
     def _validate_sidebar_nav(
         cls, value: list[PersonalizationSidebarNavItem]
     ) -> list[PersonalizationSidebarNavItem]:
-        # Same contract as sidebarMenu: drop duplicate ids (keep the first) and
-        # re-append missing ones, so the stored list covers every nav row exactly
-        # once while keeping the client's order.
+        # Like sidebarMenu, but order is preserved: dedupe, then append missing.
         seen: set[str] = set()
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
         for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items():

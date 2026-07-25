@@ -589,10 +589,9 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
 def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     """The 400 detail if the Images backend holds *repo_id*, else None.
 
-    Checks the ACTIVE engine (diffusers or native sd_cpp): on a native selection the diffusers
-    singleton reports unloaded while sd-cli still generates from the cached GGUF, so checking it
-    alone would let files be deleted mid-use. Same fail-open-on-acquire /
-    surface-on-query contract as :func:`_llama_cpp_blocks_delete`.
+    Queries the ACTIVE engine: on a native selection the diffusers singleton reports
+    unloaded while sd-cli still generates from the cached GGUF. Same
+    fail-open-on-acquire contract as :func:`_llama_cpp_blocks_delete`.
     """
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -604,16 +603,13 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     if status.get("loaded") and status.get("repo_id"):
         if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
             return "Unload the model before deleting"
-    # The native sd.cpp engine re-reads companion VAE / text-encoder files from the HF cache
-    # every generation, so deleting a companion repo (e.g. comfyanonymous/flux_text_encoders)
-    # while a native GGUF is loaded bricks the next generation. status().repo_id covers only
-    # the main GGUF, so also refuse the committed companion repos read from disk.
+    # sd.cpp re-reads companion VAE / text-encoder files every generation, and
+    # status().repo_id covers only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
-    # Also refuse while a background image load is DOWNLOADING this repo (or its companion
-    # base): status().loaded is still False then, but deleting would remove blobs from under
-    # the in-flight download/assembly.
+    # A downloading repo still reports loaded=False, but deleting would pull blobs
+    # from under the in-flight fetch.
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
@@ -621,11 +617,10 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
 
 
 def _video_blocks_delete(repo_id: str) -> Optional[str]:
-    """The 400 detail if the Video backend holds (or is downloading) *repo_id*, else None.
+    """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
 
-    Cached non-GGUF video repos surface in the Video picker with a delete action, so without
-    this a loaded/loading Wan / LTX / Hunyuan pipeline could lose its HF snapshot from under
-    it. Mirrors :func:`_diffusion_blocks_delete`.
+    Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
+    pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`.
     """
     try:
         from core.inference.video import get_video_backend
@@ -673,8 +668,7 @@ async def delete_cached_model_response(
         ):
             blocks_detail = "Unload the model before deleting"
         else:
-            # The chat guards above are chat-only; the Images / Video engines hold their own
-            # pipelines (and companion repos) whose GGUFs must not vanish from under them.
+            # The guards above are chat-only; Images / Video hold their own pipelines.
             blocks_detail = _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
     except Exception as e:
         logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")

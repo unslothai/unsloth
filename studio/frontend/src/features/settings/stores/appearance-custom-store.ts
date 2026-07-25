@@ -83,11 +83,9 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
   };
 
 /**
- * Sidebar NAVIGATION rows the user can pin and reorder (distinct from the
- * profile-menu entries above). New chat stays fixed at the top: it is an action,
- * not a destination. Array order is render order; an unpinned row moves into the
- * "More" flyout. A single unpinned row is hidden outright rather than getting a
- * flyout of one; the page stays reachable by URL.
+ * Sidebar NAVIGATION rows the user can pin and reorder, distinct from the
+ * profile-menu entries above. Array order is render order. Unpinned rows go to
+ * the "More" flyout, except a lone one, which is hidden.
  */
 export const SIDEBAR_NAV_ITEM_IDS = [
   "projects",
@@ -103,7 +101,7 @@ export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
 
 export type SidebarNavItemPref = {
   id: SidebarNavItemId;
-  /** true = a top-level sidebar row; false = inside the "More" flyout. */
+  /** true = top-level row; false = under "More". */
   pinned: boolean;
 };
 
@@ -277,8 +275,7 @@ function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, pinned: source.pinned !== false });
   }
-  // Ids added after the payload was written land at the end with their default
-  // pin state, so a new tab shows up where the shipped layout puts it.
+  // Ids added after the payload was written land at the end with their default.
   for (const id of SIDEBAR_NAV_ITEM_IDS) {
     if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
   }

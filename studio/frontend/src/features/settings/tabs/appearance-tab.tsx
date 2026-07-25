@@ -152,6 +152,7 @@ export function AppearanceTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {/* Nav shape first, then the profile menu inside it. */}
       <SettingsSection
         title={t("settings.appearance.sidebarNav.title")}
         description={t("settings.appearance.sidebarNav.description")}

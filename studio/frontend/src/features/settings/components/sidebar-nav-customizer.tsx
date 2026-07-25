@@ -58,8 +58,7 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
       dragListener={false}
       dragControls={controls}
       layout="position"
-      // Rows sit flat on the dialog surface; the dragged row lifts above its
-      // siblings so it stays readable while crossing them.
+      // The dragged row lifts above its siblings so it stays readable.
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
@@ -107,11 +106,9 @@ function MovableRow({ item }: { item: SidebarNavItemPref }) {
 }
 
 /**
- * Pin and reorder the sidebar navigation rows. Rows with their switch off collect
- * in the "More" flyout. A single unpinned row is hidden outright instead: More
- * would be a menu of one, so neither it nor the row is drawn (the page stays
- * reachable by URL). New chat renders as a static row: it is an action pinned to
- * the top, not a destination.
+ * Pin and reorder the sidebar nav rows. Unpinned rows collect in the "More"
+ * flyout; a single unpinned row is hidden instead of getting a menu of one.
+ * New chat is static: it is an action, not a destination.
  */
 export function SidebarNavCustomizer() {
   const t = useT();
@@ -137,9 +134,7 @@ export function SidebarNavCustomizer() {
           <MovableRow key={item.id} item={item} />
         ))}
       </Reorder.Group>
-      {/* Only meaningful at two or more: with everything pinned there is no More
-          row, and a single unpinned row is hidden rather than sitting behind a
-          menu built for one item. */}
+      {/* Mirrors the sidebar: More only exists at two or more. */}
       {unpinnedCount > 1 && (
         <>
           <div className="mx-2 my-1 border-t border-border/70" />

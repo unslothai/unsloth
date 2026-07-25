@@ -151,8 +151,7 @@ def _sidebar_nav(items):
 
 
 def test_customization_sidebar_nav_defaults_match_shipped_layout():
-    # An untouched payload pins the rows the sidebar ships with and leaves the
-    # rest for the "More" flyout, so a fresh account looks unchanged.
+    # A fresh account must look like the shipped sidebar.
     c = PersonalizationPayload().appearance.customization
     assert [(i.id, i.pinned) for i in c.sidebarNav] == [
         ("projects", True),
@@ -175,8 +174,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
             ]
         )
     )
-    # Order is the sidebar's render order, so the client's sequence survives:
-    # duplicates keep the first entry and unsent ids are appended with defaults.
+    # Client order survives; duplicates keep the first, unsent ids are appended.
     assert [(i.id, i.pinned) for i in p.appearance.customization.sidebarNav] == [
         ("video", True),
         ("hub", False),
@@ -443,8 +441,8 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "chat", "visible": False},
                     {"id": "connections", "visible": False},
                 ],
-                # Reordered and partly unpinned, so the round-trip proves the
-                # sidebar's render order survives a save unchanged.
+                # Reordered and partly unpinned, so the round-trip proves order
+                # survives a save.
                 "sidebarNav": [
                     {"id": "images", "pinned": True},
                     {"id": "video", "pinned": True},

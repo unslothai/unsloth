@@ -1882,10 +1882,8 @@ export function HubModelPicker({
   const deviceType = usePlatformStore((s) => s.deviceType);
   const isMac = deviceType === "mac";
 
-  // Drop models Unsloth can't run for chat (diffusion / image / video / etc.) using the Hub's
-  // classifier on the tags the listing already carries. When the picker is task-scoped (e.g.
-  // Images asks for text-to-image), models matching that task are exactly what we want -- keep
-  // them even though the chat classifier marks image tasks "unsupported".
+  // Drop models Unsloth can't run for chat. A task-scoped picker wants exactly the tasks
+  // the chat classifier calls unsupported, so it gates on the task instead.
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
       // Image/Video tab (task set): only task-matching, non-editing results.
@@ -1906,9 +1904,8 @@ export function HubModelPicker({
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      // Images/Video (task set) load single-file GGUF only, so don't surface non-GGUF rows the
-      // page can't load. Otherwise chat-only keeps runnable formats: GGUF anywhere, plus
-      // MLX/safetensors on Mac (matches the Recommended view so search stays consistent).
+      // Task-scoped pages load single-file GGUF only; chat-only keeps runnable formats
+      // (GGUF anywhere, plus MLX/safetensors on Mac).
       .filter((id) =>
         task
           ? isKnownGgufRepo(id)
@@ -1961,11 +1958,9 @@ export function HubModelPicker({
       formatFilter === "all"
         ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
-    // Images/Video (task set) load single-file GGUF only, so never surface non-GGUF rows the
-    // page can't load.
+    // Task-scoped pages load single-file GGUF only.
     if (task) rows = rows.filter((r) => r.isGguf);
-    // A catalog group already renders its member repos as one canonical row; drop the members
-    // so they don't appear twice.
+    // Members already render under their canonical group row.
     if (catalog) rows = rows.filter((r) => !groupForRepoId(r.id, catalog));
     // The "recommended" sort always applies the device-fit filter; the shared
     // "Fits on device" tick extends it to the other sorts too.
@@ -2070,8 +2065,7 @@ export function HubModelPicker({
   }, [results, recommendedSearch.results]);
 
   // Ordered by the On Device dropdown (recent/download date/size/name).
-  // The task gate keeps the Images/Video picker to diffusion GGUFs and, conversely, hides those
-  // diffusion GGUFs from the chat picker (where they aren't loadable models).
+  // The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
@@ -2111,11 +2105,8 @@ export function HubModelPicker({
       ),
     [cachedModels, downloadedSort, loadTimes, task, catalog],
   );
-  // Variant expanders and format lists follow a single-device budget when task-scoped
-  // (Images/Video): the diffusion and video loaders place the whole pipeline on one device, so
-  // sorting/recommending quants against the summed multi-GPU total would mark variants as fitting
-  // that OOM at load. Chat pickers keep the summed total, where llama.cpp splits layers across
-  // devices.
+  // Task-scoped loads put the whole pipeline on one device, so quant fit must use the
+  // largest device, not the multi-GPU sum. Chat keeps the sum (llama.cpp splits layers).
   const expanderGpuGb = gpu.available
     ? task
       ? gpu.maxDeviceMemoryGb

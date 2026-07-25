@@ -205,8 +205,8 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
-// A navigable sidebar row. The same definition renders either as a top-level
-// NavItem or as a MoreMenuItem, depending on the user's pin preference.
+// One navigable row, rendered as a NavItem or a MoreMenuItem depending on its
+// pin state.
 type NavRowDef = {
   icon: typeof ZapIcon;
   label: string;
@@ -293,9 +293,7 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
-// Small "New" pill for recently shipped tabs. Same recipe as the brand "beta"
-// badge (nav-badge font, --ui-font-scale sizing, nav token colours) so the two
-// read as one design language.
+// "New" pill for recent tabs. Same recipe as the brand "beta" badge.
 function NavBadge({ label, className }: { label: string; className?: string }) {
   return (
     <span
@@ -374,8 +372,7 @@ function NavItem({
   );
 }
 
-// One row inside the "More" flyout: same affordances as a NavItem (disabled
-// hint, "New" pill, route preloading) in dropdown-item form.
+// A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
   icon,
   label,
@@ -487,8 +484,8 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  // "More" flyout (Video / Recipes / Export). Opens on click or hover; the close
-  // is delayed so the pointer can cross the gap between row and panel.
+  // "More" flyout. Opens on click or hover; close is delayed so the pointer can
+  // cross the gap to the panel.
   const [moreOpen, setMoreOpen] = useState(false);
   const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openMore = useCallback(() => {
@@ -689,8 +686,7 @@ export function AppSidebar() {
 
   const chatDisabled = trainingInProgress;
 
-  // One definition per navigable row, so the pinned list and the More flyout
-  // render the same row from the same source and can't drift apart.
+  // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
     projects: {
       icon: Folder01Icon,
@@ -704,8 +700,7 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/projects" }));
       },
       className: "group/projects-item relative",
-      // The inline "new project" affordance only makes sense on a real row; in
-      // the flyout the row is just a link.
+      // The inline "new project" affordance only fits a real row.
       children: (
         <button
           type="button"
@@ -769,9 +764,8 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
-    // Video is diffusers-only (no native CPU engine), so a chat-only host can
-    // never load it; disable with a hint instead of bouncing off the root
-    // guard's redirect.
+    // Video is diffusers-only, so a chat-only host can't load it. Disable with a
+    // hint instead of bouncing off the root guard's redirect.
     video: {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
@@ -828,9 +822,8 @@ export function AppSidebar() {
   const unpinnedNavIds = sidebarNav
     .filter((item) => !item.pinned)
     .map((item) => item.id);
-  // A flyout wrapping a single row costs a click and earns nothing, so More only
-  // appears once it would hold two or more. With exactly one row unpinned, both
-  // the menu and that row are dropped -- the page stays reachable by URL.
+  // More needs two or more rows to be worth a click. With exactly one unpinned,
+  // the menu and that row are both dropped.
   const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
   const inlineNavIds = sidebarNav
     .filter((item) => item.pinned)
@@ -1613,9 +1606,8 @@ export function AppSidebar() {
         <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
-              {/* Rows come from the saved pin order (Settings -> Appearance ->
-                  Sidebar navigation). Pinned ids render here in order; the rest
-                  fall into the More flyout below, so nothing is unreachable. */}
+              {/* Order and pin state come from Settings -> Appearance ->
+                  Sidebar navigation. */}
               {inlineNavIds.map((id) => {
                 const row = navRows[id];
                 return (
@@ -1636,8 +1628,7 @@ export function AppSidebar() {
                   </NavItem>
                 );
               })}
-              {/* Secondary destinations behind one row, so the primary nav stays short.
-                  Hover or click opens it; the panel flies out to the right. */}
+              {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
                 <SidebarMenuItem
                   onPointerEnter={openMore}
@@ -1648,11 +1639,9 @@ export function AppSidebar() {
                     onOpenChange={setMoreOpen}
                     modal={false}
                   >
-                    {/* No `tooltip` prop on the button: with it, SidebarMenuButton
-                        returns a Tooltip root and DropdownMenuTrigger asChild would
-                        hand its ref/handlers to that instead of a DOM node, leaving
-                        the trigger dead. Wrap it here instead, so both triggers
-                        compose onto the same button. */}
+                    {/* Tooltip wraps the trigger rather than using the button's
+                        `tooltip` prop: that returns a Tooltip root, so
+                        DropdownMenuTrigger asChild would miss the DOM node. */}
                     <Tooltip>
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
@@ -1673,7 +1662,7 @@ export function AppSidebar() {
                           </SidebarMenuButton>
                         </DropdownMenuTrigger>
                       </TooltipPrimitive.Trigger>
-                      {/* Only the collapsed rail needs it; expanded rows show their label. */}
+                      {/* Collapsed rail only; expanded rows show their label. */}
                       <TooltipContent
                         side="right"
                         align="center"
