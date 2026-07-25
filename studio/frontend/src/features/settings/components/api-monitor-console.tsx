@@ -253,6 +253,8 @@ export function ApiMonitorConsole(): ReactElement {
   const statusLabel = data?.status ?? "idle";
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
+  // Older backends omit the field; only an explicit `false` means logging is off.
+  const loggingDisabled = data?.logging_enabled === false;
   const loadDetail = useCallback(
     (id: string): void => {
       if (loadingDetailsRef.current.has(id)) {
@@ -356,8 +358,10 @@ export function ApiMonitorConsole(): ReactElement {
 
       <div className="flex items-center justify-between border-b border-border/60 px-4 py-2 text-xs text-muted-foreground">
         <span>
-          {(data?.active_requests ?? 0).toLocaleString()} active /{" "}
-          {entries.length.toLocaleString()} recent
+          {(data?.active_requests ?? 0).toLocaleString()} active
+          {loggingDisabled ? null : (
+            <> / {entries.length.toLocaleString()} recent</>
+          )}
         </span>
         {data?.context_length ? (
           <span>{data.context_length.toLocaleString()} context</span>
@@ -368,6 +372,15 @@ export function ApiMonitorConsole(): ReactElement {
         {error ? (
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
             {error}
+          </div>
+        ) : loggingDisabled ? (
+          <div className="rounded-lg border border-border/70 p-4 text-sm text-muted-foreground">
+            Request logging is disabled by{" "}
+            <code className="rounded bg-muted/60 px-1 py-0.5 text-xs">
+              UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS
+            </code>
+            . API requests still run normally, they are just not recorded here. Unset
+            the variable and restart Studio to re-enable.
           </div>
         ) : entries.length === 0 ? (
           <div className="rounded-lg border border-border/70 p-4 text-sm text-muted-foreground">

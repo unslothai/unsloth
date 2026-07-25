@@ -1,7 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.authentication import get_current_subject
 from core.inference.api_monitor import ApiMonitor, _trim
+import routes.inference as inference_route
+
+
+def _get_monitor():
+    app = FastAPI()
+    app.include_router(inference_route.studio_router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    return TestClient(app).get("/monitor")
 
 
 def test_api_monitor_tracks_reply_usage_and_context():
@@ -63,6 +75,28 @@ def test_api_monitor_explicit_enabled_overrides_env(monkeypatch):
 
     assert entry_id is not None
     assert len(monitor.snapshot()) == 1
+
+
+def test_monitor_route_reports_logging_enabled(monkeypatch):
+    # Pinned rather than inherited: the module singleton reads the env var at import
+    # time, so a developer running with logging off would otherwise flip this test.
+    monkeypatch.setattr(inference_route.api_monitor, "enabled", True)
+    response = _get_monitor()
+
+    assert response.status_code == 200
+    assert response.json()["logging_enabled"] is True
+
+
+def test_monitor_route_reports_logging_disabled(monkeypatch):
+    monkeypatch.setattr(inference_route.api_monitor, "enabled", False)
+    response = _get_monitor()
+
+    assert response.status_code == 200
+    payload = response.json()
+    # An empty list alone can't be told apart from "no traffic yet", so the flag
+    # has to travel with it.
+    assert payload["logging_enabled"] is False
+    assert payload["entries"] == []
 
 
 def test_api_monitor_summary_omits_full_prompt_and_reply():

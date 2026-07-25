@@ -5287,11 +5287,15 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         operating_status = "ready"
     else:
         operating_status = "idle"
+    # With request logging off, ``snapshot()`` returns an empty list -- the same shape
+    # as a Studio that simply hasn't served a request yet. Signal the disabled state so
+    # the UI can explain the empty list instead of claiming there was no API traffic.
     return {
         "status": operating_status,
         "active_model": active_model,
         "context_length": _monitor_context_length(),
         "active_requests": active_requests,
+        "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
 

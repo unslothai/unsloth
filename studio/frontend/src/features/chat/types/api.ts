@@ -243,6 +243,8 @@ export interface ApiMonitorResponse {
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
 
