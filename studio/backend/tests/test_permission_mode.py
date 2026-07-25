@@ -620,6 +620,14 @@ def test_terminal_classifier(command, unsafe):
         ("sysctl net.ipv4.ip_forward=1", True),
         ("sysctl net.ipv4.ip_forward", False),
         ("sysctl -a", False),
+        # --- a shell alias body is a command bash runs on invocation ---
+        ("alias zap='rm -rf'", True),
+        ("shopt -s expand_aliases\nalias zap='rm -rf'\nzap victim", True),
+        ("alias ll='ls -la'", False),
+        ("alias gs='git status'", False),
+        # --- git --config-env takes the alias body from the environment ---
+        ("git --config-env=alias.n=PAYLOAD n", True),
+        ("git --config-env=user.name=UNAME commit", False),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),
@@ -809,6 +817,14 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # a file handle's truncate zeroes the file; pandas truncate does not
         ("f = open('a', 'r+')\nf.truncate(0)", True),
         ("with open('important.py', 'r+') as f:\n    f.truncate(0)", True),
+        # a stored destructive lookup is called under its own name
+        ("import os\nrm = getattr(os, 'remove')\nrm('important.py')", True),
+        ("import os\nf = getattr(os, 'unlink')\nf('x')", True),
+        # a credential word that names no file does no I/O and must not prompt
+        ("credentials = {}\nprint(credentials)", False),
+        ("def load_credentials():\n    return 1", False),
+        ("# parse credentials from payload\nprint(1)", False),
+        ("open('/home/u/.aws/credentials').read()", True),
         # a getattr name assembled from literals resolves to the real attribute
         ("import os\ngetattr(os, 'un' + 'link')('/tmp/victim')", True),
         ("import os\nname = input()\ngetattr(os, name)('/tmp/victim')", True),
@@ -894,6 +910,23 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_roles", {}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}iam__promote_user", {"u": "x"}) is True
     # Money movement is irreversible for the operator, so it asks.
+    # An MCP name built from a verb this classifier does not know cannot be
+    # screened at all, and runs outside the terminal sandbox, so it asks.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}ops__nuke_database", {"n": "prod"}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}infra__obliterate_cluster", {}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__zap_everything", {}) is True
+    # ... while the ordinary read and write vocabulary keeps running.
+    for _name in (
+        "github__get_issue",
+        "github__create_issue",
+        "slack__post_message",
+        "browser__click_element",
+        "vector__upsert_documents",
+        "ci__retry_build",
+        "sheets__append_row",
+        "gh__undelete_branch",
+    ):
+        assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}{_name}", {"a": 1}) is False, _name
     # An execution name with no separators still runs a payload on the server.
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__runcommand", {"command": "ls"}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}x__executecommand", {"command": "ls"}) is True

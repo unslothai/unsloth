@@ -735,6 +735,11 @@ class TestBashBlocklistPosition:
         # to too many other utilities to read its neighbour as one.
         assert self._find()("grep -x rm file.txt") == set()
 
+    def test_alias_body_scanned_as_command(self):
+        # `alias zap='rm -rf'` stores a command bash runs when zap is invoked.
+        assert "rm" in self._find()("alias zap='rm -rf'")
+        assert self._find()("alias ll='ls -la'") == set()
+
 
 class TestHfUploadImportGate:
     """Upload-method blocking requires an HF import in scope, so paramiko /

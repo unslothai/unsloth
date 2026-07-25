@@ -307,6 +307,18 @@ def _find_blocked_commands(command: str) -> set[str]:
         expect_command = False
         prefix_pending = False
 
+    # `alias zap='rm -rf'` stores a command bash runs when the alias is invoked,
+    # so the body is scanned as a command in its own right.
+    for i, tok in enumerate(tokens):
+        if _token_basename(tok) != "alias":
+            continue
+        for nxt in tokens[i + 1 :]:
+            if nxt in _SHELL_SEPARATORS:
+                break
+            _name, _sep, _value = nxt.partition("=")
+            if _sep and _value:
+                blocked |= _find_blocked_commands(_value)
+
     # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
     for i, tok in enumerate(tokens):
         # The long flags also carry the command attached (fd --exec=rm). Only the
@@ -663,6 +675,256 @@ _AUTO_EXEC_MCP_COMPOUND_RE = re.compile(
     r")(?:[_\-]|$)",
     re.IGNORECASE,
 )
+# The verbs an MCP tool name may carry and still run without a prompt: the
+# read side, and the ordinary write side that creates or edits a record.
+# Destructive, privilege and money-moving verbs are caught by the patterns
+# above before this is consulted.
+_AUTO_KNOWN_MCP_VERBS = frozenset(
+    {
+        # read / inspect
+        "get",
+        "list",
+        "read",
+        "search",
+        "find",
+        "fetch",
+        "query",
+        "describe",
+        "show",
+        "view",
+        "inspect",
+        "status",
+        "info",
+        "count",
+        "exists",
+        "resolve",
+        "lookup",
+        "browse",
+        "diff",
+        "log",
+        "logs",
+        "history",
+        "summarize",
+        "summarise",
+        "analyze",
+        "analyse",
+        "validate",
+        "check",
+        "test",
+        "ping",
+        "preview",
+        "head",
+        "stat",
+        "download",
+        "export",
+        "render",
+        "format",
+        "parse",
+        "compare",
+        "explain",
+        "select",
+        "retrieve",
+        "audit",
+        "review",
+        "monitor",
+        "trace",
+        "profile",
+        "benchmark",
+        "lint",
+        "detect",
+        "classify",
+        "rank",
+        "score",
+        "predict",
+        "infer",
+        "evaluate",
+        # ordinary writes
+        "create",
+        "add",
+        "insert",
+        "update",
+        "edit",
+        "modify",
+        "set",
+        "put",
+        "patch",
+        "post",
+        "send",
+        "write",
+        "append",
+        "upload",
+        "comment",
+        "assign",
+        "label",
+        "tag",
+        "move",
+        "rename",
+        "copy",
+        "clone",
+        "sync",
+        "merge",
+        "close",
+        "reopen",
+        "open",
+        "start",
+        "stop",
+        "pause",
+        "resume",
+        "cancel",
+        "schedule",
+        "notify",
+        "register",
+        "save",
+        "store",
+        "apply",
+        "submit",
+        "request",
+        "generate",
+        "convert",
+        "translate",
+        "complete",
+        "index",
+        "ingest",
+        "embed",
+        "train",
+        "call",
+        "load",
+        "init",
+        "configure",
+        "config",
+        "upsert",
+        "retry",
+        "replay",
+        "approve",
+        "reject",
+        "acknowledge",
+        "annotate",
+        "draft",
+        "subscribe",
+        "watch",
+        "listen",
+        "poll",
+        "wait",
+        "sleep",
+        # browser / ui drivers
+        "navigate",
+        "click",
+        "type",
+        "scroll",
+        "hover",
+        "press",
+        "screenshot",
+        "capture",
+        "snapshot",
+        "extract",
+        "crawl",
+        "scrape",
+        "fill",
+        "focus",
+        # data shaping
+        "sort",
+        "filter",
+        "group",
+        "aggregate",
+        "split",
+        "chunk",
+        "tokenize",
+        "encode",
+        "decode",
+        "hash",
+        "sign",
+        "verify",
+        "compress",
+        "decompress",
+        "dedupe",
+        "normalize",
+        "normalise",
+        "sanitize",
+        "sanitise",
+        "redact",
+        "mask",
+        "compute",
+        "calculate",
+        "solve",
+        "simulate",
+        "plot",
+        "chart",
+        # build / ship
+        "build",
+        "compile",
+        "bundle",
+        "package",
+        "backup",
+        "restore",
+        "ask",
+        "answer",
+        "chat",
+        "prompt",
+        "respond",
+        "reply",
+        "transcribe",
+    }
+)
+
+
+# The verbs the patterns above already recognise. A name is screenable when it
+# carries one of these too, even though reaching this point means it did not
+# match: `undelete` is the reverse of a verb this classifier knows about.
+_AUTO_GATED_MCP_VERBS = frozenset(
+    {
+        "delete",
+        "remove",
+        "drop",
+        "destroy",
+        "purge",
+        "wipe",
+        "truncate",
+        "clear",
+        "reset",
+        "empty",
+        "flush",
+        "prune",
+        "expire",
+        "revoke",
+        "grant",
+        "authorize",
+        "authorise",
+        "elevate",
+        "escalate",
+        "impersonate",
+        "promote",
+        "transfer",
+        "payout",
+        "charge",
+        "refund",
+        "publish",
+        "deploy",
+        "release",
+        "install",
+        "uninstall",
+        "lock",
+        "mount",
+    }
+)
+_AUTO_MCP_VERB_VOCAB = _AUTO_KNOWN_MCP_VERBS | _AUTO_GATED_MCP_VERBS
+
+
+def _mcp_verb_is_known(tool_name: str) -> bool:
+    """Whether any term of an MCP tool name is a verb this classifier knows.
+    A name with none of them cannot be screened, so the caller fails closed."""
+    for part in re.split(r"[_\-]+", tool_name.lower()):
+        if not part:
+            continue
+        if part in _AUTO_KNOWN_MCP_VERBS:
+            return True
+        # The reverse or the repeat of a recognised verb (undelete, reopen,
+        # resend) is just as screenable as the verb itself.
+        for prefix in ("un", "re"):
+            if part.startswith(prefix) and part[len(prefix) :] in _AUTO_MCP_VERB_VOCAB:
+                return True
+    return False
+
+
 _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
     r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
     re.IGNORECASE,
@@ -3096,6 +3358,9 @@ _HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force"})
 # `git -c alias.NAME=PAYLOAD` defines an alias git then runs; a leading `!`
 # makes the payload a shell command.
 _GIT_ALIAS_ASSIGN_RE = re.compile(r"^alias\.[^=]+=(.*)$", re.DOTALL)
+# `git --config-env=alias.n=VAR n` names an environment variable whose value
+# becomes the alias body, so the code is never present in the command text.
+_GIT_CONFIG_ENV_ALIAS_RE = re.compile(r"(?:^|=)alias\.", re.IGNORECASE)
 _GIT_GLOBAL_VALUE_FLAGS = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 )
@@ -3471,12 +3736,23 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         return True
                     # A git global option that takes a separate value (git -C repo
                     # clean) precedes its value, not the subcommand.
+                    # --config-env=<key>=<envvar> reads the value from the
+                    # environment, which cannot be resolved here, so an alias key
+                    # would store unscreened code git runs on the next call.
+                    if flag == "--config-env" and _GIT_CONFIG_ENV_ALIAS_RE.search(token):
+                        return True
                     if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
                         git_glob_pending = True
                 continue
             if _ASSIGNMENT_RE.match(token):
+                _assign_name, _, _assign_value = token.partition("=")
+                # `alias zap='rm -rf'` stores a command bash runs when the alias
+                # is invoked, the same shape as a git alias body.
+                if current_command == "alias" and _assign_value:
+                    if _depth >= 3 or _terminal_is_high_risk(_assign_value, _depth + 1):
+                        return True
                 # PATH/LD_PRELOAD-style assignments hijack command lookup/loading.
-                if _env_assignment_is_unsafe(token.split("=", 1)[0]):
+                if _env_assignment_is_unsafe(_assign_name):
                     return True
                 continue
             raw = token.strip(";&|()`{}")
@@ -3670,12 +3946,23 @@ def _python_is_high_risk(code: str) -> bool:
     # refusal; it covers subprocess/os.system shell escapes and network egress.
     if _check_code_safety(code) is not None:
         return True
-    if _references_sensitive_path(code):
-        return True
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return False  # runs into a normal traceback; nothing to guard
+        # Unparsable code never runs, but scan the raw text rather than lose the
+        # check entirely.
+        return _references_sensitive_path(code)
+    # A credential basename only names a file when it appears in a string, so
+    # match it there instead of across the whole source: `credentials = {}`,
+    # `def load_credentials()` and a comment mentioning credentials perform no
+    # I/O and must not prompt.
+    for _node in ast.walk(tree):
+        if (
+            isinstance(_node, ast.Constant)
+            and isinstance(_node.value, str)
+            and _references_sensitive_path(_node.value)
+        ):
+            return True
     # A destructive filesystem call (os.remove/os.unlink, shutil.rmtree,
     # Path.unlink/rmdir, ...) deletes a file or tree, so ask (parity with the
     # terminal `rm` gate). Collect bare aliases (from shutil import rmtree) first.
@@ -3725,6 +4012,28 @@ def _python_is_high_risk(code: str) -> bool:
         if attr in _PY_DESTRUCTIVE_FS_ATTRS:
             return True
         return attr in _PY_DESTRUCTIVE_FS_OS_ATTRS and _is_os_module_ref(value)
+
+    # `rm = getattr(os, "remove")` stores the lookup and calls it later, so the
+    # direct getattr(...)(...) shape never sees it. Bind the name here instead.
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "getattr"
+            and len(node.value.args) >= 2
+        ):
+            continue
+        _attr = _folded_str_literal(node.value.args[1])
+        _hit = (
+            _is_fs_module_ref(node.value.args[0])
+            if _attr is None
+            else _is_destructive_attr(_attr, node.value.args[0])
+        )
+        if _hit:
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    destructive_fs_aliases.add(tgt.id)
 
     # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gate it via
     # the handle name rather than the bare `.truncate` attribute: pandas
@@ -3942,6 +4251,16 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # the terminal sandbox, so it asks. Honestly-named create/update/delete
         # MCP calls (create_issue, update_record) still run in auto.
         if _mcp_arguments_mutate(arguments):
+            return True
+        # MCP tools run on an external server, outside the terminal sandbox and
+        # every backstop under it, and their names are an open vocabulary rather
+        # than the finite set of POSIX utilities, so the denylists above cannot
+        # be complete: a name built from an unfamiliar verb (nuke_database,
+        # obliterate_index) would sail through as ordinary. A name carrying no
+        # recognised verb at all therefore asks, which is also what the previous
+        # classifier did with these names, while the ordinary read and write
+        # verbs keep running without a prompt.
+        if not _mcp_verb_is_known(tool_name):
             return True
         return False
     if name == "terminal":
