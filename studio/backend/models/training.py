@@ -91,6 +91,26 @@ def _parse_lr(v: Any) -> float:
         )
     return lr
 
+class TrainingDatasetSelection(BaseModel):
+    """One independently configured training source."""
+    hf_dataset: Optional[str] = None
+    local_path: Optional[str] = None
+    subset: Optional[str] = None
+    split: str = "train"
+    format_type: Optional[str] = None
+    column_mapping: Optional[Dict[str, Any]] = None
+    sampling_weight: Optional[float] = Field(None, gt = 0)
+
+    @model_validator(mode = "after")
+    def _source(self):
+        if sum(bool(x and x.strip()) for x in (self.hf_dataset, self.local_path)) != 1:
+            raise ValueError("each training dataset must identify exactly one of hf_dataset or local_path")
+        if not self.split.strip():
+            raise ValueError("each training dataset requires a split")
+        if self.local_path and self.subset:
+            raise ValueError("subset is only supported for Hugging Face datasets")
+        return self
+
 
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
@@ -125,6 +145,7 @@ class TrainingStartRequest(BaseModel):
     )
 
     # Dataset parameters
+    training_datasets: List[TrainingDatasetSelection] = Field(default_factory = list)
     hf_dataset: Optional[str] = Field(None, description = "HuggingFace dataset identifier")
     local_datasets: List[str] = Field(
         default_factory = list, description = "List of local dataset paths"
@@ -160,6 +181,12 @@ class TrainingStartRequest(BaseModel):
         """Accept legacy 'split' field as alias for 'train_split'."""
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
+        if isinstance(values, dict) and not values.get("training_datasets"):
+            entries = []
+            if values.get("hf_dataset"):
+                entries.append({"hf_dataset": values["hf_dataset"], "subset": values.get("subset"), "split": values.get("train_split") or "train", "format_type": values.get("format_type"), "column_mapping": values.get("custom_format_mapping")})
+            entries.extend({"local_path": path, "split": "train", "format_type": values.get("format_type"), "column_mapping": values.get("custom_format_mapping")} for path in values.get("local_datasets") or [])
+            values["training_datasets"] = entries
         return values
 
     @field_validator("project_name")
