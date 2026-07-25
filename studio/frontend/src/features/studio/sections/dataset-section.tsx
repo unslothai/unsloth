@@ -1407,24 +1407,40 @@ export function DatasetSection() {
                     </Button>
                   </div>
                   {trainingDatasets.map((entry, index) => (
-                    <div
+                    <Collapsible
                       key={`${entry.source}:${entry.path}:${index}`}
-                      className="rounded-lg border bg-muted/30 p-3"
+                      defaultOpen={false}
+                      className="group rounded-lg border bg-muted/30"
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-indigo-500/10 text-ui-10 font-semibold text-indigo-500">
-                          {index + 1}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-mono text-xs font-medium">
-                            {entry.path}
-                          </p>
-                          <p className="text-ui-10 text-muted-foreground">
-                            {entry.source === "huggingface"
-                              ? "Hugging Face"
-                              : "Local dataset"}
-                          </p>
-                        </div>
+                      <div className="flex items-center gap-2 p-3">
+                        <CollapsibleTrigger asChild={true}>
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                            disabled={entry.source !== "huggingface"}
+                            aria-label={`Toggle settings for ${entry.path}`}
+                          >
+                            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-indigo-500/10 text-ui-10 font-semibold text-indigo-500">
+                              {index + 1}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-mono text-xs font-medium">
+                                {entry.path}
+                              </span>
+                              <span className="block text-ui-10 text-muted-foreground">
+                                {entry.source === "huggingface"
+                                  ? "Hugging Face"
+                                  : "Local dataset"}
+                              </span>
+                            </span>
+                            {entry.source === "huggingface" && (
+                              <HugeiconsIcon
+                                icon={ChevronDownStandardIcon}
+                                className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180"
+                              />
+                            )}
+                          </button>
+                        </CollapsibleTrigger>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1435,29 +1451,31 @@ export function DatasetSection() {
                         </Button>
                       </div>
                       {entry.source === "huggingface" && (
-                        <div className="mt-3 border-t pt-3">
-                          <HfDatasetSubsetSplitSelectors
-                            variant="studio"
-                            enabled={true}
-                            datasetName={entry.path}
-                            accessToken={hfToken || undefined}
-                            datasetSubset={entry.subset ?? null}
-                            setDatasetSubset={(subset) =>
-                              updateTrainingDataset(index, {
-                                subset,
-                                split: null,
-                              })
-                            }
-                            datasetSplit={entry.split ?? null}
-                            setDatasetSplit={(split) =>
-                              updateTrainingDataset(index, { split })
-                            }
-                            datasetEvalSplit={null}
-                            setDatasetEvalSplit={() => undefined}
-                          />
-                        </div>
+                        <CollapsibleContent>
+                          <div className="mx-3 border-t pb-3 pt-3">
+                            <HfDatasetSubsetSplitSelectors
+                              variant="studio"
+                              enabled={true}
+                              datasetName={entry.path}
+                              accessToken={hfToken || undefined}
+                              datasetSubset={entry.subset ?? null}
+                              setDatasetSubset={(subset) =>
+                                updateTrainingDataset(index, {
+                                  subset,
+                                  split: null,
+                                })
+                              }
+                              datasetSplit={entry.split ?? null}
+                              setDatasetSplit={(split) =>
+                                updateTrainingDataset(index, { split })
+                              }
+                              datasetEvalSplit={null}
+                              setDatasetEvalSplit={() => undefined}
+                            />
+                          </div>
+                        </CollapsibleContent>
                       )}
-                    </div>
+                    </Collapsible>
                   ))}
                   {isAddingDataset && (
                     <p className="rounded-md border border-dashed border-indigo-500/50 bg-indigo-500/5 px-3 py-2 text-xs text-muted-foreground">
