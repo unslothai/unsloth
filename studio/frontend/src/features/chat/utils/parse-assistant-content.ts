@@ -88,6 +88,13 @@ const isIntraWordApostrophe = (text: string, at: number): boolean =>
   WORD_CHAR.test(text[at - 1] ?? "") &&
   WORD_CHAR.test(text[at + 1] ?? "");
 
+/** A quote behind an odd backslash run sits inside a string literal. */
+const isEscaped = (text: string, at: number): boolean => {
+  let run = 0;
+  for (let j = at - 1; j >= 0 && text[j] === "\\"; j -= 1) run += 1;
+  return run % 2 === 1;
+};
+
 export type ParseOptions = {
   /** The response is still streaming, so `raw` can still grow. */
   streaming?: boolean;
@@ -156,10 +163,16 @@ function findStructuralThinkClose(
     let n = ch === '"' ? dq : ch === "'" ? sq : bt;
     const cursor = ch === '"' ? dqFrom : ch === "'" ? sqFrom : btFrom;
     for (let at = raw.indexOf(ch, cursor); at !== -1 && at < end; ) {
-      // An apostrophe inside a word is punctuation, not an opening quote:
-      // counting the one in "It's" flipped the parity of a genuinely quoted
-      // tag, so "It's discussing '</think>'" read as the block end (#7334).
-      if (ch !== "'" || !isIntraWordApostrophe(raw, at)) n += 1;
+      // Two occurrences are not delimiters: an apostrophe inside a word
+      // ("It's"), and a quote escaped by an odd backslash run, which sits
+      // inside a string literal ("use \"</think>\" here"). Counting either
+      // flipped the parity of a genuinely quoted tag (#7334).
+      if (
+        (ch !== "'" || !isIntraWordApostrophe(raw, at)) &&
+        !isEscaped(raw, at)
+      ) {
+        n += 1;
+      }
       at = raw.indexOf(ch, at + 1);
     }
     if (ch === '"') {
@@ -235,7 +248,11 @@ function findStructuralThinkClose(
       }
     } else {
       const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
-      const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
+      const closeEnd = closeIndex + THINK_CLOSE_TAG.length;
+      // Skip an escaping backslash so a mention quoted inside a string literal
+      // ( \"</think>\" ) still reads as symmetrically quoted (#7334).
+      const after =
+        (raw[closeEnd] === "\\" ? raw[closeEnd + 1] : raw[closeEnd]) ?? "";
       // A quoted mention is symmetric. Accepting ANY two delimiters called
       // "`</think>\"yes\"" quoted and kept the whole visible answer in the
       // drawer, so the flanks must be the same char (#7334).

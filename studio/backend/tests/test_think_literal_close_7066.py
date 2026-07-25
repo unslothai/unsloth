@@ -189,6 +189,41 @@ def test_intra_word_apostrophe_parity_across_deltas():
     assert visible == "answer"
 
 
+def test_escaped_quotes_do_not_flip_parity():
+    """A quote inside a string literal is not a delimiter (#7334).
+
+    ``He wrote "use \\"</think>\\" here"`` counted both escaped quotes, so the
+    mention read as the structural close and the rest of the thought leaked
+    into the visible answer.
+    """
+    reasoning, visible = _extract_responses_reasoning(
+        'He wrote "use \\"</think>\\" here" and continued</think>Answer',
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert "and continued" in reasoning
+    assert "</think>" not in reasoning  # neutralized mention, still reasoning
+    assert visible == "Answer"
+
+
+def test_escaped_quotes_parity_across_deltas():
+    """Same call when the escape and its quote land in different deltas."""
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning, visible = "", ""
+    for delta in ('He wrote "use \\', '"', "</think>", '\\" here" done', "</think>", "Answer"):
+        r, v = ex.feed(delta)
+        reasoning += r
+        visible += v
+    r, v = ex.finish()
+    reasoning += r
+    visible += v
+    assert "done" in reasoning
+    assert visible == "Answer"
+
+
 def test_mismatched_quote_flanks_structural_across_deltas():
     """Same call when the flanks land in different streaming deltas."""
     ex = _ResponsesReasoningExtractor(
@@ -316,7 +351,24 @@ def test_span_parity_counters_match_string_oracle():
     for every close position in the live buffer.
     """
     rng = random.Random(7066)
-    alphabet = ["`", '"', "'", "a", " ", "\n", "```", '"`', "``", "'`'"]
+    alphabet = [
+        "`",
+        '"',
+        "'",
+        "a",
+        " ",
+        "\n",
+        "```",
+        '"`',
+        "``",
+        "'`'",
+        # Escapes: a quote behind an odd backslash run is inside a string
+        # literal, so the counters must carry the run across chunks (#7334).
+        "\\",
+        "\\\\",
+        '\\"',
+        "\\'",
+    ]
     close = "</think>"
     for _ in range(4000):
         # Build a consumed prefix as a list of chunks with heavy quote/fence use.
@@ -731,6 +783,28 @@ def test_neutralize_tools_control_markup_keeps_name_references_in_sync():
     assert set(params["required"]) <= set(params["properties"])
     # Prose is still neutralized.
     assert "</think>" not in params["properties"]["query</think>"]["description"]
+
+
+def test_neutralize_tools_control_markup_keeps_schema_pointers():
+    """A ``$ref`` names a ``$defs`` key, which this pass leaves alone (#7066)."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "parameters": {
+                    "type": "object",
+                    "$defs": {"q</think>": {"type": "string", "description": "a </think>"}},
+                    "properties": {"q": {"$ref": "#/$defs/q</think>"}},
+                },
+            },
+        }
+    ]
+    params = neutralize_tools_control_markup(tools)[0]["function"]["parameters"]
+    assert params["properties"]["q"]["$ref"] == "#/$defs/q</think>"
+    assert list(params["$defs"]) == ["q</think>"]
+    # The referenced subschema's prose is still neutralized.
+    assert "</think>" not in params["$defs"]["q</think>"]["description"]
 
 
 def test_tool_call_arguments_still_neutralize_a_required_key():

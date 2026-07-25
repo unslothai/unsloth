@@ -47,6 +47,9 @@ const cases = {
   mismatched_flanks: '<think>I\\'ll answer with `</think>"yes" is the answer',
   // The apostrophe in "It's" is punctuation, not an opening quote (#7334).
   contraction_quoted: "<think>It's discussing '</think>' here</think>answer",
+  // A quote escaped inside a string literal is not a delimiter either (#7334).
+  escaped_quoted:
+    '<think>He wrote "use \\\\"</think>\\\\" here" and continued</think>Answer',
   closed_fence_literal: "<think>see ```\\n</think>\\n``` example</think>real answer",
   unclosed_fence: "<think>unclosed ```python\\n</think>\\nthe answer",
   // Unclosed reasoning fence + a fenced code block in the ANSWER (#7334).
@@ -246,6 +249,17 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     ]
     assert closed["contraction_quoted"] is True
 
+    # Escaped quotes belong to the string literal around them, so the mention
+    # they wrap stays reasoning and the bare tag after it ends the block (#7334).
+    assert parsed["escaped_quoted"] == [
+        {
+            "type": "reasoning",
+            "text": 'He wrote "use \\"</think>\\" here" and continued',
+        },
+        {"type": "text", "text": "Answer"},
+    ]
+    assert closed["escaped_quoted"] is True
+
     # A literal mention alone never closes the block (reasoning timer stays live).
     assert [part["type"] for part in parsed["literal_only"]] == ["reasoning"]
     assert closed["literal_only"] is False
@@ -341,6 +355,13 @@ def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
     assert "structuralThinkCloseIndex" in src
     # The end-of-stream fallback must prefer the confirmed deferred instant.
     assert "closedAt - reasoningStartAt" in src
+    # The timer starts when raw reasoning arrives, not when the holdback emits:
+    # a first delta that is only a marker prefix emits nothing (#7334).
+    start_at = src.index("if (reasoning) {")
+    assert "reasoningStartAt = Date.now();" in src[start_at : start_at + 600]
+    assert src.index("reasoningMarkupBuffer += reasoning;") > src.index(
+        "reasoningStartAt = Date.now();", start_at
+    )
 
 
 def test_chat_adapter_marks_its_own_reasoning_close_as_known(tmp_path):

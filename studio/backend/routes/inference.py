@@ -11219,30 +11219,50 @@ def _is_word_char(ch: str) -> bool:
     return bool(ch) and ch.isalnum()
 
 
+def _trailing_backslash_run(text: str, carry: int = 0) -> int:
+    """Consecutive backslashes ending *text*, continuing a ``carry`` from before."""
+    run = len(text) - len(text.rstrip("\\"))
+    return carry + run if run == len(text) else run
+
+
 def _count_quote_delimiters(
     text: str,
     ch: str,
     prev: str = "",
     nxt: str = "",
+    prev_escapes: int = 0,
 ) -> int:
     """Occurrences of ``ch`` in *text* that act as quote DELIMITERS.
 
-    An apostrophe between two word chars is punctuation, not an opening quote:
-    counting the one in "It's" flipped the parity of a genuinely quoted tag, so
-    ``It's discussing '</think>'`` read as the structural close and leaked the
-    rest of the thought into the visible answer (#7334). ``prev`` / ``nxt`` are
-    the chars flanking *text*, which carry the context across streaming chunks.
+    Two kinds of occurrence are not delimiters:
+
+    * an apostrophe between two word chars is punctuation, so counting the one
+      in "It's" flipped the parity of a genuinely quoted tag and
+      ``It's discussing '</think>'`` read as the structural close;
+    * a quote escaped by an odd backslash run sits INSIDE a string literal, so
+      counting it flipped the parity of ``He wrote "use \\"</think>\\" here"``.
+
+    Both leaked the rest of the thought into the visible answer (#7334).
+    ``prev`` / ``nxt`` / ``prev_escapes`` are the context flanking *text*, which
+    the streaming counters carry across chunk boundaries.
     """
-    if ch != "'":
-        return text.count(ch)
+    if not text:
+        return 0
+    if ch != "'" and not prev_escapes and "\\" not in text:
+        return text.count(ch)  # nothing to exclude on the common path
     count = 0
-    idx = text.find(ch)
-    while idx != -1:
-        left = text[idx - 1] if idx else prev
-        right = text[idx + 1] if idx + 1 < len(text) else nxt
-        if not (_is_word_char(left) and _is_word_char(right)):
-            count += 1
-        idx = text.find(ch, idx + 1)
+    escapes = prev_escapes
+    last = len(text) - 1
+    for i, char in enumerate(text):
+        if char == "\\":
+            escapes += 1
+            continue
+        if char == ch and escapes % 2 == 0:
+            left = text[i - 1] if i else prev
+            right = text[i + 1] if i < last else nxt
+            if ch != "'" or not (_is_word_char(left) and _is_word_char(right)):
+                count += 1
+        escapes = 0
     return count
 
 
@@ -11258,11 +11278,15 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
     The flanks must also be the SAME char: a quoted mention is symmetric, while
     mismatched flanks (``` `</think>"yes" ```) are a real close whose answer
     happens to start with another quote char, and calling that literal hid the
-    whole visible answer in the drawer (#7334).
+    whole visible answer in the drawer (#7334). An escaping backslash between
+    the tag and its closing quote (``\\"</think>\\"``) is skipped, so a mention
+    quoted inside a string literal still reads as symmetric.
     """
     end = close_idx + len(_RESPONSES_THINK_CLOSE)
     before = buffer[close_idx - 1] if close_idx > 0 else ""
     after = buffer[end] if end < len(buffer) else ""
+    if after == "\\" and end + 1 < len(buffer):
+        after = buffer[end + 1]
     if not before or not after:
         return False
     if before == after and before in "\"'`":
@@ -11326,6 +11350,9 @@ class _ResponsesReasoningExtractor:
         # neighbour (the next chunk, or the live buffer). Holds the char to its
         # LEFT while it waits, else None (#7334).
         self._pending_apostrophe_prev = None
+        # Backslashes ending the consumed span: a quote opening the live buffer
+        # is escaped when this run plus the buffer's own is odd (#7334).
+        self._trailing_backslashes = 0
         # Last char of the consumed span, needed as ``before`` when a close tag
         # sits at buffer start (index 0) so its flank is the span's last char.
         self._span_last_char = ""
@@ -11340,23 +11367,31 @@ class _ResponsesReasoningExtractor:
         """Fold a newly consumed chunk into the O(1) parity counters."""
         if not chunk:
             return
-        self._quote_counts['"'] += chunk.count('"')
-        self._quote_counts["`"] += chunk.count("`")
+        escapes = self._trailing_backslashes
+        self._quote_counts['"'] += _count_quote_delimiters(
+            chunk, '"', prev_escapes = escapes
+        )
+        self._quote_counts["`"] += _count_quote_delimiters(
+            chunk, "`", prev_escapes = escapes
+        )
         # Resolve the apostrophe held at the previous chunk's edge, now that its
         # right neighbour has arrived, then count this chunk minus its own edge.
         if self._pending_apostrophe_prev is not None:
             if not (_is_word_char(self._pending_apostrophe_prev) and _is_word_char(chunk[0])):
                 self._quote_counts["'"] += 1
             self._pending_apostrophe_prev = None
-        if chunk.endswith("'"):
+        # An escaped trailing apostrophe is no delimiter at all, so it needs no
+        # right neighbour and stays inside the counted body.
+        if chunk.endswith("'") and _trailing_backslash_run(chunk[:-1], escapes) % 2 == 0:
             body = chunk[:-1]
             self._pending_apostrophe_prev = body[-1] if body else self._span_last_char
             nxt = "'"
         else:
             body, nxt = chunk, ""
         self._quote_counts["'"] += _count_quote_delimiters(
-            body, "'", prev = self._span_last_char, nxt = nxt
+            body, "'", prev = self._span_last_char, nxt = nxt, prev_escapes = escapes
         )
+        self._trailing_backslashes = _trailing_backslash_run(chunk, escapes)
         # Carry the pending backticks so a fence straddling the chunk boundary is
         # counted exactly as ``str.count("```")`` over the full concatenation.
         combined = "`" * self._fence_state + chunk
@@ -11433,6 +11468,8 @@ class _ResponsesReasoningExtractor:
         end = close_idx + len(_RESPONSES_THINK_CLOSE)
         before = buffer[close_idx - 1] if close_idx > 0 else self._span_last_char
         after = buffer[end] if end < len(buffer) else ""
+        if after == "\\" and end + 1 < len(buffer):
+            after = buffer[end + 1]
         if not before or not after:
             return False
         if before == after and before in "\"'`":
@@ -11445,6 +11482,7 @@ class _ResponsesReasoningExtractor:
                 before,
                 prev = self._span_last_char,
                 nxt = buffer[close_idx],
+                prev_escapes = self._trailing_backslashes,
             )
             if before == "'" and self._pending_apostrophe_prev is not None:
                 # The span's held apostrophe: the live buffer supplies the right

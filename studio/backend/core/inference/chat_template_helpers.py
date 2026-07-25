@@ -129,6 +129,11 @@ _SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
 # name to the names it pulls in. The object-valued (sub-schema) form of
 # ``dependencies`` is prose-bearing, so it still goes through the walk.
 _SCHEMA_NAME_MAP_KEYS = frozenset({"dependentRequired", "dependencies"})
+# Pointers and the anchors they resolve against: "#/$defs/<name>" has to keep
+# matching the $defs key it names, which this pass leaves alone (#7066).
+_SCHEMA_REF_KEYS = frozenset(
+    {"$ref", "$dynamicRef", "$id", "$anchor", "$dynamicAnchor", "$schema"}
+)
 
 
 def _is_schema_name_list(item) -> bool:
@@ -139,6 +144,8 @@ def _is_schema_name_reference(key, item) -> bool:
     """True when ``item`` under ``key`` lists property names, not prompt text."""
     if not isinstance(key, str):
         return False
+    if key in _SCHEMA_REF_KEYS:
+        return isinstance(item, str)
     if key in _SCHEMA_NAME_LIST_KEYS:
         return _is_schema_name_list(item)
     return (

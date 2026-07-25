@@ -3986,6 +3986,13 @@ export function createOpenAIStreamAdapter(
               }
 
               if (reasoning) {
+                // Start the thought timer when reasoning first ARRIVES: a first
+                // delta that is only a marker prefix ("</thi") emits nothing, so
+                // waiting for the parsed reasoning part undercounted the thought
+                // and left a prefix-only stream with no duration at all (#7334).
+                if (!reasoningStartAt) {
+                  reasoningStartAt = Date.now();
+                }
                 // Neutralize literal think markers inside reasoning_content so
                 // a mid-thought "</think>" (e.g. echoing the user) cannot close
                 // the synthetic <think> wrapper early (#7066).
