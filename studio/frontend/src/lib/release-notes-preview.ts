@@ -8,7 +8,8 @@ const PREVIEW_ITEM_MAX_CHARS = 120;
 const NESTED_INDENT_TOLERANCE = 1;
 const TAB_WIDTH = 4;
 
-const FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
+// At most three leading spaces: deeper is indented code, not a fence.
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const HEADING = /^#{1,6}\s+/;
 const BULLET = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
 const BLOCKQUOTE = /^\s*>\s?/;

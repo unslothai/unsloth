@@ -384,10 +384,14 @@ export function useTauriUpdate(isExternalServer = false) {
     });
   }
 
+  // Install target for Linux packages that cannot self-update.
   const manualReleaseUrl =
     updatePolicy.mode === "manual_linux_package" && info
       ? manualReleasePageUrl(updatePolicy, info.version)
       : null;
+  // Release page for the offered version, on every platform. Used for the
+  // notes link, where the generic changelog is not the right destination.
+  const releasePageUrl = info ? manualReleasePageUrl(updatePolicy, info.version) : null;
 
   return {
     status,
@@ -401,6 +405,7 @@ export function useTauriUpdate(isExternalServer = false) {
     isExternalServer,
     updatePolicyMode: updatePolicy.mode,
     manualReleaseUrl,
+    releasePageUrl,
     installUpdate,
     retryUpdate,
     skipAndRestart,

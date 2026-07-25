@@ -23,6 +23,9 @@ interface UpdateBannerProps {
   isExternalServer?: boolean;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
+  // Release page for this version; the notes link prefers it over the
+  // generic changelog.
+  releasePageUrl?: string | null;
   // false fills a shared overlay stack; true self-anchors.
   positioned?: boolean;
   onInstall: () => void;
@@ -46,6 +49,7 @@ export function UpdateBanner({
   isExternalServer = false,
   updatePolicyMode,
   manualReleaseUrl,
+  releasePageUrl = null,
   positioned = true,
   onInstall,
   onDismiss,
@@ -176,7 +180,7 @@ export function UpdateBanner({
                 // Updater's release body, used only if CHANGELOG.md has no
                 // section for this version.
                 fallbackMarkdown={info?.body ?? null}
-                releaseNotesUrl={manualReleaseUrl}
+                releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
               />
             ) : null}
 

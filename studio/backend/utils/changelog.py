@@ -37,8 +37,8 @@ CHANGELOG_SUCCESS_TTL_SECONDS = 30 * 60
 CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
-_HEADING_PATTERN = re.compile(r"^##\s+(?P<title>.*?)\s*$")
-_FENCE_PATTERN = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
+_HEADING_PATTERN = re.compile(r"^ {0,3}##\s+(?P<title>.*?)\s*$")
+_FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 _CODE_SPAN_PATTERN = re.compile(r"(`+)(?:.*?)\1")

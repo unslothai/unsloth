@@ -345,6 +345,37 @@ def test_hook_never_returns_another_versions_notes():
     assert "refresh" in src, "retry must ask the backend to bypass its cache"
 
 
+@pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
+def test_headings_and_fences_allow_commonmark_indentation(changelog_module, indent):
+    """Markdown renders up to three leading spaces, so the parser must agree
+    or an indented release is unreachable and its notes join the one above."""
+    text = f"## 1.0\n\n- one\n\n{indent}## 2.0\n\n- two\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0", "2.0"]
+    fenced = f"## 1.0\n\n{indent}```\n{indent}## 9.9.9\n{indent}```\n\n- real\n"
+    assert [e.version for e in changelog_module.parse_changelog(fenced)] == ["1.0"]
+
+
+def test_four_space_indentation_is_code_not_structure(changelog_module):
+    """At four spaces Markdown switches to indented code, for both forms."""
+    assert [e.version for e in changelog_module.parse_changelog(
+        "    ## 9.9.9\n\n## 1.0\n\n- real\n"
+    )] == ["1.0"]
+    assert [e.version for e in changelog_module.parse_changelog(
+        "## 1.0\n\n    ```\n    sample\n\n## 2.0\n\n- two\n"
+    )] == ["1.0", "2.0"]
+
+
+def test_desktop_notes_link_to_the_release_page_on_every_platform():
+    """manualReleaseUrl is Linux-package only, so in-app updates on macOS,
+    Windows and AppImage would otherwise link to the generic changelog."""
+    hook = (FRONTEND / "hooks/use-tauri-update.ts").read_text(encoding = "utf-8")
+    assert "const releasePageUrl = info ?" in hook
+    banner = TAURI_BANNER.read_text(encoding = "utf-8")
+    assert "releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}" in banner
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    assert "releasePageUrl={update.releasePageUrl}" in provider
+
+
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""

@@ -222,6 +222,7 @@ function TauriUpdateLayer({
         isExternalServer={isExternalServer}
         updatePolicyMode={update.updatePolicyMode}
         manualReleaseUrl={update.manualReleaseUrl}
+        releasePageUrl={update.releasePageUrl}
         positioned={false}
         onInstall={update.installUpdate}
         onDismiss={update.dismiss}
