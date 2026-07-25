@@ -577,6 +577,7 @@ def _show_and_embed(
     if cloudflare_url:
         try:
             from IPython.display import HTML, display
+
             username, password = colab_login if colab_login else (None, None)
             display(HTML(_shareable_link_html(cloudflare_url, password, username)))
             credentials_shown = bool(colab_login)
