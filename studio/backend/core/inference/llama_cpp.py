@@ -9999,15 +9999,19 @@ class LlamaCppBackend:
             return False
         if not self._mtp_runtime_fallback_active:
             return False
-        if not self._last_load_kwargs or self._process is None:
+        # Read both BEFORE claiming: anything that raises between the claim and
+        # _recover's own try/finally strands the flag set, and nothing else ever
+        # clears it -- which would then block every later respawn, for any model.
+        kwargs = self._last_load_kwargs
+        proc = self._process
+        if not kwargs or proc is None:
             return False
         # Single-flight: the first failure claims the reload.
         with self._mtp_runtime_fallback_lock:
             if self._mtp_runtime_fallback_in_progress:
                 return False
             self._mtp_runtime_fallback_in_progress = True
-        snapshot = dict(self._last_load_kwargs)
-        proc = self._process
+        snapshot = dict(kwargs)
 
         def _recover():
             try:
@@ -10055,7 +10059,15 @@ class LlamaCppBackend:
                 with self._mtp_runtime_fallback_lock:
                     self._mtp_runtime_fallback_in_progress = False
 
-        threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
+        try:
+            threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
+        except RuntimeError as exc:
+            # Out of threads, the very pressure that kills llama-server. Release the
+            # claim or the reload that never started blocks respawn forever.
+            with self._mtp_runtime_fallback_lock:
+                self._mtp_runtime_fallback_in_progress = False
+            logger.error(f"Could not start the MTP-crash reload: {exc}")
+            return False
         return True
 
     def _start_mtp_crash_watchdog(self) -> None:
@@ -10577,11 +10589,14 @@ class LlamaCppBackend:
         port. The one-retry budget is per model request, not per chat turn, so a long
         tool loop never discards a completed tool just because an earlier turn recovered.
 
-        A child that dies during prefill has already accepted the socket, so it
-        surfaces as ReadError/WriteError/RemoteProtocolError rather than
-        ConnectError; all of them mean the transport is gone. Timeouts are excluded
-        on purpose: they mean the server is slow, not dead, and replaying one would
-        just spend the first-token budget twice.
+        A child that dies after accepting the socket but before the response headers
+        surfaces as ReadError/WriteError/RemoteProtocolError, not ConnectError, and
+        which one differs per OS. That window is a death while the request body is
+        still uploading or while it waits behind busy slots; llama-server flushes its
+        200 at slot start, so a death during decode arrives with the response already
+        open and is deliberately not replayed. Timeouts are excluded on purpose: they
+        mean the server is slow, not dead, and replaying one would just spend the
+        first-token budget twice.
         """
         for attempt in range(2):
             response_opened = False

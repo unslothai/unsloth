@@ -528,6 +528,62 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     release.set()
 
 
+def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatch):
+    # The flag is claimed before the reload thread exists, and only that thread's
+    # finally clears it. If starting it raises (thread exhaustion is exactly the
+    # pressure that kills llama-server), the claim must not latch: nothing else ever
+    # resets it, and _respawn_if_dead then refuses forever, for every later model.
+    b = _recovery_backend()
+
+    class _NoThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(llama_cpp_module.threading, "Thread", _NoThread)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    assert b._mtp_runtime_fallback_in_progress is False
+
+
+def test_load_kwargs_are_read_once_before_the_claim(monkeypatch):
+    # The gate and the snapshot must share one read. Reading twice lets an unload
+    # (which nulls _last_load_kwargs) land in between, so dict(None) raises after the
+    # claim and strands the flag set with no thread alive to clear it.
+    b = _recovery_backend()
+
+    class _CountingKwargs:  # data descriptor, so it wins over the instance dict
+        def __init__(self, value):
+            self.value = value
+            self.reads = 0
+
+        def __get__(self, obj, owner):
+            if obj is None:
+                return self
+            self.reads += 1
+            return self.value
+
+        def __set__(self, obj, value):
+            self.value = value
+
+    counter = _CountingKwargs({"model_identifier": "owner/repo"})
+    monkeypatch.setattr(type(b), "_last_load_kwargs", counter, raising = False)
+
+    class _UnstartedThread:  # keep the reload off-thread so only sync reads count
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_module.threading, "Thread", _UnstartedThread)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert counter.reads == 1, f"read {counter.reads} times; an unload can race the claim"
+
+
 def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     # The single-flight "already recovering" False must not read as "not an MTP
     # crash": respawning would replay the crashing MTP kwargs and make the
