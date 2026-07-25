@@ -51,7 +51,10 @@ export function CheckpointUploadCard({
   upload: CheckpointUploadProgress;
 }): ReactElement | null {
   const t = useT();
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissedCheckpoint, setDismissedCheckpoint] = useState<string | null>(null);
+  // Checkpoint names are stable across lifecycle updates. Dismiss only this
+  // checkpoint so the next checkpoint-N upload automatically becomes visible.
+  const dismissalKey = upload.checkpoint ?? `${upload.state}:${upload.repository_id ?? ""}`;
   const percent =
     typeof upload.percentage === "number"
       ? Math.min(100, Math.max(0, upload.percentage))
@@ -74,7 +77,7 @@ export function CheckpointUploadCard({
           ? MinusCircle
           : UploadCloud;
 
-  if (dismissed) {
+  if (dismissedCheckpoint === dismissalKey) {
     return null;
   }
 
@@ -154,7 +157,7 @@ export function CheckpointUploadCard({
         ) : null}
         <button
           type="button"
-          onClick={() => setDismissed(true)}
+          onClick={() => setDismissedCheckpoint(dismissalKey)}
           aria-label={t("common.close")}
           title={t("common.close")}
           className="pointer-events-auto grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
