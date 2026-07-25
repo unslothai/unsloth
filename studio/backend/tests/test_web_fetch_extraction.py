@@ -761,7 +761,9 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinnin
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
 
-    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://user:secret@example.com:8443/page?q=1"
+    )
 
     assert err is None
     assert body == "ok"

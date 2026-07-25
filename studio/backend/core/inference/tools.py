@@ -4196,9 +4196,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", ""
             cp = urlparse(current_url)
+            validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
+            if cp.port:
+                validated_netloc = f"{validated_netloc}:{cp.port}"
             if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1":
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS interception.
-                request_url = current_url
+                request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin to the validated IP to prevent DNS rebinding.
                 ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
@@ -4210,12 +4213,9 @@ def _fetch_url_raw(
                 _SNIHTTPSHandler(current_host),
             )
 
-            host_header = f"[{current_host}]" if ":" in current_host else current_host
-            if cp.port:
-                host_header = f"{host_header}:{cp.port}"
             headers = {
                 "User-Agent": ua,
-                "Host": host_header,
+                "Host": validated_netloc,
             }
             if extra_headers:
                 headers.update(extra_headers)
