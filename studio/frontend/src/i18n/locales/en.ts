@@ -633,6 +633,7 @@ export const en = {
       supportedAgents: {
         title: "Supported agents",
         description: "Each agent launches with its own command:",
+        requiresGguf: "Needs a GGUF model",
       },
       models: {
         title: "Choosing a model",
