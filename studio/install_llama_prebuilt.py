@@ -6178,9 +6178,29 @@ def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
             current = current.__context__
 
 
+# ERROR_HANDLE_DISK_FULL / ERROR_DISK_FULL. CPython's PC/errmap.h maps 112 to
+# ENOSPC but has no case for 39, so it arrives as EINVAL: check winerror too or
+# a Windows os.replace() onto a full disk reads as an ordinary failure.
+_WINDOWS_DISK_FULL = (39, 112)
+
+
+def _winerror_of(exc: OSError) -> Any:
+    """exc.winerror, defensively. Not getattr(exc, ..., None): urllib's HTTPError
+    is an OSError that proxies unknown attributes to a wrapped file object and
+    raises KeyError (not AttributeError) on 3.9, which getattr will not swallow.
+    A 404 from a mirror must not crash the classifier."""
+    try:
+        return exc.winerror
+    except Exception:
+        return None
+
+
 def _is_enospc(exc: BaseException) -> bool:
-    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
-        return True
+    if isinstance(exc, OSError):
+        if exc.errno == errno.ENOSPC:
+            return True
+        if _winerror_of(exc) in _WINDOWS_DISK_FULL:
+            return True
     # shutil.copytree stringifies each per-file OSError and raises Error(errors)
     # outside the except block, so errno and the whole chain are gone: the only
     # surviving evidence is the message text.
@@ -6199,6 +6219,19 @@ def _log_disk_space_help() -> None:
         "free up space or point TMPDIR and UNSLOTH_STUDIO_HOME at a larger "
         "volume (e.g. /workspace), then re-run"
     )
+
+
+@contextmanager
+def scratch_dir(prefix: str) -> Iterator[Path]:
+    """Temp dir whose cleanup never raises: an rmtree failure on the way out would
+    replace the in-flight exception and lose EXIT_NO_SPACE. Not
+    TemporaryDirectory(ignore_cleanup_errors = True), which is 3.10+ (setup.sh
+    still runs this helper under the host python, and we support 3.9)."""
+    path = Path(tempfile.mkdtemp(prefix = prefix))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors = True)
 
 
 def _first_existing_ancestor(path: Path) -> Path:
@@ -6305,12 +6338,7 @@ def install_prebuilt(
                     # recorded so the updater re-asserts it (#7213).
                     sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
-            # ignore_cleanup_errors: an rmtree failure on the way out would
-            # otherwise replace the in-flight exception and lose EXIT_NO_SPACE.
-            with tempfile.TemporaryDirectory(
-                prefix = "unsloth-llama-prebuilt-", ignore_cleanup_errors = True
-            ) as tmp:
-                work_dir = Path(tmp)
+            with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
                 download_validation_model(probe_path, validation_model_cache_path(install_dir))
                 release_count = len(release_plans)

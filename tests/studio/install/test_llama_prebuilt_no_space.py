@@ -1,6 +1,8 @@
 """Out-of-disk handling in the llama.cpp prebuilt installer: ENOSPC classification
 through exception chains, EXIT_NO_SPACE, and the advisory low-disk warning. Offline."""
 
+from __future__ import annotations
+
 import errno
 import importlib.util
 import shutil
@@ -177,6 +179,33 @@ def test_suppressed_context_is_not_treated_as_disk_full():
             raise OSError(errno.ENOSPC, "No space left on device")
         except OSError:
             raise PrebuiltFallback("checksum mismatch") from None
+    except PrebuiltFallback as outer:
+        assert M._environment_fatal_reason(outer) is None
+
+
+def test_windows_disk_full_winerrors_are_classified():
+    """CPython maps ERROR_DISK_FULL (112) to ENOSPC but has no case for
+    ERROR_HANDLE_DISK_FULL (39), which arrives as EINVAL."""
+    for winerror, code in ((112, errno.ENOSPC), (39, errno.EINVAL)):
+        exc = OSError(code, "The disk is full")
+        exc.winerror = winerror
+        assert M._environment_fatal_reason(exc), winerror
+
+    other = OSError(errno.EACCES, "sharing violation")
+    other.winerror = 32
+    assert M._environment_fatal_reason(other) is None
+
+
+def test_http_errors_in_the_chain_do_not_crash_the_classifier():
+    """HTTPError is an OSError that proxies unknown attributes to a wrapped file
+    and raises KeyError, not AttributeError, on 3.9."""
+    err = urllib.error.HTTPError("https://example.com/a", 404, "Not Found", {}, None)
+    assert M._environment_fatal_reason(err) is None
+    try:
+        try:
+            raise err
+        except urllib.error.HTTPError as inner:
+            raise PrebuiltFallback("mirror failed") from inner
     except PrebuiltFallback as outer:
         assert M._environment_fatal_reason(outer) is None
 
