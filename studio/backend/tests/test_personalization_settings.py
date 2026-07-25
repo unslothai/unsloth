@@ -18,8 +18,10 @@ from auth.authentication import get_current_subject  # noqa: E402
 from routes import settings as settings_routes  # noqa: E402
 from routes.settings import (  # noqa: E402
     MAX_SIDEBAR_MENU_INPUT_ITEMS,
+    MAX_SIDEBAR_NAV_INPUT_ITEMS,
     PersonalizationPayload,
     SIDEBAR_MENU_ITEM_DEFAULTS,
+    SIDEBAR_NAV_ITEM_DEFAULTS,
 )
 
 
@@ -142,6 +144,68 @@ def test_customization_sidebar_menu_rejects_pathological_length():
     huge = [{"id": "api"} for _ in range(MAX_SIDEBAR_MENU_INPUT_ITEMS + 1)]
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(_sidebar(huge))
+
+
+def _sidebar_nav(items):
+    return {"appearance": {"customization": {"sidebarNav": items}}}
+
+
+def test_customization_sidebar_nav_defaults_match_shipped_layout():
+    # An untouched payload pins the rows the sidebar ships with and leaves the
+    # rest for the "More" flyout, so a fresh account looks unchanged.
+    c = PersonalizationPayload().appearance.customization
+    assert [(i.id, i.pinned) for i in c.sidebarNav] == [
+        ("projects", True),
+        ("hub", True),
+        ("images", True),
+        ("train", True),
+        ("video", False),
+        ("recipes", False),
+        ("export", False),
+    ]
+
+
+def test_customization_sidebar_nav_preserves_order_and_normalizes():
+    p = PersonalizationPayload.model_validate(
+        _sidebar_nav(
+            [
+                {"id": "video", "pinned": True},
+                {"id": "video", "pinned": False},
+                {"id": "hub", "pinned": False},
+            ]
+        )
+    )
+    # Order is the sidebar's render order, so the client's sequence survives:
+    # duplicates keep the first entry and unsent ids are appended with defaults.
+    assert [(i.id, i.pinned) for i in p.appearance.customization.sidebarNav] == [
+        ("video", True),
+        ("hub", False),
+        ("projects", True),
+        ("images", True),
+        ("train", True),
+        ("recipes", False),
+        ("export", False),
+    ]
+
+
+def test_customization_sidebar_nav_rejects_unknown_id():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(_sidebar_nav([{"id": "chats"}]))
+
+
+def test_customization_sidebar_nav_dedupes_oversized_payload():
+    ids = list(SIDEBAR_NAV_ITEM_DEFAULTS)
+    doubled = [{"id": i} for i in ids] + [{"id": i} for i in ids]
+    assert len(doubled) > len(SIDEBAR_NAV_ITEM_DEFAULTS)
+    p = PersonalizationPayload.model_validate(_sidebar_nav(doubled))
+    result = [i.id for i in p.appearance.customization.sidebarNav]
+    assert result == ids
+
+
+def test_customization_sidebar_nav_rejects_pathological_length():
+    huge = [{"id": "hub"} for _ in range(MAX_SIDEBAR_NAV_INPUT_ITEMS + 1)]
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(_sidebar_nav(huge))
 
 
 def test_customization_imported_fonts_validated():
@@ -378,6 +442,17 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "resources", "visible": False},
                     {"id": "chat", "visible": False},
                     {"id": "connections", "visible": False},
+                ],
+                # Reordered and partly unpinned, so the round-trip proves the
+                # sidebar's render order survives a save unchanged.
+                "sidebarNav": [
+                    {"id": "images", "pinned": True},
+                    {"id": "video", "pinned": True},
+                    {"id": "hub", "pinned": True},
+                    {"id": "train", "pinned": True},
+                    {"id": "projects", "pinned": False},
+                    {"id": "recipes", "pinned": False},
+                    {"id": "export", "pinned": False},
                 ],
             },
         },

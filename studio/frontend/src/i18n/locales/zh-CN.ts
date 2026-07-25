@@ -44,6 +44,7 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      projects: "项目",
       more: "更多",
       newBadge: "新",
       export: "导出",
@@ -368,6 +369,14 @@ export const zhCN = {
         title: "布局",
         compactSidebar: "默认固定侧边栏",
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
+      },
+      sidebarNav: {
+        title: "侧边栏导航",
+        description:
+          "固定并重新排序侧边栏标签。取消固定的项目会移入“更多”菜单而不是被隐藏。新聊天和搜索保持固定。",
+        dragToReorder: "拖动以重新排序",
+        pinToSidebar: "将{name}固定到侧边栏",
+        moreHolds: "更多（{count}）",
       },
       sidebarMenu: {
         title: "侧边栏菜单",

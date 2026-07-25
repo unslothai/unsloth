@@ -36,6 +36,7 @@ export const en = {
       returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
+      projects: "Projects",
       hub: "Model hub",
       train: "Train",
       recipes: "Recipes",
@@ -514,6 +515,14 @@ export const en = {
         compactSidebar: "Pin sidebar by default",
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
+      },
+      sidebarNav: {
+        title: "Sidebar navigation",
+        description:
+          "Pin and reorder the sidebar tabs. Anything unpinned moves into the More menu instead of being hidden. New chat and Search stay fixed.",
+        dragToReorder: "Drag to reorder",
+        pinToSidebar: "Pin {name} to the sidebar",
+        moreHolds: "More ({count})",
       },
       sidebarMenu: {
         title: "Sidebar menu",

@@ -130,6 +130,7 @@ import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
 } from "@/features/settings";
+import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
@@ -202,6 +203,22 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   resources: { icon: CpuIcon, labelKey: "settings.tabs.resources" },
   chat: { icon: Message01Icon, labelKey: "settings.tabs.chat" },
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
+};
+
+// A navigable sidebar row. The same definition renders either as a top-level
+// NavItem or as a MoreMenuItem, depending on the user's pin preference.
+type NavRowDef = {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  spinner?: boolean;
+  badge?: string;
+  onClick: () => void;
+  onIntent?: () => void;
+  className?: string;
+  children?: ReactNode;
 };
 
 type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
@@ -402,6 +419,9 @@ export function AppSidebar() {
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const sidebarMenu = useAppearanceCustomStore(
     (s) => s.customization.sidebarMenu,
+  );
+  const sidebarNav = useAppearanceCustomStore(
+    (s) => s.customization.sidebarNav,
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
@@ -668,13 +688,150 @@ export function AppSidebar() {
   ]);
 
   const chatDisabled = trainingInProgress;
-  // Highlight the "More" row while one of the routes it holds is showing.
-  const moreSectionActive =
-    pathname === "/video" ||
-    pathname.startsWith("/video/") ||
-    pathname === "/export" ||
-    pathname.startsWith("/export/") ||
-    isRecipesRoute;
+
+  // One definition per navigable row, so the pinned list and the More flyout
+  // render the same row from the same source and can't drift apart.
+  const navRows: Record<SidebarNavItemId, NavRowDef> = {
+    projects: {
+      icon: Folder01Icon,
+      label: t("shell.navigation.projects"),
+      active: pathname === "/projects" || pathname.startsWith("/projects/"),
+      onClick: () => {
+        navigate({ to: "/projects" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/projects" }));
+      },
+      className: "group/projects-item relative",
+      // The inline "new project" affordance only makes sense on a real row; in
+      // the flyout the row is just a link.
+      children: (
+        <button
+          type="button"
+          aria-label="New project"
+          onClick={(e) => {
+            e.stopPropagation();
+            setProjectCreateMoveTarget(null);
+            setProjectNameDraft("");
+            setCreatingProject(true);
+          }}
+          className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+        >
+          <span className="sidebar-row-action-glyph">
+            <HugeiconsIcon
+              icon={PlusSignIcon}
+              strokeWidth={1.75}
+              className="size-4"
+            />
+          </span>
+        </button>
+      ),
+    },
+    hub: {
+      icon: DashboardCircleIcon,
+      label: t("shell.navigation.hub"),
+      active: pathname === "/hub" || pathname.startsWith("/hub/"),
+      onClick: () => {
+        navigate({ to: "/hub" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/hub" }));
+      },
+    },
+    images: {
+      icon: Image03Icon,
+      label: t("shell.navigation.images"),
+      badge: t("shell.navigation.newBadge"),
+      active: pathname === "/images" || pathname.startsWith("/images/"),
+      onClick: () => {
+        navigate({ to: "/images" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/images" }));
+      },
+    },
+    train: {
+      icon: TestTubeOutlineIcon,
+      label: t("shell.navigation.train"),
+      active: pathname === "/studio" || pathname.startsWith("/studio/"),
+      disabled: chatOnly,
+      tooltip: trainDisabledHint,
+      spinner: trainingInProgress,
+      onClick: () => {
+        if (chatOnly) return;
+        navigate({ to: "/studio" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/studio" }));
+      },
+    },
+    // Video is diffusers-only (no native CPU engine), so a chat-only host can
+    // never load it; disable with a hint instead of bouncing off the root
+    // guard's redirect.
+    video: {
+      icon: FlimSlateIcon,
+      label: t("shell.navigation.video"),
+      badge: t("shell.navigation.newBadge"),
+      active: pathname === "/video" || pathname.startsWith("/video/"),
+      disabled: chatOnly,
+      tooltip: chatOnly
+        ? "Video generation needs an NVIDIA or AMD GPU."
+        : undefined,
+      onClick: () => {
+        navigate({ to: "/video" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/video" }));
+      },
+    },
+    recipes: {
+      icon: ChefHatIcon,
+      label: t("shell.navigation.recipes"),
+      active: isRecipesRoute,
+      onClick: () => {
+        navigate({ to: "/data-recipes" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/data-recipes" }));
+        preloadSilently(
+          import("@/features/data-recipes").then((module) =>
+            module.preloadRecipes(),
+          ),
+        );
+      },
+    },
+    export: {
+      icon: DownloadSquare01Icon,
+      label: t("shell.navigation.export"),
+      active: pathname === "/export" || pathname.startsWith("/export/"),
+      spinner: exportInProgress,
+      onClick: () => {
+        navigate({ to: "/export" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/export" }));
+        preloadSilently(
+          import("@/features/export/export-navigation-cache").then((module) =>
+            module.preloadExportData(),
+          ),
+        );
+      },
+    },
+  };
+  const pinnedNavIds = sidebarNav
+    .filter((item) => item.pinned)
+    .map((item) => item.id);
+  const overflowNavIds = sidebarNav
+    .filter((item) => !item.pinned)
+    .map((item) => item.id);
+
   const showSidebarBrand = !usesCustomTitlebar;
   const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
 
@@ -1452,202 +1609,105 @@ export function AppSidebar() {
         <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
-              <NavItem
-                icon={DashboardCircleIcon}
-                label={t("shell.navigation.hub")}
-                active={pathname === "/hub" || pathname.startsWith("/hub/")}
-                onClick={() => {
-                  navigate({ to: "/hub" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/hub" }));
-                }}
-              />
-              <NavItem
-                icon={Folder01Icon}
-                label="Projects"
-                active={
-                  pathname === "/projects" || pathname.startsWith("/projects/")
-                }
-                onClick={() => {
-                  navigate({ to: "/projects" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/projects" }));
-                }}
-                className="group/projects-item relative"
-              >
-                <button
-                  type="button"
-                  aria-label="New project"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setProjectCreateMoveTarget(null);
-                    setProjectNameDraft("");
-                    setCreatingProject(true);
-                  }}
-                  className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
-                >
-                  <span className="sidebar-row-action-glyph">
-                    <HugeiconsIcon
-                      icon={PlusSignIcon}
-                      strokeWidth={1.75}
-                      className="size-4"
-                    />
-                  </span>
-                </button>
-              </NavItem>
-              <NavItem
-                icon={Image03Icon}
-                label={t("shell.navigation.images")}
-                badge={t("shell.navigation.newBadge")}
-                active={pathname === "/images" || pathname.startsWith("/images/")}
-                onClick={() => {
-                  navigate({ to: "/images" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/images" }));
-                }}
-              />
-              <NavItem
-                icon={TestTubeOutlineIcon}
-                label={t("shell.navigation.train")}
-                active={
-                  pathname === "/studio" || pathname.startsWith("/studio/")
-                }
-                disabled={chatOnly}
-                tooltip={trainDisabledHint}
-                spinner={trainingInProgress}
-                onClick={() => {
-                  if (chatOnly) return;
-                  navigate({ to: "/studio" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/studio" }));
-                }}
-              />
+              {/* Rows come from the saved pin order (Settings -> Appearance ->
+                  Sidebar navigation). Pinned ids render here in order; the rest
+                  fall into the More flyout below, so nothing is unreachable. */}
+              {pinnedNavIds.map((id) => {
+                const row = navRows[id];
+                return (
+                  <NavItem
+                    key={id}
+                    icon={row.icon}
+                    label={row.label}
+                    badge={row.badge}
+                    active={row.active}
+                    disabled={row.disabled}
+                    tooltip={row.tooltip}
+                    spinner={row.spinner}
+                    onClick={row.onClick}
+                    onIntent={row.onIntent}
+                    className={row.className}
+                  >
+                    {row.children}
+                  </NavItem>
+                );
+              })}
               {/* Secondary destinations behind one row, so the primary nav stays short.
                   Hover or click opens it; the panel flies out to the right. */}
-              <SidebarMenuItem
-                onPointerEnter={openMore}
-                onPointerLeave={closeMoreSoon}
-              >
-                <DropdownMenu
-                  open={moreOpen}
-                  onOpenChange={setMoreOpen}
-                  modal={false}
+              {overflowNavIds.length > 0 && (
+                <SidebarMenuItem
+                  onPointerEnter={openMore}
+                  onPointerLeave={closeMoreSoon}
                 >
-                  {/* No `tooltip` prop on the button: with it, SidebarMenuButton
-                      returns a Tooltip root and DropdownMenuTrigger asChild would
-                      hand its ref/handlers to that instead of a DOM node, leaving
-                      the trigger dead. Wrap it here instead, so both triggers
-                      compose onto the same button. */}
-                  <Tooltip>
-                    <TooltipPrimitive.Trigger asChild>
-                      <DropdownMenuTrigger asChild>
-                        <SidebarMenuButton
-                          isActive={moreSectionActive}
-                          className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
-                        >
-                          <HugeiconsIcon
-                            icon={MoreHorizontalIcon}
-                            strokeWidth={1.75}
-                            className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
-                          />
-                          <span className="text-ui-14p5 leading-ui-19 tracking-nav">
-                            {t("shell.navigation.more")}
-                          </span>
-                        </SidebarMenuButton>
-                      </DropdownMenuTrigger>
-                    </TooltipPrimitive.Trigger>
-                    {/* Only the collapsed rail needs it; expanded rows show their label. */}
-                    <TooltipContent
-                      side="right"
-                      align="center"
-                      className="tooltip-compact"
-                      hidden={isMobile || sidebarState !== "collapsed"}
-                    >
-                      {t("shell.navigation.more")}
-                    </TooltipContent>
-                  </Tooltip>
-                  <DropdownMenuContent
-                    side="right"
-                    align="start"
-                    sideOffset={6}
-                    onPointerEnter={openMore}
-                    onPointerLeave={closeMoreSoon}
-                    className="w-48 p-1"
+                  <DropdownMenu
+                    open={moreOpen}
+                    onOpenChange={setMoreOpen}
+                    modal={false}
                   >
-                    {/* Video is diffusers-only (no native CPU engine), so a chat-only host
-                        can never load it; disable with a hint instead of bouncing off the
-                        root guard's redirect. */}
-                    <MoreMenuItem
-                      icon={FlimSlateIcon}
-                      label={t("shell.navigation.video")}
-                      badge={t("shell.navigation.newBadge")}
-                      active={
-                        pathname === "/video" || pathname.startsWith("/video/")
-                      }
-                      disabled={chatOnly}
-                      tooltip={
-                        chatOnly
-                          ? "Video generation needs an NVIDIA or AMD GPU."
-                          : undefined
-                      }
-                      onSelect={() => {
-                        navigate({ to: "/video" });
-                        closeMobileIfOpen();
-                      }}
-                      onIntent={() => {
-                        preloadSilently(router.preloadRoute({ to: "/video" }));
-                      }}
-                    />
-                    <MoreMenuItem
-                      icon={ChefHatIcon}
-                      label={t("shell.navigation.recipes")}
-                      active={isRecipesRoute}
-                      onSelect={() => {
-                        navigate({ to: "/data-recipes" });
-                        closeMobileIfOpen();
-                      }}
-                      onIntent={() => {
-                        preloadSilently(
-                          router.preloadRoute({ to: "/data-recipes" }),
+                    {/* No `tooltip` prop on the button: with it, SidebarMenuButton
+                        returns a Tooltip root and DropdownMenuTrigger asChild would
+                        hand its ref/handlers to that instead of a DOM node, leaving
+                        the trigger dead. Wrap it here instead, so both triggers
+                        compose onto the same button. */}
+                    <Tooltip>
+                      <TooltipPrimitive.Trigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <SidebarMenuButton
+                            isActive={overflowNavIds.some(
+                              (id) => navRows[id].active,
+                            )}
+                            className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
+                          >
+                            <HugeiconsIcon
+                              icon={MoreHorizontalIcon}
+                              strokeWidth={1.75}
+                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                            />
+                            <span className="text-ui-14p5 leading-ui-19 tracking-nav">
+                              {t("shell.navigation.more")}
+                            </span>
+                          </SidebarMenuButton>
+                        </DropdownMenuTrigger>
+                      </TooltipPrimitive.Trigger>
+                      {/* Only the collapsed rail needs it; expanded rows show their label. */}
+                      <TooltipContent
+                        side="right"
+                        align="center"
+                        className="tooltip-compact"
+                        hidden={isMobile || sidebarState !== "collapsed"}
+                      >
+                        {t("shell.navigation.more")}
+                      </TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent
+                      side="right"
+                      align="start"
+                      sideOffset={6}
+                      onPointerEnter={openMore}
+                      onPointerLeave={closeMoreSoon}
+                      className="w-48 p-1"
+                    >
+                      {overflowNavIds.map((id) => {
+                        const row = navRows[id];
+                        return (
+                          <MoreMenuItem
+                            key={id}
+                            icon={row.icon}
+                            label={row.label}
+                            badge={row.badge}
+                            active={row.active}
+                            disabled={row.disabled}
+                            tooltip={row.tooltip}
+                            spinner={row.spinner}
+                            onSelect={row.onClick}
+                            onIntent={row.onIntent}
+                          />
                         );
-                        preloadSilently(
-                          import("@/features/data-recipes").then((module) =>
-                            module.preloadRecipes(),
-                          ),
-                        );
-                      }}
-                    />
-                    <MoreMenuItem
-                      icon={DownloadSquare01Icon}
-                      label={t("shell.navigation.export")}
-                      active={
-                        pathname === "/export" || pathname.startsWith("/export/")
-                      }
-                      spinner={exportInProgress}
-                      onSelect={() => {
-                        navigate({ to: "/export" });
-                        closeMobileIfOpen();
-                      }}
-                      onIntent={() => {
-                        preloadSilently(router.preloadRoute({ to: "/export" }));
-                        preloadSilently(
-                          import(
-                            "@/features/export/export-navigation-cache"
-                          ).then((module) => module.preloadExportData()),
-                        );
-                      }}
-                    />
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </SidebarMenuItem>
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

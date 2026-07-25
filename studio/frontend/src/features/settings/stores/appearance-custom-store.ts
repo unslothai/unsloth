@@ -82,6 +82,42 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     connections: false,
   };
 
+/**
+ * Sidebar NAVIGATION rows the user can pin and reorder (distinct from the
+ * profile-menu entries above). New Chat and Search stay fixed at the top: they
+ * are actions, not destinations. Array order is render order; an unpinned row
+ * moves into the "More" flyout rather than disappearing, so no page becomes
+ * unreachable.
+ */
+export const SIDEBAR_NAV_ITEM_IDS = [
+  "projects",
+  "hub",
+  "images",
+  "train",
+  "video",
+  "recipes",
+  "export",
+] as const;
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
+
+export type SidebarNavItemPref = {
+  id: SidebarNavItemId;
+  /** true = a top-level sidebar row; false = inside the "More" flyout. */
+  pinned: boolean;
+};
+
+// Matches the shipped layout, so an untouched install looks unchanged.
+export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
+  projects: true,
+  hub: true,
+  images: true,
+  train: true,
+  video: false,
+  recipes: false,
+  export: false,
+};
+
 export const MAX_IMPORTED_FONTS = 3;
 /** Imported-font family name cap; must match the backend name max_length (100). */
 export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
@@ -113,6 +149,8 @@ export type AppearanceCustomization = {
   fontSmoothing: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
+  /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
+  sidebarNav: SidebarNavItemPref[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -137,6 +175,10 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
+  })),
+  sidebarNav: SIDEBAR_NAV_ITEM_IDS.map((id) => ({
+    id,
+    pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
   })),
 };
 
@@ -222,6 +264,27 @@ function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
   return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
 }
 
+function isSidebarNavItemId(value: unknown): value is SidebarNavItemId {
+  return SIDEBAR_NAV_ITEM_IDS.includes(value as SidebarNavItemId);
+}
+
+function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
+  const items: SidebarNavItemPref[] = [];
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarNavItemPref>;
+    if (!isSidebarNavItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, pinned: source.pinned !== false });
+  }
+  // Ids added after the payload was written land at the end with their default
+  // pin state, so a new tab shows up where the shipped layout puts it.
+  for (const id of SIDEBAR_NAV_ITEM_IDS) {
+    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+  }
+  return items;
+}
+
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
   const items: SidebarMenuItemPref[] = [];
   const seen = new Set<SidebarMenuItemId>();
@@ -273,6 +336,7 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
+    sidebarNav: sanitizeSidebarNav(source.sidebarNav),
   };
 }
 

@@ -21,6 +21,7 @@ import {
 import { PaletteCards } from "../components/palette-cards";
 import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
+import { SidebarNavCustomizer } from "../components/sidebar-nav-customizer";
 import {
   SettingsGroupDivider,
   SettingsSection,
@@ -149,6 +150,15 @@ export function AppearanceTab() {
         >
           <Switch checked={pinned} onCheckedChange={setPinned} />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title={t("settings.appearance.sidebarNav.title")}
+        description={t("settings.appearance.sidebarNav.description")}
+      >
+        <div className="pt-3">
+          <SidebarNavCustomizer />
+        </div>
       </SettingsSection>
 
       <SettingsSection

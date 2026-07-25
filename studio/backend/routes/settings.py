@@ -734,6 +734,21 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
     "connections": False,
 }
 
+# Navigable sidebar rows the user can pin/reorder; the boolean is each id's
+# default pin state, matching the shipped layout. An unpinned row moves into the
+# "More" flyout client-side, so it stays reachable.
+SIDEBAR_NAV_ITEM_DEFAULTS = {
+    "projects": True,
+    "hub": True,
+    "images": True,
+    "train": True,
+    "video": False,
+    "recipes": False,
+    "export": False,
+}
+
+MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
+
 # The sidebarMenu validator below dedupes ids and re-fills any missing ones, so
 # the stored list is always exactly one entry per id. Cap the *incoming* list at
 # a generous multiple rather than len(defaults): a stale or duplicated payload
@@ -763,6 +778,28 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
     return [
         PersonalizationSidebarMenuItem(id = item_id, visible = visible)
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items()
+    ]
+
+
+class PersonalizationSidebarNavItem(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: Literal[
+        "projects",
+        "hub",
+        "images",
+        "train",
+        "video",
+        "recipes",
+        "export",
+    ]
+    pinned: bool = True
+
+
+def _default_sidebar_nav() -> "list[PersonalizationSidebarNavItem]":
+    return [
+        PersonalizationSidebarNavItem(id = item_id, pinned = pinned)
+        for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items()
     ]
 
 
@@ -803,6 +840,12 @@ class PersonalizationCustomization(BaseModel):
         default_factory = _default_sidebar_menu,
         max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
     )
+    # Order matters here: it is the sidebar's render order, so the validator
+    # preserves the client's sequence and only appends ids it didn't send.
+    sidebarNav: list[PersonalizationSidebarNavItem] = Field(
+        default_factory = _default_sidebar_nav,
+        max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
+    )
 
     @field_validator("sidebarMenu")
     @classmethod
@@ -816,6 +859,21 @@ class PersonalizationCustomization(BaseModel):
         for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
             if item_id not in seen:
                 items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+        return items
+
+    @field_validator("sidebarNav")
+    @classmethod
+    def _validate_sidebar_nav(
+        cls, value: list[PersonalizationSidebarNavItem]
+    ) -> list[PersonalizationSidebarNavItem]:
+        # Same contract as sidebarMenu: drop duplicate ids (keep the first) and
+        # re-append missing ones, so the stored list covers every nav row exactly
+        # once while keeping the client's order.
+        seen: set[str] = set()
+        items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items():
+            if item_id not in seen:
+                items.append(PersonalizationSidebarNavItem(id = item_id, pinned = pinned))
         return items
 
 
