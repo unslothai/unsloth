@@ -618,15 +618,16 @@ export function AgentsTab() {
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
   const selectedAgentDetails = detailsFor(selectedAgent);
-  // The snapshot path of a GGUF outside the active cache is used to list its
-  // quants, but never as --model: /v1/models reports a path as its basename
-  // (public_model_id), which matches neither the requested path nor the load
-  // response, so `unsloth start` would abort with "didn't report as loaded".
+  // A GGUF outside the active cache does not resolve by repo id, so name its
+  // snapshot path; `unsloth start` now also matches a path by the basename
+  // /v1/models advertises for it. The resident model is exempt: it already
+  // loaded by id, and cached-gguf keeps the largest copy across caches, whose
+  // snapshot could switch cache or quant under it.
   const cachedLoadId =
     selectedModel === activeStatusModel
       ? null
       : (cachedLoadIds[selectedModel] ?? null);
-  const modelId = selectedModel;
+  const modelId = cachedLoadId ?? selectedModel;
   const suffixVariant = isHuggingFaceRepo(modelId);
   const commandModel =
     selectedVariant && suffixVariant
@@ -787,6 +788,23 @@ export function AgentsTab() {
     [],
   );
 
+  // The resident GGUF went away (unloaded, or replaced by a transformer model).
+  // Following it means letting go too, or the command would name a stale model and
+  // switch the shared server back. A native-grant label is not even loadable, so it
+  // leaves the list entirely. An explicit pick still wins.
+  const dropActiveModel = useCallback((attachOnly: string | null) => {
+    if (attachOnly) {
+      setModels((current) => current.filter((model) => model !== attachOnly));
+    }
+    if (modelSelectionChanged.current) {
+      return;
+    }
+    setSelectedModel((current) =>
+      current === attachOnly ? EXAMPLE_MODEL_REPO : current,
+    );
+    setSelectedVariant((current) => (attachOnly ? null : current));
+  }, []);
+
   // Another client, or a load that finishes after this tab opens, can change what
   // is resident on a shared server. Keep tracking it rather than pinning the model
   // seen at mount, or the command would name a stale one and switch the server
@@ -800,10 +818,13 @@ export function AgentsTab() {
             return;
           }
           const active = activeGgufSelection(status);
+          const wasAttachOnly = attachOnlyModel;
           setActiveStatusModel(active?.model ?? null);
           setAttachOnlyModel(active && !active.named ? active.model : null);
           if (active) {
             adoptActiveModel(active);
+          } else {
+            dropActiveModel(wasAttachOnly);
           }
         })
         .catch(() => {
@@ -815,7 +836,7 @@ export function AgentsTab() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [adoptActiveModel]);
+  }, [adoptActiveModel, attachOnlyModel, dropActiveModel]);
 
   useEffect(() => {
     let cancelled = false;

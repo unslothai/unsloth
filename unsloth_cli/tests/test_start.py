@@ -1297,6 +1297,35 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
     assert "please wait" not in output
 
 
+def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
+    """A GGUF loaded by snapshot path is advertised by its basename, not the path."""
+    snapshot = "/home/u/.cache/legacy/models--Org--Model/snapshots/abc123"
+    state = {"loaded": False}
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/v1/models"):
+            return {"data": [{"id": "abc123"}] if state["loaded"] else []}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            # The load echoes the path it was given, which /v1/models never lists.
+            return {"model": snapshot, "display_name": snapshot}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", snapshot, start.LoadOptions())
+
+    assert entry["id"] == "abc123"
+
+
+def test_public_model_id_leaves_repo_ids_alone():
+    """Only a path gets reduced; a repo id must not match some unrelated model."""
+    assert start._public_model_id("unsloth/gemma-4-E4B-it-GGUF") is None
+    assert start._public_model_id("org/model") is None
+    assert start._public_model_id("/srv/models/Qwen3-Q4_K_M.gguf") == "Qwen3-Q4_K_M"
+    assert start._public_model_id("/a/b/snapshots/rev1") == "rev1"
+
+
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     # A cached-but-unloaded catalog entry (loaded == False) that only case-differs must
     # not be treated as ready; the load endpoint must still be called so the requested

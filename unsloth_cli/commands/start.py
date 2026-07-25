@@ -1385,6 +1385,33 @@ def _is_hub_model_id(value: object) -> bool:
     return True
 
 
+def _looks_like_path(value: str) -> bool:
+    """Mirrors core.inference.model_ids._looks_like_path: a repo id is exactly
+    ``org/model``; anything else with a separator, drive, prefix or .gguf is a path."""
+    if value.lower().endswith(".gguf"):
+        return True
+    if value.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
+        return True
+    if len(value) >= 2 and value[1] == ":":
+        return True
+    return value.count("/") >= 2 or "\\" in value
+
+
+def _public_model_id(value: Optional[str]) -> Optional[str]:
+    """The id Unsloth advertises for a model loaded by path.
+
+    /v1/models never echoes a host path: it reports the file or directory name
+    with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so
+    a path we asked to load has to be matched by that name too.
+    """
+    if not value or not _looks_like_path(value):
+        return None
+    name = os.path.basename(value.replace("\\", "/").rstrip("/"))
+    if name.lower().endswith(".gguf"):
+        name = name[: -len(".gguf")]
+    return name or None
+
+
 def _model_id_matches(
     actual: object,
     requested: object,
@@ -1485,7 +1512,7 @@ def _resolve_model(
         # casing) that /v1/models echoes but which may differ from the path we
         # passed; match on the id the load reports so we don't silently fall
         # through to models[0] and connect to a different loaded model.
-        wanted = {requested}
+        wanted = {requested, _public_model_id(requested)} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
