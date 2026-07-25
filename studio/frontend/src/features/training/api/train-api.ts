@@ -11,6 +11,7 @@ import type {
 } from "../types/api";
 import type {
   TrainingMetricsResponse,
+  CheckpointUploadProgress,
   TrainingProgressPayload,
   TrainingStatusResponse,
 } from "../types/runtime";
@@ -67,11 +68,11 @@ export async function getTrainingMetrics(): Promise<TrainingMetricsResponse> {
   return parseJson<TrainingMetricsResponse>(response);
 }
 
-type ProgressEventName = "progress" | "heartbeat" | "complete" | "error";
+type ProgressEventName = "progress" | "heartbeat" | "complete" | "error" | "checkpoint_upload";
 
 interface ParsedSseEvent {
   event: ProgressEventName;
-  payload: TrainingProgressPayload;
+  payload: TrainingProgressPayload | CheckpointUploadProgress;
   id: number | null;
 }
 
@@ -92,6 +93,7 @@ function parseSseEvent(rawEvent: string): ParsedSseEvent | null {
         value === "heartbeat" ||
         value === "complete" ||
         value === "error"
+        || value === "checkpoint_upload"
       ) {
         eventName = value;
       }
@@ -111,7 +113,7 @@ function parseSseEvent(rawEvent: string): ParsedSseEvent | null {
     return null;
   }
 
-  const parsed = JSON.parse(dataLines.join("\n")) as TrainingProgressPayload;
+  const parsed = JSON.parse(dataLines.join("\n")) as TrainingProgressPayload | CheckpointUploadProgress;
   return { event: eventName, payload: parsed, id };
 }
 
