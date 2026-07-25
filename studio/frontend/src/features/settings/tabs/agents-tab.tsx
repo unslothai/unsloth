@@ -19,7 +19,11 @@ import { useEffect, useRef, useState } from "react";
 import { useChatRuntimeStore } from "@/features/chat";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { type CodingAgentsInfo, loadCodingAgents } from "../api/coding-agents";
-import { isLoopbackHost, normalizeHost } from "../components/agent-command";
+import {
+  buildAgentCommand,
+  isLoopbackHost,
+  normalizeHost,
+} from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
@@ -169,7 +173,7 @@ const OPTION_ROWS: { flag: string; descKey: TranslationKey }[] = [
   { flag: "--yolo", descKey: "settings.agents.options.yolo" },
 ];
 
-const QUICKSTART_CMD = "unsloth start claude";
+const QUICKSTART_AGENT = "claude";
 
 // Single line so the copied command pastes as-is in POSIX, PowerShell and cmd.
 const MODEL_SUFFIX_CMD =
@@ -284,6 +288,16 @@ export function AgentsTab() {
     activeNativePathToken != null ||
     ggufContextLength != null;
 
+  // The desktop app falls back across ports 8888-8908, and the UI can be
+  // attached to any Studio base, so a bare `unsloth start` would probe the
+  // default 127.0.0.1:8888 instead of the server holding the loaded model.
+  // buildAgentCommand keeps the bare form for the default local server and
+  // sets UNSLOTH_STUDIO_URL otherwise, matching the API usage panel.
+  const commandBase = serverUrl ?? origin;
+  const commandOs = isWindowsClient ? "windows" : "unix";
+  const agentCommand = (agentId: string) =>
+    buildAgentCommand(commandBase, null, commandOs, agentId);
+
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <header className="flex min-w-0 flex-col gap-1">
@@ -318,7 +332,7 @@ export function AgentsTab() {
         description={t("settings.agents.quickstart.description")}
       >
         <div className="pt-2">
-          <CommandBlock command={QUICKSTART_CMD} />
+          <CommandBlock command={agentCommand(QUICKSTART_AGENT)} />
         </div>
       </SettingsSection>
 
@@ -330,7 +344,7 @@ export function AgentsTab() {
           {SUPPORTED_AGENTS.map((agent) => (
             <div
               key={agent.id}
-              className="flex items-center justify-between gap-4 py-2.5"
+              className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2.5"
             >
               <div className="flex min-w-0 items-center gap-3">
                 <AgentIcon
@@ -352,7 +366,7 @@ export function AgentsTab() {
                   </span>
                 ) : null}
               </div>
-              <InlineCommand command={`unsloth start ${agent.id}`} />
+              <InlineCommand command={agentCommand(agent.id)} />
             </div>
           ))}
         </div>
