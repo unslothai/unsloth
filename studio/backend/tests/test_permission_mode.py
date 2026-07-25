@@ -544,6 +544,35 @@ def test_terminal_classifier(command, unsafe):
         ("git -c user.name=me commit -m x", False),
         ("git -c core.pager=less log", False),
         # --- privilege/namespace boundary tools wrap a nested command ---
+        # --- git checkout <commit> <path> is the pathspec overwrite form ---
+        ("git checkout HEAD f", True),
+        ("git checkout main --pathspec-from-file=list", True),
+        ("git checkout feature/x", False),  # one positional stays a branch name
+        # --- a stored git alias is code git runs on the next invocation ---
+        ("git config alias.n '!rm victim'", True),
+        ("git config alias.n 'clean -fd'", True),
+        ("git config alias.st status", False),
+        ("git config user.name me", False),
+        # --- a listener resolved behind a wrapper or by absolute path ---
+        ("env uvicorn app:api", True),
+        ("timeout 60 gunicorn app:app", True),
+        ("/usr/local/bin/uvicorn app:api", True),
+        # --- find/fd only run a child at -exec, so a search pattern is not one ---
+        ("find . -name rm", False),
+        ("fd sudo .", False),
+        # --- a transient systemd unit launches a nested command ---
+        ("systemd-run --user --on-active=1s /bin/rm victim", True),
+        # --- openssl must be at command position, not merely mentioned ---
+        ("grep 'openssl s_client' README.md", False),
+        ("echo 'openssl s_server'", False),
+        ("openssl s_client -connect h:443", True),
+        # --- version-suffixed runtimes still run inline code ---
+        ("perl5.38.2 -e 'unlink 1'", True),
+        ("ruby3.2 -e 'x'", True),
+        ("php8.2 -r 'x'", True),
+        # --- an exec-valued flag only counts for the utility that owns it ---
+        ("printf '%s' --rsh", False),
+        ("echo --checkpoint-action", False),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),
@@ -732,6 +761,7 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("import os\nos.killpg(1, 9)", True),
         # a file handle's truncate zeroes the file; pandas truncate does not
         ("f = open('a', 'r+')\nf.truncate(0)", True),
+        ("with open('important.py', 'r+') as f:\n    f.truncate(0)", True),
         # an annotated binding is the same alias as a plain one
         ("import os\nf: object = os.remove\nf('important.py')", True),
         # __import__ binds the module the same way `import os as m` does
