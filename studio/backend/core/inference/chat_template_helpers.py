@@ -122,13 +122,47 @@ def neutralize_think_markup_streaming(buffer: str, *, finalize: bool = False) ->
 
 def neutralize_non_assistant_control_markup(text: str) -> str:
     """Neutralize think + ChatML control markers in user/system/tool text (#7066)."""
+    return _neutralize_markers(text, _NON_ASSISTANT_CONTROL_MARKERS)
+
+
+def _neutralize_markers(text: str, markers) -> str:
     if not text:
         return text
     out = text
-    for src, dst in _NON_ASSISTANT_CONTROL_MARKERS:
+    for src, dst in markers:
         if src in out:
             out = out.replace(src, dst)
     return out
+
+
+# Turn boundaries never belong INSIDE a turn, so they are neutralized in
+# assistant content too: replayed history is client-controlled on the API, and a
+# raw sentinel there truncates that turn or injects a new one. The assistant's
+# own think / channel / tool markup is structural and stays (#7066).
+_TURN_BOUNDARY_NAMES = frozenset(
+    {
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|eot_id|>",
+        "<|eom_id|>",
+        "<|start_header_id|>",
+        "<|end_header_id|>",
+        "<start_of_turn>",
+        "<end_of_turn>",
+        "<|end_of_turn|>",
+        "<|end|>",
+        "<|turn>",
+        "<turn|>",
+    }
+)
+_TURN_BOUNDARY_MARKERS: tuple[tuple[str, str], ...] = tuple(
+    pair for pair in _NON_ASSISTANT_CONTROL_MARKERS if pair[0] in _TURN_BOUNDARY_NAMES
+)
+
+
+def neutralize_turn_boundary_markup(text: str) -> str:
+    """Neutralize only the turn-boundary sentinels, for assistant text (#7066)."""
+    return _neutralize_markers(text, _TURN_BOUNDARY_MARKERS)
 
 
 # JSON-Schema keywords whose string entries REFERENCE declared property names
@@ -298,26 +332,31 @@ def neutralize_tool_call_arguments(tool_calls):
 
 
 def neutralize_message_content_for_role(role: Optional[str], content):
-    """Apply control-markup neutralization to non-assistant message content.
+    """Apply control-markup neutralization to message content.
 
-    Assistant turns keep real ``<think>`` structure (and ``reasoning_content``).
+    Assistant turns keep their structural think / channel / tool markup, but
+    even there the turn-boundary sentinels are neutralized: replayed history is
+    client-controlled and a raw one truncates that turn or injects a new one.
     String content and OpenAI text parts are rewritten; other part types pass
     through. Returns ``content`` unchanged when nothing needed rewriting.
     """
-    if (role or "").strip().lower() == "assistant":
-        return content
+    rewrite = (
+        neutralize_turn_boundary_markup
+        if (role or "").strip().lower() == "assistant"
+        else neutralize_non_assistant_control_markup
+    )
     if isinstance(content, str):
-        return neutralize_non_assistant_control_markup(content)
+        return rewrite(content)
     if isinstance(content, list):
         changed = False
         out = []
         for part in content:
             if isinstance(part, str):
-                new_part = neutralize_non_assistant_control_markup(part)
+                new_part = rewrite(part)
                 changed = changed or new_part is not part and new_part != part
                 out.append(new_part)
             elif isinstance(part, dict) and isinstance(part.get("text"), str):
-                new_text = neutralize_non_assistant_control_markup(part["text"])
+                new_text = rewrite(part["text"])
                 if new_text != part["text"]:
                     out.append({**part, "text": new_text})
                     changed = True
