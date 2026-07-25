@@ -1797,8 +1797,10 @@ def run_server(
     return app
 
 
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
-# backend launches; `unsloth studio run` always passes its own value (4).
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_* and the shared
+# core/inference/llama_server_args.py PARALLEL_* (the per-load
+# LoadRequest.n_parallel bounds). Default 1 is for direct backend launches;
+# `unsloth studio run` always passes its own value (4).
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 1
@@ -1898,7 +1900,8 @@ def _build_arg_parser():
         default = _PARALLEL_DEFAULT_PLAIN,
         help = (
             f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
-            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
+            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4. "
+            "The Studio run settings (Parallel Slots) can override it per load."
         ),
     )
     return parser
