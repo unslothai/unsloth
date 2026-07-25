@@ -19,6 +19,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { TrainingSeriesPoint } from "@/features/training";
 // eslint-disable-next-line no-restricted-imports -- matches images-page.tsx's token access
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
@@ -110,7 +119,7 @@ function repoIsPrequantized(baseModel: string): boolean {
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
 const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
-const selectClass = "h-8 w-full rounded-md border border-input bg-background px-2 text-xs";
+const selectClass = "h-8 w-full text-xs";
 
 // Merge the backend's reported families (if any) over the presets, keeping the preset
 // ordering (popularity) and filling labels/notes/defaults the backend omits.
@@ -231,6 +240,8 @@ export function DiffusionTrainPanel({
   const [uploadName, setUploadName] = useState("my-images");
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Mirrors the hidden input's selection so the row can report it.
+  const [pickedFileCount, setPickedFileCount] = useState(0);
   const [gridOpen, setGridOpen] = useState(false);
   const [gridRefresh, setGridRefresh] = useState(0);
   const [examples, setExamples] = useState<DiffusionDatasetExample[]>([]);
@@ -596,6 +607,7 @@ export function DiffusionTrainPanel({
           `"${res.name}" now has ${res.image_count} images`,
       );
       if (fileInputRef.current) fileInputRef.current.value = "";
+      setPickedFileCount(0);
       await refreshInfo();
       setDataset(res.name);
       setGridRefresh((k) => k + 1);
@@ -824,18 +836,21 @@ export function DiffusionTrainPanel({
           }}
           className="h-8 min-w-0 flex-1 text-xs"
         />
-        <select
+        <Select
           value={durationUnit}
-          onChange={(e) => {
+          onValueChange={(v) => {
             settingsDirty.current = true;
-            setDurationUnit(e.target.value as "steps" | "epochs");
+            setDurationUnit(v as "steps" | "epochs");
           }}
-          className="h-8 w-24 rounded-md border border-input bg-background px-2 text-xs"
-          aria-label="Run length unit"
         >
-          <option value="steps">Steps</option>
-          <option value="epochs">Epochs</option>
-        </select>
+          <SelectTrigger className="h-8 w-24 text-xs" aria-label="Run length unit">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="steps">Steps</SelectItem>
+            <SelectItem value="epochs">Epochs</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
     </div>
   );
@@ -872,17 +887,20 @@ export function DiffusionTrainPanel({
         })}
         <div className="grid gap-1.5">
           <Label className="text-xs">LR schedule</Label>
-          <select
+          <Select
             value={lrScheduler}
-            onChange={(e) => setLrScheduler(e.target.value as typeof lrScheduler)}
-            className={selectClass}
-            aria-label="LR schedule"
+            onValueChange={(v) => setLrScheduler(v as typeof lrScheduler)}
           >
-            <option value="constant">Constant</option>
-            <option value="constant_with_warmup">Constant + warmup</option>
-            <option value="cosine">Cosine decay</option>
-            <option value="linear">Linear decay</option>
-          </select>
+            <SelectTrigger className={selectClass} aria-label="LR schedule">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="constant">Constant</SelectItem>
+              <SelectItem value="constant_with_warmup">Constant + warmup</SelectItem>
+              <SelectItem value="cosine">Cosine decay</SelectItem>
+              <SelectItem value="linear">Linear decay</SelectItem>
+            </SelectContent>
+          </Select>
           <p className="text-[11px] leading-snug text-muted-foreground">
             How fast the model learns over time. Constant is fine for most runs.
           </p>
@@ -894,15 +912,18 @@ export function DiffusionTrainPanel({
       <div className="grid grid-cols-2 items-start gap-x-6 gap-y-4 lg:grid-cols-3">
         <div className="grid gap-1.5">
           <Label className="text-xs">Gradient checkpointing</Label>
-          <select
+          <Select
             value={gradCheckpoint ? "on" : "off"}
-            onChange={(e) => setGradCheckpoint(e.target.value === "on")}
-            className={selectClass}
-            aria-label="Gradient checkpointing"
+            onValueChange={(v) => setGradCheckpoint(v === "on")}
           >
-            <option value="on">On (less VRAM)</option>
-            <option value="off">Off (faster steps)</option>
-          </select>
+            <SelectTrigger className={selectClass} aria-label="Gradient checkpointing">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="on">On (less VRAM)</SelectItem>
+              <SelectItem value="off">Off (faster steps)</SelectItem>
+            </SelectContent>
+          </Select>
           <p className="text-[11px] leading-snug text-muted-foreground">
             Saves a lot of GPU memory in exchange for slightly slower steps.
           </p>
@@ -911,26 +932,29 @@ export function DiffusionTrainPanel({
         {isDiT ? (
           <div className="grid gap-1.5">
             <Label className="text-xs">Base precision</Label>
-            <select
+            <Select
               value={basePrecision}
-              onChange={(e) => {
+              onValueChange={(v) => {
                 precisionDirty.current = true;
-                setBasePrecision(e.target.value as typeof basePrecision);
+                setBasePrecision(v as typeof basePrecision);
               }}
-              className={selectClass}
-              aria-label="Base precision"
               disabled={familyUntrainable}
             >
-              {precisionModes.map((m) => (
-                <option
-                  key={m}
-                  value={m}
-                  disabled={basePrequantized && DENSE_PRECISIONS.has(m)}
-                >
-                  {precisionLabel(m)}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className={selectClass} aria-label="Base precision">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {precisionModes.map((m) => (
+                  <SelectItem
+                    key={m}
+                    value={m}
+                    disabled={basePrequantized && DENSE_PRECISIONS.has(m)}
+                  >
+                    {precisionLabel(m)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-[11px] leading-snug text-muted-foreground">
               {familyUntrainable ? (
                 // The reason itself (the backend's bf16-preflight text) already shows in
@@ -950,16 +974,19 @@ export function DiffusionTrainPanel({
         ) : (
           <div className="grid gap-1.5">
             <Label className="text-xs">Precision</Label>
-            <select
+            <Select
               value={precision}
-              onChange={(e) => setPrecision(e.target.value as "bf16" | "fp16" | "no")}
-              className={selectClass}
-              aria-label="Precision"
+              onValueChange={(v) => setPrecision(v as "bf16" | "fp16" | "no")}
             >
-              <option value="bf16">bf16 (default)</option>
-              <option value="fp16">fp16 (older GPUs)</option>
-              <option value="no">fp32 (no mixed)</option>
-            </select>
+              <SelectTrigger className={selectClass} aria-label="Precision">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="bf16">bf16 (default)</SelectItem>
+                <SelectItem value="fp16">fp16 (older GPUs)</SelectItem>
+                <SelectItem value="no">fp32 (no mixed)</SelectItem>
+              </SelectContent>
+            </Select>
             <p className="text-[11px] leading-snug text-muted-foreground">
               How the math runs during training. bf16 is right for modern GPUs.
             </p>
@@ -968,18 +995,21 @@ export function DiffusionTrainPanel({
         {supportsCompile && (
           <div className="grid gap-1.5">
             <Label className="text-xs">Compile transformer</Label>
-            <select
+            <Select
               value={compileTransformer}
-              onChange={(e) =>
-                setCompileTransformer(e.target.value as typeof compileTransformer)
+              onValueChange={(v) =>
+                setCompileTransformer(v as typeof compileTransformer)
               }
-              className={selectClass}
-              aria-label="Compile transformer"
             >
-              <option value="auto">Auto</option>
-              <option value="on">On (faster after warmup)</option>
-              <option value="off">Off</option>
-            </select>
+              <SelectTrigger className={selectClass} aria-label="Compile transformer">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto</SelectItem>
+                <SelectItem value="on">On (faster after warmup)</SelectItem>
+                <SelectItem value="off">Off</SelectItem>
+              </SelectContent>
+            </Select>
             <p className="text-[11px] leading-snug text-muted-foreground">
               Warms up once at the start, then every training step runs faster.
             </p>
@@ -992,225 +1022,248 @@ export function DiffusionTrainPanel({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
       {/* Left: configure */}
-      <div className="bg-card corner-squircle flex w-[380px] min-w-0 shrink-0 flex-col gap-4 overflow-y-auto overflow-x-hidden rounded-3xl p-5 ring-1 ring-foreground/10">
-        <div>
-          <h2 className="text-sm font-semibold">Train a LoRA</h2>
-          <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-            Teach an image model a style, character, or subject from your own images. The
-            finished adapter shows up in the Create tab&apos;s LoRA picker.
-          </p>
-        </div>
-
-        {/* Family + base */}
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Model family</Label>
-          <select
-            value={familyName}
-            onChange={(e) => setFamilyName(e.target.value)}
-            className={selectClass}
-            aria-label="Model family"
-          >
-            {families.map((f) => (
-              <option key={f.name} value={f.name}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-          {family?.vram_note && (
-            <p className="text-[11px] leading-snug text-muted-foreground">{family.vram_note}</p>
-          )}
-        </div>
-
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Base model</Label>
-          <select
-            value={effectiveBase}
-            onChange={(e) => setBaseChoice(e.target.value)}
-            className={selectClass}
-            aria-label="Base model"
-          >
-            {(family?.base_repos ?? []).map((repo) => (
-              <option key={repo} value={repo}>
-                {repo}
-              </option>
-            ))}
-            <option value={CUSTOM_BASE}>Custom repo or local path...</option>
-          </select>
-          {effectiveBase === CUSTOM_BASE && (
-            <Input
-              value={customBase}
-              placeholder="my-org/my-base or /path/to/pipeline"
-              spellCheck={false}
-              onChange={(e) => setCustomBase(e.target.value)}
-              className="h-8 text-xs"
-            />
-          )}
-        </div>
-
-        {/* Dataset */}
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Training images</Label>
-          <select
-            value={dataset}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v.startsWith(EXAMPLE_PREFIX)) {
-                const ex = pendingExamples.find((x) => x.id === v.slice(EXAMPLE_PREFIX.length));
-                if (ex) void importExample(ex);
-                return; // controlled select snaps back to the current dataset while importing
-              }
-              setDataset(v);
-              setGridOpen(false);
-            }}
-            className={selectClass}
-            aria-label="Training images"
-            disabled={importingId !== null}
-          >
-            {(info?.datasets ?? []).map((d) => (
-              <option key={d.name} value={d.name}>
-                {d.name} ({d.image_count} image{d.image_count === 1 ? "" : "s"}
-                {d.caption_count > 0 ? `, ${d.caption_count} captions` : ""})
-              </option>
-            ))}
-            {pendingExamples.length > 0 && (
-              <optgroup label="Examples (one-click import)">
-                {pendingExamples.map((ex) => (
-                  <option key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
-                    {ex.label} ({ex.image_cap} images, {ex.license})
-                  </option>
-                ))}
-              </optgroup>
-            )}
-            <option value={UPLOAD_DATASET}>Upload new images...</option>
-          </select>
-          {importingId && (
-            <p className="text-[11px] text-muted-foreground">
-              Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
+      <div className="bg-card corner-squircle flex w-[380px] min-w-0 shrink-0 flex-col overflow-hidden rounded-3xl panel-soft-surface">
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden p-5">
+          <div>
+            <h2 className="text-sm font-semibold">Train a LoRA</h2>
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+              Teach an image model a style, character, or subject from your own images. The
+              finished adapter shows up in the Create tab&apos;s LoRA picker.
             </p>
-          )}
+          </div>
 
-          {dataset === UPLOAD_DATASET ? (
-            <div className="grid gap-1.5 rounded-md border border-dashed border-border p-2">
-              <Input
-                value={uploadName}
-                placeholder="my-style-photos"
-                spellCheck={false}
-                onChange={(e) => setUploadName(e.target.value)}
-                className="h-8 text-xs"
-                aria-label="New dataset name"
-              />
-              <div className="flex items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept={DATASET_FILE_ACCEPT}
-                  className="min-w-0 flex-1 text-xs file:mr-2 file:rounded-md file:border-0 file:bg-muted file:px-2 file:py-1 file:text-xs"
-                  aria-label="Training image files"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className="h-8 shrink-0"
-                  onClick={onUpload}
-                  disabled={uploading}
-                >
-                  {uploading ? "Uploading..." : "Upload"}
-                </Button>
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                10-50 images are plenty. Captions are optional: without them, the trigger
-                prompt below describes every image.
-              </p>
-            </div>
-          ) : (
-            selectedDataset && (
-              <>
-                {selectedDataset.image_count > 0 && !gridOpen && (
-                  <DatasetShowcase
-                    dataset={dataset}
-                    imageCount={selectedDataset.image_count}
-                    refreshKey={gridRefresh}
-                    onBrowse={() => setGridOpen(true)}
-                  />
-                )}
-                <LabelingGridToggle
-                  count={selectedDataset.image_count}
-                  open={gridOpen}
-                  onToggle={() => setGridOpen((o) => !o)}
-                />
-                {gridOpen && (
-                  <DatasetLabelingGrid
-                    dataset={dataset}
-                    refreshKey={gridRefresh}
-                    onCountsChanged={() => void refreshInfo()}
-                  />
-                )}
-                {selectedDataset.caption_count === 0 && !gridOpen && (
-                  <p className="text-[11px] text-muted-foreground">
-                    No captions yet: the trigger prompt below will describe every image,
-                    or open Review captions to write your own.
-                  </p>
-                )}
-              </>
-            )
-          )}
-
-          <ExampleDatasetCards
-            examples={pendingExamples}
-            busyId={importingId}
-            onImport={(ex) => void importExample(ex)}
-          />
-        </div>
-
-        {/* Trigger + adapter name (trigger first: it describes the dataset, the name
-            just labels the output) */}
-        {fullyCaptioned ? (
-          <p className="text-[11px] leading-snug text-muted-foreground">
-            All {selectedDataset?.image_count} images have captions - no trigger prompt needed.
-            The style applies to any prompt after training.
-          </p>
-        ) : (
+          {/* Family + base */}
           <div className="grid gap-1.5">
-            <Label className="text-xs">
-              Trigger prompt (how you&apos;ll invoke the style later)
-            </Label>
+            <Label className="text-xs">Model family</Label>
+            <Select value={familyName} onValueChange={setFamilyName}>
+              <SelectTrigger className={selectClass} aria-label="Model family">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {families.map((f) => (
+                  <SelectItem key={f.name} value={f.name}>
+                    {f.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {family?.vram_note && (
+              <p className="text-[11px] leading-snug text-muted-foreground">{family.vram_note}</p>
+            )}
+          </div>
+
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Base model</Label>
+            <Select value={effectiveBase} onValueChange={setBaseChoice}>
+              <SelectTrigger className={selectClass} aria-label="Base model">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(family?.base_repos ?? []).map((repo) => (
+                  <SelectItem key={repo} value={repo}>
+                    {repo}
+                  </SelectItem>
+                ))}
+                <SelectItem value={CUSTOM_BASE}>Custom repo or local path...</SelectItem>
+              </SelectContent>
+            </Select>
+            {effectiveBase === CUSTOM_BASE && (
+              <Input
+                value={customBase}
+                placeholder="my-org/my-base or /path/to/pipeline"
+                spellCheck={false}
+                onChange={(e) => setCustomBase(e.target.value)}
+                className="h-8 text-xs"
+              />
+            )}
+          </div>
+
+          {/* Dataset */}
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Training images</Label>
+            <Select
+              value={dataset}
+              onValueChange={(v) => {
+                if (v.startsWith(EXAMPLE_PREFIX)) {
+                  const ex = pendingExamples.find((x) => x.id === v.slice(EXAMPLE_PREFIX.length));
+                  if (ex) void importExample(ex);
+                  return; // the controlled value stays put while the import runs
+                }
+                setDataset(v);
+                setGridOpen(false);
+              }}
+              disabled={importingId !== null}
+            >
+              <SelectTrigger className={selectClass} aria-label="Training images">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(info?.datasets ?? []).map((d) => (
+                  <SelectItem key={d.name} value={d.name}>
+                    {d.name} ({d.image_count} image{d.image_count === 1 ? "" : "s"}
+                    {d.caption_count > 0 ? `, ${d.caption_count} captions` : ""})
+                  </SelectItem>
+                ))}
+                {pendingExamples.length > 0 && (
+                  <SelectGroup>
+                    <SelectLabel>Examples (one-click import)</SelectLabel>
+                    {pendingExamples.map((ex) => (
+                      <SelectItem key={ex.id} value={`${EXAMPLE_PREFIX}${ex.id}`}>
+                        {ex.label} ({ex.image_cap} images, {ex.license})
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )}
+                <SelectItem value={UPLOAD_DATASET}>Upload new images...</SelectItem>
+              </SelectContent>
+            </Select>
+            {importingId && (
+              <p className="text-[11px] text-muted-foreground">
+                Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
+              </p>
+            )}
+
+            {dataset === UPLOAD_DATASET ? (
+              <div className="grid gap-1.5 rounded-md border border-dashed border-border p-2">
+                <Input
+                  value={uploadName}
+                  placeholder="my-style-photos"
+                  spellCheck={false}
+                  onChange={(e) => setUploadName(e.target.value)}
+                  className="h-8 text-xs"
+                  aria-label="New dataset name"
+                />
+                <div className="flex items-center gap-2">
+                  {/* The native input is the file picker but never the control the
+                      user sees, so the row keeps the app's button styling. */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept={DATASET_FILE_ACCEPT}
+                    className="hidden"
+                    aria-label="Training image files"
+                    onChange={(e) => setPickedFileCount(e.target.files?.length ?? 0)}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 shrink-0"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                  >
+                    Choose images
+                  </Button>
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {pickedFileCount > 0
+                      ? `${pickedFileCount} file${pickedFileCount === 1 ? "" : "s"} selected`
+                      : "No files selected"}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 shrink-0"
+                    onClick={onUpload}
+                    disabled={uploading}
+                  >
+                    {uploading ? "Uploading..." : "Upload"}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  10-50 images are plenty. Captions are optional: without them, the trigger
+                  prompt below describes every image.
+                </p>
+              </div>
+            ) : (
+              selectedDataset && (
+                <>
+                  {selectedDataset.image_count > 0 && !gridOpen && (
+                    <DatasetShowcase
+                      dataset={dataset}
+                      imageCount={selectedDataset.image_count}
+                      refreshKey={gridRefresh}
+                      onBrowse={() => setGridOpen(true)}
+                    />
+                  )}
+                  <LabelingGridToggle
+                    count={selectedDataset.image_count}
+                    open={gridOpen}
+                    onToggle={() => setGridOpen((o) => !o)}
+                  />
+                  {gridOpen && (
+                    <DatasetLabelingGrid
+                      dataset={dataset}
+                      refreshKey={gridRefresh}
+                      onCountsChanged={() => void refreshInfo()}
+                    />
+                  )}
+                  {selectedDataset.caption_count === 0 && !gridOpen && (
+                    <p className="text-[11px] text-muted-foreground">
+                      No captions yet: the trigger prompt below will describe every image,
+                      or open Review captions to write your own.
+                    </p>
+                  )}
+                </>
+              )
+            )}
+
+            <ExampleDatasetCards
+              examples={pendingExamples}
+              busyId={importingId}
+              onImport={(ex) => void importExample(ex)}
+            />
+          </div>
+
+          {/* Trigger + adapter name (trigger first: it describes the dataset, the name
+              just labels the output) */}
+          {fullyCaptioned ? (
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              All {selectedDataset?.image_count} images have captions - no trigger prompt needed.
+              The style applies to any prompt after training.
+            </p>
+          ) : (
+            <div className="grid gap-1.5">
+              <Label className="text-xs">
+                Trigger prompt (how you&apos;ll invoke the style later)
+              </Label>
+              <Input
+                value={instancePrompt}
+                placeholder="a photo in SKS style"
+                onChange={(e) => setInstancePrompt(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+          )}
+          <div className="grid gap-1.5">
+            <Label className="text-xs">Adapter name</Label>
             <Input
-              value={instancePrompt}
-              placeholder="a photo in SKS style"
-              onChange={(e) => setInstancePrompt(e.target.value)}
+              value={outputDir}
+              placeholder="my-style-lora"
+              spellCheck={false}
+              onChange={(e) => setOutputDir(e.target.value)}
               className="h-8 text-xs"
             />
           </div>
-        )}
-        <div className="grid gap-1.5">
-          <Label className="text-xs">Adapter name</Label>
-          <Input
-            value={outputDir}
-            placeholder="my-style-lora"
-            spellCheck={false}
-            onChange={(e) => setOutputDir(e.target.value)}
-            className="h-8 text-xs"
-          />
-        </div>
 
-        {/* Start lives here; Stop lives in the run card next to the live stats. */}
-        <div className="mt-auto pt-2">
-          <Button
-            type="button"
-            className="w-full"
-            onClick={onStart}
-            disabled={starting || uploading || running || familyUntrainable}
-          >
-            {starting
-              ? "Starting..."
-              : running
-                ? "Training in progress"
-                : familyUntrainable
-                  ? "Not supported on this GPU"
-                  : "Start training"}
-          </Button>
+          {/* Start lives here; Stop lives in the run card next to the live stats. */}
+          <div className="mt-auto pt-2">
+            <Button
+              type="button"
+              className="w-full"
+              onClick={onStart}
+              disabled={starting || uploading || running || familyUntrainable}
+            >
+              {starting
+                ? "Starting..."
+                : running
+                  ? "Training in progress"
+                  : familyUntrainable
+                    ? "Not supported on this GPU"
+                    : "Start training"}
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -1218,12 +1271,12 @@ export function DiffusionTrainPanel({
           front) plus the previous-runs history; during/after a run the live view takes
           over (progress with Stop, then the saved-adapter card ABOVE the charts).
           Selecting a previous run re-plots its persisted logs read-only. */}
-      {/* p-px so the cards' ring-1 (drawn outside the box) isn't clipped by this
+      {/* p-1.5 so the cards' shadow (drawn outside the box) isn't clipped by this
           scroll container. */}
-      <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-px">
+      <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-1.5">
         {viewRun && !hasRun ? (
           <>
-            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
+            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 panel-soft-surface">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold">
                   Previous run: {viewRun.adapter || viewRun.job_id.slice(0, 8)}
@@ -1286,7 +1339,7 @@ export function DiffusionTrainPanel({
           </>
         ) : !hasRun ? (
           <>
-            <div className="bg-card corner-squircle flex flex-col gap-4 rounded-3xl p-5 ring-1 ring-foreground/10">
+            <div className="bg-card corner-squircle flex flex-col gap-4 rounded-3xl p-5 panel-soft-surface">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-sm font-semibold">
                   <HugeiconsIcon icon={Settings02Icon} className="size-4" />
@@ -1304,7 +1357,7 @@ export function DiffusionTrainPanel({
             </div>
 
             {prevRuns.length > 0 && (
-              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
+              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 panel-soft-surface">
                 <span className="text-sm font-semibold">Previous runs</span>
                 <div className="flex flex-col divide-y divide-border/60">
                   {prevRuns.map((r) => (
@@ -1344,7 +1397,7 @@ export function DiffusionTrainPanel({
           </>
         ) : (
           <>
-            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">
+            <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 panel-soft-surface">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-semibold capitalize">
                   {status?.status === "completed" ? "Training complete \u{1F389}" : status?.status}
@@ -1420,7 +1473,7 @@ export function DiffusionTrainPanel({
             </div>
 
             {(completed || stoppedWithAdapter) && (
-              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 ring-1 ring-foreground/10">
+              <div className="bg-card corner-squircle flex flex-col gap-2 rounded-3xl p-5 panel-soft-surface">
                 <span className="text-sm font-semibold">
                   {completed ? "Adapter ready" : "Partial adapter saved"}
                 </span>

@@ -106,7 +106,7 @@ function LabelTile({
         uncaptioned ? "border-amber-500/60 bg-amber-500/5" : "border-border",
       )}
     >
-      <div className="group relative aspect-square w-full overflow-hidden rounded-md bg-muted">
+      <div className="group relative aspect-square w-full overflow-hidden rounded-[10px] bg-muted">
         {thumb ? (
           <img src={thumb} alt={record.filename} className="size-full object-cover" />
         ) : (

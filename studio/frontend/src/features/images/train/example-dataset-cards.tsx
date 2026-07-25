@@ -66,7 +66,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
   return (
     <div className="flex gap-1">
       {urls.map((u) => (
-        <div key={u} className="size-10 shrink-0 overflow-hidden rounded-md bg-muted">
+        <div key={u} className="size-10 shrink-0 overflow-hidden rounded-[8px] bg-muted">
           <img src={u} alt="" loading="lazy" className="size-full object-cover" />
         </div>
       ))}

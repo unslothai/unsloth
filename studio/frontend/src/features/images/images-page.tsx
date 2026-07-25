@@ -606,7 +606,7 @@ function ImageDropzone({
 
   if (value) {
     return (
-      <div className="relative overflow-hidden rounded-xl border border-border">
+      <div className="relative overflow-hidden rounded-[10px] border border-border">
         <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
         <Button
           type="button"
@@ -782,7 +782,7 @@ function MaskCanvas({
   };
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-border bg-muted/30">
+    <div className="relative overflow-hidden rounded-[10px] border border-border bg-muted/30">
       <img
         src={image}
         alt="Inpaint source"
@@ -2335,567 +2335,569 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
         {/* The controls rail. Plain card (the gray surface) with no header —
             the prompt + Generate button make the panel self-explanatory. */}
-        <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
-          {/* Workflow picker. Seven workflows don't fit a segmented strip in a 340px
-              rail, so it's a dropdown: the trigger carries the current workflow and
-              its hint, and each row explains itself. A row is disabled until the
-              loaded model supports it (status.workflows), with the reason in place of
-              the hint. New workflows slot in without shrinking anything. */}
-          <div className="grid gap-1.5">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild={true}>
-                <button
-                  type="button"
-                  aria-label="Workflow"
-                  className="corner-squircle flex h-9 w-full items-center gap-2 rounded-xl bg-foreground/[0.07] px-3 text-left transition-colors hover:bg-foreground/[0.11] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-foreground/[0.12] dark:hover:bg-foreground/[0.16]"
-                >
-                  <HugeiconsIcon
-                    icon={activeWorkflowTab.icon}
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
-                    {activeWorkflowTab.label}
-                  </span>
-                  <HugeiconsIcon
-                    icon={ArrowDown01Icon}
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                </button>
-              </DropdownMenuTrigger>
-              {/* DropdownMenuContent already tracks the trigger width, so the rows get
-                  the full rail width for their hints. */}
-              <DropdownMenuContent align="start">
-                {WORKFLOW_TABS.map((t) => {
-                  const enabled = workflowEnabled(t);
-                  return (
-                    <DropdownMenuItem
-                      key={t.id}
-                      disabled={!enabled}
-                      onSelect={() => setWorkflow(t.id)}
-                      // The selected row's description shows under the trigger, and a
-                      // disabled row explains itself on hover, so rows stay one line.
-                      title={
-                        enabled
-                          ? t.hint
-                          : `Needs a loaded model that supports ${t.label.toLowerCase()}`
-                      }
-                      className="gap-2"
-                    >
-                      <HugeiconsIcon
-                        icon={t.icon}
-                        className="size-4 shrink-0 text-muted-foreground"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                        {t.label}
-                      </span>
-                      <HugeiconsIcon
-                        icon={CheckmarkCircle02Icon}
-                        className={cn(
-                          "size-3.5 shrink-0",
-                          workflow === t.id ? "text-foreground" : "invisible",
-                        )}
-                      />
-                    </DropdownMenuItem>
-                  );
-                })}
-              </DropdownMenuContent>
-            </DropdownMenu>
-            {/* Description sits under the closed trigger, matching the Field hints
-                below it, so the button itself stays one line. */}
-            <p className="px-0.5 text-ui-11p5 leading-snug text-muted-foreground">
-              {activeWorkflowTab.hint}
-            </p>
-          </div>
-
-          {workflow === "transform" && (
-            <>
-              <Field
-                label="Source image"
-                hint="The image to transform. Generation redraws it guided by your prompt; the Strength below controls how far."
-              >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
-              </Field>
-              <SliderField
-                label="Strength"
-                hint="How much to redraw the source. Low keeps the original composition; high reimagines it from the prompt."
-                value={strength}
-                min={0.1}
-                max={1}
-                step={0.05}
-                onChange={setStrength}
-              />
-            </>
-          )}
-
-          {workflow === "inpaint" && (
-            <>
-              {!initImage ? (
-                <Field
-                  label="Source image"
-                  hint="The image to edit. After uploading, paint over the area you want to regenerate; the rest is kept."
-                >
-                  <ImageDropzone value={null} onChange={handleInitChange} />
-                </Field>
-              ) : (
-                <>
-                  <Field
-                    label="Mask"
-                    hint="Brush over the region to regenerate (shown in red). Those pixels are repainted from your prompt; everything else is preserved."
+        <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col overflow-hidden rounded-3xl panel-soft-surface">
+          <div className="flex min-h-0 flex-col gap-4 overflow-y-auto p-5">
+            {/* Workflow picker. Seven workflows don't fit a segmented strip in a 340px
+                rail, so it's a dropdown: the trigger carries the current workflow and
+                its hint, and each row explains itself. A row is disabled until the
+                loaded model supports it (status.workflows), with the reason in place of
+                the hint. New workflows slot in without shrinking anything. */}
+            <div className="grid gap-1.5">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild={true}>
+                  <button
+                    type="button"
+                    aria-label="Workflow"
+                    className="corner-squircle flex h-9 w-full items-center gap-2 rounded-xl bg-foreground/[0.07] px-3 text-left transition-colors hover:bg-foreground/[0.11] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-foreground/[0.12] dark:hover:bg-foreground/[0.16]"
                   >
-                    <MaskCanvas
-                      image={initImage}
-                      brushPct={brushPct}
-                      resetKey={maskResetKey}
-                      onMaskChange={setMaskImage}
+                    <HugeiconsIcon
+                      icon={activeWorkflowTab.icon}
+                      className="size-4 shrink-0 text-muted-foreground"
                     />
-                  </Field>
-                  <SliderField
-                    label="Brush size"
-                    hint="Brush radius as a percent of the image's shorter side."
-                    value={brushPct}
-                    min={2}
-                    max={25}
-                    step={1}
-                    onChange={setBrushPct}
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => {
-                        setMaskImage(null);
-                        setMaskResetKey((k) => k + 1);
-                      }}
-                    >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                      Clear mask
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => handleInitChange(null)}
-                    >
-                      <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                      Replace image
-                    </Button>
-                  </div>
-                  <SliderField
-                    label="Strength"
-                    hint="How much to redraw the masked region. Low blends with the source; high fully reimagines it from the prompt."
-                    value={strength}
-                    min={0.1}
-                    max={1}
-                    step={0.05}
-                    onChange={setStrength}
-                  />
-                </>
-              )}
-            </>
-          )}
-
-          {workflow === "extend" && (
-            <>
-              <Field
-                label="Source image"
-                hint="The image to outpaint. The canvas grows on the selected sides and the new area is filled from your prompt; the original is kept."
-              >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
-              </Field>
-              <SliderField
-                label="Expand by"
-                hint="How far to grow each selected side, as a percent of the image's size."
-                value={extendPct}
-                min={10}
-                max={100}
-                step={5}
-                onChange={setExtendPct}
-              />
-              <Field label="Sides" hint="Which edges to extend.">
-                <div className="grid grid-cols-2 gap-1.5">
-                  {(
-                    [
-                      ["top", "Top"],
-                      ["bottom", "Bottom"],
-                      ["left", "Left"],
-                      ["right", "Right"],
-                    ] as Array<[keyof ExtendSides, string]>
-                  ).map(([key, label]) => {
-                    const on = extendSides[key];
+                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+                      {activeWorkflowTab.label}
+                    </span>
+                    <HugeiconsIcon
+                      icon={ArrowDown01Icon}
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </DropdownMenuTrigger>
+                {/* DropdownMenuContent already tracks the trigger width, so the rows get
+                    the full rail width for their hints. */}
+                <DropdownMenuContent align="start">
+                  {WORKFLOW_TABS.map((t) => {
+                    const enabled = workflowEnabled(t);
                     return (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setExtendSides((s) => ({ ...s, [key]: !s[key] }))}
-                        className={cn(
-                          "rounded-lg px-2 py-1.5 text-xs font-medium ring-1 transition-colors",
-                          on
-                            ? "bg-primary/10 text-foreground ring-primary/40"
-                            : "text-muted-foreground ring-border hover:text-foreground",
-                        )}
+                      <DropdownMenuItem
+                        key={t.id}
+                        disabled={!enabled}
+                        onSelect={() => setWorkflow(t.id)}
+                        // The selected row's description shows under the trigger, and a
+                        // disabled row explains itself on hover, so rows stay one line.
+                        title={
+                          enabled
+                            ? t.hint
+                            : `Needs a loaded model that supports ${t.label.toLowerCase()}`
+                        }
+                        className="gap-2"
                       >
-                        {label}
-                      </button>
+                        <HugeiconsIcon
+                          icon={t.icon}
+                          className="size-4 shrink-0 text-muted-foreground"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                          {t.label}
+                        </span>
+                        <HugeiconsIcon
+                          icon={CheckmarkCircle02Icon}
+                          className={cn(
+                            "size-3.5 shrink-0",
+                            workflow === t.id ? "text-foreground" : "invisible",
+                          )}
+                        />
+                      </DropdownMenuItem>
                     );
                   })}
-                </div>
-              </Field>
-            </>
-          )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              {/* Description sits under the closed trigger, matching the Field hints
+                  below it, so the button itself stays one line. */}
+              <p className="px-0.5 text-ui-11p5 leading-snug text-muted-foreground">
+                {activeWorkflowTab.hint}
+              </p>
+            </div>
 
-          {workflow === "upscale" && (
-            <>
-              <Field
-                label="Source image"
-                hint="The image to upscale. It is enlarged by the factor below, then re-detailed at higher resolution guided by your prompt; keep the prompt describing the same content."
-              >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
-              </Field>
-              <SliderField
-                label="Scale"
-                hint="How much larger to make the image. The output size is the source size times this factor (capped and rounded to a multiple of 16)."
-                value={upscaleFactor}
-                min={1.5}
-                max={4}
-                step={0.5}
-                onChange={setUpscaleFactor}
-              />
-              <SliderField
-                label="Detail strength"
-                hint="How much new detail to add while upscaling. Low keeps the image faithful to the source; high adds more (and may drift). 0.35 is a good hires-fix default."
-                value={upscaleStrength}
-                min={0.1}
-                max={0.6}
-                step={0.05}
-                onChange={setUpscaleStrength}
-              />
-            </>
-          )}
-
-          {workflow === "reference" && (
-            <>
-              <Field
-                label="Reference image"
-                hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
-              >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
-              </Field>
-              {referenceImages.map((img, i) => (
+            {workflow === "transform" && (
+              <>
                 <Field
-                  key={i}
-                  label={`Reference ${i + 2}`}
-                  hint="An extra reference combined with the others (e.g. one for the subject, one for the style)."
+                  label="Source image"
+                  hint="The image to transform. Generation redraws it guided by your prompt; the Strength below controls how far."
                 >
-                  <div className="space-y-1.5">
-                    <ImageDropzone
-                      value={img}
-                      onChange={(v) =>
-                        // Keep the slot in place (empty string when cleared) so other slots
-                        // don't renumber mid-edit; empty slots are dropped only at send time
-                        // and removed explicitly via the button below. Stable key={i}.
-                        setReferenceImages((prev) =>
-                          prev.map((p, j) => (j === i ? (v ?? "") : p)),
-                        )
-                      }
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
+                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                </Field>
+                <SliderField
+                  label="Strength"
+                  hint="How much to redraw the source. Low keeps the original composition; high reimagines it from the prompt."
+                  value={strength}
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  onChange={setStrength}
+                />
+              </>
+            )}
+
+            {workflow === "inpaint" && (
+              <>
+                {!initImage ? (
+                  <Field
+                    label="Source image"
+                    hint="The image to edit. After uploading, paint over the area you want to regenerate; the rest is kept."
+                  >
+                    <ImageDropzone value={null} onChange={handleInitChange} />
+                  </Field>
+                ) : (
+                  <>
+                    <Field
+                      label="Mask"
+                      hint="Brush over the region to regenerate (shown in red). Those pixels are repainted from your prompt; everything else is preserved."
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-                      Remove reference {i + 2}
-                    </Button>
+                      <MaskCanvas
+                        image={initImage}
+                        brushPct={brushPct}
+                        resetKey={maskResetKey}
+                        onMaskChange={setMaskImage}
+                      />
+                    </Field>
+                    <SliderField
+                      label="Brush size"
+                      hint="Brush radius as a percent of the image's shorter side."
+                      value={brushPct}
+                      min={2}
+                      max={25}
+                      step={1}
+                      onChange={setBrushPct}
+                    />
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          setMaskImage(null);
+                          setMaskResetKey((k) => k + 1);
+                        }}
+                      >
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        Clear mask
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => handleInitChange(null)}
+                      >
+                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        Replace image
+                      </Button>
+                    </div>
+                    <SliderField
+                      label="Strength"
+                      hint="How much to redraw the masked region. Low blends with the source; high fully reimagines it from the prompt."
+                      value={strength}
+                      min={0.1}
+                      max={1}
+                      step={0.05}
+                      onChange={setStrength}
+                    />
+                  </>
+                )}
+              </>
+            )}
+
+            {workflow === "extend" && (
+              <>
+                <Field
+                  label="Source image"
+                  hint="The image to outpaint. The canvas grows on the selected sides and the new area is filled from your prompt; the original is kept."
+                >
+                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                </Field>
+                <SliderField
+                  label="Expand by"
+                  hint="How far to grow each selected side, as a percent of the image's size."
+                  value={extendPct}
+                  min={10}
+                  max={100}
+                  step={5}
+                  onChange={setExtendPct}
+                />
+                <Field label="Sides" hint="Which edges to extend.">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        ["top", "Top"],
+                        ["bottom", "Bottom"],
+                        ["left", "Left"],
+                        ["right", "Right"],
+                      ] as Array<[keyof ExtendSides, string]>
+                    ).map(([key, label]) => {
+                      const on = extendSides[key];
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setExtendSides((s) => ({ ...s, [key]: !s[key] }))}
+                          className={cn(
+                            "rounded-lg px-2 py-1.5 text-xs font-medium ring-1 transition-colors",
+                            on
+                              ? "bg-primary/10 text-foreground ring-primary/40"
+                              : "text-muted-foreground ring-border hover:text-foreground",
+                          )}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </Field>
-              ))}
-              {referenceImages.length < 3 && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="w-full"
-                  disabled={!initImage}
-                  onClick={() => setReferenceImages((prev) => [...prev, ""])}
+              </>
+            )}
+
+            {workflow === "upscale" && (
+              <>
+                <Field
+                  label="Source image"
+                  hint="The image to upscale. It is enlarged by the factor below, then re-detailed at higher resolution guided by your prompt; keep the prompt describing the same content."
                 >
-                  <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                  Add another reference
-                </Button>
-              )}
-            </>
-          )}
+                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                </Field>
+                <SliderField
+                  label="Scale"
+                  hint="How much larger to make the image. The output size is the source size times this factor (capped and rounded to a multiple of 16)."
+                  value={upscaleFactor}
+                  min={1.5}
+                  max={4}
+                  step={0.5}
+                  onChange={setUpscaleFactor}
+                />
+                <SliderField
+                  label="Detail strength"
+                  hint="How much new detail to add while upscaling. Low keeps the image faithful to the source; high adds more (and may drift). 0.35 is a good hires-fix default."
+                  value={upscaleStrength}
+                  min={0.1}
+                  max={0.6}
+                  step={0.05}
+                  onChange={setUpscaleStrength}
+                />
+              </>
+            )}
 
-          {workflow === "edit" && (
-            <Field
-              label="Source image"
-              hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
-            >
-              <ImageDropzone value={initImage} onChange={handleInitChange} />
-            </Field>
-          )}
-
-          <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
-            <Textarea
-              rows={4}
-              placeholder={
-                workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
-              }
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-            />
-          </Field>
-          {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a
-              Hugging Face repo id (owner/name, or owner/name:weight-file.safetensors) or pick
-              a discovered adapter from the suggestions. Stack multiple, each with a 0-2 weight.
-              The backend owns how they apply (native prompt tags / diffusers set_adapters); the
-              UI only sends {id, weight}. */}
-          {loraCapable && (
-            <Field
-              label="LoRAs"
-              hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
-            >
-              <div className="space-y-2">
-                {availableLoras.length > 0 && (
-                  <datalist id="diffusion-lora-suggestions">
-                    {availableLoras.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.display_name}
-                      </option>
-                    ))}
-                  </datalist>
-                )}
-                {loras.map((sel, i) => (
-                  <div
-                    key={sel.id || i}
-                    className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
+            {workflow === "reference" && (
+              <>
+                <Field
+                  label="Reference image"
+                  hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
+                >
+                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                </Field>
+                {referenceImages.map((img, i) => (
+                  <Field
+                    key={i}
+                    label={`Reference ${i + 2}`}
+                    hint="An extra reference combined with the others (e.g. one for the subject, one for the style)."
                   >
-                    <div className="flex items-center gap-2">
-                      <Input
-                        value={sel.id}
-                        list={availableLoras.length > 0 ? "diffusion-lora-suggestions" : undefined}
-                        placeholder="owner/name or owner/name:file.safetensors"
-                        spellCheck={false}
-                        autoCapitalize="none"
-                        autoCorrect="off"
-                        className="h-8 flex-1 text-xs"
-                        onChange={(e) =>
-                          setLoras((prev) =>
-                            prev.map((p, j) => (j === i ? { ...p, id: e.target.value } : p)),
+                    <div className="space-y-1.5">
+                      <ImageDropzone
+                        value={img}
+                        onChange={(v) =>
+                          // Keep the slot in place (empty string when cleared) so other slots
+                          // don't renumber mid-edit; empty slots are dropped only at send time
+                          // and removed explicitly via the button below. Stable key={i}.
+                          setReferenceImages((prev) =>
+                            prev.map((p, j) => (j === i ? (v ?? "") : p)),
                           )
                         }
                       />
                       <Button
                         type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="size-8 shrink-0"
-                        aria-label={`Remove LoRA ${i + 1}`}
-                        onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
+                        variant="secondary"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
                       >
                         <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        Remove reference {i + 2}
                       </Button>
                     </div>
-                    <SliderField
-                      label="Weight"
-                      value={sel.weight}
-                      min={0}
-                      max={2}
-                      step={0.05}
-                      onChange={(v) =>
-                        setLoras((prev) => prev.map((p, j) => (j === i ? { ...p, weight: v } : p)))
-                      }
-                    />
-                  </div>
+                  </Field>
                 ))}
-                {loras.length < 8 && (
+                {referenceImages.length < 3 && (
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     className="w-full"
-                    onClick={() => {
-                      // Prefill with the first unused suggestion when a curated catalog exists,
-                      // else an empty row the user fills with a Hugging Face repo id.
-                      const taken = new Set(loras.map((l) => l.id));
-                      const next = availableLoras.find((a) => !taken.has(a.id));
-                      setLoras((prev) => [
-                        ...prev,
-                        next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
-                      ]);
-                    }}
+                    disabled={!initImage}
+                    onClick={() => setReferenceImages((prev) => [...prev, ""])}
                   >
                     <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                    Add LoRA
+                    Add another reference
                   </Button>
                 )}
-              </div>
+              </>
+            )}
+
+            {workflow === "edit" && (
+              <Field
+                label="Source image"
+                hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
+              >
+                <ImageDropzone value={initImage} onChange={handleInitChange} />
+              </Field>
+            )}
+
+            <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
+              <Textarea
+                rows={4}
+                placeholder={
+                  workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
+                }
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
             </Field>
-          )}
-          {/* ControlNet: shown when the loaded model supports it, a model is discoverable, and
-              the plain text-to-image workflow is active (v1 conditions txt2img only). Pick a
-              model, add a control image, choose how to derive the map, and set the strength. */}
-          {controlnetCapable && availableControlNets.length > 0 && workflow === "create" && (
+            {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a
+                Hugging Face repo id (owner/name, or owner/name:weight-file.safetensors) or pick
+                a discovered adapter from the suggestions. Stack multiple, each with a 0-2 weight.
+                The backend owns how they apply (native prompt tags / diffusers set_adapters); the
+                UI only sends {id, weight}. */}
+            {loraCapable && (
+              <Field
+                label="LoRAs"
+                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
+              >
+                <div className="space-y-2">
+                  {availableLoras.length > 0 && (
+                    <datalist id="diffusion-lora-suggestions">
+                      {availableLoras.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.display_name}
+                        </option>
+                      ))}
+                    </datalist>
+                  )}
+                  {loras.map((sel, i) => (
+                    <div
+                      key={sel.id || i}
+                      className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={sel.id}
+                          list={availableLoras.length > 0 ? "diffusion-lora-suggestions" : undefined}
+                          placeholder="owner/name or owner/name:file.safetensors"
+                          spellCheck={false}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          className="h-8 flex-1 text-xs"
+                          onChange={(e) =>
+                            setLoras((prev) =>
+                              prev.map((p, j) => (j === i ? { ...p, id: e.target.value } : p)),
+                            )
+                          }
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 shrink-0"
+                          aria-label={`Remove LoRA ${i + 1}`}
+                          onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
+                        >
+                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        </Button>
+                      </div>
+                      <SliderField
+                        label="Weight"
+                        value={sel.weight}
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        onChange={(v) =>
+                          setLoras((prev) => prev.map((p, j) => (j === i ? { ...p, weight: v } : p)))
+                        }
+                      />
+                    </div>
+                  ))}
+                  {loras.length < 8 && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => {
+                        // Prefill with the first unused suggestion when a curated catalog exists,
+                        // else an empty row the user fills with a Hugging Face repo id.
+                        const taken = new Set(loras.map((l) => l.id));
+                        const next = availableLoras.find((a) => !taken.has(a.id));
+                        setLoras((prev) => [
+                          ...prev,
+                          next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
+                        ]);
+                      }}
+                    >
+                      <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                      Add LoRA
+                    </Button>
+                  )}
+                </div>
+              </Field>
+            )}
+            {/* ControlNet: shown when the loaded model supports it, a model is discoverable, and
+                the plain text-to-image workflow is active (v1 conditions txt2img only). Pick a
+                model, add a control image, choose how to derive the map, and set the strength. */}
+            {controlnetCapable && availableControlNets.length > 0 && workflow === "create" && (
+              <Field
+                label="ControlNet"
+                hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
+              >
+                <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
+                  <Select value={controlnetId || undefined} onValueChange={setControlnetId}>
+                    <SelectTrigger className="h-8 w-full text-xs">
+                      <SelectValue placeholder="Select a ControlNet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableControlNets.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.display_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {controlnetId && (
+                    <>
+                      <ImageDropzone value={controlImage} onChange={setControlImage} />
+                      <div className="flex items-center gap-2">
+                        <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
+                        <Select value={controlType} onValueChange={setControlType}>
+                          <SelectTrigger className="h-8 flex-1 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {controlTypeOptions.map((t) => (
+                              <SelectItem key={t} value={t}>
+                                {CONTROL_TYPE_LABELS[t] ??
+                                  `${t.charAt(0).toUpperCase()}${t.slice(1)} (map)`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <SliderField
+                        label="Strength"
+                        value={controlStrength}
+                        min={0}
+                        max={2}
+                        step={0.05}
+                        onChange={setControlStrength}
+                      />
+                    </>
+                  )}
+                </div>
+              </Field>
+            )}
+            {/* A negative prompt only does anything with guidance on, so hide it at
+                guidance 0 (Z-Image-Turbo's default) instead of showing a dead field. */}
+            {guidance > 0 && (
+              <Field
+                label="Negative prompt"
+                hint="What to steer the image away from. Only used when guidance is above 0."
+              >
+                <Textarea
+                  rows={2}
+                  placeholder="What to avoid (optional)"
+                  value={negativePrompt}
+                  onChange={(e) => setNegativePrompt(e.target.value)}
+                />
+              </Field>
+            )}
+
             <Field
-              label="ControlNet"
-              hint="Condition the image on a control map (edges / depth / pose). Union models cover many types. Use 'Canny' to trace edges from your image, or 'Passthrough' if it is already a control map."
+              label="Aspect ratio"
+              hint="Pick a ratio to lock the proportions, then set the size with the sliders. Flip swaps width and height. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
             >
-              <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-2">
-                <Select value={controlnetId || undefined} onValueChange={setControlnetId}>
-                  <SelectTrigger className="h-8 w-full text-xs">
-                    <SelectValue placeholder="Select a ControlNet" />
+              <div className="flex items-center gap-2">
+                <Select
+                  value={aspect}
+                  onValueChange={changeAspect}
+                  open={active && aspectOpen}
+                  onOpenChange={(o) => setAspectOpen(active && o)}
+                >
+                  <SelectTrigger className="flex-1">
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {availableControlNets.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {c.display_name}
+                    {ASPECT_OPTIONS.map((key) => (
+                      <SelectItem key={key} value={key}>
+                        {key === "custom" ? "Custom" : key}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {controlnetId && (
-                  <>
-                    <ImageDropzone value={controlImage} onChange={setControlImage} />
-                    <div className="flex items-center gap-2">
-                      <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
-                      <Select value={controlType} onValueChange={setControlType}>
-                        <SelectTrigger className="h-8 flex-1 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {controlTypeOptions.map((t) => (
-                            <SelectItem key={t} value={t}>
-                              {CONTROL_TYPE_LABELS[t] ??
-                                `${t.charAt(0).toUpperCase()}${t.slice(1)} (map)`}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <SliderField
-                      label="Strength"
-                      value={controlStrength}
-                      min={0}
-                      max={2}
-                      step={0.05}
-                      onChange={setControlStrength}
-                    />
-                  </>
-                )}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="icon"
+                  aria-label="Flip width and height"
+                  title="Flip orientation"
+                  onClick={flipDimensions}
+                >
+                  <HugeiconsIcon icon={ArrowLeftRightIcon} className="size-4" />
+                </Button>
               </div>
             </Field>
-          )}
-          {/* A negative prompt only does anything with guidance on, so hide it at
-              guidance 0 (Z-Image-Turbo's default) instead of showing a dead field. */}
-          {guidance > 0 && (
-            <Field
-              label="Negative prompt"
-              hint="What to steer the image away from. Only used when guidance is above 0."
-            >
-              <Textarea
-                rows={2}
-                placeholder="What to avoid (optional)"
-                value={negativePrompt}
-                onChange={(e) => setNegativePrompt(e.target.value)}
+            <SliderField label="Width" value={width} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeWidth} />
+            <SliderField label="Height" value={height} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeHeight} />
+
+            <SliderField
+              label="Steps"
+              hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
+              value={steps}
+              min={1}
+              max={50}
+              step={1}
+              onChange={setSteps}
+            />
+            <SliderField
+              label="Guidance"
+              hint="Keep this at 0 for Z-Image-Turbo. Higher values make its output worse. Other models use guidance."
+              value={guidance}
+              min={0}
+              max={15}
+              step={0.5}
+              onChange={setGuidance}
+            />
+            <SliderField
+              label="Batch size"
+              hint="How many images to make at once. Faster than running them one by one, but uses more VRAM. They share a seed but each one is different."
+              value={batchSize}
+              min={1}
+              max={32}
+              step={1}
+              onChange={setBatchSize}
+            />
+            <SliderField
+              label="Runs"
+              hint="How many times to repeat the generation, one after another. Each run uses the next seed, so the images differ and can be reproduced."
+              value={count}
+              min={1}
+              max={RUNS_SLIDER_MAX}
+              step={1}
+              onChange={setCount}
+            />
+            <Field label="Seed" hint="Leave empty for a fresh random seed each run.">
+              <Input
+                placeholder="Random if empty"
+                value={seed}
+                onChange={(e) => setSeed(e.target.value)}
               />
             </Field>
-          )}
 
-          <Field
-            label="Aspect ratio"
-            hint="Pick a ratio to lock the proportions, then set the size with the sliders. Flip swaps width and height. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
-          >
-            <div className="flex items-center gap-2">
-              <Select
-                value={aspect}
-                onValueChange={changeAspect}
-                open={active && aspectOpen}
-                onOpenChange={(o) => setAspectOpen(active && o)}
-              >
-                <SelectTrigger className="flex-1">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ASPECT_OPTIONS.map((key) => (
-                    <SelectItem key={key} value={key}>
-                      {key === "custom" ? "Custom" : key}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                variant="secondary"
-                size="icon"
-                aria-label="Flip width and height"
-                title="Flip orientation"
-                onClick={flipDimensions}
-              >
-                <HugeiconsIcon icon={ArrowLeftRightIcon} className="size-4" />
-              </Button>
-            </div>
-          </Field>
-          <SliderField label="Width" value={width} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeWidth} />
-          <SliderField label="Height" value={height} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeHeight} />
+            <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
+              {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
+              {busy === "generating" && genDone != null && count > 1
+                ? `Generating ${genDone}/${count}…`
+                : "Generate"}
+            </Button>
 
-          <SliderField
-            label="Steps"
-            hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
-            value={steps}
-            min={1}
-            max={50}
-            step={1}
-            onChange={setSteps}
-          />
-          <SliderField
-            label="Guidance"
-            hint="Keep this at 0 for Z-Image-Turbo. Higher values make its output worse. Other models use guidance."
-            value={guidance}
-            min={0}
-            max={15}
-            step={0.5}
-            onChange={setGuidance}
-          />
-          <SliderField
-            label="Batch size"
-            hint="How many images to make at once. Faster than running them one by one, but uses more VRAM. They share a seed but each one is different."
-            value={batchSize}
-            min={1}
-            max={32}
-            step={1}
-            onChange={setBatchSize}
-          />
-          <SliderField
-            label="Runs"
-            hint="How many times to repeat the generation, one after another. Each run uses the next seed, so the images differ and can be reproduced."
-            value={count}
-            min={1}
-            max={RUNS_SLIDER_MAX}
-            step={1}
-            onChange={setCount}
-          />
-          <Field label="Seed" hint="Leave empty for a fresh random seed each run.">
-            <Input
-              placeholder="Random if empty"
-              value={seed}
-              onChange={(e) => setSeed(e.target.value)}
-            />
-          </Field>
-
-          <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
-            {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-            {busy === "generating" && genDone != null && count > 1
-              ? `Generating ${genDone}/${count}…`
-              : "Generate"}
-          </Button>
-
+          </div>
         </div>
 
-        <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
+        <div className="bg-card corner-squircle relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl panel-soft-surface">
           <div className="relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
@@ -3013,7 +3015,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   key={image.id}
                   type="button"
                   onClick={() => setSelectedId(image.id)}
-                  className="relative size-16 shrink-0 overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="relative size-16 shrink-0 overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {srcById[image.id] ? (
                     <img
@@ -3048,7 +3050,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             like Chat's run-settings toggle), so the optimisation controls are discoverable
             without being docked open or buried at the bottom of the left rail. */}
         {advancedOpen && (
-          <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl ring-1 ring-foreground/10">
+          <div className="bg-card corner-squircle flex w-[300px] shrink-0 flex-col overflow-hidden rounded-3xl panel-soft-surface">
             <div className="flex h-[52px] shrink-0 items-center border-b border-border/60 px-4">
               <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
                 <HugeiconsIcon icon={Settings02Icon} className="size-4" />

@@ -39,7 +39,7 @@ function ShowcaseTile({ dataset, filename }: { dataset: string; filename: string
   }, [dataset, filename]);
 
   return (
-    <div className="size-14 shrink-0 overflow-hidden rounded-md bg-muted">
+    <div className="size-14 shrink-0 overflow-hidden rounded-[8px] bg-muted">
       {url ? (
         <img src={url} alt={filename} className="size-full object-cover" />
       ) : (
