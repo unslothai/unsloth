@@ -363,14 +363,25 @@ def test_shareable_link_html_renders_the_url_as_a_link():
 def test_shareable_link_html_emphasises_the_password():
     """The password is the one thing to copy, so it is enlarged and underlined."""
     html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
-    pw_tag = html[html.index("Password:") : html.index("secret-pass")]
+    pw_tag = html[html.index("Password") : html.index("secret-pass")]
     assert "font-size: 24px" in pw_tag
     assert "text-decoration: underline" in pw_tag
 
 
+def test_shareable_link_html_password_has_no_adjacent_whitespace():
+    """Whitespace beside the password is selected with it on a double click."""
+    html = colab._shareable_link_html("https://share.trycloudflare.com", "secret-pass", "unsloth")
+    before, after = html.split("secret-pass", 1)
+    assert before.endswith(">")
+    assert after.startswith("<")
+    # Label on its own line, so nothing shares the password's text node.
+    assert "Password:" not in html
+    assert "user-select: all" in html
+
+
 def test_shareable_link_html_omits_login_block_without_password():
     html = colab._shareable_link_html("https://share.trycloudflare.com")
-    assert "Password:" not in html
+    assert "Password" not in html
 
 
 def test_show_and_embed_folds_login_into_the_cloudflare_card(monkeypatch):

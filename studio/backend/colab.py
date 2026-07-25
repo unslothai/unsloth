@@ -454,10 +454,12 @@ def _shareable_link_html(
     if password:
         login_block = f"""
         <p style="color: #000000; margin: 16px 0 0 0; font-size: 20px; font-weight: 800;">
-            Password:
-            <code style="font-size: 24px; font-weight: 800; text-decoration: underline;
-                         background: #f3f3f3; padding: 4px 10px; border-radius: 6px;">{password}</code>
+            Password
         </p>
+        <p style="margin: 6px 0 0 0;"><code style="display: inline-block; font-size: 24px;
+            font-weight: 800; text-decoration: underline; background: #f3f3f3;
+            padding: 4px 10px; border-radius: 6px; user-select: all;
+            -webkit-user-select: all; -moz-user-select: all;">{password}</code></p>
         <p style="color: #666666; margin: 6px 0 0 0; font-size: 12px;">
             Log in as <code>{username}</code> with this password. Shown only in your
             notebook session, and never included in the shared link.
