@@ -11276,6 +11276,10 @@ class _ResponsesReasoningExtractor:
         # Last char of the consumed span, needed as ``before`` when a close tag
         # sits at buffer start (index 0) so its flank is the span's last char.
         self._span_last_char = ""
+        # Resume point for the "does a closing ``` follow the held tag" scan.
+        # While a close tag is held at buffer[0] the buffer only grows at the
+        # tail, so rescanning the whole prefix every delta is O(n^2) (#7334).
+        self._fence_scan_from = 0
 
     def _add_to_span(self, chunk: str) -> None:
         """Fold a newly consumed chunk into the O(1) parity counters."""
@@ -11314,7 +11318,15 @@ class _ResponsesReasoningExtractor:
         if not self._fence_parity_odd(buffer[:close_idx]):
             return False
         # No further ``` after the tag means the enclosing fence never closes.
-        return "```" not in buffer[close_idx:]
+        # Resume from the last scanned offset (never before the tag) so a held
+        # tag does not re-scan the whole growing buffer on every delta (#7334).
+        start = close_idx if close_idx > self._fence_scan_from else self._fence_scan_from
+        if buffer.find("```", start) != -1:
+            return False
+        # Overlap by 2 so a fence straddling this boundary is still found.
+        nxt = len(buffer) - 2
+        self._fence_scan_from = nxt if nxt > close_idx else close_idx
+        return True
 
     def _think_close_is_literal(self, buffer: str, close_idx: int) -> bool:
         """Literal-close check over consumed span + ``buffer[:close_idx]``.
@@ -11392,6 +11404,8 @@ class _ResponsesReasoningExtractor:
                         )
                         self._add_to_span(self._buffer[:hold_start])
                         self._buffer = self._buffer[hold_start:]
+                        # Buffer re-based: the fence scan cursor no longer applies.
+                        self._fence_scan_from = 0
                         break
                     # Quoted / backticked / fenced </think> is content (user
                     # echo, script discussion), not the end of reasoning (#7066).
@@ -11408,6 +11422,11 @@ class _ResponsesReasoningExtractor:
                             )
                             self._add_to_span(self._buffer[:close_idx])
                             self._buffer = self._buffer[close_idx:]
+                            # Re-base the scan cursor onto the trimmed buffer: the
+                            # tag now sits at index 0 and everything before the
+                            # last 2 chars has already been scanned (#7334).
+                            nxt = len(self._buffer) - 2
+                            self._fence_scan_from = nxt if nxt > 0 else 0
                             break
                         from core.inference.chat_template_helpers import (
                             neutralize_think_markup,
@@ -11420,6 +11439,7 @@ class _ResponsesReasoningExtractor:
                         consumed = close_idx + len(_RESPONSES_THINK_CLOSE)
                         self._add_to_span(self._buffer[:consumed])
                         self._buffer = self._buffer[consumed:]
+                        self._fence_scan_from = 0
                         continue
                     reasoning_parts.append(
                         self._buffer[:close_idx].replace(_RESPONSES_THINK_OPEN, "")
@@ -11439,6 +11459,7 @@ class _ResponsesReasoningExtractor:
                 reasoning_parts.append(emit.replace(_RESPONSES_THINK_OPEN, ""))
                 self._add_to_span(emit)
                 self._buffer = self._buffer[-keep:] if keep else ""
+                self._fence_scan_from = 0
                 break
 
             open_idx = self._buffer.find(_RESPONSES_THINK_OPEN)

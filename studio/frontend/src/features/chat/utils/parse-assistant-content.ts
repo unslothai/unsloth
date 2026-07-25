@@ -80,72 +80,113 @@ export function drainThinkMarkupBuffer(
   };
 }
 
-/** Non-overlapping ``` fence count in `raw[from, to)` (matches Python str.count). */
-function countFences(raw: string, from: number, to: number): number {
-  let fences = 0;
-  let f = raw.indexOf("```", from);
-  while (f !== -1 && f < to) {
-    fences++;
-    f = raw.indexOf("```", f + 3);
-  }
-  return fences;
-}
-
 /**
- * True when a close tag looks like quoted/code content rather than a block
- * end (#7066): flanked by quote chars, with the leading quote OPENING a span
- * (odd count of that quote char since the reasoning start).
+ * First structural (non-quoted, non-fenced) close tag at or after `from`.
+ *
+ * A close tag is *literal* content rather than a block end (#7066) when it sits
+ * inside a ``` fence that actually closes, or when it is flanked by quote chars
+ * whose leading quote OPENS a span (odd count of that char since `spanStart`).
+ *
+ * One forward pass: the fence count, the quote counts and the "is there a later
+ * fence" answer carry across candidate tags, so a call costs O(raw.length) even
+ * with many literal `"</think>"` mentions. Restarting the quote scan at
+ * `spanStart` per candidate was O(candidates x length), and this runs on the
+ * cumulative string for every SSE delta (#7334).
  */
-function isLiteralThinkClose(
-  raw: string,
-  spanStart: number,
-  closeIndex: number,
-): boolean {
-  // Inside an open ``` fence, a close tag is sample text, not a block end --
-  // but only when that fence actually closes. An unclosed fence in the
-  // reasoning (e.g. `<think>...```python\n...</think>answer`) must not make the
-  // real </think> look literal and swallow the whole visible answer, so fall
-  // back to structural when the fence never closes by end of text. Mirrors the
-  // backend Responses extractor's EOF fallback (_fence_unresolved_at_close, #7334).
-  const fencesBefore = countFences(raw, spanStart, closeIndex);
-  if (fencesBefore % 2 === 1) {
-    // The close sits inside an open ``` fence. That fence is resolved (a real
-    // fenced example) iff a closing ``` appears after this tag; the next fence
-    // marker closes it. Global parity over the rest of the span is wrong, since
-    // a separate later unclosed fence would then misflag an earlier close whose
-    // own fence already closed (#7334). No further ``` means the enclosing
-    // fence never closes, so treat this tag as a genuine structural close.
-    if (raw.indexOf("```", closeIndex) === -1) return false;
-    return true;
-  }
-  const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
-  const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
-  if (!before || !after) return false;
-  if (!`"'\``.includes(before) || !`"'\``.includes(after)) return false;
-  let count = 0;
-  for (let i = spanStart; i < closeIndex; i++) {
-    if (raw[i] === before) count++;
-  }
-  return count % 2 === 1;
-}
-
-/** First structural (non-quoted) close tag at or after `from`. */
 function findStructuralThinkClose(
   raw: string,
   spanStart: number,
   from: number,
 ): number {
+  const FENCE = "```";
   let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
-  while (
-    closeIndex !== -1 &&
-    isLiteralThinkClose(raw, spanStart, closeIndex)
-  ) {
+  if (closeIndex === -1) return -1;
+
+  // Greedy non-overlapping fence scan (matches Python str.count): `fences` is
+  // the number of fence markers starting strictly before `nextFence`.
+  let fences = 0;
+  let nextFence = raw.indexOf(FENCE, spanStart);
+  // Last fence marker in `raw`; only the odd-parity branch needs it, so it is
+  // computed at most once and reused.
+  let lastFence: number | undefined;
+  // Running quote counts over [spanStart, cursor) per quote char, advanced
+  // lazily with indexOf rather than a char-by-char loop (same answer, far less
+  // work on ordinary prose, which is mostly quote-free).
+  let dq = 0;
+  let dqFrom = spanStart;
+  let sq = 0;
+  let sqFrom = spanStart;
+  let bt = 0;
+  let btFrom = spanStart;
+  const quoteCount = (ch: string, end: number): number => {
+    let n = ch === '"' ? dq : ch === "'" ? sq : bt;
+    const cursor = ch === '"' ? dqFrom : ch === "'" ? sqFrom : btFrom;
+    for (let at = raw.indexOf(ch, cursor); at !== -1 && at < end; ) {
+      n += 1;
+      at = raw.indexOf(ch, at + 1);
+    }
+    if (ch === '"') {
+      dq = n;
+      dqFrom = end;
+    } else if (ch === "'") {
+      sq = n;
+      sqFrom = end;
+    } else {
+      bt = n;
+      btFrom = end;
+    }
+    return n;
+  };
+
+  while (closeIndex !== -1) {
+    while (nextFence !== -1 && nextFence < closeIndex) {
+      fences += 1;
+      nextFence = raw.indexOf(FENCE, nextFence + FENCE.length);
+    }
+
+    let literal: boolean;
+    if (fences % 2 === 1) {
+      // The close sits inside an open ``` fence. That fence is resolved (a real
+      // fenced example) iff a closing ``` appears after this tag; the next fence
+      // marker closes it. Global parity over the rest of the span is wrong, since
+      // a separate later unclosed fence would then misflag an earlier close whose
+      // own fence already closed (#7334). No further ``` means the enclosing
+      // fence never closes, so treat this tag as a genuine structural close --
+      // an unclosed fence in the reasoning must not swallow the visible answer.
+      // Mirrors the backend extractor's EOF fallback (_fence_unresolved_at_close).
+      if (nextFence !== -1) {
+        // A greedy fence at/after the tag already proves the fence closes; only
+        // fall back to the O(n) scan when the greedy cursor is exhausted, since
+        // overlapping runs such as "````" can still hide a marker from it.
+        literal = true;
+      } else {
+        if (lastFence === undefined) lastFence = raw.lastIndexOf(FENCE);
+        literal = lastFence >= closeIndex;
+      }
+    } else {
+      const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
+      const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
+      if (
+        !before ||
+        !after ||
+        !`"'\``.includes(before) ||
+        !`"'\``.includes(after)
+      ) {
+        literal = false;
+      } else {
+        // The leading quote is literal only when it OPENS a span, i.e. an odd
+        // count of that char since the reasoning start.
+        literal = quoteCount(before, closeIndex) % 2 === 1;
+      }
+    }
+
+    if (!literal) return closeIndex;
     closeIndex = raw.indexOf(
       THINK_CLOSE_TAG,
       closeIndex + THINK_CLOSE_TAG.length,
     );
   }
-  return closeIndex;
+  return -1;
 }
 
 export function parseAssistantContent(raw: string): ContentPart[] {

@@ -376,6 +376,53 @@ def test_closed_fence_literal_before_later_unclosed_fence_streaming():
     assert visible.strip() == "answer"
 
 
+def test_held_fence_stream_does_not_rescan_the_buffer():
+    """A close tag held by an unclosed fence must not re-scan the whole held
+    buffer on every delta (#7334). The scan cursor tracks the buffer tail, so
+    each delta only looks at the new bytes plus a 2-char overlap."""
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning, _ = ex.feed("```python\nprint(1)\n</think>")
+    seen = []
+    for _ in range(200):
+        ex.feed("word " * 8)
+        seen.append((ex._fence_scan_from, len(ex._buffer)))
+    # Cursor pinned two chars from the end of the held buffer every delta.
+    assert all(cursor == length - 2 for cursor, length in seen)
+    # The held close still resolves structurally at EOF (#7066).
+    tail, visible = ex.finish()
+    assert "print(1)" in reasoning + tail
+    assert visible.startswith("word ")
+
+
+def test_held_fence_stream_scales_linearly():
+    """A long unclosed-fence stream must stay close to a clean stream of the
+    same length; the quadratic rescan was ~6x the clean control at 32k tokens
+    and grew from there (#7334)."""
+    import time
+
+    filler = "the model keeps reasoning about the training loop in detail. "
+    body = (filler * ((32000 * 4) // len(filler) + 1))[: 32000 * 4]
+
+    def stream(text: str) -> float:
+        ex = _ResponsesReasoningExtractor(
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        deltas = [text[i : i + 4] for i in range(0, len(text), 4)]
+        start = time.perf_counter()
+        for delta in deltas:
+            ex.feed(delta)
+        ex.finish()
+        return time.perf_counter() - start
+
+    held = stream("```python\nprint(1)\n</think>" + body)
+    clean = stream(body)
+    assert held < 4.0 * clean + 0.05, f"held {held:.3f}s vs clean {clean:.3f}s"
+
+
 def test_neutralize_tools_control_markup_deep():
     tools = [
         {
