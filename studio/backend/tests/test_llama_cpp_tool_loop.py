@@ -37,6 +37,24 @@ def _done() -> str:
     return "data: [DONE]\n"
 
 
+def _finish(reason: str) -> str:
+    return (
+        "data: "
+        + json.dumps(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": reason,
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+
+
 def _make_backend(
     monkeypatch,
     streams: list[object],
@@ -327,9 +345,8 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
 def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
     # A reasoning-only turn (whole answer in reasoning_content, no content, no
     # tool) with a tool active streams the reasoning live, then resolves to the
-    # bare reasoning text -- identical to the no-tool generate_chat_completion
-    # path -- so the non-streaming drain still returns it as `content`, not an
-    # empty answer.
+    # same text on the visible channel. The final cumulative snapshot stays
+    # append-only so route suffix extraction cannot drop that fallback.
     stream = [
         _sse({"reasoning_content": "The capital of France is Paris."}),
         _done(),
@@ -349,8 +366,49 @@ def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
     content_texts = [e["text"] for e in events if e["type"] == "content"]
     # Reasoning streamed live during BUFFERING (the fix).
     assert content_texts[0] == "<think>The capital of France is Paris."
-    # Resolves to bare reasoning, matching the no-tool sibling.
-    assert content_texts[-1] == "The capital of France is Paris."
+    assert content_texts[-1] == (
+        "<think>The capital of France is Paris.</think>The capital of France is Paris."
+    )
+
+
+def _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatch, with_tools):
+    stream = [
+        _sse({"reasoning_content": "The capital of France is Paris."}),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [stream], [])
+
+    if with_tools:
+        items = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "capital of France?"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations = 1,
+                promote_reasoning_only = False,
+            )
+        )
+        cumulatives = [item["text"] for item in items if item.get("type") == "content"]
+    else:
+        items = list(
+            backend.generate_chat_completion(
+                messages = [{"role": "user", "content": "capital of France?"}],
+                promote_reasoning_only = False,
+            )
+        )
+        cumulatives = [item for item in items if isinstance(item, str)]
+
+    assert cumulatives[-1] == "<think>The capital of France is Paris.</think>"
+    assert all(
+        current.startswith(previous) for previous, current in zip([""] + cumulatives, cumulatives)
+    )
+
+
+def test_reasoning_only_raw_consumer_without_tools_gets_one_balanced_think_block(monkeypatch):
+    _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatch, False)
+
+
+def test_reasoning_only_raw_consumer_with_tools_gets_one_balanced_think_block(monkeypatch):
+    _assert_reasoning_only_raw_consumer_gets_one_balanced_think_block(monkeypatch, True)
 
 
 def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
@@ -420,8 +478,8 @@ def _replay_route_reasoning_extractor(cumulatives: list[str]) -> tuple[str, str]
 def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
     # Parity contract: a reasoning-only reply must reach the client identically
     # whether tools are on or off. Both generators stream <think> live then
-    # resolve to the bare reasoning text; the route's suffix-diff + extractor
-    # must therefore produce the same (visible, reasoning) split for both.
+    # append a balanced close plus visible fallback; the route's suffix-diff +
+    # extractor must therefore produce the same split for both.
     stream = [
         _sse({"reasoning_content": "The capital"}),
         _sse({"reasoning_content": " of France is Paris."}),
@@ -458,8 +516,35 @@ def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
     no_tool_out = _replay_route_reasoning_extractor(no_tool_cumulatives)
     assert tool_out == no_tool_out
     # Pin the shared contract so a change to either path shows up here.
-    _visible, reasoning = tool_out
+    visible, reasoning = tool_out
+    assert visible == "The capital of France is Paris."
     assert reasoning == "The capital of France is Paris."
+
+
+def test_length_truncated_reasoning_stays_append_only_without_visible_promotion(monkeypatch):
+    stream = [
+        _sse({"reasoning_content": "The proof begins by assuming finitely many primes."}),
+        _finish("length"),
+        _done(),
+    ]
+    backend = _make_backend(monkeypatch, [stream], [])
+
+    items = list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "Prove infinitely many primes"}],
+            max_tokens = 16,
+        )
+    )
+    cumulatives = [item for item in items if isinstance(item, str)]
+
+    assert all(
+        current.startswith(previous) for previous, current in zip([""] + cumulatives, cumulatives)
+    )
+    assert cumulatives[-1] == ("<think>The proof begins by assuming finitely many primes.</think>")
+    visible, reasoning = _replay_route_reasoning_extractor(cumulatives)
+    assert visible == ""
+    assert reasoning == "The proof begins by assuming finitely many primes."
+    assert items[-1]["finish_reason"] == "length"
 
 
 def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
