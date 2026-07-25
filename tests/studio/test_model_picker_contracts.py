@@ -412,9 +412,9 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value.
     assert "maxSeqLength: maxSeqLengthValue" in src
     assert "const loadConfig" in src
-    # The persisted record is loaded via onRun(loadConfig), and save uses the
+    # The persisted record is loaded via onRun, and save uses the
     # untouched runtimeConfig (so a reset/default config stays default).
-    assert "onRun(loadConfig)" in src
+    assert "onRun(loadConfig, resolvedIsDiffusion)" in src
     assert "savePerModelConfig(" in src
 
 
@@ -503,8 +503,8 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
 
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'className={isDiffusion ? "hidden" : ROW_CLASS}' in page
-    assert "withoutUnsupportedDiffusionSettings(config)" in page
-    assert 'isDiffusion && gpuIndexKind === "vulkan"' in page
+    assert "withoutUnsupportedDiffusionSettings(config, gpuIndexKind)" in page
+    assert 'resolvedIsDiffusion && gpuIndexKind === "vulkan"' in page
     assert "stagedMetadataPending ||" in page
     assert "config.selectedGpuIds != null" in page
     for field in (

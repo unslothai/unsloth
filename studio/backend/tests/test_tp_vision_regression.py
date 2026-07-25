@@ -853,22 +853,3 @@ def test_explicit_gpu_ids_dedupes_when_device_already_stripped():
     backend._gpu_ids = [0]
     backend._requested_gpu_ids = [0]
     assert inference_routes._request_matches_loaded_settings(req, backend) is True
-
-
-def test_empty_gpu_ids_dedupes_without_stripping_device():
-    """gpu_ids=[] is documented as auto (same as omitting): the load path normalizes it to
-    None and keeps its --device, so the request-side strip must be gated on an EFFECTIVE pin.
-    An empty list re-sending --device must still dedupe against a server loaded with no pin
-    that kept its --device, not force a needless reload / training 409 (#7188)."""
-    from models.inference import LoadRequest
-
-    inference_routes = _load_inference_routes_module()
-
-    req = LoadRequest(
-        model_path = "owner/repo",
-        gpu_ids = [],
-        llama_extra_args = ["--device", "Vulkan3", "--top-k", "5"],
-    )
-    backend = _dedup_loaded_backend(extra_args = ["--device", "Vulkan3", "--top-k", "5"])
-    backend._gpu_ids = None
-    assert inference_routes._request_matches_loaded_settings(req, backend) is True

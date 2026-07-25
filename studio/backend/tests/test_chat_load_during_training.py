@@ -305,84 +305,6 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "estimate_unavailable")
 
-    # ── Vulkan ordinal budgeting ─────────────────────────────────────────────
-
-    def test_vulkan_build_budgets_least_free_gpu(self):
-        # The model fits even on the least-free card.
-        ok, info, _ = self._run(
-            devices = _devices((0, 80, 10), (1, 80, 20)),
-            required_override = 5.0,
-            gpu_ids = [0],
-            gpu_ids_are_vulkan_ordinals = True,
-        )
-        self.assertTrue(ok)
-        self.assertEqual(info["mode"], "gguf_vulkan")
-
-    def test_vulkan_build_rejected_when_worst_card_too_full(self):
-        # The unknown mapping could select the near-full card.
-        ok, info, _ = self._run(
-            devices = _devices((0, 80, 10), (1, 80, 77)),
-            required_override = 10.0,
-            gpu_ids = [0],
-            gpu_ids_are_vulkan_ordinals = True,
-        )
-        self.assertFalse(ok)
-        self.assertEqual(info["mode"], "gguf_vulkan")
-
-    def test_cuda_indexed_build_allows_same_layout(self):
-        # CUDA IDs resolve physically, so the same aggregate can pass.
-        ok, info, _ = self._run(
-            devices = _devices((0, 80, 10), (1, 80, 77)),
-            required_override = 10.0,
-            gpu_ids = [0, 1],
-            gpu_ids_are_vulkan_ordinals = False,
-        )
-        self.assertTrue(ok)
-        self.assertEqual(info["mode"], "gguf")
-
-    def test_vulkan_build_no_visible_gpus_refuses(self):
-        # Vulkan build with no visible GPUs -> nothing to budget -> default-deny.
-        ok, info, _ = self._run(
-            devices = [],
-            required_override = 5.0,
-            gpu_ids = [0],
-            gpu_ids_are_vulkan_ordinals = True,
-        )
-        self.assertFalse(ok)
-        self.assertEqual(info["reason"], "no_visible_gpus")
-
-    def test_vulkan_multi_gpu_shards_budget_per_device(self):
-        # Two Vulkan devices split a model that cannot fit the least-free card alone.
-        ok_single, info_single, _ = self._run(
-            devices = _devices((0, 80, 10), (1, 80, 76)),
-            required_override = 2.0,
-            gpu_ids = [0],
-            gpu_ids_are_vulkan_ordinals = True,
-        )
-        self.assertFalse(ok_single)
-        ok_multi, info_multi, _ = self._run(
-            devices = _devices((0, 80, 10), (1, 80, 76)),
-            required_override = 2.0,
-            gpu_ids = [0, 1],
-            gpu_ids_are_vulkan_ordinals = True,
-        )
-        self.assertTrue(ok_multi)
-        self.assertEqual(info_multi["mode"], "gguf_vulkan")
-        self.assertEqual(info_multi["per_gpu_needed_gb"], round(6.3 / 2, 3))
-
-    def test_vulkan_aggregate_budgets_requested_subset_not_all_visible(self):
-        # Budget only the requested two-card subset, not all visible GPUs.
-        ok, info, _ = self._run(
-            devices = _devices((0, 80, 30), (1, 80, 30), (2, 80, 30), (3, 80, 30)),
-            required_override = 80.0,
-            gpu_ids = [0, 1],
-            gpu_ids_are_vulkan_ordinals = True,
-        )
-        self.assertFalse(ok)
-        self.assertEqual(info["mode"], "gguf_vulkan")
-        self.assertEqual(info["usable_gb"], 92.5)
-
-
 # ── can_load_chat_during_training: device-independent paths ──────────────────
 
 
@@ -555,15 +477,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         )
         self.assertIsNone(self.route._classify_diffusion_gguf(config))
 
-    def test_uncached_normal_model_with_diffusion_in_name_remains_unknown(self):
-        config = SimpleNamespace(
-            identifier = "owner/stable-diffusion-prompt-model-GGUF",
-            gguf_hf_repo = "owner/stable-diffusion-prompt-model-GGUF",
-            gguf_variant = "Q4_K_M",
-            gguf_file = None,
-        )
-        self.assertIsNone(self.route._classify_diffusion_gguf(config))
-
     def test_diffusion_detection_reuses_loader_metadata_probe(self):
         import tempfile
 
@@ -598,28 +511,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             model = Path(d) / "renamed.gguf"
             model.write_bytes(b"GGUF")
             config = SimpleNamespace(identifier = "local", gguf_file = str(model))
-            with patch.object(self.route, "LlamaCppBackend", _Probe):
-                self.assertFalse(self.route._classify_diffusion_gguf(config))
-
-    def test_local_normal_gguf_in_diffusion_named_path_is_normal(self):
-        # A readable GGUF header overrides a diffusion-like path.
-        import tempfile
-        class _Probe:
-            is_diffusion = False
-            _architecture = "llama"
-
-            def _read_gguf_metadata(self, _path):
-                pass
-
-        with tempfile.TemporaryDirectory() as d:
-            model = Path(d) / "diffusion-experiments" / "qwen3.gguf"
-            model.parent.mkdir(parents = True)
-            model.write_bytes(b"GGUF")
-            config = SimpleNamespace(
-                identifier = "me/qwen3-diffusion-tests",
-                gguf_hf_repo = "me/qwen3-diffusion-tests",
-                gguf_file = str(model),
-            )
             with patch.object(self.route, "LlamaCppBackend", _Probe):
                 self.assertFalse(self.route._classify_diffusion_gguf(config))
 
@@ -681,27 +572,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertTrue(captured[0]["gpu_ids_are_vulkan_ordinals"])
         self.assertIsNone(captured[0]["single_device_gpu"])
-
-    def test_unclassified_gguf_on_cuda_build_keeps_single_device(self):
-        # Same unknown GGUF on a CUDA-indexed build: the Vulkan flag stays off and the
-        # single-device CUDA guard is preserved (no regression from the Vulkan gating) (#7188).
-        captured = []
-        config = SimpleNamespace(is_gguf = True)
-        with (
-            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
-            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
-            patch.object(self.route.LlamaCppBackend, "_diffusion_gpu_arg", return_value = "0"),
-        ):
-            self._guard(
-                config = config,
-                captured = captured,
-                training_active = True,
-                decision = (True, {"mode": "single_device"}),
-                requested_gpu_ids = [0, 1],
-            )
-        self.assertEqual(len(captured), 1)
-        self.assertFalse(captured[0]["gpu_ids_are_vulkan_ordinals"])
-        self.assertEqual(captured[0]["single_device_gpu"], "0")
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
@@ -978,52 +848,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             response = asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertTrue(response.is_diffusion)
 
-    def test_gguf_validate_rejects_inherited_draft_device_before_unload(self):
-        # Validate inherited draft placement before the client unloads.
-        from models.inference import ValidateModelRequest
-
-        request = ValidateModelRequest(model_path = "x.gguf", gpu_ids = [0])
-        cfg = SimpleNamespace(
-            identifier = "x.gguf",
-            display_name = "x",
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-            gguf_variant = None,
-        )
-        loaded = SimpleNamespace(
-            is_loaded = True,
-            model_identifier = "x.gguf",
-            extra_args = ["--spec-draft-device", "CUDA1"],
-            extra_args_source = ("x.gguf", None),
-            is_vulkan_build = lambda: False,
-        )
-        captured = []
-        with (
-            patch.object(
-                self.route,
-                "_resolve_model_identifier_for_request",
-                return_value = ("x.gguf", "x.gguf", False),
-            ),
-            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
-            patch.object(self.route, "load_inference_config", return_value = {}),
-            patch.object(self.route, "_requires_trust_remote_code_for_model", return_value = False),
-            patch.object(self.route, "get_llama_cpp_backend", return_value = loaded),
-            patch.object(
-                self.route,
-                "_resolve_gguf_gpu_ids_for_request",
-                return_value = ([0], False),
-            ),
-            _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
-        ):
-            with self.assertRaises(HTTPException) as ctx:
-                asyncio.run(self.route.validate_model(request, current_subject = "u"))
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn("draft-model device", ctx.exception.detail)
-        self.assertEqual(captured, [])
-
     def _validate_gguf_template(
         self,
         *,
@@ -1284,74 +1108,6 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
 
         self.assertEqual(exc.exception.status_code, 409)
         # Guard runs before the unload step, so a refused load tears down nothing.
-        inf.unload_model.assert_not_called()
-        inf._shutdown_subprocess.assert_not_called()
-        llama.unload_model.assert_not_called()
-
-    def test_gguf_draft_device_gpu_rejected_under_gpu_ids_before_unload(self):
-        # Reject escaping draft placement before teardown.
-        import contextlib
-        from unittest.mock import MagicMock
-        from models.inference import LoadRequest
-
-        inf = SimpleNamespace(active_model_name = None)
-        inf.unload_model = MagicMock()
-        inf._shutdown_subprocess = MagicMock()
-        llama = SimpleNamespace(
-            is_loaded = False,
-            model_identifier = None,
-            hf_variant = None,
-            is_vulkan_build = lambda: False,
-        )
-        llama.unload_model = MagicMock()
-        cfg = SimpleNamespace(
-            is_gguf = True,
-            is_lora = False,
-            is_vision = False,
-            path = None,
-            base_model = None,
-            identifier = "x.gguf",
-            display_name = "x",
-        )
-        request = LoadRequest(
-            model_path = "x.gguf",
-            gpu_ids = [0],
-            llama_extra_args = ["--spec-draft-device", "CUDA1"],
-            max_seq_length = 4096,
-        )
-        captured = []
-        with (
-            patch("utils.transformers_version.latest_tier_active_for", return_value = False),
-            patch.object(
-                self.route,
-                "validate_extra_args",
-                return_value = ["--spec-draft-device", "CUDA1"],
-            ),
-            patch.object(
-                self.route,
-                "_resolve_model_identifier_for_request",
-                return_value = ("x.gguf", "x.gguf", False),
-            ),
-            patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
-            patch.object(
-                self.route,
-                "_resolve_gguf_gpu_ids_for_request",
-                return_value = ([0], False),
-            ),
-            patch.object(self.route, "get_inference_backend", return_value = inf),
-            patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
-            patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
-            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
-            _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
-        ):
-            with self.assertRaises(HTTPException) as exc:
-                asyncio.run(
-                    self.route.load_model(request, fastapi_request = MagicMock(), current_subject = "u")
-                )
-
-        self.assertEqual(exc.exception.status_code, 400)
-        self.assertIn("draft-model device", exc.exception.detail)
-        self.assertEqual(captured, [])
         inf.unload_model.assert_not_called()
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()

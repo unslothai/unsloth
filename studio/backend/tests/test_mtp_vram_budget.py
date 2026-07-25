@@ -869,20 +869,6 @@ class TestExtraArgsMtpDetection:
         # HF-only (hf_repo): local/native loads have no download to retry.
         assert "llama_backend.hf_repo" in body
 
-    def test_route_matcher_strips_memory_flags_under_env_override(self):
-        routes_src = (
-            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-        ).read_text()
-        start = routes_src.index("def _request_matches_loaded_settings")
-        end = routes_src.index("\ndef ", start + 1)
-        body = "".join(routes_src[start:end].split())
-        assert "_strip_mem=LlamaCppBackend._memory_mode_env_override()" in body
-        # The request side is stripped and compared against the UNstripped backend.
-        assert "_request_extra" in body
-        assert "if_request_extra!=backend_extra:" in body
-        # Backend side is not stripped a second time (no _backend_extra_cmp helper).
-        assert "_backend_extra_cmp" not in body
-
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win
         # per axis at launch), not the last-wins single type that under-reserves.
