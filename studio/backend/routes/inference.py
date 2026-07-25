@@ -13266,7 +13266,11 @@ async def anthropic_messages(
     # slot only while the body iterates (the upstream stream opens on iteration); the
     # non-stream path holds it across the single awaited generation.
     async def _admitted_anthropic_stream(
-        orig_body, reservation, admission_config, stream_lease, prior_cleanup = None
+        orig_body,
+        reservation,
+        admission_config,
+        stream_lease,
+        prior_cleanup = None,
     ):
         lease = stream_lease
         stream_cancelled = False

@@ -500,7 +500,7 @@ def test_queued_give_up_runs_the_response_pre_start_cleanup(monkeypatch):
         )
         body = response.body_iterator
         await asyncio.wait_for(body.__anext__(), timeout = 2)  # keep-alive, still queued
-        await body.aclose()                                    # give up before the body ran
+        await body.aclose()  # give up before the body ran
 
         assert ran == [True]
         for lease in held:
@@ -519,7 +519,8 @@ def test_passthrough_stream_registers_a_pre_start_cleanup():
     tree = ast.parse(src.replace("\t", "    ").lstrip())
     returns = [n for n in ast.walk(tree) if isinstance(n, ast.Return) and n.value is not None]
     call = next(
-        n.value for n in returns
+        n.value
+        for n in returns
         if isinstance(n.value, ast.Call)
         and getattr(n.value.func, "id", "") == "_sse_streaming_response"
     )
