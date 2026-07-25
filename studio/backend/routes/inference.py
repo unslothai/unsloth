@@ -1200,11 +1200,11 @@ def _anthropic_admission_http_exception(exc: Exception, *, status_code: int) -> 
             f"{message} "
             f"(active={snapshot.active}, queued={snapshot.queued}, capacity={snapshot.capacity})"
         )
-    # A saturated backend is Anthropic's overloaded_error; 499 keeps the per-status default.
-    err_type = "overloaded_error" if status_code in (429, 503) else None
+    # Types come from ANTHROPIC_TYPE_BY_STATUS (429 -> rate_limit_error, which is
+    # what Anthropic SDKs back off on); overloaded_error is reserved for 529.
     return HTTPException(
         status_code = status_code,
-        detail = anthropic_error_body(message, status = status_code, err_type = err_type),
+        detail = anthropic_error_body(message, status = status_code),
     )
 
 
@@ -13248,6 +13248,8 @@ async def anthropic_messages(
     # non-stream path holds it across the single awaited generation.
     async def _admitted_anthropic_stream(orig_body, reservation, admission_config, stream_lease):
         lease = stream_lease
+        stream_cancelled = False
+        body_started = False
         try:
             if lease is None:
                 async for wait_item in _openai_admission_wait_stream_chunks(
@@ -13263,23 +13265,31 @@ async def anthropic_messages(
                     break
             if lease is None:
                 return
+            body_started = True
             async for chunk in orig_body:
                 yield chunk
+        except asyncio.CancelledError:
+            # Must reach the monitored generator as CancelledError, not aclose's
+            # GeneratorExit, or its handler never finalizes the monitor entry.
+            stream_cancelled = True
+            raise
         except LlamaAdmissionTimeout as exc:
             api_monitor.fail(monitor_id, str(exc))
             yield build_anthropic_sse_event(
                 "error",
-                anthropic_error_body(str(exc), status = 503, err_type = "overloaded_error"),
+                anthropic_error_body(str(exc), status = 503),
             )
         except LlamaAdmissionCancelled:
             return
         finally:
-            _aclose = getattr(orig_body, "aclose", None)
-            if _aclose is not None:
-                try:
-                    await _aclose()
-                except Exception:
-                    pass
+            await _close_openai_admitted_stream_iterator(
+                orig_body,
+                cancelled = stream_cancelled,
+            )
+            # The monitored body finalizes itself once it has started; before that
+            # nothing else will, so a give-up while queued must do it here.
+            if not body_started:
+                api_monitor.finish(monitor_id, "cancelled")
             if lease is not None:
                 lease.release()
             else:
@@ -13316,6 +13326,8 @@ async def anthropic_messages(
                 return monitored
 
             async def _unstarted_cleanup() -> None:
+                # The body never ran, so nothing else closes out the monitor entry.
+                api_monitor.finish(monitor_id, "cancelled")
                 _aclose = getattr(orig_body, "aclose", None)
                 if _aclose is not None:
                     try:
@@ -13350,6 +13362,13 @@ async def anthropic_messages(
             coro.close()
             api_monitor.finish(monitor_id, "cancelled")
             raise _anthropic_admission_http_exception(exc, status_code = 499)
+        except BaseException:
+            # Cancelled while queued (shutdown, outer task cancel): the generation
+            # coroutine was never awaited, so close it rather than leak it.
+            if lease is None:
+                coro.close()
+                api_monitor.finish(monitor_id, "cancelled")
+            raise
         finally:
             if lease is not None:
                 lease.release()

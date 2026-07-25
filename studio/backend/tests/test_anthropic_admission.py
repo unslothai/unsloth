@@ -31,6 +31,7 @@ from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
     ADMISSION_MAX_QUEUE_ENV,
+    ADMISSION_QUEUE_PER_SLOT_ENV,
     ADMISSION_QUEUE_TIMEOUT_ENV,
     LlamaAdmissionConfig,
     get_llama_admission_queue,
@@ -50,6 +51,7 @@ def _isolate(monkeypatch):
         ADMISSION_QUEUE_TIMEOUT_ENV,
         ADMISSION_KEEPALIVE_INTERVAL_ENV,
         ADMISSION_MAX_QUEUE_ENV,
+        ADMISSION_QUEUE_PER_SLOT_ENV,
         # Legacy spellings resolve too, so clear both for isolation.
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_CONTROL",
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_QUEUE_TIMEOUT",
@@ -159,7 +161,8 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
         with pytest.raises(HTTPException) as exc:
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
-        assert exc.value.detail["error"]["type"] == "overloaded_error"
+        # rate_limit_error is what Anthropic SDKs back off on; overloaded_error is 529.
+        assert exc.value.detail["error"]["type"] == "rate_limit_error"
         for lease in held:
             lease.release()
 
@@ -380,3 +383,87 @@ async def _drain(body):
     async for chunk in body:
         chunks.append(chunk.decode() if isinstance(chunk, (bytes, bytearray)) else chunk)
     return "".join(chunks)
+
+
+def test_streaming_midstream_cancel_finalizes_the_monitor(monkeypatch):
+    # A mid-stream disconnect is delivered as CancelledError so the monitored body
+    # can finalize its entry. Closing the inner iterator with aclose() instead
+    # delivers GeneratorExit, and the entry stays "running" for the process life.
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        body = response.body_iterator
+        await asyncio.wait_for(body.__anext__(), timeout = 2)   # stream started
+        assert inf_mod.api_monitor.active_count() == 1
+
+        # Propagates back out, as the un-admitted path did; what matters is that
+        # the monitored body saw it on the way through.
+        with pytest.raises(asyncio.CancelledError):
+            await body.athrow(asyncio.CancelledError())         # client vanished
+
+        assert inf_mod.api_monitor.active_count() == 0
+        assert _snapshot().active == 0 and _snapshot().queued == 0
+
+    asyncio.run(_run())
+
+
+def test_streaming_give_up_while_queued_finalizes_the_monitor(monkeypatch):
+    # Cancelled before the body ever ran, so nothing downstream can close the
+    # entry out; the wrapper has to do it.
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        body = response.body_iterator
+        await asyncio.wait_for(body.__anext__(), timeout = 2)   # keep-alive, still queued
+        assert inf_mod.api_monitor.active_count() == 1
+
+        await body.aclose()                                     # give up while waiting
+
+        assert inf_mod.api_monitor.active_count() == 0
+        for lease in held:
+            lease.release()
+        assert _snapshot().active == 0 and _snapshot().queued == 0
+
+    asyncio.run(_run())
+
+
+def test_every_dispatch_site_goes_through_admission():
+    """All six generation returns in anthropic_messages are admission-wrapped.
+
+    The tool paths need a passthrough-capable backend and a tools payload to reach
+    at runtime, so guard them structurally instead: a new dispatch site added
+    without admission (or one reverted to _monitored_anthropic) fails here.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(inf_mod).replace("\t", "    "))
+    handler = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "anthropic_messages"
+    )
+    # The wrappers themselves call _monitored_anthropic; only the dispatch sites count.
+    nested = {
+        node for node in ast.walk(handler)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("_admitted_anthropic")
+    }
+    inner = {id(n) for wrapper in nested for n in ast.walk(wrapper)}
+
+    called = []
+    for node in ast.walk(handler):
+        if id(node) in inner or not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            called.append(node.func.id)
+
+    assert called.count("_admitted_anthropic") == 6
+    assert called.count("_monitored_anthropic") == 0

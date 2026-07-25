@@ -16,6 +16,7 @@ from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KEEPALIVE_INTERVAL_ENV,
     ADMISSION_MAX_QUEUE_ENV,
+    ADMISSION_QUEUE_PER_SLOT_ENV,
     ADMISSION_QUEUE_TIMEOUT_ENV,
     DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S,
     DEFAULT_ADMISSION_MAX_QUEUE,
@@ -41,6 +42,7 @@ def test_admission_config_defaults(monkeypatch):
         ADMISSION_QUEUE_TIMEOUT_ENV,
         ADMISSION_KEEPALIVE_INTERVAL_ENV,
         ADMISSION_MAX_QUEUE_ENV,
+        ADMISSION_QUEUE_PER_SLOT_ENV,
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_CONTROL",
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_QUEUE_TIMEOUT",
         "UNSLOTH_OPENAI_COMPAT_ADMISSION_KEEPALIVE_INTERVAL",
@@ -50,10 +52,15 @@ def test_admission_config_defaults(monkeypatch):
 
     config = llama_admission_config_from_env()
 
+    # Literals, not the module constants: comparing a default to itself would let
+    # any future value change through silently.
     assert config.enabled is True
-    assert config.queue_timeout_s == DEFAULT_ADMISSION_QUEUE_TIMEOUT_S
-    assert config.keepalive_interval_s == DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
-    assert config.max_queue == DEFAULT_ADMISSION_MAX_QUEUE
+    assert config.queue_timeout_s is None          # wait forever
+    assert config.keepalive_interval_s == 5.0
+    assert config.max_queue is None                # no absolute cap
+    assert config.queue_per_slot == 16
+    assert (DEFAULT_ADMISSION_QUEUE_TIMEOUT_S, DEFAULT_ADMISSION_MAX_QUEUE) == (None, None)
+    assert DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S == 5.0
 
 
 def test_admission_config_env_overrides(monkeypatch):
@@ -198,20 +205,30 @@ def test_shrinking_capacity_retires_slots_beyond_the_new_pool():
 
 
 def test_queue_limit_scales_with_the_serving_slots():
-    # The wait line follows --parallel: 16 per slot by default.
+    # The wait line follows --parallel: 16 per slot, floored at 64 so a 1-slot
+    # backend keeps the depth it had before scaling existed.
     config = LlamaAdmissionConfig()
     assert config.queue_limit(4) == 64  # --parallel 4  (the default)
     assert config.queue_limit(8) == 128  # --parallel 8
-    assert config.queue_limit(1) == 16
+    assert config.queue_limit(16) == 256
+    assert config.queue_limit(1) == 64  # floor, not 16
+    assert config.queue_limit(2) == 64  # floor, not 32
     # An explicit cap wins, and a None multiplier means an unbounded line.
     assert LlamaAdmissionConfig(max_queue = 5).queue_limit(8) == 5
     assert LlamaAdmissionConfig(queue_per_slot = None).queue_limit(8) is None
+    # Non-positive settings mean unbounded, never "reject everything".
+    assert LlamaAdmissionConfig(max_queue = 0).queue_limit(4) is None
+    assert LlamaAdmissionConfig(max_queue = -1).queue_limit(4) is None
+    assert LlamaAdmissionConfig(queue_per_slot = 0).queue_limit(4) is None
+    assert LlamaAdmissionConfig(queue_per_slot = -3).queue_limit(4) is None
 
 
-def test_scaled_queue_limit_rejects_only_past_slots_times_multiplier():
+def test_queue_limit_rejects_only_once_the_line_is_full():
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(queue_per_slot = 2)  # capacity 2 -> 4 waiters
+        # Explicit cap, so the test drives rejection without standing up the 64
+        # waiters the scaled floor would otherwise require.
+        config = LlamaAdmissionConfig(max_queue = 4)
 
         held = [queue.reserve(capacity = 2, config = config).lease_nowait() for _ in range(2)]
         parked = [queue.reserve(capacity = 2, config = config) for _ in range(4)]
@@ -485,3 +502,72 @@ def test_new_key_retains_in_flight_prior_load_queue():
         assert set(llama_admission._QUEUES) == {"http://127.0.0.1:2003"}
 
     asyncio.run(_run())
+
+
+def test_capacity_shrink_never_admits_past_the_new_ceiling():
+    # A load that downshifts --parallel (or an unload resetting it to 1) shrinks the
+    # pool while slots are still held. Those holdovers keep occupying the backend, so
+    # they must count against the ceiling; sizing on free ids alone over-admits.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        held = [queue.reserve(capacity = 4, config = config).lease_nowait() for _ in range(4)]
+        assert all(lease is not None for lease in held)
+        waiter = queue.reserve(capacity = 4, config = config)
+
+        queue.reserve(capacity = 1, config = config)   # capacity collapses to 1
+        # Release the one id that still falls inside the shrunk pool, so it goes
+        # back on the free list; ids at or above capacity retire instead.
+        low = min(held, key = lambda lease: lease.slot)
+        assert low.slot == 0
+        low.release()
+
+        # The other 3 holdovers are still generating, which already meets the new
+        # ceiling, so the freed id must not be handed on. Gating on "is an id free"
+        # alone grants it here and puts 4 generations on a 1-slot backend.
+        with pytest.raises(asyncio.TimeoutError):
+            await waiter.wait(0.2)
+        assert queue.snapshot().active == 3
+
+        waiter.cancel()
+        for lease in held:
+            if lease is not low:
+                lease.release()
+
+    asyncio.run(_run())
+
+
+def test_queue_per_slot_env_is_parsed(monkeypatch):
+    monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, "4")
+    assert llama_admission_config_from_env().queue_limit(32) == 128
+    # Non-positive asks for an unbounded line rather than rejecting everything.
+    monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, "0")
+    assert llama_admission_config_from_env().queue_limit(32) is None
+
+
+def test_max_queue_zero_from_env_is_unbounded_end_to_end(monkeypatch):
+    # Guards the whole env path, not just the parsed field: a regression that let
+    # queue_per_slot survive MAX_QUEUE=0 would silently re-bound the line.
+    monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "0")
+    config = llama_admission_config_from_env()
+    assert config.max_queue is None and config.queue_per_slot is None
+    assert config.queue_limit(1) is None and config.queue_limit(64) is None
+
+
+def test_legacy_env_fallback_covers_every_setting(monkeypatch):
+    for canonical, legacy in llama_admission._LEGACY_ENV.items():
+        monkeypatch.delenv(canonical, raising = False)
+        monkeypatch.setenv(legacy, "0" if "CONTROL" in canonical else "7")
+    config = llama_admission_config_from_env()
+    assert config.enabled is False
+    assert config.queue_timeout_s == 7.0
+    assert config.keepalive_interval_s == 7.0
+    assert config.max_queue == 7
+
+
+def test_empty_canonical_env_falls_through_to_legacy(monkeypatch):
+    # The branch _raw_env exists for: set but blank must not mask the legacy name.
+    monkeypatch.setenv(ADMISSION_CONTROL_ENV, "   ")
+    monkeypatch.setenv(llama_admission._LEGACY_ENV[ADMISSION_CONTROL_ENV], "0")
+    assert llama_admission_config_from_env().enabled is False

@@ -44,6 +44,10 @@ DEFAULT_ADMISSION_MAX_QUEUE = None
 # Wait line = 16 x the serving slots, so it tracks --parallel (4 slots -> 64
 # waiters, 8 -> 128). Purely a memory guard; waiting itself is never timed out.
 DEFAULT_ADMISSION_QUEUE_PER_SLOT = 16
+# Floor for the scaled line, so a 1-slot backend (plain `unsloth studio`, or any
+# load downshifted to fit VRAM) keeps the depth it had before scaling existed
+# rather than dropping to 16 and rejecting callers that used to queue.
+DEFAULT_ADMISSION_MIN_QUEUE = 64
 
 
 @dataclass(frozen = True, slots = True)
@@ -58,13 +62,14 @@ class LlamaAdmissionConfig:
         """How many callers may line up for a pool of ``capacity`` slots.
 
         An explicit ``max_queue`` wins; otherwise the line scales with the slots
-        so it follows ``--parallel``. None means an unbounded line.
+        so it follows ``--parallel``, floored so small pools do not shrink. None
+        (or any non-positive setting) means an unbounded line.
         """
         if self.max_queue is not None:
-            return self.max_queue
-        if self.queue_per_slot is None:
+            return self.max_queue if self.max_queue > 0 else None
+        if not self.queue_per_slot or self.queue_per_slot <= 0:
             return None
-        return self.queue_per_slot * max(1, capacity)
+        return max(DEFAULT_ADMISSION_MIN_QUEUE, self.queue_per_slot * max(1, capacity))
 
 
 @dataclass(frozen = True, slots = True)
@@ -331,8 +336,13 @@ class LlamaAdmissionQueue:
         self._capacity = capacity
         self._free = [slot for slot in range(capacity) if not self._in_use >> slot & 1]
 
+    def _can_admit_locked(self) -> bool:
+        # Slots still held above a shrunk capacity keep occupying the backend, so
+        # count every held slot against the ceiling, not just the ids below it.
+        return bool(self._free) and self._in_use.bit_count() < self._capacity
+
     def _take_slot_locked(self) -> Optional[int]:
-        if not self._free:
+        if not self._can_admit_locked():
             return None
         slot = self._free.pop()
         self._in_use |= 1 << slot
@@ -377,12 +387,17 @@ class LlamaAdmissionQueue:
                 waiter = waiter,
             )
 
-    def release(self, slot: Optional[int] = None) -> None:
+    def _release_slot_locked(self, slot: Optional[int]) -> None:
+        # A slot id at or past a shrunk capacity retires instead of returning.
+        if slot is None or not self._in_use >> slot & 1:
+            return
+        self._in_use &= ~(1 << slot)
+        if slot < self._capacity:
+            self._free.append(slot)
+
+    def release(self, slot: Optional[int]) -> None:
         with self._lock:
-            if slot is not None and self._in_use >> slot & 1:
-                self._in_use &= ~(1 << slot)
-                if slot < self._capacity:
-                    self._free.append(slot)
+            self._release_slot_locked(slot)
             self._grant_waiters_locked()
 
     def cancel(self, waiter: _Waiter) -> None:
@@ -413,14 +428,20 @@ class LlamaAdmissionQueue:
 
     def _grant_waiters_locked(self) -> None:
         # Dead waiters are skipped as they are popped, so no prune is needed here.
-        while self._waiters and self._free:
+        while self._waiters and self._can_admit_locked():
             waiter = self._waiters.popleft()
             if waiter.cancelled or waiter.future.done():
                 continue
             slot = self._take_slot_locked()
             lease = LlamaAdmissionLease(self, slot)
             waiter.granted_lease = lease
-            waiter.loop.call_soon_threadsafe(self._deliver_lease, waiter, lease)
+            try:
+                waiter.loop.call_soon_threadsafe(self._deliver_lease, waiter, lease)
+            except RuntimeError:
+                # Waiter's loop is gone. Reclaim the slot; leaving the bit set
+                # would strand it, since _free is rebuilt from the bitmask.
+                waiter.granted_lease = None
+                self._release_slot_locked(slot)
 
     def _deliver_lease(self, waiter: _Waiter, lease: LlamaAdmissionLease) -> None:
         if waiter.cancelled or waiter.future.done():
