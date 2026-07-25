@@ -378,6 +378,18 @@ def _auto_generate_colab_admin_password() -> "str | None":
     the on-disk bootstrap password), then return it for one-time display in the
     cell. Returns None when a password is already set (nothing to do) or on error.
     The value is never persisted to disk or placed on argv.
+
+    The commit is a compare-and-set on ``must_change_password``: another tab can
+    finish /change-password against the reused server between the check below and
+    the write, and an unconditional update would either discard the password the
+    user just chose or display a generated one that has already been replaced,
+    publishing the tunnel under credentials nobody can use. Losing that race means
+    a password is now set, so we return None exactly as if one always had been.
+
+    Entering this path also purges the pre-#7392 ``.colab_notebook_login`` cache:
+    the removed finalize flow wrote the admin username and password there in
+    plaintext, and an upgraded runtime must not keep a readable copy of a
+    credential this flow promises is never persisted (CWE-256).
     """
     try:
         from auth.storage import (
@@ -390,13 +402,24 @@ def _auto_generate_colab_admin_password() -> "str | None":
         logger.warning(f"Could not load auth storage to secure the public link ({e}).")
         return None
     try:
+        _clear_colab_login_credentials()
         ensure_default_admin()
         if not requires_password_change(DEFAULT_ADMIN_USERNAME):
             return None
         import secrets
 
         generated = secrets.token_urlsafe(24)
-        update_password(DEFAULT_ADMIN_USERNAME, generated, revoke_refresh_tokens = True)
+        committed = update_password(
+            DEFAULT_ADMIN_USERNAME,
+            generated,
+            revoke_refresh_tokens = True,
+            require_must_change = True,
+        )
+        if not committed:
+            # Lost the race: a password was set elsewhere, so ours was never
+            # written. Never show it -- it would not authenticate.
+            logger.info("An admin password was set concurrently; keeping it for the public link.")
+            return None
         return generated
     except Exception as e:
         logger.warning(f"Could not auto-generate an admin password for the public link ({e}).")

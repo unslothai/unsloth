@@ -1211,6 +1211,53 @@ def test_cli_update_password_revokes_link_tokens(monkeypatch, tmp_path):
     assert _auth_state(studio_mod)["must_change_password"] == 0
 
 
+def test_cli_update_password_compare_and_set_guard(monkeypatch, tmp_path):
+    # Mirror backend storage.update_password: the auto-generated launch credential
+    # is committed only while must_change_password is still 1. A user finishing
+    # /change-password in a Studio tab between the must_change read and this write
+    # must not be silently overwritten, and nothing else may be revoked when the
+    # guard rejects the update.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    conn = studio_mod._connect_auth_db()
+    admin = studio_mod.DEFAULT_ADMIN_USERNAME
+    assert (
+        studio_mod._cli_update_password(
+            conn, admin, "first-generated-pw-1", require_must_change = True
+        )
+        is True
+    )
+    before = conn.execute(
+        "SELECT password_hash, jwt_secret FROM auth_user WHERE username = ?", (admin,)
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+        ("jti-guarded", admin, "2099-01-01T00:00:00"),
+    )
+    conn.commit()
+
+    # must_change is 0 now, so the guarded write is refused and changes nothing.
+    assert (
+        studio_mod._cli_update_password(
+            conn, admin, "second-generated-pw-2", require_must_change = True
+        )
+        is False
+    )
+    after = conn.execute(
+        "SELECT password_hash, jwt_secret FROM auth_user WHERE username = ?", (admin,)
+    ).fetchone()
+    remaining = conn.execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0]
+
+    # An explicit (unguarded) change still applies.
+    assert studio_mod._cli_update_password(conn, admin, "explicit-change-pw-3") is True
+    conn.close()
+
+    assert tuple(after) == tuple(before)  # password and JWT secret untouched
+    assert remaining == 1  # no collateral revocation on a rejected write
+
+
 def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):
     # If auth.db cannot be removed (running Unsloth / Windows lock, read-only dir),
     # reset must abort BEFORE touching the credential files -- deleting them while

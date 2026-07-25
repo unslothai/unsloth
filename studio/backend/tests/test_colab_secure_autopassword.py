@@ -66,6 +66,81 @@ def test_auto_generate_noop_when_password_already_set():
     # A supplied/changed password must NOT be overwritten.
     assert colab._auto_generate_colab_admin_password() is None
     assert storage.requires_password_change(admin) is False
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    assert hashing.verify_password("bootstrap-secret-123", salt, pwd_hash) is True
+
+
+def test_auto_generate_loses_race_to_a_concurrent_password_change(monkeypatch):
+    # Another tab can complete /change-password against the reused Colab server
+    # between the requires_password_change() read and the rotation. The commit is a
+    # compare-and-set on must_change_password, so the user's chosen password
+    # survives and no already-replaced generated value is returned for display
+    # (publishing the shared link under it would lock everyone out).
+    admin = _seed_admin(must_change_password = True)
+    real_update = storage.update_password
+    real_requires = storage.requires_password_change
+    raced = []
+
+    def _racing_requires_password_change(username):
+        # Report "still pending", then let the other tab commit before we write.
+        if not raced:
+            raced.append(True)
+            real_update(username, "user-chosen-password-1", revoke_refresh_tokens = True)
+        return True
+
+    monkeypatch.setattr(storage, "requires_password_change", _racing_requires_password_change)
+
+    assert colab._auto_generate_colab_admin_password() is None
+    assert raced == [True]
+
+    monkeypatch.setattr(storage, "requires_password_change", real_requires)
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    # The concurrently chosen password is intact; the generated one never landed.
+    assert hashing.verify_password("user-chosen-password-1", salt, pwd_hash) is True
+    assert storage.requires_password_change(admin) is False
+
+
+def test_update_password_compare_and_set_guard():
+    # Storage unit: the guarded update writes only while must_change_password = 1.
+    admin = _seed_admin(must_change_password = True)
+    assert storage.update_password(admin, "first-generated-pw-1", require_must_change = True) is True
+    # must_change is now 0, so a second guarded write is refused (rowcount 0)...
+    assert (
+        storage.update_password(admin, "second-generated-pw-2", require_must_change = True) is False
+    )
+    from auth import hashing
+
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    assert hashing.verify_password("first-generated-pw-1", salt, pwd_hash) is True
+    # ...while the unguarded path (an explicit reset/change) still applies.
+    assert storage.update_password(admin, "explicit-change-pw-3") is True
+    salt, pwd_hash, _jwt, _mc = storage.get_user_and_secret(admin)
+    assert hashing.verify_password("explicit-change-pw-3", salt, pwd_hash) is True
+
+
+def test_auto_generate_purges_legacy_plaintext_credential_cache():
+    # Upgrade path: the pre-#7392 Colab flow persisted the admin username and
+    # password in plaintext in .colab_notebook_login and re-read it on every
+    # re-run. Nothing calls that flow now, so an upgraded runtime would keep a
+    # readable credential on disk forever (CWE-256) while this flow promises the
+    # credential is never persisted. Entering the public-auth path purges it, in
+    # BOTH branches (rotating, and already-has-a-password).
+    _seed_admin(must_change_password = True)
+    legacy = colab._colab_login_credentials_path()
+    colab._store_colab_login_credentials("unsloth", "legacy-plaintext-pw")
+    assert legacy.is_file()
+
+    assert isinstance(colab._auto_generate_colab_admin_password(), str)
+    assert not legacy.exists()
+
+    # Already-set branch: still purged.
+    colab._store_colab_login_credentials("unsloth", "legacy-plaintext-pw")
+    assert colab._auto_generate_colab_admin_password() is None
+    assert not legacy.exists()
 
 
 def test_start_cloudflare_tunnel_autogenerates_then_proceeds(monkeypatch):

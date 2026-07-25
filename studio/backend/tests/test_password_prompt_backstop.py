@@ -136,13 +136,17 @@ def test_gate_skips_when_password_already_changed(monkeypatch):
     assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, False)
 
 
-def _stub_update_password(monkeypatch) -> list:
+def _stub_update_password(monkeypatch, *, committed: bool = True) -> list:
     """Record update_password calls so the auto-generate path can be asserted
-    without touching the real auth DB."""
+    without touching the real auth DB. Returns the real function's bool so the
+    compare-and-set caller sees a committed (or, with committed=False, a lost) write."""
     calls = []
-    monkeypatch.setattr(
-        auth_storage, "update_password", lambda u, p, **kw: calls.append((u, p, kw))
-    )
+
+    def _update(u, p, **kw):
+        calls.append((u, p, kw))
+        return committed
+
+    monkeypatch.setattr(auth_storage, "update_password", _update)
     return calls
 
 
@@ -169,7 +173,9 @@ def test_gate_autogenerates_password_on_tty_console(monkeypatch):
     username, password, kwargs = calls[0]
     assert username == admin
     assert isinstance(password, str) and len(password) >= auth_storage.MIN_PASSWORD_LENGTH
-    assert kwargs == {"revoke_refresh_tokens": True}
+    # Compare-and-set: the write lands only while must_change_password is still 1,
+    # so a password chosen elsewhere in the meantime is never overwritten.
+    assert kwargs == {"revoke_refresh_tokens": True, "require_must_change": True}
     out = stderr.getvalue()
     assert "auto-generated" in out
     assert admin in out
@@ -216,6 +222,50 @@ def test_console_only_stream_unwraps_tee():
     assert run._console_only_stream(tee) is console
     plain = io.StringIO()
     assert run._console_only_stream(plain) is plain
+
+
+def test_console_only_stream_unwraps_nested_tees(monkeypatch):
+    # run_server() can run twice in one process (a local run, then a public one),
+    # and each call re-wraps the already-wrapped sys.stdout/stderr, so the tees
+    # nest. Peeling a single layer returned the INNER _TeeStream -- which forwards
+    # isatty() to the console and so passes the tty check -- and the one-time
+    # credential was mirrored into the first run's retained server-*.log
+    # (CWE-532). Every layer must be unwrapped.
+    console = _Stream(isatty = True)
+    first_log, second_log = io.StringIO(), io.StringIO()
+    nested = run._TeeStream(run._TeeStream(console, first_log), second_log)
+    assert run._console_only_stream(nested) is console
+
+    # End to end: the secret reaches the console and neither retained log.
+    monkeypatch.setattr(sys, "stderr", nested)
+    monkeypatch.setattr(sys, "stdout", nested)
+    out = run._one_time_secret_stream()
+    assert out is console
+    run._print_auto_generated_credentials("unsloth", "Nested-Tee-Pw-1", out = out)
+    assert "Nested-Tee-Pw-1" in console.getvalue()
+    assert "Nested-Tee-Pw-1" not in first_log.getvalue()
+    assert "Nested-Tee-Pw-1" not in second_log.getvalue()
+
+
+def test_gate_does_not_show_password_when_rotation_loses_the_race(monkeypatch):
+    # Another Studio process/tab sharing this auth DB can finish /change-password
+    # between the gate's must_change read and the rotation. The guarded update then
+    # writes nothing, so the generated value never took effect: it must not be
+    # displayed (it would not authenticate), and the launch proceeds under the
+    # password that did land.
+    stderr = _patch_streams_autogen(monkeypatch)
+    _patch_seeded_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    calls = _stub_update_password(monkeypatch, committed = False)
+
+    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (True, True)
+
+    assert len(calls) == 1, calls
+    _username, password, kwargs = calls[0]
+    assert kwargs["require_must_change"] is True
+    out = stderr.getvalue()
+    assert password not in out
+    assert "auto-generated" not in out
 
 
 def test_gate_autogenerates_even_when_deadline_cannot_arm(monkeypatch):

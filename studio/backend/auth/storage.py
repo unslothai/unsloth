@@ -604,12 +604,21 @@ def update_password(
     new_password: str,
     *,
     revoke_refresh_tokens: bool = False,
+    require_must_change: bool = False,
 ) -> bool:
     """Update password, clear first-login requirement, rotate JWT secret.
 
     ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
     transaction: a separate delete could fail after the password commit and
     leave a pre-change token still able to mint access tokens.
+
+    ``require_must_change`` makes this a compare-and-set: the row is written only
+    while ``must_change_password`` is still 1, and False is returned when it is
+    not. Auto-generated launch credentials use it so a user who completes
+    /change-password in another tab between a ``requires_password_change()`` read
+    and this call is not silently overwritten (and no already-replaced generated
+    password is displayed). SQLite runs the guarded UPDATE as one atomic
+    statement, so exactly one of the two writers sees rowcount > 0.
 
     Outstanding one-time link tokens are ALSO deleted in this same transaction,
     unconditionally. Their signing key is derived from the JWT secret we rotate
@@ -623,13 +632,14 @@ def update_password(
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
+    guard = " AND must_change_password = 1" if require_must_change else ""
     conn = get_connection()
     try:
         cursor = conn.execute(
-            """
+            f"""
             UPDATE auth_user
             SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-            WHERE username = ?
+            WHERE username = ?{guard}
             """,
             (salt, pwd_hash, jwt_secret, username),
         )

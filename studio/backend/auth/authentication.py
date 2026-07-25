@@ -163,6 +163,29 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
+def _b64url_decode_canonical(value: str) -> Optional[bytes]:
+    """Decode unpadded base64url, rejecting every non-canonical spelling.
+
+    urlsafe_b64decode is not injective: it silently discards non-alphabet
+    characters, accepts already-present "=" padding, and ignores the unused pad
+    bits of the final character (RFC 4648 s3.5 puts the zero-pad-bits MUST on
+    encoders, and only lets decoders reject). A 32-byte HMAC therefore has four
+    spellings that decode to the same bytes, so flipping the last character of a
+    signature still passes compare_digest whenever it is canonically "A" -- about
+    1 in 16 tokens. Re-encoding the decoded bytes and requiring an exact match
+    makes the mapping one-to-one, so any altered signature text is rejected.
+    Returns None instead of raising, so callers reject without leaking which
+    check failed.
+    """
+    try:
+        raw = _b64url_decode(value)
+    except (ValueError, TypeError):
+        return None
+    if _b64url_encode(raw) != value:
+        return None
+    return raw
+
+
 def _link_token_key(subject: str) -> Optional[bytes]:
     """Derive the link-token signing key for *subject* from their JWT secret.
 
@@ -176,8 +199,11 @@ def _link_token_key(subject: str) -> Optional[bytes]:
 
 
 def _decode_link_payload(payload_b64: str) -> Optional[dict]:
+    raw = _b64url_decode_canonical(payload_b64)
+    if raw is None:
+        return None
     try:
-        return json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None
 
@@ -245,9 +271,11 @@ def exchange_link_token_with_secret(token: str) -> Optional[Tuple[str, str]]:
         return None
     key = hmac.new(secret.encode("utf-8"), _LINK_TOKEN_KEY_LABEL, hashlib.sha256).digest()
     expected_sig = hmac.new(key, payload_b64.encode("ascii"), hashlib.sha256).digest()
-    try:
-        provided_sig = _b64url_decode(sig_b64)
-    except (ValueError, TypeError):
+    # Canonical decode: a permissive base64url decode would accept three sibling
+    # spellings of the same signature bytes, so a tampered trailing character
+    # could still verify (see _b64url_decode_canonical).
+    provided_sig = _b64url_decode_canonical(sig_b64)
+    if provided_sig is None:
         return None
     if not hmac.compare_digest(expected_sig, provided_sig):
         return None

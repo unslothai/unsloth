@@ -162,13 +162,72 @@ def test_link_token_tampered_signature_is_rejected():
     admin = _seed_admin()
     token = authentication.create_link_token(admin)
     payload_b64, sig_b64 = token.split(".", 1)
-    # Flip the last signature character to a different value.
-    flipped = "A" if sig_b64[-1] != "A" else "B"
-    tampered = f"{payload_b64}.{sig_b64[:-1]}{flipped}"
+    # Flip a signature BYTE and re-encode canonically, so the tampering always
+    # changes the decoded bytes (flipping the last base64 character only alters
+    # pad bits about 1 in 16 times, which is what made this test flaky).
+    raw_sig = bytearray(authentication._b64url_decode(sig_b64))
+    raw_sig[0] ^= 0x01
+    tampered = f"{payload_b64}.{authentication._b64url_encode(bytes(raw_sig))}"
     assert authentication.exchange_link_token(tampered) is None
     # The jti was never consumed, so a valid replay of the untampered token still
     # works exactly once afterwards.
     assert authentication.exchange_link_token(token) == admin
+
+
+def test_link_token_non_canonical_signature_is_rejected():
+    # base64url is not injective under a permissive decoder: the final character of
+    # a 32-byte signature carries 2 unused pad bits, so 'A', 'B', 'C' and 'D' all
+    # decode to the same trailing byte (RFC 4648 s3.5 puts the zero-pad-bits MUST on
+    # encoders only), and urlsafe_b64decode also accepts extra "=" and silently
+    # drops non-alphabet characters. Before the canonical re-encode check, rewriting
+    # a canonical trailing 'A' as 'B' still passed compare_digest and exchanged
+    # successfully -- roughly 1 token in 16. Mint until a token exhibits the
+    # trailing-'A' case rather than relying on chance.
+    admin = _seed_admin()
+    token = None
+    for _ in range(500):
+        candidate = authentication.create_link_token(admin)
+        if candidate.split(".", 1)[1].endswith("A"):
+            token = candidate
+            break
+    assert token is not None, "no signature ending in 'A' in 500 mints"
+    payload_b64, sig_b64 = token.split(".", 1)
+    variants = [
+        f"{payload_b64}.{sig_b64[:-1]}B",  # same bytes, different spelling
+        f"{payload_b64}.{sig_b64[:-1]}C",
+        f"{payload_b64}.{sig_b64[:-1]}D",
+        f"{payload_b64}.{sig_b64}=",  # explicit padding
+        f"{payload_b64}.{sig_b64}==",
+        f"{payload_b64}.{sig_b64[:4]}*{sig_b64[4:]}",  # non-alphabet char, silently dropped
+    ]
+    for variant in variants:
+        assert authentication.exchange_link_token(variant) is None, variant
+    # None of the rejected variants consumed the jti: the real token still works once.
+    assert authentication.exchange_link_token(token) == admin
+    assert authentication.exchange_link_token(token) is None
+
+
+def test_link_token_non_canonical_payload_is_rejected():
+    # The signature covers the payload TEXT, so a re-spelled payload cannot verify;
+    # assert it explicitly so the canonical decode stays in place.
+    admin = _seed_admin()
+    token = authentication.create_link_token(admin)
+    payload_b64, sig_b64 = token.split(".", 1)
+    assert authentication.exchange_link_token(f"{payload_b64}=.{sig_b64}") is None
+    assert (
+        authentication.exchange_link_token(f"{payload_b64[:4]}*{payload_b64[4:]}.{sig_b64}") is None
+    )
+    assert authentication.exchange_link_token(token) == admin
+
+
+def test_b64url_decode_canonical_round_trips_and_rejects_variants():
+    # Unit: only the exact canonical spelling of the bytes decodes.
+    for size in (1, 2, 3, 16, 32, 48):
+        raw = secrets.token_bytes(size)
+        canonical = authentication._b64url_encode(raw)
+        assert authentication._b64url_decode_canonical(canonical) == raw
+        assert authentication._b64url_decode_canonical(canonical + "=") is None
+        assert authentication._b64url_decode_canonical(canonical + "\n") is None
 
 
 def test_link_token_tampered_payload_is_rejected():

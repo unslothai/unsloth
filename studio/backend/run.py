@@ -1085,10 +1085,21 @@ def _console_only_stream(stream):
     password) must reach the operator's console but MUST NOT land in that
     persisted file (OWASP CWE-532: never write credentials to logs). Writing to
     the underlying stream shows the banner on the console while bypassing the tee.
+
+    Unwraps RECURSIVELY: run_server() can run twice in one process (e.g. a local
+    run followed by a public one), and each call re-wraps the already-wrapped
+    sys.stdout/stderr, so the tees nest. Peeling one layer would return an inner
+    _TeeStream -- which forwards isatty() to the real console and so passes the
+    TTY check -- and the credential would be mirrored into the older run's
+    retained server-*.log. The depth bound keeps a pathological self-referential
+    wrapper from looping forever; a stream still wrapped after it is reported as
+    unusable (None) so the caller fails closed rather than tee a credential.
     """
-    if isinstance(stream, _TeeStream):
-        return stream._stream
-    return stream
+    for _ in range(64):
+        if not isinstance(stream, _TeeStream):
+            return stream
+        stream = stream._stream
+    return None
 
 
 def _one_time_secret_stream():
@@ -1155,7 +1166,7 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
         return False
 
 
-def _auto_generate_admin_password(admin_username: str) -> str:
+def _auto_generate_admin_password(admin_username: str) -> "Optional[str]":
     """Generate a strong random admin password and commit it for a headless
     public launch that supplied none.
 
@@ -1164,14 +1175,25 @@ def _auto_generate_admin_password(admin_username: str) -> str:
     JWT secret, revokes refresh tokens, and deletes the on-disk bootstrap
     password. The value is returned once for display; it is NEVER written to disk
     or placed on argv.
+
+    The commit is a compare-and-set on ``must_change_password``: another Studio
+    process or tab sharing this auth DB can complete /change-password between the
+    gate's read and this write, and an unconditional update would overwrite the
+    password the user just chose. Returns None when that guard rejects the write,
+    so the caller shows nothing rather than a credential that never took effect.
     """
     import secrets as _secrets
 
     from auth import storage as _auth_storage
 
     generated = _secrets.token_urlsafe(24)
-    _auth_storage.update_password(admin_username, generated, revoke_refresh_tokens = True)
-    return generated
+    committed = _auth_storage.update_password(
+        admin_username,
+        generated,
+        revoke_refresh_tokens = True,
+        require_must_change = True,
+    )
+    return generated if committed else None
 
 
 def _print_auto_generated_credentials(username: str, password: str, *, out) -> None:
@@ -1284,6 +1306,12 @@ def _terminal_password_gate(
             )
             return False, False
         generated = _auto_generate_admin_password(_admin)
+        if generated is None:
+            # Lost the compare-and-set: a password was set elsewhere between the
+            # gate's read and the rotation, so ours was never written. The account
+            # is no longer on the default credential, so proceed without showing a
+            # password that would not authenticate.
+            return True, True
         # Write the one-time credential to the raw console stream, NOT the
         # _TeeStream that _setup_server_disk_logging() installed: the tee mirrors
         # everything into a retained server-*.log, and this password must never be

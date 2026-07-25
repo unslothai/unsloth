@@ -716,13 +716,26 @@ def _one_time_secret_console_stream():
     return None
 
 
-def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
+def _cli_update_password(
+    conn: sqlite3.Connection,
+    username: str,
+    new_password: str,
+    *,
+    require_must_change: bool = False,
+) -> bool:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
     revoke refresh tokens (PR #6651 finding), revoke outstanding one-time link
     tokens, and drop the desktop secret. File cleanup happens after commit; a
-    failed unlink must not roll the change back.
+    failed unlink must not roll the change back. Returns whether the row was
+    written.
+
+    ``require_must_change`` makes it a compare-and-set on must_change_password,
+    mirroring backend storage.update_password: an auto-generated launch credential
+    must not overwrite a password a user chose in a Studio tab between the
+    must_change read and this write. Returns False when that guard rejects the
+    update, and then nothing else is revoked or deleted.
 
     Revoking link_tokens here mirrors backend storage.update_password: a link
     token is signed with a key derived from the JWT secret rotated in this same
@@ -731,15 +744,18 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
     rows in the SAME transaction as the rotation closes that race.
     """
     password_salt, password_hash = _hash_password(new_password)
+    guard = " AND must_change_password = 1" if require_must_change else ""
     with conn:
-        conn.execute(
-            """
+        cursor = conn.execute(
+            f"""
             UPDATE auth_user
             SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-            WHERE username = ?
+            WHERE username = ?{guard}
             """,
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
+        if require_must_change and cursor.rowcount == 0:
+            return False
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
         conn.execute(
@@ -775,6 +791,7 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
                     "after a reset.",
                     err = True,
                 )
+    return True
 
 
 def _echo_auto_generated_credentials(
@@ -1187,7 +1204,15 @@ def _enforce_password_change_before_exposure(
                 )
                 raise typer.Exit(1)
             generated = secrets.token_urlsafe(24)
-            _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, generated)
+            if not _cli_update_password(
+                conn, DEFAULT_ADMIN_USERNAME, generated, require_must_change = True
+            ):
+                # Lost the compare-and-set: a password was set (another Studio tab
+                # finishing /change-password, a concurrent launch) between the
+                # must_change read above and this write, so ours was never stored.
+                # The account is off the seeded default, so launch with theirs and
+                # never show a credential that would not authenticate.
+                return
             _echo_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out)
             return
         password_salt, password_hash = row[0], row[1]
