@@ -1036,7 +1036,7 @@ export function DiffusionTrainPanel({
         {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
         <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
           <div>
-            <h2 className="text-sm font-semibold">Train a LoRA</h2>
+            <h2 className="text-base font-semibold">Train a LoRA</h2>
             <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
               Teach an image model a style, character, or subject from your own images. The
               finished adapter shows up in the Create tab&apos;s LoRA picker.
@@ -1365,7 +1365,7 @@ export function DiffusionTrainPanel({
           <>
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-sm font-semibold">
+                <span className="font-heading flex items-center gap-1.5 text-base font-medium">
                   <HugeiconsIcon icon={Settings02Icon} className="size-4" />
                   Training settings
                 </span>

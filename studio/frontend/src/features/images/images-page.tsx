@@ -2345,7 +2345,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           padding, so the rule runs the full page height; the panes pad their own
           content instead. ── */
       <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[1100px] flex-1 overflow-hidden px-5 pt-9 sm:px-8">
-        <div className="flex w-[392px] shrink-0 flex-col overflow-hidden border-r border-border/60">
+        <div className="flex w-[368px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
             {/* Workflow picker. Seven workflows don't fit a segmented strip in this rail,
