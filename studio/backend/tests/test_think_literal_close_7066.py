@@ -418,6 +418,39 @@ def test_answer_side_fence_streaming_matches_single_delta():
         assert visible == "Answer: ```js\nconst a = 1;\n```\ndone", size
 
 
+def test_answer_fence_hold_scales_linearly():
+    """Both look-aheads behind a held fenced tag must resume from a cursor.
+
+    A tag held by ``draft ```...</think>`` re-runs the "next ```" and "next
+    close tag" scans on every delta. When the answer's ``` already sits far
+    inside the buffer, re-finding it from the start each time is quadratic, so
+    the fence cursor parks on the marker and the close cursor tracks the tail
+    (#7334). Held streaming must stay close to a clean stream of equal length.
+    """
+    import time
+
+    filler = "the model keeps writing the answer out in some detail. "
+    half = (filler * ((32000 * 2) // len(filler) + 1))[: 32000 * 2]
+
+    def stream(head: str, tail: str) -> float:
+        ex = _ResponsesReasoningExtractor(
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        start = time.perf_counter()
+        # `head` lands in one delta so the fence sits deep in the held buffer
+        # from the very first look-ahead, then the tail streams in small deltas.
+        ex.feed(head)
+        for i in range(0, len(tail), 4):
+            ex.feed(tail[i : i + 4])
+        ex.finish()
+        return time.perf_counter() - start
+
+    held = stream("draft ```</think>" + half + "```js\n", half)
+    clean = stream(half, half)
+    assert held < 4.0 * clean + 0.05, f"held {held:.3f}s vs clean {clean:.3f}s"
+
+
 def test_closed_fence_literal_still_stays_reasoning():
     """A ``</think>`` inside a *closed* fence remains literal reasoning (#7334)."""
     reasoning, visible = _extract_responses_reasoning(

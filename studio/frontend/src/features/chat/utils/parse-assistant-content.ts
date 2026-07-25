@@ -142,6 +142,21 @@ function findStructuralThinkClose(
     }
     return n;
   };
+  // Memoized "is there a close tag at or after `at`", so the fence look-ahead
+  // below stays amortized O(raw.length) across candidates instead of one full
+  // indexOf each (#7334). `hit` is monotone: once none is found from some
+  // offset, none is found from any later one.
+  let seekFrom = -1;
+  let seekHit = -1;
+  const hasCloseTagFrom = (at: number): boolean => {
+    if (seekFrom !== -1) {
+      if (seekHit >= at) return true;
+      if (seekHit === -1 && at >= seekFrom) return false;
+    }
+    seekFrom = at;
+    seekHit = raw.indexOf(THINK_CLOSE_TAG, at);
+    return seekHit !== -1;
+  };
 
   while (closeIndex !== -1) {
     while (nextFence !== -1 && nextFence < closeIndex) {
@@ -179,8 +194,7 @@ function findStructuralThinkClose(
         // "draft ```</think>Answer: ```js ... ```" (#7334). Mirrors the backend
         // extractor's _fence_unresolved_at_close.
         literal =
-          fenceClose !== -1 &&
-          raw.indexOf(THINK_CLOSE_TAG, fenceClose + FENCE.length) !== -1;
+          fenceClose !== -1 && hasCloseTagFrom(fenceClose + FENCE.length);
       }
     } else {
       const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";

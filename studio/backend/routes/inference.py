@@ -11349,12 +11349,16 @@ class _ResponsesReasoningExtractor:
             nxt = len(buffer) - 2
             self._fence_scan_from = nxt if nxt > close_idx else close_idx
             return True
+        # Park the fence cursor ON the marker: it must be re-found every delta
+        # while the tag stays held, and a cursor pointing at a real ``` cannot
+        # skip one, so the re-find becomes O(1) instead of O(distance).
+        if fence_at > self._fence_scan_from:
+            self._fence_scan_from = fence_at
         after = fence_at + 3
         scan = after if after > self._close_scan_from else self._close_scan_from
         if buffer.find(_RESPONSES_THINK_CLOSE, scan) != -1:
             return False
-        # Overlap so a close tag straddling this boundary is still found. The
-        # fence cursor stays put: ``fence_at`` must be re-found next delta.
+        # Overlap so a close tag straddling this boundary is still found.
         nxt = len(buffer) - (len(_RESPONSES_THINK_CLOSE) - 1)
         self._close_scan_from = nxt if nxt > after else after
         return True

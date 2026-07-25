@@ -103,11 +103,22 @@ function timeUs(fn) {
   for (let i = 0; i < 200; i++) fn();
   return Number(process.hrtime.bigint() - t0) / 200 / 1000;
 }
+function fencedSpan(nLit) {
+  // One open fence holding nLit literal close tags, then the fence closes and a
+  // long stretch runs before the real close. Every literal takes the odd-fence
+  // branch with the SAME "next close tag" answer, so an unmemoized look-ahead
+  // rescans that stretch nLit times.
+  let s = "```\\n";
+  for (let i = 0; i < nLit; i++) s += "</think>\\n" + words(30);
+  return s + "```\\n" + words(8000);
+}
 const clean = `<think>${span(0)}</think>${words(4000)}`;
 const many = `<think>${span(200)}</think>${words(4000)}`;
+const fenced = `<think>${fencedSpan(200)}</think>${words(4000)}`;
 const perf = {
   clean_us: timeUs(() => parseAssistantContent(clean)),
   many_us: timeUs(() => parseAssistantContent(many)),
+  fenced_us: timeUs(() => parseAssistantContent(fenced)),
 };
 console.log(JSON.stringify({ parsed, closed, perf, streaming }));
 """
@@ -209,3 +220,11 @@ def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):
     perf = _run_parse_harness(tmp_path)["perf"]
     ratio = perf["many_us"] / perf["clean_us"]
     assert ratio < 500, f"many {perf['many_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
+    # 200 FENCED literals sharing one open fence all take the odd-fence branch
+    # with the same "is there a later close tag" answer; memoizing it keeps the
+    # parse near linear (~7x the clean control, vs ~17x re-scanning and far
+    # worse as the trailing span grows).
+    fenced_ratio = perf["fenced_us"] / perf["clean_us"]
+    assert fenced_ratio < 60, (
+        f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
+    )
