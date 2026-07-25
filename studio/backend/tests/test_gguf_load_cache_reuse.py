@@ -32,16 +32,11 @@ _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
-# routes/inference.py pulls in core.inference.external_provider, which binds a
-# structlog logger at import time; give the stub a working factory so the route
-# module is importable when structlog is not installed.
+# routes/inference.py binds structlog.get_logger at import time through
+# core.inference.external_provider. setdefault keeps any bare stub an earlier
+# test module left behind, so repair that one too instead of relying on order.
 _structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
-# An earlier test module in the same session (e.g. test_checkpoints_scan.py) may
-# already have parked a bare ModuleType("structlog") in sys.modules, in which
-# case the setdefault above kept that one and get_logger is missing. Repair it
-# so the route import stays order-independent. The real structlog always has
-# get_logger, so this never shadows the installed package.
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
@@ -816,10 +811,9 @@ class TestLoadHubDownloadExclusion:
 
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
-        # _load_model_impl has more than one `if config.is_gguf:` (the GPU-pool
-        # validation reworked by #7239 comes first), so anchor on the branch
-        # that actually owns the load marker rather than the first one in the
-        # file, which belongs to an earlier check.
+        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
+        # the branch that actually owns the load marker rather than the first
+        # one in the file, which belongs to an earlier check.
         marker = source.index("enter_context(gguf_load_in_flight")
         gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
         gguf_branch = source[gguf_branch_start:]
@@ -831,8 +825,6 @@ class TestLoadHubDownloadExclusion:
         # inherited value (e.g. a carried --no-mmproj) shapes the guard's
         # require_mmproj. Anchor on the call form so the assertion pins the
         # endpoint's call site, not the function definition.
-        # test_inherited_extra_args_shape_hub_guard_require_mmproj below pins
-        # the same ordering behaviourally, without depending on source offsets.
         assert source.index("= _resolve_inherited_extra_args(") < gguf_branch_start
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
@@ -877,8 +869,7 @@ class TestLoadHubDownloadExclusion:
             captured["require_mmproj"] = require_mmproj
             return True
 
-        # A vision GGUF: require_mmproj is True unless the effective extras
-        # carry --no-mmproj.
+        # A vision GGUF: require_mmproj is True unless the extras say --no-mmproj.
         config = SimpleNamespace(
             is_gguf = True,
             is_lora = False,
@@ -893,8 +884,7 @@ class TestLoadHubDownloadExclusion:
             identifier = REPO,
             display_name = REPO,
         )
-        # Previous same-model load's pass-through extras, as the running
-        # llama.cpp backend records them.
+        # Pass-through extras the running backend recorded for the last load.
         llama_backend = SimpleNamespace(
             is_loaded = False,
             extra_args = list(stored_extra_args),
@@ -945,12 +935,9 @@ class TestLoadHubDownloadExclusion:
         return captured["require_mmproj"]
 
     def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
-        # llama_extra_args inheritance must resolve before the hub-download
-        # guard runs: the inherited value (a carried --no-mmproj) decides the
-        # guard's require_mmproj, so resolving it later would reject a load
-        # over an mmproj download the effective arguments disable (#7251).
-        # Asserted behaviourally rather than by source offsets, which silently
-        # re-anchored onto an unrelated "if config.is_gguf:" (#7239).
+        # Inheritance must resolve before the hub-download guard: the inherited
+        # --no-mmproj decides require_mmproj, so resolving it later would reject
+        # a load over an mmproj download the effective arguments disable (#7251).
         assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
         # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True
