@@ -2598,6 +2598,12 @@ export function createOpenAIStreamAdapter(
       // SSE loop because the close tag fires when content arrives.
       let reasoningContentOpen = false;
       let reasoningMarkupBuffer = "";
+      // Offsets in `cumulativeText` of the `</think>` we append ourselves when
+      // closing a synthetic reasoning_content wrapper. That boundary is known,
+      // not inferred, so the parser must not re-derive it with the raw-marker
+      // fence/quote heuristics -- reasoning ending in an unfinished ``` would
+      // otherwise keep every answer delta in the drawer until the end (#7334).
+      const syntheticCloses = new Set<number>();
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -2690,11 +2696,12 @@ export function createOpenAIStreamAdapter(
 
         const appendTextThrough = (nextCursor: number) => {
           if (nextCursor <= textCursor) return;
+          const base = textCursor;
           assembled.push(
-            ...parseAssistantContent(
-              rawText.slice(textCursor, nextCursor),
-              options,
-            ),
+            ...parseAssistantContent(rawText.slice(base, nextCursor), {
+              ...options,
+              isKnownClose: (index) => syntheticCloses.has(index + base),
+            }),
           );
           textCursor = nextCursor;
         };
@@ -2757,6 +2764,7 @@ export function createOpenAIStreamAdapter(
           }
         }
         if (!reasoningContentOpen) return;
+        syntheticCloses.add(cumulativeText.length);
         cumulativeText += "</think>";
         reasoningContentOpen = false;
       };
@@ -3985,6 +3993,7 @@ export function createOpenAIStreamAdapter(
               }
               const textParts = parseAssistantContent(cumulativeText, {
                 streaming: true,
+                isKnownClose: (index) => syntheticCloses.has(index),
               });
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -3995,7 +4004,10 @@ export function createOpenAIStreamAdapter(
                 reasoningStartAt = Date.now();
               }
               if (
-                hasClosedThinkTag(cumulativeText, { streaming: true }) &&
+                hasClosedThinkTag(cumulativeText, {
+                  streaming: true,
+                  isKnownClose: (index) => syntheticCloses.has(index),
+                }) &&
                 reasoningStartAt &&
                 !reasoningDuration
               ) {

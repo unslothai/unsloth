@@ -81,7 +81,26 @@ const unclosedStreaming = {
     (part) => part.type,
   ),
 };
-const streaming = { streamClosed, streamTypes, streamFinal, unclosedStreaming };
+// A delimiter the ADAPTER inserted itself (closing a synthetic
+// reasoning_content wrapper) is a known boundary, not an inferred one, so the
+// raw-marker deferral must not apply to it (#7334).
+const syntheticRaw = "<think>draft ```</think>The answer. See ```js\\ncode\\n```";
+const syntheticAt = "<think>draft ```".length;
+const isKnownClose = (index) => index === syntheticAt;
+const synthetic = {
+  known: parseAssistantContent(syntheticRaw, { streaming: true, isKnownClose }),
+  knownClosed: hasClosedThinkTag(syntheticRaw, { streaming: true, isKnownClose }),
+  rawMarker: parseAssistantContent(syntheticRaw, { streaming: true }).map(
+    (part) => part.type,
+  ),
+};
+const streaming = {
+  streamClosed,
+  streamTypes,
+  streamFinal,
+  unclosedStreaming,
+  synthetic,
+};
 
 // Perf guard for #7334: literal mentions must not make the parse super-linear.
 const LOREM = "reasoning about the training loop in some detail. ";
@@ -211,6 +230,34 @@ def test_mid_stream_unclosed_fence_decision_is_deferred(tmp_path):
     # in the semantics test above) is what falls back to structural.
     assert streaming["unclosedStreaming"]["closed"] is False
     assert streaming["unclosedStreaming"]["types"] == ["reasoning"]
+
+
+def test_known_synthetic_close_is_not_re_derived(tmp_path):
+    """The adapter's own `</think>` must survive the streaming deferral.
+
+    A provider can end structured reasoning_content inside an unfinished ```
+    fence; `closeReasoningContent()` then appends a delimiter whose position is
+    already known. Running the raw-marker fence heuristics over it kept every
+    answer delta in the thinking drawer until the stream ended (#7334).
+    """
+    synthetic = _run_parse_harness(tmp_path)["streaming"]["synthetic"]
+
+    assert synthetic["known"] == [
+        {"type": "reasoning", "text": "draft ```"},
+        {"type": "text", "text": "The answer. See ```js\ncode\n```"},
+    ]
+    assert synthetic["knownClosed"] is True
+    # Without the known boundary the same shape is a RAW model marker, which
+    # still defers mid-stream (the ambiguity the heuristics exist for).
+    assert synthetic["rawMarker"] == ["reasoning"]
+
+
+def test_chat_adapter_marks_its_own_reasoning_close_as_known(tmp_path):
+    """The adapter must record the offsets it inserts and pass them down."""
+    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    assert "syntheticCloses" in src
+    assert "syntheticCloses.add(cumulativeText.length)" in src
+    assert "isKnownClose" in src
 
 
 def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):

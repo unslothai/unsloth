@@ -80,6 +80,13 @@ export function drainThinkMarkupBuffer(
   };
 }
 
+export type ParseOptions = {
+  /** The response is still streaming, so `raw` can still grow. */
+  streaming?: boolean;
+  /** True for a `</think>` the caller inserted itself, at that index. */
+  isKnownClose?: (index: number) => boolean;
+};
+
 /**
  * First structural (non-quoted, non-fenced) close tag at or after `from`.
  *
@@ -96,12 +103,18 @@ export function drainThinkMarkupBuffer(
  * `streaming` marks a mid-stream parse, where `raw` can still grow: an
  * enclosing ``` fence that has not closed yet may still close in a later
  * delta, so the unclosed-fence fallback is deferred to the final parse.
+ *
+ * `isKnownClose` reports delimiters the caller inserted itself (closing a
+ * synthetic `reasoning_content` wrapper). Those positions are authoritative,
+ * so the heuristics below - which only exist to interpret RAW model markers -
+ * must not second-guess them.
  */
 function findStructuralThinkClose(
   raw: string,
   spanStart: number,
   from: number,
   streaming = false,
+  isKnownClose?: (index: number) => boolean,
 ): number {
   const FENCE = "```";
   let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
@@ -165,7 +178,10 @@ function findStructuralThinkClose(
     }
 
     let literal: boolean;
-    if (fences % 2 === 1) {
+    if (isKnownClose?.(closeIndex)) {
+      // Our own delimiter: the boundary is already known, not inferred.
+      literal = false;
+    } else if (fences % 2 === 1) {
       // The close sits inside an open ``` fence. Global parity over the rest of
       // the span is wrong here, since a separate later unclosed fence would
       // misflag an earlier close whose own fence already closed (#7334).
@@ -231,7 +247,7 @@ function findStructuralThinkClose(
  */
 export function parseAssistantContent(
   raw: string,
-  options?: { streaming?: boolean },
+  options?: ParseOptions,
 ): ContentPart[] {
   const parts: ContentPart[] = [];
   if (!raw) {
@@ -255,6 +271,7 @@ export function parseAssistantContent(
       reasoningStart,
       reasoningStart,
       streaming,
+      options?.isKnownClose,
     );
     if (closeIndex === -1) {
       appendReasoningPart(parts, raw.slice(reasoningStart));
@@ -281,7 +298,7 @@ export function parseAssistantContent(
  */
 export function hasClosedThinkTag(
   raw: string,
-  options?: { streaming?: boolean },
+  options?: ParseOptions,
 ): boolean {
   const openIndex = raw.indexOf(THINK_OPEN_TAG);
   const spanStart = openIndex === -1 ? 0 : openIndex + THINK_OPEN_TAG.length;
@@ -291,6 +308,7 @@ export function hasClosedThinkTag(
       spanStart,
       spanStart,
       options?.streaming ?? false,
+      options?.isKnownClose,
     ) !== -1
   );
 }

@@ -110,9 +110,13 @@ def neutralize_control_markup_deep(value):
     """Recursively neutralize control markers in every string *value* of a
     nested dict/list structure (tool schemas / tool-call argument JSON).
 
-    Dict keys are left untouched (schema field names); only leaf strings are
-    rewritten. Returns the same object when nothing changed so callers keep
-    byte-identical payloads on the common path (#7066).
+    String dict keys are rewritten too: templates such as ``gemma-4.jinja``
+    render schema property names straight into the prompt, and neutralizing
+    only the matching ``required`` entry would leave the schema pointing at a
+    property that no longer exists. No JSON Schema keyword contains a control
+    marker, so this is a no-op for ordinary schemas (#7066). Returns the same
+    object when nothing changed so callers keep byte-identical payloads on the
+    common path.
     """
     if isinstance(value, str):
         return neutralize_non_assistant_control_markup(value)
@@ -120,10 +124,17 @@ def neutralize_control_markup_deep(value):
         changed = False
         out = {}
         for key, item in value.items():
+            new_key = key
+            if isinstance(key, str):
+                candidate = neutralize_non_assistant_control_markup(key)
+                # Never rename onto a sibling: that would silently drop a field.
+                if candidate != key and candidate not in value:
+                    new_key = candidate
+                    changed = True
             new_item = neutralize_control_markup_deep(item)
             if new_item is not item and new_item != item:
                 changed = True
-            out[key] = new_item
+            out[new_key] = new_item
         return out if changed else value
     if isinstance(value, list):
         changed = False
