@@ -44,6 +44,7 @@ include-package-data = true
 [tool.setuptools.package-data]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
+    "CHANGELOG.md",
     "*.sh",
     "*.ps1",
     "*.bat",

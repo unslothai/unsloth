@@ -213,7 +213,7 @@ function TauriUpdateLayer({
   }
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex flex-col items-end gap-2">
       <UpdateBanner
         status={update.status}
         info={update.info}
@@ -379,8 +379,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <>
         {children}
         {/* One bottom-right stack so overlays never overlap; they stack with a
-            gap, download panel anchored at the corner with banners above. */}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+            gap, download panel anchored at the corner with banners above.
+            Each overlay owns its width: the update banner is wider so its
+            notes and buttons fit on one row. */}
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex flex-col items-end gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}

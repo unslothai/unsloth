@@ -1,0 +1,273 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Contracts for the update popup's release-notes preview.
+
+The popup renders CHANGELOG.md notes for the exact version it is offering. The
+risk this file guards is showing notes from a different release: a near-miss
+lookup must return nothing rather than the newest section it can find."""
+
+from __future__ import annotations
+
+import http.server
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+BACKEND = REPO / "studio/backend"
+FRONTEND = REPO / "studio/frontend/src"
+CHANGELOG = REPO / "CHANGELOG.md"
+PANEL = FRONTEND / "components/update/release-notes-panel.tsx"
+NOTES_HOOK = FRONTEND / "hooks/use-release-notes.ts"
+PREVIEW = FRONTEND / "lib/release-notes-preview.ts"
+WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
+TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
+
+SAMPLE = """# Changelog
+
+Intro prose that belongs to no release.
+
+## Format
+
+```md
+## 9999.9.9 - fenced sample, not a real section
+```
+
+## Unreleased
+
+- staged note
+
+## 2026.7.6 - 2026-07-22
+
+### What's Changed
+
+- newer thing
+
+## 2026.7.5
+
+### What's Changed
+
+- older thing
+"""
+
+
+@pytest.fixture(scope = "module")
+def changelog_module():
+    sys.path.insert(0, str(BACKEND))
+    try:
+        from utils import changelog
+    finally:
+        sys.path.pop(0)
+    changelog.reset_changelog_cache()
+    yield changelog
+    changelog.reset_changelog_cache()
+
+
+@pytest.fixture
+def isolated_changelog(changelog_module, tmp_path, monkeypatch):
+    """Point the module at a temp file and away from the network."""
+    monkeypatch.setenv(changelog_module.DISABLE_ENV_VAR, "1")
+    path = tmp_path / "CHANGELOG.md"
+    path.write_text(SAMPLE, encoding = "utf-8")
+    monkeypatch.setenv(changelog_module.CHANGELOG_PATH_ENV_VAR, str(path))
+    changelog_module.reset_changelog_cache()
+    yield changelog_module
+    changelog_module.reset_changelog_cache()
+
+
+def test_only_real_release_headings_become_sections(changelog_module):
+    versions = [entry.version for entry in changelog_module.parse_changelog(SAMPLE)]
+    # "Format"/"Unreleased" are not versions, and the fenced 9999.9.9 is sample
+    # markdown inside a code block.
+    assert versions == ["2026.7.6", "2026.7.5"]
+
+
+def test_section_body_stops_at_the_next_release(changelog_module):
+    entry = changelog_module.find_release_notes(SAMPLE, "2026.7.6")
+    assert entry is not None
+    assert "newer thing" in entry.body
+    assert "older thing" not in entry.body
+
+
+def test_unknown_version_returns_no_notes_instead_of_a_nearby_release(changelog_module):
+    assert changelog_module.find_release_notes(SAMPLE, "2026.7.7") is None
+    assert changelog_module.find_release_notes(SAMPLE, "2026.7") is None
+
+
+def test_version_equality_is_normalized_not_fuzzy(changelog_module):
+    entry = changelog_module.find_release_notes(SAMPLE, "2026.07.6")
+    assert entry is not None and entry.version == "2026.7.6"
+
+
+def test_response_reports_no_match_without_markdown(isolated_changelog):
+    payload = isolated_changelog.get_release_notes("2026.7.7")
+    assert payload["matched"] is False
+    assert payload["markdown"] is None
+    assert payload["version"] == "2026.7.7"
+    # The UI still needs somewhere to send the user.
+    assert payload["release_notes_url"]
+
+
+def test_response_matches_local_changelog_when_offline(isolated_changelog):
+    payload = isolated_changelog.get_release_notes("2026.7.6")
+    assert payload["matched"] is True
+    assert payload["source"] == "local"
+    assert "newer thing" in payload["markdown"]
+
+
+def test_unsupported_version_query_is_rejected(isolated_changelog):
+    assert isolated_changelog.is_supported_version_query("2026.7.6") is True
+    for bad in ("../etc/passwd", "2026.7.6 OR 1", "", "a" * 80):
+        assert isolated_changelog.is_supported_version_query(bad) is False
+    assert isolated_changelog.get_release_notes("../etc/passwd")["matched"] is False
+
+
+def test_remote_changelog_wins_over_bundled_copy(changelog_module, tmp_path, monkeypatch):
+    """The offered version is newer than the installed checkout, so the repo
+    copy has to be able to describe versions the local file has never heard of."""
+    monkeypatch.delenv(changelog_module.DISABLE_ENV_VAR, raising = False)
+    local = tmp_path / "CHANGELOG.md"
+    local.write_text(SAMPLE, encoding = "utf-8")
+    monkeypatch.setenv(changelog_module.CHANGELOG_PATH_ENV_VAR, str(local))
+
+    remote_body = "# Changelog\n\n## 2026.8.0\n\n- shipped after this install\n"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib naming
+            payload = remote_body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread.start()
+    try:
+        monkeypatch.setenv(
+            changelog_module.CHANGELOG_URL_ENV_VAR,
+            f"http://127.0.0.1:{server.server_port}/CHANGELOG.md",
+        )
+        changelog_module.reset_changelog_cache()
+        payload = changelog_module.get_release_notes("2026.8.0")
+        assert payload["matched"] is True
+        assert payload["source"] == "remote"
+        assert "shipped after this install" in payload["markdown"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        changelog_module.reset_changelog_cache()
+
+
+def test_repo_changelog_exists_and_parses(changelog_module):
+    assert CHANGELOG.is_file(), "CHANGELOG.md is the editable source of release notes"
+    entries = changelog_module.parse_changelog(CHANGELOG.read_text(encoding = "utf-8"))
+    assert entries, "CHANGELOG.md needs at least one `## <version>` section"
+
+
+def test_backend_exposes_release_notes_route():
+    src = (BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert '@app.get("/api/studio/release-notes")' in src
+    assert "is_supported_version_query" in src
+
+
+def test_panel_is_scrollable_and_version_scoped():
+    src = PANEL.read_text(encoding = "utf-8")
+    assert "overflow-y-auto" in src, "release notes must scroll inside the popup"
+    assert "max-h-" in src, "the scroller needs a bounded height"
+    # Falls back to the payload's own body only, never to another version.
+    assert "fallbackMarkdown" in src
+
+
+def test_notes_surface_is_borderless_and_lifts_in_dark_mode():
+    src = PANEL.read_text(encoding = "utf-8")
+    assert "border border-border" not in src, "the notes box is a fill, not a bordered box"
+    # Lighter than the card behind it, rather than a darker inset.
+    assert "dark:bg-white/[0.06]" in src
+    # Streamdown's mt-6 pins the first heading to the scroller edge and clips
+    # its ascenders.
+    assert "[&>*>*:first-child]:mt-0" in src
+    # Shared utility: thumb hidden until the notes are hovered.
+    assert "hover-scrollbar" in src
+    # Streamdown renders code at text-sm, twice this panel's body size.
+    assert "[&_code]:text-[0.92em]" in src
+
+
+def test_hook_discards_notes_for_a_different_version():
+    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    assert "notesVersion !== version" in src
+
+
+def test_collapsed_panel_previews_the_top_bullets():
+    """Collapsed popups show the headline changes without an extra click."""
+    preview = PREVIEW.read_text(encoding = "utf-8")
+    assert "RELEASE_NOTES_PREVIEW_ITEMS = 4" in preview
+    # Wrapped changelog bullets must join, or a preview ends mid-sentence.
+    assert "current = `${current} ${text}`" in preview
+
+    panel = PANEL.read_text(encoding = "utf-8")
+    assert "releaseNotesPreview" in panel
+    assert 'data-testid="update-release-notes-summary"' in panel
+    # Notes are fetched when the popup appears, since the collapsed preview
+    # needs them too.
+    assert "enabled: true" in panel
+
+
+def test_preview_highlights_the_leading_sentence():
+    """Each bullet leads with its headline sentence, emphasised over the rest."""
+    preview = PREVIEW.read_text(encoding = "utf-8")
+    assert "splitLeadSentence" in preview
+    # A period inside "CHANGELOG.md" or "e.g." must not read as a break.
+    assert "SENTENCE_BREAK" in preview and "(?=" in preview
+
+    panel = PANEL.read_text(encoding = "utf-8")
+    assert '<span className="font-medium text-foreground">{item.lead}</span>' in panel
+    assert "item.rest" in panel
+
+
+@pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
+def test_update_popup_is_wider_than_the_other_overlays(banner):
+    """The card is sized for three same-size buttons on one row.
+
+    Width moved from the shared overlay stack onto each overlay, so widening
+    the update popup does not widen the llama.cpp banner or download panel."""
+    assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
+    llama = (FRONTEND / "components/llama-update-banner.tsx").read_text(encoding = "utf-8")
+    assert "max-w-[400px]" in llama, "unrelated overlays keep their width"
+
+
+@pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
+def test_banners_toggle_inline_release_notes(banner):
+    src = banner.read_text(encoding = "utf-8")
+    assert "ReleaseNotesPanel" in src
+    assert "Show release notes" in src and "Hide release notes" in src
+    # Expansion state is keyed by version, so a new offer cannot leave the
+    # previous release's notes on screen.
+    assert "notesVersion" in src
+
+
+@pytest.mark.parametrize(
+    "banner,toggle,action",
+    [
+        (WEB_BANNER, "web-update-release-notes-toggle", "web-update-snooze-button"),
+        (TAURI_BANNER, "tauri-update-release-notes-toggle", "Remind me later"),
+    ],
+)
+def test_notes_toggle_shares_the_action_row(banner, toggle, action):
+    """The toggle sits in the same row as the actions, not on its own line."""
+    src = banner.read_text(encoding = "utf-8")
+    row = src.index("mt-4 flex")
+    assert row < src.index(toggle) < src.index(action)
+    # Same type size as the actions it sits beside; nowrap stops a label
+    # breaking across lines inside the row.
+    toggle_line = next(line for line in src.splitlines() if toggle in line)
+    toggle_block = src[src.index("Button", row) : src.index(toggle_line)]
+    assert "text-ui-13" in toggle_block and "whitespace-nowrap" in toggle_block

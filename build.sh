@@ -103,7 +103,11 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
-# 4. Build wheel/sdist
+# 4. Snapshot the changelog into the package so release notes still render
+# offline. CHANGELOG.md at the repo root stays the one file to edit.
+cp CHANGELOG.md studio/CHANGELOG.md
+
+# 5. Build wheel/sdist
 python -m build
 
 if [ "${1:-}" = "publish" ]; then
@@ -113,7 +117,7 @@ fi
 _restore_studio_build_info
 trap - EXIT
 
-# 5. Optionally publish
+# 6. Optionally publish
 if [ "${1:-}" = "publish" ]; then
     python -m twine upload dist/*
 fi

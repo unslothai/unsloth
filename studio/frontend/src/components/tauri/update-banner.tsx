@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,
@@ -30,6 +31,7 @@ interface UpdateBannerProps {
 }
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
+const LEADING_V = /^v/;
 
 function formatVersion(version: string | null | undefined): string {
   if (!version) return "";
@@ -52,6 +54,8 @@ export function UpdateBanner({
   const [copying, setCopying] = useState(false);
   const [manualReport, setManualReport] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState<string | null>(null);
+  // Version whose notes are expanded; a new offer collapses the panel.
+  const [notesVersion, setNotesVersion] = useState<string | null>(null);
   const showFailure = Boolean(lastFailure) && !dismissed;
   const showAvailable = status === "available" && !dismissed && !showFailure;
   const show = showFailure || (showAvailable && Boolean(info));
@@ -62,6 +66,10 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
+  // CHANGELOG.md headings use plain versions.
+  const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
+  const notesOpen =
+    notesTargetVersion !== null && notesVersion === notesTargetVersion;
 
   async function handleCopyDiagnostics() {
     setCopying(true);
@@ -94,9 +102,10 @@ export function UpdateBanner({
           exit={{ opacity: 0, y: 8, scale: 0.97 }}
           transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
           className={cn(
+            // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[400px]"
-              : "pointer-events-auto w-full",
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
+              : "pointer-events-auto w-[calc(100vw-2rem)] max-w-[448px]",
           )}
           data-testid="tauri-update-banner"
         >
@@ -160,7 +169,40 @@ export function UpdateBanner({
               </p>
             )}
 
-            <div className="mt-4 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            {!showFailure && notesTargetVersion ? (
+              <ReleaseNotesPanel
+                version={notesTargetVersion}
+                open={notesOpen}
+                // Updater's release body, used only if CHANGELOG.md has no
+                // section for this version.
+                fallbackMarkdown={info?.body ?? null}
+                releaseNotesUrl={manualReleaseUrl}
+              />
+            ) : null}
+
+            <div
+              className={cn(
+                "mt-4 flex flex-wrap items-center gap-x-1 gap-y-2",
+                !showFailure && notesTargetVersion
+                  ? "justify-between"
+                  : "justify-end",
+              )}
+            >
+              {!showFailure && notesTargetVersion ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  // same type size as the action buttons
+                  className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                  onClick={() =>
+                    setNotesVersion(notesOpen ? null : notesTargetVersion)
+                  }
+                  aria-expanded={notesOpen}
+                  data-testid="tauri-update-release-notes-toggle"
+                >
+                  {notesOpen ? "Hide release notes" : "Show release notes"}
+                </Button>
+              ) : null}
               {showFailure ? (
                 <>
                   <Button
@@ -191,24 +233,26 @@ export function UpdateBanner({
                   </Button>
                 </>
               ) : (
-                <>
+                // wrap + right-align so the action pair stays together when the
+                // release-notes toggle shares the row
+                <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
+                    className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
                     onClick={onDismiss}
                   >
                     Remind me later
                   </Button>
                   <Button
                     size="sm"
-                    className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
+                    className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                     onClick={onInstall}
                     disabled={installDisabled}
                   >
                     {isManualLinuxPackage ? "Open release page" : "Update"}
                   </Button>
-                </>
+                </div>
               )}
             </div>
             {manualMessage && (

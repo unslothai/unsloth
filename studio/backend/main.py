@@ -342,6 +342,7 @@ from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
 )
+from utils.changelog import get_release_notes, is_supported_version_query
 from utils.studio_version import get_studio_version
 from utils.api_errors import install_api_error_handlers
 
@@ -1116,6 +1117,17 @@ def studio_install_source(_current_subject: str = Depends(get_current_subject)):
 def studio_update_status(_current_subject: str = Depends(get_current_subject)):
     """Return source-aware manual update status for browser-served Unsloth."""
     return get_studio_update_status(UNSLOTH_VERSION)
+
+
+@app.get("/api/studio/release-notes")
+def studio_release_notes(
+    version: str = Query(..., max_length = 64),
+    _current_subject: str = Depends(get_current_subject),
+):
+    """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
+    if not is_supported_version_query(version):
+        raise HTTPException(status_code = 422, detail = "Invalid version.")
+    return get_release_notes(version)
 
 
 @app.get(
