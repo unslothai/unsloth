@@ -407,10 +407,7 @@ def test_answer_side_fence_streaming_matches_single_delta():
             parse_think_markers = True,
             reasoning_prefilled = True,
         )
-        parts = [
-            ex.feed(_ANSWER_FENCE[i : i + size])
-            for i in range(0, len(_ANSWER_FENCE), size)
-        ]
+        parts = [ex.feed(_ANSWER_FENCE[i : i + size]) for i in range(0, len(_ANSWER_FENCE), size)]
         parts.append(ex.finish())
         reasoning = "".join(r for r, _ in parts)
         visible = "".join(v for _, v in parts)
