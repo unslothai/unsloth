@@ -2269,7 +2269,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            className="h-[34px] [&>button]:h-[34px]"
+            className="h-[34px] [&>button]:h-[34px] [&>button]:px-4"
             tabs={[
               {
                 value: "create",
@@ -2347,7 +2347,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 <button
                   type="button"
                   aria-label="Workflow"
-                  className="corner-squircle flex h-9 w-full items-center gap-2 rounded-xl bg-muted/50 px-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="corner-squircle flex h-9 w-full items-center gap-2 rounded-xl bg-foreground/[0.07] px-3 text-left transition-colors hover:bg-foreground/[0.11] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-foreground/[0.12] dark:hover:bg-foreground/[0.16]"
                 >
                   <HugeiconsIcon
                     icon={activeWorkflowTab.icon}
@@ -2372,24 +2372,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       key={t.id}
                       disabled={!enabled}
                       onSelect={() => setWorkflow(t.id)}
-                      className="items-start gap-2"
+                      // The selected row's description shows under the trigger, and a
+                      // disabled row explains itself on hover, so rows stay one line.
+                      title={
+                        enabled
+                          ? t.hint
+                          : `Needs a loaded model that supports ${t.label.toLowerCase()}`
+                      }
+                      className="gap-2"
                     >
                       <HugeiconsIcon
                         icon={t.icon}
-                        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                        className="size-4 shrink-0 text-muted-foreground"
                       />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-xs font-medium">{t.label}</span>
-                        <span className="block text-ui-10 text-muted-foreground">
-                          {enabled
-                            ? t.hint
-                            : `Needs a loaded model that supports ${t.label.toLowerCase()}`}
-                        </span>
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                        {t.label}
                       </span>
                       <HugeiconsIcon
                         icon={CheckmarkCircle02Icon}
                         className={cn(
-                          "mt-0.5 size-3.5 shrink-0",
+                          "size-3.5 shrink-0",
                           workflow === t.id ? "text-foreground" : "invisible",
                         )}
                       />
@@ -2400,7 +2402,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             </DropdownMenu>
             {/* Description sits under the closed trigger, matching the Field hints
                 below it, so the button itself stays one line. */}
-            <p className="px-0.5 text-ui-10 leading-snug text-muted-foreground">
+            <p className="px-0.5 text-ui-11p5 leading-snug text-muted-foreground">
               {activeWorkflowTab.hint}
             </p>
           </div>
