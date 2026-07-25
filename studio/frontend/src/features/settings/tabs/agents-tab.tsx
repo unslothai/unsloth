@@ -373,12 +373,12 @@ $env:UNSLOTH_API_KEY = "sk-unsloth-..."
 unsloth start claude`;
 
 // Independent alternatives, each with its own copy button (not one script).
-const PASSTHROUGH_COMMANDS = [
-  "unsloth start claude --continue",
-  "unsloth start codex --persist resume --last",
+const PASSTHROUGH_EXAMPLES = [
+  { agent: "claude", flags: "--continue" },
+  { agent: "codex", flags: "--persist resume --last" },
 ];
 
-const DRY_RUN_CMD = "unsloth start claude --no-launch";
+const DRY_RUN_FLAGS = "--no-launch";
 
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
@@ -610,13 +610,18 @@ export function AgentsTab() {
   // Omitting the flag lets it replay the saved key; the remote section covers
   // first-time setup. getApiBase is the base the app already talks to, so fall
   // back to it while the health request that fills serverUrl is in flight.
+  const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const commandOs = isWindowsClient ? "windows" : "unix";
   const commandBase = buildAgentCommand(
-    isTauri ? (serverUrl ?? getApiBase()) : origin,
+    studioBase,
     null,
-    isWindowsClient ? "windows" : "unix",
+    commandOs,
     selectedAgent,
   );
   const command = `${commandBase} ${modelArgs}`;
+  // The fixed examples below target the same Studio, not a bare 127.0.0.1:8888.
+  const example = (agentId: string, flags: string) =>
+    `${buildAgentCommand(studioBase, null, commandOs, agentId)} ${flags}`;
   const {
     copied,
     copy: handleCopy,
@@ -1149,8 +1154,8 @@ export function AgentsTab() {
         description={t("settings.agents.passthrough.description")}
       >
         <div className="flex flex-col gap-2 pt-2">
-          {PASSTHROUGH_COMMANDS.map((command) => (
-            <CommandBlock key={command} command={command} />
+          {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
+            <CommandBlock key={flags} command={example(agent, flags)} />
           ))}
         </div>
       </SettingsSection>
@@ -1160,7 +1165,7 @@ export function AgentsTab() {
         description={t("settings.agents.dryRun.description")}
       >
         <div className="pt-2">
-          <CommandBlock command={DRY_RUN_CMD} />
+          <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
         </div>
       </SettingsSection>
     </div>
