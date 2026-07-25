@@ -141,9 +141,9 @@ class TestRunAllMatchesCi:
         would fail the suite locally for reasons CI never reproduces."""
         source = _RUN_ALL.read_text(encoding = "utf-8")
         assert 'bash "$_t"' in source, "tests/run_all.sh must run tests/sh/ with bash"
-        assert 'sh "$_t"' not in source.replace('bash "$_t"', ""), (
-            "tests/run_all.sh still invokes a discovered test with sh"
-        )
+        assert 'sh "$_t"' not in source.replace(
+            'bash "$_t"', ""
+        ), "tests/run_all.sh still invokes a discovered test with sh"
         assert 'bash "$s"' in _shell_step_script(), "Backend CI must run tests/sh/ with bash"
 
     def test_run_all_skips_are_a_subset_of_ci_skips(self):
