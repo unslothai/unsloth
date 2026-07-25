@@ -34,17 +34,40 @@ function formatSize(bytes: number): string {
     value /= 1024;
     unit += 1;
   }
-  return `${value >= 10 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  const shown =
+    value >= 10 || unit === 0
+      ? String(Math.round(value))
+      : value.toFixed(1).replace(/\.0$/, "");
+  return `${shown} ${units[unit]}`;
 }
 
-/** Merge a new selection into the staged list, skipping duplicates. */
+const ACCEPTED_EXTS = new Set(
+  RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase()),
+);
+
+// `accept` only filters the picker, so a drop can carry anything. A folder
+// arrives as an extension-less entry, which this rejects along with the types
+// the backend would 400 on.
+function isSupported(file: File): boolean {
+  const dot = file.name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return ACCEPTED_EXTS.has(file.name.slice(dot).toLowerCase());
+}
+
+/** Merge a selection into the staged list, dropping duplicates and unsupported
+ * entries. Returns the skipped names so the caller can explain them once. */
 function addStagedSources(
   staged: StagedSource[],
   incoming: FileList | File[],
-): StagedSource[] {
+): { next: StagedSource[]; skipped: string[] } {
   const seen = new Set(staged.map((entry) => fileSignature(entry.file)));
   const next = [...staged];
+  const skipped: string[] = [];
   for (const file of Array.from(incoming)) {
+    if (!isSupported(file)) {
+      skipped.push(file.name);
+      continue;
+    }
     const signature = fileSignature(file);
     if (seen.has(signature)) continue;
     seen.add(signature);
@@ -53,7 +76,7 @@ function addStagedSources(
       file,
     });
   }
-  return next;
+  return { next, skipped };
 }
 
 // Projects created with staged files, so the landing can open on Sources.
@@ -107,8 +130,16 @@ export function ProjectSourceDropzone({
 
   const addFiles = useCallback(
     (files: FileList | File[]) => {
-      const next = addStagedSources(staged, files);
+      const { next, skipped } = addStagedSources(staged, files);
       if (next.length !== staged.length) onChange(next);
+      if (skipped.length > 0) {
+        toast.info(
+          skipped.length === 1
+            ? `Can't add ${skipped[0]}`
+            : `Can't add ${skipped.length} files`,
+          { description: `Supported types: ${RAG_UPLOAD_ACCEPT}` },
+        );
+      }
     },
     [staged, onChange],
   );

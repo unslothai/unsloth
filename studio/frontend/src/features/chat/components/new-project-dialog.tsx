@@ -51,6 +51,14 @@ export function NewProjectDialog({
     setStaged([]);
   }
 
+  // Every close path routes through here: callers keep this mounted, so a draft
+  // left behind would resurface (and upload) on the next project.
+  function close() {
+    if (busy) return;
+    reset();
+    onOpenChange(false);
+  }
+
   async function commitCreate() {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
@@ -82,9 +90,11 @@ export function NewProjectDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (busy) return;
-        if (!next) reset();
-        onOpenChange(next);
+        if (next) {
+          onOpenChange(true);
+          return;
+        }
+        close();
       }}
     >
       <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg">
@@ -128,7 +138,7 @@ export function NewProjectDialog({
             type="button"
             variant="ghost"
             disabled={busy}
-            onClick={() => onOpenChange(false)}
+            onClick={close}
           >
             Cancel
           </Button>
