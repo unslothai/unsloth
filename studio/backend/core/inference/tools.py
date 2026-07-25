@@ -620,6 +620,14 @@ _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
     r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
     re.IGNORECASE,
 )
+# Money movement and other irreversible external side effects: an MCP call
+# that pays, refunds, wires or transfers funds cannot be undone by the
+# operator, so it asks even though it is not "destructive" in the fs sense.
+_AUTO_HIGH_IMPACT_MCP_RE = re.compile(
+    r"(?:^|[_\-])(?:transfer|payout|payment|pay|charge|refund|wire|remit|"
+    r"withdraw|deposit|invoice|subscribe|unsubscribe|publish|deploy|release)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 _AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
     r"(?:^|[_\-])(?:role|roles|permission|permissions|privilege|privileges|acl|acls|"
     r"policy|policies|scope|scopes|grant|grants|membership|admin|owner)(?:[_\-]|$)",
@@ -902,9 +910,9 @@ _SENSITIVE_PATH_RE = re.compile(
     # sandbox does not confine absolute paths, so >> ~/.bashrc reaches the real
     # file. These are rarely read in a dev session, so gating any reference is
     # conservative and does not over-prompt on real work.
-    r"|\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases|profile"
-    r"|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
-    r"|xprofile|xinitrc|xsession)(?:$|[/\\.\s'\"])"
+    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
+    r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
     r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the
@@ -2964,7 +2972,11 @@ def _short_flag_arg(token: str, letters: str) -> "str | None":
 # and read/commit subcommands run. Ordinary git (add/commit/status/log/pull)
 # stays out.
 # `git rm` deletes tracked files from the worktree, the same loss as plain rm.
-_HIGH_RISK_GIT_SUBCOMMANDS = frozenset({"clean", "restore", "rm"})
+# Plumbing and maintenance that delete refs, reflogs or unreachable objects,
+# or rewrite history: the same data loss as the porcelain forms above.
+_HIGH_RISK_GIT_SUBCOMMANDS = frozenset(
+    {"clean", "restore", "rm", "update-ref", "filter-branch", "prune", "gc", "reflog"}
+)
 _HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
 _HIGH_RISK_GIT_PUSH_FLAGS = frozenset(
     # --delete/-d removes a remote ref; --mirror and --prune delete remote refs
@@ -3109,6 +3121,20 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     return False
 
 
+def _segment_is_recursive(tokens: list, start: int) -> bool:
+    """Whether a recursive flag (-R / --recursive / an -rf style cluster) belongs
+    to the command starting at ``start``: scan only up to the next separator, so
+    `grep -R x . && chmod +x f` does not make the chmod look recursive."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t in ("-R", "--recursive"):
+            return True
+        if t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:]:
+            return True
+    return False
+
+
 def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     """High-risk terminal command for auto mode: credential/secret access,
     privilege escalation, destructive/persistence changes, or network
@@ -3213,6 +3239,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             ):
                 expect_command = True
                 prefix_pending = False
+                # A dangling wrapper option (env -u ; rm ...) must not consume
+                # the next segment's command word.
+                wrapper_value_pending = False
                 scan_forward = False
                 current_command = ""
                 git_subcommand = ""
@@ -3404,7 +3433,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 # forms (env uvicorn app:api, timeout 60 gunicorn, /usr/bin/uvicorn).
                 if base in _LISTENER_BINARIES:
                     return True
-                if base in _HIGH_RISK_RECURSIVE_COMMANDS and recursive:
+                if base in _HIGH_RISK_RECURSIVE_COMMANDS and _segment_is_recursive(
+                    tokens, _tok_idx
+                ):
                     return True
                 if base in _HIGH_RISK_FORWARDING_COMMANDS:
                     # find/fd only run a child at -exec/-execdir/-ok; forwarding
@@ -3692,6 +3723,16 @@ def _python_is_high_risk(code: str) -> bool:
             # Screen the literal recursively; __import__("os") of a module name is
             # not analyzable as code, so a literal name stays safe.
             if name == "__import__":
+                # A literal __import__("socket") / import_module("shutil") binds
+                # a side-effecting module just like a static import of it, so
+                # apply the same module screen instead of waving it through.
+                mod = (
+                    arg.value.decode("utf-8", "replace")
+                    if isinstance(arg.value, bytes)
+                    else arg.value
+                )
+                if isinstance(mod, str) and mod.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                    return True
                 continue
             inner = (
                 arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
@@ -3737,6 +3778,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
             return True
         if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name):
             return True
         if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
             tool_name

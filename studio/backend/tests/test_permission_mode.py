@@ -573,6 +573,20 @@ def test_terminal_classifier(command, unsafe):
         # --- an exec-valued flag only counts for the utility that owns it ---
         ("printf '%s' --rsh", False),
         ("echo --checkpoint-action", False),
+        # --- a pending wrapper value must not cross a command separator ---
+        ("env -u; rm -rf build", True),
+        # --- a recursive flag belongs to its own segment, not the whole line ---
+        ("grep -R pattern . && chmod +x build.sh", False),
+        ("ls -R && chown me file.txt", False),
+        ("chmod -R 777 /etc", True),
+        # --- destructive git plumbing loses refs, reflogs and objects ---
+        ("git update-ref -d refs/heads/main", True),
+        ("git reflog delete HEAD@{0}", True),
+        ("git gc --prune=now", True),
+        # --- a startup-file name must sit on a path boundary ---
+        ("cat notes.profile.bak", False),
+        ("cat my.zshrc.template", False),
+        ("cat ~/.zshrc", True),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),
@@ -762,6 +776,8 @@ def test_terminal_high_risk_classifier(command, high_risk):
         # a file handle's truncate zeroes the file; pandas truncate does not
         ("f = open('a', 'r+')\nf.truncate(0)", True),
         ("with open('important.py', 'r+') as f:\n    f.truncate(0)", True),
+        # a dynamically imported side-effecting module is screened like a static one
+        ("s = __import__('socket')\ns.socket()", True),
         # an annotated binding is the same alias as a plain one
         ("import os\nf: object = os.remove\nf('important.py')", True),
         # __import__ binds the module the same way `import os as m` does
@@ -841,6 +857,10 @@ def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__add_label", {"l": "bug"}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}gh__list_roles", {}) is False
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}iam__promote_user", {"u": "x"}) is True
+    # Money movement is irreversible for the operator, so it asks.
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}stripe__transfer_funds", {"a": 1}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}stripe__create_charge", {"a": 1}) is True
+    assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}bank__wire_payment", {"a": 1}) is True
     # A bare runtime name is an execution tool even without a verb.
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}srv__python", {"code": "1"}) is True
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}srv__node", {"code": "1"}) is True
