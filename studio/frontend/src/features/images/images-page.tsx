@@ -3,8 +3,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowDown01Icon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
+  CheckmarkCircle02Icon,
   Delete02Icon,
   Download01Icon,
   ImageAdd02Icon,
@@ -2097,6 +2099,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.workflows, workflow]);
 
+  // Create (requires null) needs txt2img once a model is loaded: an edit-only model
+  // (workflows: ["edit"]) has no text-to-image mode, so its Create row is disabled and
+  // Edit is the only enabled one. With nothing loaded, Create stays available so the
+  // user can pick a model.
+  const workflowEnabled = (t: (typeof WORKFLOW_TABS)[number]) => {
+    const wf = status?.workflows ?? [];
+    return t.requires === null
+      ? !status?.loaded || wf.includes("txt2img")
+      : wf.includes(t.requires);
+  };
+  const activeWorkflowTab =
+    WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
+
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
@@ -2302,42 +2317,64 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         {/* The controls rail. Plain card (the gray surface) with no header —
             the prompt + Generate button make the panel self-explanatory. */}
         <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
-          {/* Workflow tabs. Create = text-to-image; Transform = img2img (needs a
-              source image). A tab is disabled until the loaded model supports it
-              (status.workflows), with a tooltip explaining why. More workflows
-              (Edit/Extend/Control/Enhance) slot in here as they land. */}
-          <div className="flex gap-1 rounded-xl bg-muted/50 p-1">
-            {WORKFLOW_TABS.map((t) => {
-              const wf = status?.workflows ?? [];
-              // Create (requires null) needs txt2img once a model is loaded -- an edit-only
-              // model (workflows: ["edit"]) has no text-to-image mode, so its Create tab is
-              // disabled and Edit is the only enabled one. With nothing loaded, Create stays
-              // available so the user can pick a model.
-              const enabled =
-                t.requires === null
-                  ? !status?.loaded || wf.includes("txt2img")
-                  : wf.includes(t.requires);
-              const active = workflow === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  disabled={!enabled}
-                  title={enabled ? t.hint : `Load a model that supports ${t.label.toLowerCase()}`}
-                  onClick={() => setWorkflow(t.id)}
-                  className={cn(
-                    "flex-1 rounded-lg px-2 py-1 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                    !enabled && "cursor-not-allowed opacity-40 hover:text-muted-foreground",
-                  )}
-                >
-                  {t.label}
-                </button>
-              );
-            })}
-          </div>
+          {/* Workflow picker. Seven workflows don't fit a segmented strip in a 340px
+              rail, so it's a dropdown: the trigger carries the current workflow and
+              its hint, and each row explains itself. A row is disabled until the
+              loaded model supports it (status.workflows), with the reason in place of
+              the hint. New workflows slot in without shrinking anything. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Workflow"
+                className="corner-squircle flex w-full items-center gap-2 rounded-xl bg-muted/50 px-3 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-medium text-foreground">
+                    {activeWorkflowTab.label}
+                  </span>
+                  <span className="block truncate text-ui-10 text-muted-foreground">
+                    {activeWorkflowTab.hint}
+                  </span>
+                </span>
+                <HugeiconsIcon
+                  icon={ArrowDown01Icon}
+                  className="size-4 shrink-0 text-muted-foreground"
+                />
+              </button>
+            </DropdownMenuTrigger>
+            {/* DropdownMenuContent already tracks the trigger width, so the rows get
+                the full rail width for their hints. */}
+            <DropdownMenuContent align="start">
+              {WORKFLOW_TABS.map((t) => {
+                const enabled = workflowEnabled(t);
+                return (
+                  <DropdownMenuItem
+                    key={t.id}
+                    disabled={!enabled}
+                    onSelect={() => setWorkflow(t.id)}
+                    className="items-start gap-2"
+                  >
+                    <HugeiconsIcon
+                      icon={CheckmarkCircle02Icon}
+                      className={cn(
+                        "mt-0.5 size-3.5 shrink-0",
+                        workflow === t.id ? "text-foreground" : "invisible",
+                      )}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs font-medium">{t.label}</span>
+                      <span className="block text-ui-10 text-muted-foreground">
+                        {enabled
+                          ? t.hint
+                          : `Needs a loaded model that supports ${t.label.toLowerCase()}`}
+                      </span>
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {workflow === "transform" && (
             <>
