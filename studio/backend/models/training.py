@@ -413,6 +413,12 @@ class TrainingStartRequest(BaseModel):
     warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
+    save_total_limit: Optional[int] = Field(
+        None, ge = 0, le = _MAX_STEPS,
+        description = "Maximum retained checkpoints; 0 or null means unlimited",
+    )
+    push_to_hub: bool = Field(False, description = "Upload checkpoints to the Hub")
+    hub_model_id: Optional[str] = Field(None, description = "Hub repository ID (owner/name)")
     weight_decay: float = Field(0.001, description = "Weight decay")
     max_grad_norm: float = Field(
         0.0,
@@ -544,6 +550,22 @@ class TrainingStartRequest(BaseModel):
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_checkpoint_upload(self) -> "TrainingStartRequest":
+        # Transformers cannot push checkpoints when no checkpoints are saved.
+        if self.save_steps == 0:
+            self.push_to_hub = False
+        if self.push_to_hub:
+            repo_id = (self.hub_model_id or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*", repo_id):
+                raise ValueError("hub_model_id must be a valid non-empty owner/repository ID when push_to_hub is enabled")
+            self.hub_model_id = repo_id
+        else:
+            self.hub_model_id = None
+        if self.save_total_limit == 0:
+            self.save_total_limit = None
         return self
 
     @model_validator(mode = "after")

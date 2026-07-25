@@ -164,6 +164,8 @@ function canProceedForStep(state: TrainingConfigState): boolean {
       }
       return state.dataset !== null;
     case 4:
+      return !state.enableAutoCheckpointUpload ||
+        (state.saveSteps > 0 && /^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(state.checkpointRepoId.trim()));
     case 5:
       return true;
     default:
@@ -882,7 +884,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           notifyStreamingCompat(streamingPatch);
         },
-        setSaveSteps: (saveSteps) => set({ saveSteps }),
+        setSaveSteps: (saveSteps) =>
+          set({
+            saveSteps,
+            ...(saveSteps === 0 ? { enableAutoCheckpointUpload: false } : {}),
+          }),
+        setSaveTotalLimit: (saveTotalLimit) => set({ saveTotalLimit }),
+        setEnableAutoCheckpointUpload: (enableAutoCheckpointUpload) =>
+          set({ enableAutoCheckpointUpload }),
+        setCheckpointRepoId: (checkpointRepoId) => set({ checkpointRepoId }),
         setEvalSteps: (evalSteps) => {
           const state = get();
           const streamingPatch = streamingCompatiblePatch({ ...state, evalSteps });

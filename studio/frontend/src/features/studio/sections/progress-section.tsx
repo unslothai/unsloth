@@ -104,6 +104,10 @@ export function ProgressSection({
       maxSteps: state.maxSteps,
       contextLength: state.contextLength,
       warmupSteps: state.warmupSteps,
+      saveSteps: state.saveSteps,
+      saveTotalLimit: state.saveTotalLimit,
+      enableAutoCheckpointUpload: state.enableAutoCheckpointUpload,
+      checkpointRepoId: state.checkpointRepoId,
       optimizerType: state.optimizerType,
       loraRank: state.loraRank,
       loraAlpha: state.loraAlpha,
@@ -183,6 +187,10 @@ export function ProgressSection({
   const cfgMaxSteps = cfg?.maxSteps;
   const cfgContextLength = cfg?.contextLength;
   const cfgWarmupSteps = cfg?.warmupSteps;
+  const cfgSaveSteps = cfg?.saveSteps;
+  const cfgSaveTotalLimit = cfg?.saveTotalLimit;
+  const cfgAutoUpload = cfg?.enableAutoCheckpointUpload;
+  const cfgCheckpointRepo = cfg?.checkpointRepoId;
   const cfgOptimizerType = cfg?.optimizerType;
   const cfgLoraRank = cfg?.loraRank;
   const cfgLoraAlpha = cfg?.loraAlpha;
@@ -212,6 +220,13 @@ export function ProgressSection({
         configRow(t("studio.progress.maxSteps"), cfgMaxSteps),
         configRow(t("studio.progress.contextLength"), cfgContextLength),
         configRow(t("studio.progress.warmupSteps"), cfgWarmupSteps),
+        configRow(t("studio.params.saveSteps"), cfgSaveSteps),
+        configRow(t("studio.params.saveTotalLimit"), cfgSaveTotalLimit),
+        configRow(
+          t("studio.params.enableAutoCheckpointUpload"),
+          cfgAutoUpload === undefined ? undefined : cfgAutoUpload ? "Yes" : "No",
+        ),
+        configRow(t("studio.params.checkpointRepoId"), cfgCheckpointRepo),
       ],
     },
     ...(data.trainingMethod !== "full"
