@@ -295,22 +295,13 @@ _FAMILY_LABELS = {
     "flux.2-dev": "FLUX.2-dev",
 }
 _FAMILY_VRAM_NOTES = {
-    "sdxl": "Trains on ~12 GB+ (bf16 LoRA). The lightest, fastest option.",
-    "flux.1": (
-        "12B model, QLoRA (nf4) by default (~16 GB+). Gated on Hugging Face: accept the "
-        "FLUX.1-dev license and add your HF token before training."
-    ),
-    "qwen-image": "20B model, QLoRA (nf4) by default (~24 GB+). The heaviest option.",
-    "z-image": "6B model, QLoRA (nf4) by default (~12 GB+). bf16 only.",
-    "krea-2": (
-        "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only. Trains on the "
-        "undistilled Krea-2-Raw (Krea's guidance: train on Raw, run adapters on Turbo)."
-    ),
-    "flux.2-klein": "4B model, QLoRA (nf4) by default (~10 GB+). bf16 only.",
-    "flux.2-dev": (
-        "32B model, QLoRA (nf4) by default (~28 GB+). bf16 only. Gated on Hugging Face: "
-        "accept the FLUX.2-dev license and add your HF token before training."
-    ),
+    "sdxl": "~12 GB+. The lightest option.",
+    "flux.1": "12B, QLoRA by default (~16 GB+). Gated: needs its license and your HF token.",
+    "qwen-image": "20B, QLoRA by default (~24 GB+). The heaviest option.",
+    "z-image": "6B, QLoRA by default (~12 GB+).",
+    "krea-2": "12B, QLoRA by default (~18 GB+). Trains on Krea-2-Raw, runs on Turbo.",
+    "flux.2-klein": "4B, QLoRA by default (~10 GB+).",
+    "flux.2-dev": "32B, QLoRA by default (~28 GB+). Gated: needs its license and your HF token.",
 }
 
 # The flow-matching DiT families (run by diffusion_dit_trainer). They expose the base_precision /

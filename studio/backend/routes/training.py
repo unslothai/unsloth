@@ -2173,11 +2173,8 @@ _DATASET_EXAMPLES: list[dict] = [
         "id": "dreambooth-dog",
         "label": "Dog (DreamBooth subject)",
         "repo": "diffusers/dog-example",
-        "description": (
-            "5 photos of one dog. The classic DreamBooth subject set: teach the model a "
-            "specific subject, then summon it with the trigger prompt."
-        ),
-        "license": "Released by Google for DreamBooth research/demos",
+        "description": "5 photos of one dog. Teach a subject, then call it with the trigger.",
+        "license": "Google, research and demos",
         "image_cap": 10,
         "suggested_trigger": "a photo of sks dog",
         "loader": "hf_dataset",
@@ -2188,10 +2185,7 @@ _DATASET_EXAMPLES: list[dict] = [
         "id": "tuxemon",
         "label": "Tuxemon (captioned style set)",
         "repo": "linoyts/Tuxemon",
-        "description": (
-            "Captioned cartoon monster art. A good style set: each image ships a caption, "
-            "so the adapter learns the look without a trigger word."
-        ),
+        "description": "Captioned cartoon monster art. A style set, no trigger needed.",
         "license": "cc-by-sa-3.0",
         "image_cap": 60,
         "suggested_trigger": None,
@@ -2203,10 +2197,7 @@ _DATASET_EXAMPLES: list[dict] = [
         "id": "tarot-1920",
         "label": "1920 Tarot (public domain style set)",
         "repo": "multimodalart/1920-raider-waite-tarot-public-domain",
-        "description": (
-            "Public-domain 1920 Raider-Waite tarot art with captions. A permissive style "
-            "set for demoing captioned LoRA training."
-        ),
+        "description": "Captioned 1920 Raider-Waite tarot art. A permissive style set.",
         "license": "public domain",
         "image_cap": 60,
         "suggested_trigger": None,
@@ -2218,11 +2209,8 @@ _DATASET_EXAMPLES: list[dict] = [
         "id": "smithsonian-butterflies",
         "label": "Smithsonian Butterflies",
         "repo": "huggan/smithsonian_butterflies_subset",
-        "description": (
-            "100 butterfly specimen photos. The classic diffusers-docs training set. No "
-            "captions, so pair it with the trigger prompt to teach a butterfly subject."
-        ),
-        "license": "CC0 (Smithsonian Open Access)",
+        "description": "100 butterfly photos. No captions, so use the trigger prompt.",
+        "license": "CC0",
         "image_cap": 100,
         # The metadata columns are species names / boilerplate alt-text, not captions, so train
         # it as a subject set with the trigger prompt instead.
@@ -2235,10 +2223,7 @@ _DATASET_EXAMPLES: list[dict] = [
         "id": "pixel-nouns",
         "label": "Nouns (pixel avatars)",
         "repo": "m1guelpf/nouns",
-        "description": (
-            "100 captioned Nouns pixel-art avatars. A captioned style set: each image ships "
-            "a caption, so the adapter learns the pixel look without a trigger word."
-        ),
+        "description": "100 captioned pixel-art avatars. A style set, no trigger needed.",
         "license": "cc0-1.0",
         "image_cap": 100,
         "suggested_trigger": None,

@@ -77,7 +77,7 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     label: "FLUX.1-dev (12B)",
     base_repos: ["black-forest-labs/FLUX.1-dev"],
     defaults: { rank: 16, lr: 0.0001, resolution: 512 },
-    vram_note: "Needs a free Hugging Face license: accept it on the model page, then add your token.",
+    vram_note: "Gated: needs its license and your HF token.",
     gated: true,
   },
   {
@@ -85,21 +85,21 @@ const FAMILY_PRESETS: FamilyPreset[] = [
     label: "Qwen-Image (20B)",
     base_repos: ["unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"],
     defaults: { rank: 16, lr: 0.00005, resolution: 512 },
-    vram_note: "The biggest model: needs a large GPU. Start at 512px.",
+    vram_note: "The biggest: needs a large GPU. Start at 512px.",
   },
   {
     name: "z-image",
     label: "Z-Image-Turbo (6B)",
     base_repos: ["unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 768 },
-    vram_note: "The smallest and fastest to train. A great first pick.",
+    vram_note: "The smallest and fastest. A good first pick.",
   },
   {
     name: "sdxl",
     label: "SDXL (U-Net)",
     base_repos: ["stabilityai/stable-diffusion-xl-base-1.0", "stabilityai/sdxl-turbo"],
     defaults: { rank: 16, lr: 0.0001, resolution: 1024 },
-    vram_note: "The classic. Trains comfortably at 1024px.",
+    vram_note: "The classic. Fine at 1024px.",
   },
 ];
 
@@ -867,11 +867,11 @@ export function DiffusionTrainPanel({
   const precisionLabel = (
     m: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto",
   ): string => {
-    if (m === "auto") return "Auto (recommended)";
-    if (m === "nf4") return "nf4 (4-bit QLoRA, lowest VRAM)";
-    if (m === "bf16") return "bf16 (fastest, most VRAM)";
-    if (m === "int8") return "int8 (8-bit)";
-    if (m === "mxfp8") return "mxfp8 (Blackwell, best at high res/batch)";
+    if (m === "auto") return "Auto";
+    if (m === "nf4") return "nf4 (lowest VRAM)";
+    if (m === "bf16") return "bf16 (fastest)";
+    if (m === "int8") return "int8";
+    if (m === "mxfp8") return "mxfp8 (Blackwell)";
     return "fp8 (experimental)";
   };
 
@@ -911,7 +911,7 @@ export function DiffusionTrainPanel({
             </SelectContent>
           </Select>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            How fast the model learns over time. Constant is fine for most runs.
+            Constant is fine for most runs.
           </p>
         </div>
         {lrScheduler !== "constant" &&
@@ -934,7 +934,7 @@ export function DiffusionTrainPanel({
             </SelectContent>
           </Select>
           <p className="text-[11px] leading-snug text-muted-foreground">
-            Saves a lot of GPU memory in exchange for slightly slower steps.
+            Less VRAM, slightly slower steps.
           </p>
         </div>
 
@@ -971,8 +971,7 @@ export function DiffusionTrainPanel({
                 <>This GPU cannot train this model family.</>
               ) : (
                 <>
-                  How the base model is stored while training. Auto picks the best fit
-                  for your GPU.
+                  Auto picks the best fit for your GPU.
                   {basePrequantized && (
                     <> This base is already 4-bit, so only nf4/auto apply.</>
                   )}
@@ -997,7 +996,7 @@ export function DiffusionTrainPanel({
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              How the math runs during training. bf16 is right for modern GPUs.
+              bf16 is right for modern GPUs.
             </p>
           </div>
         )}
@@ -1020,7 +1019,7 @@ export function DiffusionTrainPanel({
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-snug text-muted-foreground">
-              Warms up once at the start, then every training step runs faster.
+              Slower first step, faster after.
             </p>
           </div>
         )}
@@ -1038,8 +1037,7 @@ export function DiffusionTrainPanel({
           <div>
             <h2 className="text-base font-semibold">Train a LoRA</h2>
             <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-              Teach an image model a style, character, or subject from your own images. The
-              finished adapter shows up in the Create tab&apos;s LoRA picker.
+              Teach a model a style or subject from your own images.
             </p>
           </div>
 
@@ -1081,7 +1079,7 @@ export function DiffusionTrainPanel({
             {effectiveBase === CUSTOM_BASE && (
               <Input
                 value={customBase}
-                placeholder="Hugging Face repo id, or a folder on this machine"
+                placeholder="Repo id or local folder"
                 spellCheck={false}
                 onChange={(e) => setCustomBase(e.target.value)}
                 className="h-8 text-xs"
@@ -1191,8 +1189,7 @@ export function DiffusionTrainPanel({
                   )}
                 </div>
                 <p className="text-[11px] leading-snug text-muted-foreground">
-                  10-50 images are plenty. Captions are optional: without them, the trigger
-                  prompt below describes every image.
+                  10-50 images is plenty. Captions are optional.
                 </p>
               </div>
             ) : (
@@ -1219,9 +1216,8 @@ export function DiffusionTrainPanel({
                     />
                   )}
                   {selectedDataset.caption_count === 0 && !gridOpen && (
-                    <p className="text-[11px] text-muted-foreground">
-                      No captions yet: the trigger prompt below will describe every image,
-                      or open Review captions to write your own.
+                    <p className="text-[11px] leading-snug text-muted-foreground">
+                      No captions yet, so the trigger prompt describes every image.
                     </p>
                   )}
                 </>
@@ -1239,8 +1235,8 @@ export function DiffusionTrainPanel({
               just labels the output) */}
           {fullyCaptioned ? (
             <p className="text-[11px] leading-snug text-muted-foreground">
-              All {selectedDataset?.image_count} images have captions - no trigger prompt needed.
-              The style applies to any prompt after training.
+              All {selectedDataset?.image_count} images have captions, so no trigger prompt
+              is needed.
             </p>
           ) : (
             <div className={fieldClass}>
@@ -1252,8 +1248,7 @@ export function DiffusionTrainPanel({
                 className="h-8 text-xs"
               />
               <p className="text-[11px] leading-snug text-muted-foreground">
-                What every image is described as while training. Put these words in a
-                prompt later to get the style back.
+                The words you will use later to get this style back.
               </p>
             </div>
           )}
@@ -1267,7 +1262,7 @@ export function DiffusionTrainPanel({
               className="h-8 text-xs"
             />
             <p className="text-[11px] leading-snug text-muted-foreground">
-              The name this LoRA gets in the Create tab's picker.
+              Its name in the Create tab&apos;s picker.
             </p>
           </div>
 
@@ -1370,13 +1365,12 @@ export function DiffusionTrainPanel({
                   Training settings
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  Applied when you press Start training
+                  Applied on Start training
                 </span>
               </div>
               {trainingSettings}
               <p className="text-[11px] leading-snug text-muted-foreground">
-                Once training starts, live progress and the Training Loss / Gradient Norm
-                charts take over this area.
+                Progress and charts take over here once training starts.
               </p>
             </div>
 
