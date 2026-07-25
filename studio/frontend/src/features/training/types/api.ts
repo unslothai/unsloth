@@ -3,7 +3,18 @@
 
 import type { S3Config } from "@/types/training";
 
+export interface TrainingDatasetRequest {
+  hf_dataset?: string | null;
+  local_path?: string | null;
+  subset?: string | null;
+  split?: string | null;
+  format_type?: string | null;
+  column_mapping?: Record<string, unknown> | null;
+  sampling_weight?: number | null;
+}
+
 export interface TrainingStartRequest {
+  training_datasets: TrainingDatasetRequest[];
   model_name: string;
   project_name: string | null;
   training_type: string;

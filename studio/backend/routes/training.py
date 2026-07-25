@@ -190,6 +190,9 @@ async def start_training(
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
 
         # Validate dataset paths if provided.
+        for entry in request.training_datasets:
+            if entry.local_path:
+                entry.local_path = _validate_local_dataset_paths([entry.local_path], "Training dataset")[0]
         if request.local_datasets:
             request.local_datasets = _validate_local_dataset_paths(
                 request.local_datasets, "Local dataset"
@@ -225,6 +228,8 @@ async def start_training(
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
         if request.dataset_streaming:
+            if len(request.training_datasets) > 1:
+                raise HTTPException(status_code = 400, detail = "Streaming multiple datasets is not supported; disable streaming or select one Hugging Face dataset.")
             if not request.hf_dataset:
                 raise HTTPException(
                     status_code = 400,
@@ -294,6 +299,7 @@ async def start_training(
             "max_seq_length": request.max_seq_length,
             "vision_image_size": request.vision_image_size,
             "hf_dataset": request.hf_dataset or "",
+            "training_datasets": [entry.model_dump() for entry in request.training_datasets],
             "local_datasets": request.local_datasets,
             "local_eval_datasets": request.local_eval_datasets,
             "format_type": request.format_type,
