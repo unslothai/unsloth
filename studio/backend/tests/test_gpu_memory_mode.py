@@ -879,7 +879,7 @@ def _rocm_torch_stub(monkeypatch):
 def test_subset_pin_masks_via_rocr_on_rocm(monkeypatch):
     # A GPU-subset pin must exclude the rest at the ROCr/HSA layer: HIP masking
     # still enumerates every agent first, which segfaults the build on an
-    # unsupported deselected GPU (e.g. a gfx1103 iGPU under a gfx110X prebuilt).
+    # unsupported deselected GPU (e.g. a gfx1036 iGPU under a gfx103X prebuilt).
     # ROCR drops it at the driver layer; only one mask is set (HIP cleared).
     _rocm_torch_stub(monkeypatch)
     env = {"HIP_VISIBLE_DEVICES": "9"}  # stale/inherited HIP mask must not survive
