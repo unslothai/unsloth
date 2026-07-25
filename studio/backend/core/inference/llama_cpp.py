@@ -2084,7 +2084,9 @@ class LlamaCppBackend:
         self._tensor_split: Optional[List[float]] = None
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
-        # Raw requested GPU pin before automatic fit narrows the active subset.
+        # RAW requested GPU pin, before the fit narrowed it. self._gpu_ids records the
+        # EFFECTIVE (fit-narrowed) pin for /status; dedupe compares this raw value so a
+        # [0, 1] narrowed to [0] and re-sent as [0, 1] still matches (#7239).
         self._requested_gpu_ids: Optional[List[int]] = None
         # Raw mode preserves explicit "auto"; the property provides its canonical form.
         self._requested_memory_mode: Optional[str] = None
@@ -2563,7 +2565,8 @@ class LlamaCppBackend:
 
     @property
     def requested_gpu_ids(self) -> Optional[List[int]]:
-        """Raw requested GPU pin before automatic fit narrows it."""
+        """RAW requested GPU pin (before the fit narrowed it), or None for auto.
+        gpu_ids echoes the EFFECTIVE pin for /status."""
         return self._requested_gpu_ids
 
     def matches_gpu_ids(self, gpu_ids: Optional[List[int]]) -> bool:
@@ -2879,6 +2882,7 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
+                "supports_fit_target": False,
                 "supports_load_mode": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
@@ -2900,6 +2904,7 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
+        supports_fit_target = False
         supports_load_mode = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
@@ -3005,6 +3010,7 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
+            supports_fit_target = _is_real("--fit-target")
             supports_load_mode = _is_real("--load-mode")
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
@@ -3041,6 +3047,7 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
+            "supports_fit_target": supports_fit_target,
             "supports_load_mode": supports_load_mode,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
@@ -5294,7 +5301,10 @@ class LlamaCppBackend:
         # above), not the whole pick, and clears any explicit pin from a prior
         # chat load; a multi-GPU list would misreport placement and mis-dedup.
         self._gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None
-        self._requested_gpu_ids = sorted(gpu_ids) if gpu_ids else None
+        # The frontend prefers requested_gpu_ids when hydrating the picker.
+        # Diffusion uses only one device, so echo the collapsed effective pin,
+        # not unused members of the original request.
+        self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -9326,18 +9336,10 @@ class LlamaCppBackend:
                 )
             ):
                 return False
-        # A changed GPU pick must reload (compare order-insensitively; None/[]
-        # both mean automatic). The diffusion runner collapses a multi-GPU pick
-        # to its single lowest device, so self._gpu_ids holds just that device;
-        # normalize the request the same way, or a multi-GPU pick that resolves
-        # to the same device needlessly reloads.
-        if self._is_diffusion:
-            requested_gpu_pick = [sorted(gpu_ids)[0]] if gpu_ids else None
-            loaded_gpu_pick = self._gpu_ids or None
-        else:
-            requested_gpu_pick = sorted(gpu_ids) if gpu_ids else None
-            loaded_gpu_pick = self._requested_gpu_ids or None
-        if loaded_gpu_pick != requested_gpu_pick:
+        # A changed GPU pick must reload. Regular GGUF accepts either the raw
+        # requested placement pool or the effective status-echoed subset;
+        # diffusion compares its normalized single-device pick.
+        if not self.matches_gpu_ids(gpu_ids):
             return False
 
         # GGUF host-memory placement mode is first-class; a change must reload (#7164).
@@ -10469,11 +10471,10 @@ class LlamaCppBackend:
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
         at an explicitly requested ctx so it offloads or fails instead of
-        silently shrinking the window. The 8192 auto-floor applies only under
-        Manual + Auto (``auto_fit``), which omits ``-c``: on the legacy auto
-        path ``-c 0`` already pins the native window and ``--fit-ctx 8192``
-        would override it down to 8192. Keep llama.cpp's default fit target
-        instead of reducing its safety margin.
+        silently shrinking the window. The 8192 auto-floor and tighter
+        ``--fit-target`` margin apply only under Manual + Auto (``auto_fit``),
+        which omits ``-c``: on the legacy auto path ``-c 0`` already pins the
+        native window and ``--fit-ctx 8192`` would override it down to 8192.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -10486,6 +10487,10 @@ class LlamaCppBackend:
                 # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
                 # shrink the window below a usable size.
                 flags.extend(["--fit-ctx", "8192"])
+        if use_fit and auto_fit and caps.get("supports_fit_target"):
+            # Leave 512 MiB free per device so llama.cpp packs more of the
+            # model onto the GPU before spilling to system RAM.
+            flags.extend(["--fit-target", "512"])
         return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:

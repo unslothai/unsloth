@@ -563,15 +563,20 @@ def test_manual_allows_tensor_parallel_via_split_mode():
     assert "if tp_tensor_split and len(tp_tensor_split) > 1:" in src
 
 
-def test_fit_keeps_upstream_target_margin():
-    # Manual + Auto must keep llama.cpp's default fit target. Reducing its
-    # headroom is especially risky on integrated GPUs that share system RAM.
-    flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, {})
-    assert "--fit-target" not in flags
-    # Not emitted on the legacy auto path (fit on but not auto_fit).
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, {})
+def test_fit_sets_target_margin():
+    # Manual + Auto (auto_fit) tightens the per-device VRAM margin to 512 MiB.
+    caps = {"supports_fit_target": True}
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, True, 0, 0, caps)
+    assert flags[flags.index("--fit-target") + 1] == "512"
+    # Not emitted on the legacy auto path (fit on but not auto_fit): -c 0 pins
+    # native there, so the tighter margin must not ride along.
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, True, False, 0, 0, caps)
     # Not emitted when fit is off.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, {})
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, False, 0, 0, caps)
+    # Not emitted when the binary lacks support.
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, True, 0, 0, {"supports_fit_target": False}
+    )
 
 
 # ── GPU picker (gpu_ids -> CUDA_VISIBLE_DEVICES) ─────────────────────
@@ -661,15 +666,24 @@ def test_gpu_ids_reload_detection_is_order_insensitive():
     assert _target_state_gpu_ids(backend, None) is False
 
 
-def test_gpu_ids_reload_detection_uses_raw_request_after_fit_narrows():
+def test_gpu_ids_reload_detection_accepts_raw_and_effective_pin():
     backend = _loaded_backend("auto")
-    backend._gpu_ids = [0]
     backend._requested_gpu_ids = [0, 1]
+    backend._gpu_ids = [0]
+    backend._last_load_kwargs = {"gpu_ids": [0, 1], "model_identifier": "owner/repo"}
 
-    # Repeating the original request dedupes even though fit used one GPU.
+    # The original request still matches after the fitter narrows it.
     assert _target_state_gpu_ids(backend, [1, 0]) is True
-    # Deliberately changing the request to the effective subset still reloads.
-    assert _target_state_gpu_ids(backend, [0]) is False
+    assert backend.requested_gpu_ids == [0, 1]
+    # The status response echoes the effective pin, which must also round-trip.
+    # Treat the incoming subset as the latest intent so status and a future
+    # reload do not restore GPU 1 after the user removed it.
+    assert _target_state_gpu_ids(backend, [0]) is True
+    assert backend.requested_gpu_ids == [0]
+    assert backend._last_load_kwargs == {"gpu_ids": [0], "model_identifier": "owner/repo"}
+    # A genuinely different placement pool still reloads.
+    assert _target_state_gpu_ids(backend, [1]) is False
+    assert _target_state_gpu_ids(backend, None) is False
 
 
 def test_gpu_ids_reload_detection_collapses_diffusion_to_single_device():
@@ -754,10 +768,8 @@ def test_route_matches_loaded_settings_uses_shared_gpu_pin_matcher():
     # raw, effective, and diffusion pins cannot drift apart.
     route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
     match_impl = route_src[route_src.index("def _request_matches_loaded_settings") :]
-    guard = match_impl.index("if llama_backend.is_diffusion:")
-    collapse = match_impl.index("[sorted(request.gpu_ids)[0]] if request.gpu_ids else None")
-    compare = match_impl.index("if _req_gpu_ids != _loaded_gpu_ids:")
-    assert guard < collapse < compare
+    assert "if not llama_backend.matches_gpu_ids(request.gpu_ids):" in match_impl
+    assert "llama_backend._record_matching_gpu_request(request.gpu_ids)" in match_impl
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
