@@ -537,6 +537,11 @@ export function AgentsTab() {
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
+  // The model /api/inference/status reports as resident, so the command can
+  // attach to it as loaded rather than remapping it to another cached copy.
+  const [activeStatusModel, setActiveStatusModel] = useState<string | null>(
+    null,
+  );
   const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
@@ -580,7 +585,13 @@ export function AgentsTab() {
   const selectedAgentDetails = detailsFor(selectedAgent);
   // A GGUF outside the active HF cache only loads by its snapshot path, and a
   // path takes its quant via --gguf-variant since it has no ":variant" suffix.
-  const modelId = cachedLoadIds[selectedModel] ?? selectedModel;
+  // The resident model is exempt: it already loaded by id, and cached-gguf keeps
+  // the largest copy, whose snapshot could switch cache or quant under it.
+  const cachedLoadId =
+    selectedModel === activeStatusModel
+      ? null
+      : (cachedLoadIds[selectedModel] ?? null);
+  const modelId = cachedLoadId ?? selectedModel;
   const suffixVariant = isHuggingFaceRepo(modelId);
   const commandModel =
     selectedVariant && suffixVariant
@@ -697,6 +708,7 @@ export function AgentsTab() {
         }
         setModels(models);
         setCachedLoadIds(loadIds);
+        setActiveStatusModel(active?.model ?? null);
         setKnownVariants((current) => ({
           ...current,
           ...knownVariants,
@@ -732,8 +744,8 @@ export function AgentsTab() {
     // Offer the quants from the same place the command loads from: a snapshot
     // outside the active cache would otherwise list remote-only variants.
     listGgufVariants(selectedModel, hfToken || undefined, {
-      preferLocalCache: cachedLoadIds[selectedModel] != null,
-      localPath: cachedLoadIds[selectedModel] ?? null,
+      preferLocalCache: cachedLoadId != null,
+      localPath: cachedLoadId,
     })
       .then((info) => {
         if (cancelled) {
@@ -791,7 +803,7 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-  }, [cachedLoadIds, hfToken, preferredVariant, selectedModel]);
+  }, [cachedLoadId, hfToken, preferredVariant, selectedModel]);
 
   // `codex` needs a GGUF model (unsloth_cli's _require_gguf_for_codex exits otherwise), but
   // the picker only offers GGUFs and the command names the one it built, so no warning fits.
