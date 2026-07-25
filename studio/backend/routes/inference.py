@@ -387,7 +387,7 @@ def _raise_unsupported_n(path_label: str) -> None:
     _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
 
 
-def _sse_streaming_response(content) -> StreamingResponse:
+def _sse_streaming_response(content, *, unstarted_cleanup = None) -> StreamingResponse:
     """A ``text/event-stream`` response with the standard SSE headers used by
     every streaming path here: no client/proxy caching, no proxy buffering, and
     a one-shot connection. Two callers build their response inline instead: the
@@ -409,6 +409,7 @@ def _sse_streaming_response(content) -> StreamingResponse:
             "Connection": "close",
             "X-Accel-Buffering": "no",
         },
+        unstarted_cleanup = unstarted_cleanup,
     )
 
 
@@ -1511,6 +1512,24 @@ class _SameTaskStreamingResponse(StreamingResponse):
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
+
+
+async def _release_unstarted_anthropic_stream(iterator, prior_cleanup) -> None:
+    """Close a stream whose body never started, running the response's own
+    pre-start hook. aclose() on an unstarted async generator is a no-op, so its
+    finally never runs and anything the builder acquired eagerly (the passthrough
+    cancel tracker) would leak without the hook."""
+    aclose = getattr(iterator, "aclose", None)
+    if aclose is not None:
+        try:
+            await aclose()
+        except Exception:
+            pass
+    if prior_cleanup is not None:
+        try:
+            await prior_cleanup()
+        except Exception:
+            pass
 
 
 def _tracked_cancel_unstarted_cleanup(tracker):
@@ -13246,7 +13265,9 @@ async def anthropic_messages(
     # once full. Mirrors the OpenAI passthrough admission wiring. Streaming holds the
     # slot only while the body iterates (the upstream stream opens on iteration); the
     # non-stream path holds it across the single awaited generation.
-    async def _admitted_anthropic_stream(orig_body, reservation, admission_config, stream_lease):
+    async def _admitted_anthropic_stream(
+        orig_body, reservation, admission_config, stream_lease, prior_cleanup = None
+    ):
         lease = stream_lease
         stream_cancelled = False
         body_started = False
@@ -13282,14 +13303,16 @@ async def anthropic_messages(
         except LlamaAdmissionCancelled:
             return
         finally:
-            await _close_openai_admitted_stream_iterator(
-                orig_body,
-                cancelled = stream_cancelled,
-            )
-            # The monitored body finalizes itself once it has started; before that
-            # nothing else will, so a give-up while queued must do it here.
-            if not body_started:
+            if body_started:
+                await _close_openai_admitted_stream_iterator(
+                    orig_body,
+                    cancelled = stream_cancelled,
+                )
+            else:
+                # Giving up while queued: the monitored body never ran, so nothing
+                # downstream finalizes the entry or exits the response's tracker.
                 api_monitor.finish(monitor_id, "cancelled")
+                await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
             if lease is not None:
                 lease.release()
             else:
@@ -13325,21 +13348,21 @@ async def anthropic_messages(
                     reservation.cancel()
                 return monitored
 
+            # Replacing body_iterator would strand the response's own pre-start
+            # hook (the passthrough uses one to exit its cancel tracker), so chain
+            # to it instead of clobbering it.
+            prior_cleanup = getattr(monitored, "_unstarted_cleanup", None)
+
             async def _unstarted_cleanup() -> None:
                 # The body never ran, so nothing else closes out the monitor entry.
                 api_monitor.finish(monitor_id, "cancelled")
-                _aclose = getattr(orig_body, "aclose", None)
-                if _aclose is not None:
-                    try:
-                        await _aclose()
-                    except Exception:
-                        pass
+                await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
                 if stream_lease is not None:
                     stream_lease.release()
                 reservation.cancel()
 
             monitored.body_iterator = _admitted_anthropic_stream(
-                orig_body, reservation, admission_config, stream_lease
+                orig_body, reservation, admission_config, stream_lease, prior_cleanup
             )
             monitored._unstarted_cleanup = _unstarted_cleanup
             return monitored
@@ -14081,6 +14104,10 @@ async def _anthropic_passthrough_retry_url(llama_backend, exc):
     recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
     if recover is not None and recover(exc):
         return None
+    # Only the first caller gets True above; the rest must not respawn the same
+    # MTP config underneath the fallback that is already reloading without it.
+    if getattr(llama_backend, "_mtp_runtime_fallback_in_progress", False):
+        return None
     respawn = getattr(llama_backend, "_respawn_if_dead", None)
     if respawn is None or not await asyncio.to_thread(respawn):
         return None
@@ -14287,7 +14314,13 @@ async def _anthropic_passthrough_stream(
         for line in emitter.finish():
             yield line
 
-    return _sse_streaming_response(_stream())
+    # The tracker is entered eagerly above, but _stream()'s finally is what exits
+    # it. Closing an async generator that never started is a no-op, so hand the
+    # response a cleanup hook or a pre-start give-up leaks the registry entry.
+    return _sse_streaming_response(
+        _stream(),
+        unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
+    )
 
 
 async def _anthropic_passthrough_non_streaming(

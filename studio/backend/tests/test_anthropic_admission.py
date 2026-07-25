@@ -469,3 +469,58 @@ def test_every_dispatch_site_goes_through_admission():
 
     assert called.count("_admitted_anthropic") == 6
     assert called.count("_monitored_anthropic") == 0
+
+
+def test_queued_give_up_runs_the_response_pre_start_cleanup(monkeypatch):
+    """A stream abandoned while queued must run the builder's eager cleanup.
+
+    The passthrough enters a _TrackedCancel before returning its response and
+    relies on the stream's finally to exit it. That finally never runs for a
+    generator that never started, so the response carries a pre-start hook and
+    the admission wrapper has to chain to it instead of replacing it.
+    """
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+    ran = []
+
+    async def _hook():
+        ran.append(True)
+
+    real = inf_mod._sse_streaming_response
+
+    def _tagged(content, *, unstarted_cleanup = None):
+        return real(content, unstarted_cleanup = _hook)
+
+    monkeypatch.setattr(inf_mod, "_sse_streaming_response", _tagged)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        body = response.body_iterator
+        await asyncio.wait_for(body.__anext__(), timeout = 2)  # keep-alive, still queued
+        await body.aclose()                                    # give up before the body ran
+
+        assert ran == [True]
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())
+
+
+def test_passthrough_stream_registers_a_pre_start_cleanup():
+    # Structural guard: the tracker is entered eagerly, so the response must
+    # carry the hook that exits it when the body never starts.
+    import ast
+    import inspect
+
+    src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
+    tree = ast.parse(src.replace("\t", "    ").lstrip())
+    returns = [n for n in ast.walk(tree) if isinstance(n, ast.Return) and n.value is not None]
+    call = next(
+        n.value for n in returns
+        if isinstance(n.value, ast.Call)
+        and getattr(n.value.func, "id", "") == "_sse_streaming_response"
+    )
+    assert "unstarted_cleanup" in {kw.arg for kw in call.keywords}
