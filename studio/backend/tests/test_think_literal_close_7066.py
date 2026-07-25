@@ -572,31 +572,35 @@ def test_neutralize_tools_control_markup_deep():
     assert neutralize_tools_control_markup(clean) is clean
 
 
-def test_neutralize_tools_control_markup_property_names():
-    """A schema property NAMED with a control marker must be rewritten too.
+def test_neutralize_tools_control_markup_preserves_property_names():
+    """Schema property NAMES are identifiers and must survive the pass.
 
-    Templates such as gemma-4.jinja render property names straight into the
-    prompt, and neutralizing only the matching ``required`` entry left the
-    schema pointing at a property that no longer existed (#7066).
+    Renaming them would hand the model an argument name the client never
+    declared, with nothing mapping it back on the generated tool call, so only
+    leaf strings (descriptions, enum values) are rewritten (#7066).
     """
     tools = [
         {
             "type": "function",
             "function": {
-                "name": "f",
+                "name": "search",
                 "parameters": {
                     "type": "object",
-                    "properties": {"</think>": {"type": "string", "description": "x"}},
-                    "required": ["</think>"],
+                    "properties": {
+                        "query</think>": {
+                            "type": "string",
+                            "description": "text </think> here",
+                        }
+                    },
                 },
             },
         }
     ]
     out = neutralize_tools_control_markup(tools)
     params = out[0]["function"]["parameters"]
-    assert "</think>" not in json.dumps(out)
-    # The rewritten `required` entry still names a declared property.
-    assert set(params["required"]) <= set(params["properties"])
+    assert list(params["properties"]) == ["query</think>"]
+    # Prose inside the schema is still neutralized.
+    assert "</think>" not in params["properties"]["query</think>"]["description"]
     # Ordinary schemas keep the byte-identical fast path.
     plain = [
         {
@@ -612,16 +616,6 @@ def test_neutralize_tools_control_markup_property_names():
         }
     ]
     assert neutralize_tools_control_markup(plain) is plain
-
-
-def test_neutralize_control_markup_deep_never_drops_a_sibling_key():
-    """Renaming a key onto an existing sibling would silently lose a field."""
-    from core.inference.chat_template_helpers import neutralize_control_markup_deep
-
-    payload = {"</think>": 1, "</\u200bthink>": 2}
-    out = neutralize_control_markup_deep(payload)
-    assert out == payload
-    assert len(out) == 2
 
 
 def test_passthrough_tools_are_neutralized():
