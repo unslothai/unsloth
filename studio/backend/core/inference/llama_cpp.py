@@ -3405,7 +3405,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _strip_device_extra_args(extra_args):
-        """Drop --device/-dev so gpu_ids remains authoritative."""
+        """Drop device and main-GPU flags so gpu_ids remains authoritative."""
         return strip_shadowing_flags(
             extra_args,
             strip_context = False,
@@ -8198,12 +8198,12 @@ class LlamaCppBackend:
                 if extra_args:
                     _emit_extra_args = list(extra_args)
                     if gpu_ids is not None:
-                        # gpu_ids owns placement, so remove a competing --device.
+                        # gpu_ids owns placement, so remove competing device flags.
                         _emit_extra_args = self._strip_device_extra_args(extra_args)
                         if _emit_extra_args != list(extra_args):
                             logger.info(
-                                "Dropped a user --device/-dev from extra args: explicit "
-                                "gpu_ids owns device placement."
+                                "Dropped user device placement flags from extra args: "
+                                "explicit gpu_ids owns placement."
                             )
                     cmd.extend(str(a) for a in _emit_extra_args)
                     logger.info(
@@ -8247,9 +8247,10 @@ class LlamaCppBackend:
                         if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
                             env.pop(_ct_var, None)
 
-                # A gpu_ids pin also owns the inherited --device equivalent.
+                # A gpu_ids pin also owns inherited device placement.
                 if gpu_ids is not None:
                     env.pop("LLAMA_ARG_DEVICE", None)
+                    env.pop("LLAMA_ARG_MAIN_GPU", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default

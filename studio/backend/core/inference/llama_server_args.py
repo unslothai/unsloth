@@ -202,10 +202,12 @@ _MEMORY_MODE_FLAGS: frozenset[str] = frozenset(
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
-# llama.cpp offload device list (--device / -dev). Opt-in (users may pass it under
-# auto-select): stripped only when gpu_ids is set, so it can't override the pin and
-# offload to a GPU the training guard never budgeted (#7188).
-_DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev"})
+# llama.cpp placement flags. Opt-in (users may pass them under auto-select):
+# stripped only when gpu_ids is set, so they cannot override the selected pool
+# or choose a main GPU outside it (#7188).
+_DEVICE_FLAGS: frozenset[str] = frozenset(
+    {"--device", "-dev", "--main-gpu", "-mg"}
+)
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload
 # (manual emits --fit / --gpu-layers / --n-cpu-moe); in auto, a user's

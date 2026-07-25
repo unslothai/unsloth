@@ -400,8 +400,8 @@ def test_strip_shadowing_flags_keeps_device_by_default():
 
 
 def test_strip_shadowing_flags_drops_device_when_requested():
-    # strip_device drops --device/-dev + value when explicit gpu_ids owns placement.
-    for flag in ("--device", "-dev"):
+    # strip_device drops device placement flags when gpu_ids owns placement.
+    for flag in ("--device", "-dev", "--main-gpu", "-mg"):
         out = strip_shadowing_flags(
             [flag, "Vulkan1", "--top-k", "20"],
             strip_context = False,

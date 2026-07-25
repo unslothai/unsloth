@@ -425,8 +425,9 @@ def test_gpu_ids_preserved_on_fit_fallback(tmp_path):
 
 @pytest.mark.parametrize("gpu_ids,scrubbed", [([1, 2], True), (None, False)])
 def test_gpu_ids_scrubs_inherited_llama_arg_device(tmp_path, monkeypatch, gpu_ids, scrubbed):
-    """Scrub inherited LLAMA_ARG_DEVICE only when gpu_ids owns placement."""
+    """Scrub inherited placement variables only when gpu_ids owns placement."""
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA3")
+    monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "3")
 
     gguf = tmp_path / "model.gguf"
     _write_minimal_gguf(gguf)
@@ -476,6 +477,7 @@ def test_gpu_ids_scrubs_inherited_llama_arg_device(tmp_path, monkeypatch, gpu_id
 
     assert captured_envs, "llama-server was not spawned"
     assert ("LLAMA_ARG_DEVICE" not in captured_envs[-1]) == scrubbed
+    assert ("LLAMA_ARG_MAIN_GPU" not in captured_envs[-1]) == scrubbed
 
 
 def test_vulkan_gpu_ids_used_as_direct_ordinals_not_remapped(tmp_path):
