@@ -85,6 +85,13 @@ export type ParseOptions = {
   streaming?: boolean;
   /** True for a `</think>` the caller inserted itself, at that index. */
   isKnownClose?: (index: number) => boolean;
+  /**
+   * Mid-stream only: a close tag whose fence decision was deferred, at that
+   * index. It may still turn out literal, so callers must not act on it until
+   * the final parse confirms it - but recording when it arrived lets the
+   * reasoning timer stop there instead of at end of stream (#7334).
+   */
+  onDeferredClose?: (index: number) => void;
 };
 
 /**
@@ -115,6 +122,7 @@ function findStructuralThinkClose(
   from: number,
   streaming = false,
   isKnownClose?: (index: number) => boolean,
+  onDeferredClose?: (index: number) => void,
 ): number {
   const FENCE = "```";
   let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
@@ -190,7 +198,9 @@ function findStructuralThinkClose(
         // Defer like the backend extractor's hold: calling it structural now
         // and reversing it when the fence closes would bounce text out of the
         // thinking drawer and back, and latch reasoningDuration on a tag that
-        // was never the real close (#7334).
+        // was never the real close (#7334). Report the candidate so the caller
+        // can timestamp it and use that instant only if the final parse agrees.
+        onDeferredClose?.(closeIndex);
         literal = true;
       } else {
         // Where the enclosing fence would close. The greedy cursor answers this
@@ -215,12 +225,10 @@ function findStructuralThinkClose(
     } else {
       const before = closeIndex > spanStart ? raw[closeIndex - 1] : "";
       const after = raw[closeIndex + THINK_CLOSE_TAG.length] ?? "";
-      if (
-        !before ||
-        !after ||
-        !`"'\``.includes(before) ||
-        !`"'\``.includes(after)
-      ) {
+      // A quoted mention is symmetric. Accepting ANY two delimiters called
+      // "`</think>\"yes\"" quoted and kept the whole visible answer in the
+      // drawer, so the flanks must be the same char (#7334).
+      if (!before || before !== after || !`"'\``.includes(before)) {
         literal = false;
       } else {
         // The leading quote is literal only when it OPENS a span, i.e. an odd
@@ -272,6 +280,7 @@ export function parseAssistantContent(
       reasoningStart,
       streaming,
       options?.isKnownClose,
+      options?.onDeferredClose,
     );
     if (closeIndex === -1) {
       appendReasoningPart(parts, raw.slice(reasoningStart));
@@ -300,15 +309,28 @@ export function hasClosedThinkTag(
   raw: string,
   options?: ParseOptions,
 ): boolean {
+  return structuralThinkCloseIndex(raw, options) !== -1;
+}
+
+/**
+ * Index of the structural close tag ending the first reasoning block, or -1.
+ *
+ * Same classification as `hasClosedThinkTag`; callers that recorded deferred
+ * candidates mid-stream need the confirmed index to match one against them
+ * (#7334).
+ */
+export function structuralThinkCloseIndex(
+  raw: string,
+  options?: ParseOptions,
+): number {
   const openIndex = raw.indexOf(THINK_OPEN_TAG);
   const spanStart = openIndex === -1 ? 0 : openIndex + THINK_OPEN_TAG.length;
-  return (
-    findStructuralThinkClose(
-      raw,
-      spanStart,
-      spanStart,
-      options?.streaming ?? false,
-      options?.isKnownClose,
-    ) !== -1
+  return findStructuralThinkClose(
+    raw,
+    spanStart,
+    spanStart,
+    options?.streaming ?? false,
+    options?.isKnownClose,
+    options?.onDeferredClose,
   );
 }

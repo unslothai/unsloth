@@ -87,6 +87,7 @@ import {
   hasClosedThinkTag,
   neutralizeThinkMarkup,
   parseAssistantContent,
+  structuralThinkCloseIndex,
 } from "../utils/parse-assistant-content";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
@@ -2604,6 +2605,12 @@ export function createOpenAIStreamAdapter(
       // fence/quote heuristics -- reasoning ending in an unfinished ``` would
       // otherwise keep every answer delta in the drawer until the end (#7334).
       const syntheticCloses = new Set<number>();
+      // When a close tag first appeared, for candidates whose fence decision is
+      // deferred mid-stream. Reasoning ending in an unfinished ``` resolves as
+      // structural only at end of stream, so without this the thinking timer
+      // would run until then and report the whole answer as thought time
+      // (#7334). Read back only for the index the final parse confirms.
+      const deferredCloseTimes = new Map<number, number>();
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -4007,6 +4014,11 @@ export function createOpenAIStreamAdapter(
                 hasClosedThinkTag(cumulativeText, {
                   streaming: true,
                   isKnownClose: (index) => syntheticCloses.has(index),
+                  onDeferredClose: (index) => {
+                    if (!deferredCloseTimes.has(index)) {
+                      deferredCloseTimes.set(index, Date.now());
+                    }
+                  },
                 }) &&
                 reasoningStartAt &&
                 !reasoningDuration
@@ -4111,11 +4123,22 @@ export function createOpenAIStreamAdapter(
           finalTokPerSec,
         );
 
-        // Finalize reasoning-only streams.
+        // Finalize reasoning-only streams. A close whose fence decision was
+        // deferred mid-stream ends the thought at the instant it arrived, not
+        // at end of stream, once the final parse confirms it structural (#7334).
         if (reasoningStartAt && !reasoningDuration) {
+          const confirmedClose = deferredCloseTimes.size
+            ? structuralThinkCloseIndex(cumulativeText, {
+                isKnownClose: (index) => syntheticCloses.has(index),
+              })
+            : -1;
+          const closedAt =
+            (confirmedClose === -1
+              ? undefined
+              : deferredCloseTimes.get(confirmedClose)) ?? Date.now();
           reasoningDuration = Math.max(
             0,
-            Math.round((Date.now() - reasoningStartAt) / 1000),
+            Math.round((closedAt - reasoningStartAt) / 1000),
           );
         }
         yield {

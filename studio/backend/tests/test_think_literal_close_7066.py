@@ -127,6 +127,43 @@ def test_prefilled_backticked_close_stays_in_reasoning():
     assert visible == "ok"
 
 
+def test_mismatched_quote_flanks_are_a_structural_close():
+    """Quoted mentions are symmetric; mismatched flanks end the thought (#7334).
+
+    ``I'll answer with `</think>"yes"`` has an odd backtick count before the tag
+    and a double quote after it. Reading any two delimiters as a quote span kept
+    the entire visible answer inside the reasoning drawer.
+    """
+    reasoning, visible = _extract_responses_reasoning(
+        'I\'ll answer with `</think>"yes" is the answer.',
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    assert reasoning == "I'll answer with `"
+    assert visible == '"yes" is the answer.'
+    # The span oracle agrees, and a symmetric mention is still literal.
+    assert _think_close_is_literal_in_span('with `</think>"yes"', len("with `")) is False
+    assert _think_close_is_literal_in_span('with "</think>"yes', len('with "')) is True
+
+
+def test_mismatched_quote_flanks_structural_across_deltas():
+    """Same call when the flanks land in different streaming deltas."""
+    ex = _ResponsesReasoningExtractor(
+        parse_think_markers = True,
+        reasoning_prefilled = True,
+    )
+    reasoning, visible = "", ""
+    for delta in ("I'll answer with `", "</think>", '"yes"'):
+        r, v = ex.feed(delta)
+        reasoning += r
+        visible += v
+    r, v = ex.finish()
+    reasoning += r
+    visible += v
+    assert reasoning == "I'll answer with `"
+    assert visible == '"yes"'
+
+
 def test_structured_reasoning_content_is_neutralized():
     ex = _ResponsesReasoningExtractor(parse_think_markers = True)
     reasoning, visible = ex.feed(
@@ -616,6 +653,49 @@ def test_neutralize_tools_control_markup_preserves_property_names():
         }
     ]
     assert neutralize_tools_control_markup(plain) is plain
+
+
+def test_neutralize_tools_control_markup_keeps_name_references_in_sync():
+    """``required`` / ``propertyOrdering`` name the properties, so they survive.
+
+    Property keys are preserved, so rewriting the entries that reference them
+    would leave the schema requiring a property it no longer declares: OpenAI
+    strict mode rejects such a schema outright, and Gemini requires every
+    ``propertyOrdering`` entry to be a valid key (#7066).
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query</think>": {"type": "string", "description": "a </think> hint"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": ["query</think>", "limit"],
+                    "propertyOrdering": ["query</think>", "limit"],
+                    "dependentRequired": {"query</think>": ["limit"]},
+                },
+            },
+        }
+    ]
+    params = neutralize_tools_control_markup(tools)[0]["function"]["parameters"]
+    assert params["required"] == ["query</think>", "limit"]
+    assert params["propertyOrdering"] == ["query</think>", "limit"]
+    assert params["dependentRequired"]["query</think>"] == ["limit"]
+    assert set(params["required"]) <= set(params["properties"])
+    # Prose is still neutralized.
+    assert "</think>" not in params["properties"]["query</think>"]["description"]
+
+
+def test_tool_call_arguments_still_neutralize_a_required_key():
+    """The name-reference carve-out is schema-only; argument data is rewritten."""
+    out = neutralize_tool_call_arguments(
+        [{"function": {"name": "f", "arguments": {"required": ["</think> now"]}}}]
+    )
+    assert "</think>" not in json.dumps(out)
 
 
 def test_passthrough_tools_are_neutralized():

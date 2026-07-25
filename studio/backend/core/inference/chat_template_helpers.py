@@ -106,15 +106,48 @@ def neutralize_non_assistant_control_markup(text: str) -> str:
     return out
 
 
-def neutralize_control_markup_deep(value):
+# JSON-Schema keywords whose string entries REFERENCE declared property names
+# instead of carrying prompt prose. Dict keys are already preserved, so
+# rewriting these would leave ``required`` naming a property the schema no
+# longer declares (OpenAI strict mode rejects that outright, and Gemini
+# requires every ``propertyOrdering`` entry to be a valid key) (#7066).
+_SCHEMA_NAME_LIST_KEYS = frozenset({"required", "propertyOrdering"})
+# Same, one level deeper: {"dependentRequired": {"a": ["b"]}} maps a property
+# name to the names it pulls in. The object-valued (sub-schema) form of
+# ``dependencies`` is prose-bearing, so it still goes through the walk.
+_SCHEMA_NAME_MAP_KEYS = frozenset({"dependentRequired", "dependencies"})
+
+
+def _is_schema_name_list(item) -> bool:
+    return isinstance(item, list) and all(isinstance(entry, str) for entry in item)
+
+
+def _is_schema_name_reference(key, item) -> bool:
+    """True when ``item`` under ``key`` lists property names, not prompt text."""
+    if not isinstance(key, str):
+        return False
+    if key in _SCHEMA_NAME_LIST_KEYS:
+        return _is_schema_name_list(item)
+    return (
+        key in _SCHEMA_NAME_MAP_KEYS
+        and isinstance(item, dict)
+        and bool(item)
+        and all(_is_schema_name_list(entry) for entry in item.values())
+    )
+
+
+def neutralize_control_markup_deep(value, *, schema: bool = False):
     """Recursively neutralize control markers in every string *value* of a
     nested dict/list structure (tool schemas / tool-call argument JSON).
 
     Dict keys are left untouched; only leaf strings are rewritten. Keys are
     identifiers, not prompt prose: renaming a schema property would hand the
     model an argument name the client never declared, and nothing maps it back
-    on the generated tool call. Returns the same object when nothing changed so
-    callers keep byte-identical payloads on the common path (#7066).
+    on the generated tool call. With ``schema = True`` the name lists mirroring
+    those keys (``required`` and friends) are preserved for the same reason;
+    tool-call arguments carry no such references, so their data is always
+    rewritten. Returns the same object when nothing changed so callers keep
+    byte-identical payloads on the common path (#7066).
     """
     if isinstance(value, str):
         return neutralize_non_assistant_control_markup(value)
@@ -122,7 +155,10 @@ def neutralize_control_markup_deep(value):
         changed = False
         out = {}
         for key, item in value.items():
-            new_item = neutralize_control_markup_deep(item)
+            if schema and _is_schema_name_reference(key, item):
+                out[key] = item
+                continue
+            new_item = neutralize_control_markup_deep(item, schema = schema)
             if new_item is not item and new_item != item:
                 changed = True
             out[key] = new_item
@@ -131,7 +167,7 @@ def neutralize_control_markup_deep(value):
         changed = False
         out = []
         for item in value:
-            new_item = neutralize_control_markup_deep(item)
+            new_item = neutralize_control_markup_deep(item, schema = schema)
             if new_item is not item and new_item != item:
                 changed = True
             out.append(new_item)
@@ -145,10 +181,13 @@ def neutralize_tools_control_markup(tools):
     Tool function descriptions, parameter text, and enum values are rendered
     into the chat template as prompt text, so a schema containing ``</think>``
     or ``<|im_start|>`` would otherwise bypass message-level neutralization.
+    ``required`` / ``propertyOrdering`` name the declared properties, whose keys
+    this pass leaves alone, so they are preserved too: rewriting one would point
+    the schema at a property it no longer declares.
     """
     if not tools:
         return tools
-    return neutralize_control_markup_deep(tools)
+    return neutralize_control_markup_deep(tools, schema = True)
 
 
 def neutralize_tool_call_arguments(tool_calls):

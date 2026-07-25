@@ -11224,13 +11224,17 @@ def _is_literal_think_close(buffer: str, close_idx: int) -> bool:
 
     Both flanks must be non-empty: Python's ``"" in needles`` is True, so an
     empty before/after (close at buffer start / end) must not count as quoted.
+    The flanks must also be the SAME char: a quoted mention is symmetric, while
+    mismatched flanks (``` `</think>"yes" ```) are a real close whose answer
+    happens to start with another quote char, and calling that literal hid the
+    whole visible answer in the drawer (#7334).
     """
     end = close_idx + len(_RESPONSES_THINK_CLOSE)
     before = buffer[close_idx - 1] if close_idx > 0 else ""
     after = buffer[end] if end < len(buffer) else ""
     if not before or not after:
         return False
-    if before in "\"'`" and after in "\"'`":
+    if before == after and before in "\"'`":
         # Only literal when the leading quote OPENS a span (odd count of that
         # quote char before the tag). An even count means the quote closed a
         # prior span, so this close tag is structural.
@@ -11380,9 +11384,11 @@ class _ResponsesReasoningExtractor:
         after = buffer[end] if end < len(buffer) else ""
         if not before or not after:
             return False
-        if before in "\"'`" and after in "\"'`":
+        if before == after and before in "\"'`":
             # Odd count of the flanking quote before the tag means it opens a
             # span, so the close tag is quoted content (not a structural close).
+            # Mismatched flanks are not a quoted mention (see
+            # _is_literal_think_close), so they fall through as structural.
             count = self._quote_counts[before] + buffer.count(before, 0, close_idx)
             if count % 2 == 1:
                 return True

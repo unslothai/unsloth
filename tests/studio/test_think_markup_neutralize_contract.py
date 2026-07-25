@@ -35,10 +35,16 @@ def test_chat_adapter_neutralizes_reasoning_before_think_wrap():
 
 
 _HARNESS = """
-import { parseAssistantContent, hasClosedThinkTag } from "__PARSE_TS__";
+import {
+  parseAssistantContent,
+  hasClosedThinkTag,
+  structuralThinkCloseIndex,
+} from "__PARSE_TS__";
 
 const cases = {
   quoted_literal: '<think>user wrote "</think>" here</think>answer',
+  // Mismatched flanks are not a quote span (#7334).
+  mismatched_flanks: '<think>I\\'ll answer with `</think>"yes" is the answer',
   closed_fence_literal: "<think>see ```\\n</think>\\n``` example</think>real answer",
   unclosed_fence: "<think>unclosed ```python\\n</think>\\nthe answer",
   // Unclosed reasoning fence + a fenced code block in the ANSWER (#7334).
@@ -94,12 +100,42 @@ const synthetic = {
     (part) => part.type,
   ),
 };
+// A close deferred mid-stream must still be REPORTED, so the adapter can time
+// the thought at the instant it arrived instead of at end of stream (#7334).
+const deferDeltas = ["<think>draft ```", "</think>", "long answer"];
+const deferredSeen = [];
+let deferCum = "";
+for (const delta of deferDeltas) {
+  deferCum += delta;
+  hasClosedThinkTag(deferCum, {
+    streaming: true,
+    onDeferredClose: (index) => deferredSeen.push(index),
+  });
+}
+const deferred = {
+  seen: deferredSeen,
+  confirmed: structuralThinkCloseIndex(deferCum),
+  closedWhileStreaming: hasClosedThinkTag(deferCum, { streaming: true }),
+  // A close that is genuinely literal is deferred too, and the final parse
+  // then does NOT confirm it, so its timestamp must go unused.
+  literalConfirmed: structuralThinkCloseIndex(cases.closed_fence_literal),
+  literalFirstDeferred: (() => {
+    const seen = [];
+    hasClosedThinkTag(cases.closed_fence_literal, {
+      streaming: true,
+      onDeferredClose: (index) => seen.push(index),
+    });
+    return seen[0] ?? -1;
+  })(),
+};
+
 const streaming = {
   streamClosed,
   streamTypes,
   streamFinal,
   unclosedStreaming,
   synthetic,
+  deferred,
 };
 
 // Perf guard for #7334: literal mentions must not make the parse super-linear.
@@ -190,6 +226,15 @@ def test_parse_assistant_content_literal_close_semantics(tmp_path):
     assert parsed["unclosed_fence"][-1]["text"].strip() == "the answer"
     assert closed["unclosed_fence"] is True
 
+    # Mismatched flanks are not a quoted mention: an odd backtick count before
+    # the tag and a double quote after it used to read as a quote span, which
+    # hid the entire visible answer in the thinking drawer (#7334).
+    assert parsed["mismatched_flanks"] == [
+        {"type": "reasoning", "text": "I'll answer with `"},
+        {"type": "text", "text": '"yes" is the answer'},
+    ]
+    assert closed["mismatched_flanks"] is True
+
     # A literal mention alone never closes the block (reasoning timer stays live).
     assert [part["type"] for part in parsed["literal_only"]] == ["reasoning"]
     assert closed["literal_only"] is False
@@ -250,6 +295,41 @@ def test_known_synthetic_close_is_not_re_derived(tmp_path):
     # Without the known boundary the same shape is a RAW model marker, which
     # still defers mid-stream (the ambiguity the heuristics exist for).
     assert synthetic["rawMarker"] == ["reasoning"]
+
+
+def test_deferred_close_is_reported_for_reasoning_timing(tmp_path):
+    """A deferred close must be reported so the thought can be timed at it.
+
+    ``<think>draft ```</think>long answer`` defers the close mid-stream and only
+    resolves it as structural at the end, so `reasoningDuration` was measured to
+    end of stream and counted the whole visible answer as thought time (#7334).
+    """
+    deferred = _run_parse_harness(tmp_path)["streaming"]["deferred"]
+
+    # Reported every delta while held, always at the real close offset.
+    close_at = len("<think>draft ```")
+    assert deferred["seen"], "deferred close was never reported"
+    assert set(deferred["seen"]) == {close_at}
+    # ... and the final parse confirms exactly that offset, so its timestamp is
+    # the one the adapter may use.
+    assert deferred["confirmed"] == close_at
+    # The deferral itself is unchanged: mid-stream this is still not closed.
+    assert deferred["closedWhileStreaming"] is False
+
+    # A genuinely literal close is reported too, but the final parse resolves a
+    # LATER offset, so the recorded timestamp is never applied.
+    assert deferred["literalFirstDeferred"] != -1
+    assert deferred["literalConfirmed"] != deferred["literalFirstDeferred"]
+
+
+def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
+    """The adapter must record deferred offsets and read them back at finalize."""
+    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    assert "deferredCloseTimes" in src
+    assert "onDeferredClose" in src
+    assert "structuralThinkCloseIndex" in src
+    # The end-of-stream fallback must prefer the confirmed deferred instant.
+    assert "closedAt - reasoningStartAt" in src
 
 
 def test_chat_adapter_marks_its_own_reasoning_close_as_known(tmp_path):
