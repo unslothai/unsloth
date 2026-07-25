@@ -305,6 +305,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(info["reason"], "estimate_unavailable")
 
+
 # ── can_load_chat_during_training: device-independent paths ──────────────────
 
 
