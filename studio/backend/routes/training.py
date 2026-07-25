@@ -15,6 +15,7 @@ from loggers import get_logger
 import asyncio
 from datetime import datetime
 import uuid as _uuid
+import json as _json
 
 # Add backend directory to path.
 backend_path = Path(__file__).parent.parent.parent
@@ -632,6 +633,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
                 "total_steps": getattr(progress, "total_steps", 0),
                 "loss": getattr(progress, "loss", None),
                 "learning_rate": getattr(progress, "learning_rate", None),
+                "checkpoint_upload": getattr(progress, "checkpoint_upload", None),
             }
             # Always present: an explicit null tells the client to drop a cached
             # path (stop without save clears the run's output_dir).
@@ -780,6 +782,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                checkpoint_upload = getattr(progress, "checkpoint_upload", None) or {},
             )
 
         def format_sse(
@@ -800,6 +803,17 @@ async def stream_training_progress(
         # ── Retry directive ──────────────────────────────────────
         # Reconnect after 3 seconds if the connection drops.
         yield "retry: 3000\n\n"
+
+        # Always replay the latest upload lifecycle state. Unlike step IDs this
+        # state may change without a training step, so reconnects must not infer it.
+        latest_upload = getattr(
+            getattr(getattr(backend, "trainer", None), "training_progress", None),
+            "checkpoint_upload", None,
+        )
+        if latest_upload:
+            yield format_sse(
+                _json.dumps(latest_upload), event = "checkpoint_upload"
+            )
 
         # ── Replay missed steps on reconnect ─────────────────────
         if resume_from_step is not None and backend.step_history:
@@ -889,6 +903,7 @@ async def stream_training_progress(
 
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
+        last_upload = _json.dumps(latest_upload, sort_keys = True) if latest_upload else ""
         no_update_count = 0
         # The stall timeout applies only once the run is stepping (pre-step prep
         # may legitimately emit no step for a long time). On reconnect to an
@@ -906,6 +921,11 @@ async def stream_training_progress(
                 return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                upload_inner = getattr(tp_inner, "checkpoint_upload", None) if tp_inner else None
+                serialized_upload = _json.dumps(upload_inner, sort_keys = True) if upload_inner else ""
+                if serialized_upload and serialized_upload != last_upload:
+                    yield format_sse(serialized_upload, event = "checkpoint_upload")
+                    last_upload = serialized_upload
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
                 if backend.step_history or live_step > 0:
                     current_step = backend.step_history[-1] if backend.step_history else 0
