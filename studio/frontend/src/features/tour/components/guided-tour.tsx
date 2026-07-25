@@ -306,20 +306,20 @@ export function GuidedTour({
                     )}
                     aria-hidden={true}
                   />
-                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-emerald-400/18 via-cyan-300/6 to-transparent dark:from-emerald-400/24 dark:via-cyan-300/12" />
-                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-emerald-400/20 blur-2xl dark:bg-emerald-400/26" />
+                  <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-control-accent/18 via-control-accent/6 to-transparent dark:from-control-accent/24 dark:via-control-accent/12" />
+                  <div className="absolute -left-14 -top-16 size-44 rounded-full bg-control-accent/20 blur-2xl dark:bg-control-accent/26" />
                   <div className="absolute -right-14 -bottom-16 size-44 rounded-full bg-cyan-300/18 blur-2xl dark:bg-cyan-300/24" />
 
                   <div className="relative p-5">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-[10px] font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-black/[0.04] px-2.5 py-1 text-ui-10 font-mono text-foreground/60 ring-1 ring-black/10 dark:bg-white/[0.04] dark:text-zinc-200/75 dark:ring-white/14">
                           {idx + 1}/{total}
-                          <span className="size-1 rounded-full bg-emerald-500/70" />
+                          <span className="size-1 rounded-full bg-control-accent/70" />
                           guided tour
                         </div>
                         <DialogPrimitive.Title
-                          className="mt-2 text-[18px] leading-tight"
+                          className="mt-2 text-ui-18 leading-tight"
                           style={{ fontFamily: "var(--font-serif)" }}
                         >
                           {step?.title ?? "Quick tour"}
@@ -352,7 +352,7 @@ export function GuidedTour({
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
-                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-white/15 dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
+                          className="border-black/10 bg-white/70 text-foreground hover:bg-white hover:text-foreground dark:border-transparent dark:bg-white/[0.07] dark:text-zinc-100 dark:hover:bg-white/[0.12]"
                           disabled={idx === 0}
                           onClick={() => setIdx((i) => Math.max(0, i - 1))}
                         >
@@ -362,7 +362,7 @@ export function GuidedTour({
                         {isLast ? (
                           <Button
                             variant="dark"
-                            className="bg-gradient-to-r from-emerald-500 to-cyan-400 text-white hover:from-emerald-600 hover:to-cyan-500"
+                            className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/90"
                             onClick={() => requestClose("complete")}
                           >
                             <HugeiconsIcon icon={CheckmarkCircle01Icon} className="size-4" />
@@ -371,7 +371,7 @@ export function GuidedTour({
                         ) : (
                           <Button
                             variant="dark"
-                            className="bg-gradient-to-r from-emerald-500 to-cyan-400 text-white hover:from-emerald-600 hover:to-cyan-500"
+                            className="bg-control-accent text-control-accent-foreground hover:bg-control-accent/90"
                             onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
                           >
                             Next
@@ -383,7 +383,7 @@ export function GuidedTour({
                   </div>
 
                   <div className="h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/14" />
-                  <div className="px-5 py-3 text-[11px] text-foreground/55 dark:text-zinc-300/65">
+                  <div className="px-5 py-3 text-ui-11 text-foreground/55 dark:text-zinc-300/65">
                     Tip: `Esc` skips. Tour blocks clicks so you can read.
                   </div>
                 </motion.div>

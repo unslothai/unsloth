@@ -42,17 +42,17 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
-import { ModelSelector } from "@/components/assistant-ui/model-selector";
-import { IMAGE_GEN_TASKS } from "@/components/assistant-ui/model-selector/pickers";
+import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
-} from "@/components/assistant-ui/model-selector/model-catalog";
+} from "@/features/model-picker/components/model-selector/model-catalog";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
-} from "@/components/assistant-ui/model-selector/types";
+} from "@/features/model-picker/components/model-selector/types";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";

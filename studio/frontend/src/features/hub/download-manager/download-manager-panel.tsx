@@ -8,10 +8,10 @@ import {
 } from "@/components/ui/tooltip";
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  ArrowDown01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -19,13 +19,13 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { DownloadProgressBar } from "./download-progress-bar";
 import {
   type ManagedDownload,
   downloadManager,
   hydrateDownloadManager,
   useDownloadManagerStore,
 } from "./download-manager-controller";
+import { DownloadProgressBar } from "./download-progress-bar";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -108,7 +108,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
+        <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
           {job.repoId}
           <span className="text-muted-foreground">{variantSuffix(job)}</span>
         </span>
@@ -165,7 +165,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
         />
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
-        <div className="px-0 text-[11px] text-muted-foreground tabular-nums">
+        <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
           <StatusLine job={job} />
         </div>
       ) : null}
@@ -231,7 +231,7 @@ export function DownloadManagerPanel({
       ) : (
         <div className="hub-download-panel pointer-events-auto w-[min(400px,calc(100vw-2rem))] overflow-hidden">
           <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">
+            <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               {headerLabel}
             </span>
             <button
@@ -241,7 +241,7 @@ export function DownloadManagerPanel({
               className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]"
             >
               <HugeiconsIcon
-                icon={ArrowDown01Icon}
+                icon={ChevronDownStandardIcon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />

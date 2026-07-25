@@ -37,7 +37,7 @@ def _checkpoint_sort_key(checkpoint_path: Path) -> tuple[int, int, str]:
 
 
 def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
-    """Best-effort base-model lookup using persisted Studio run metadata."""
+    """Best-effort base-model lookup using persisted Unsloth run metadata."""
     checkpoint_name = checkpoint_dir.name
     resolved_checkpoint_dir = str(checkpoint_dir.resolve())
 
@@ -248,7 +248,7 @@ def scan_checkpoints(
         # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)
 
-        logger.info(f"Found {len(models)} training runs in {outputs_dir}")
+        logger.debug(f"Found {len(models)} training runs in {outputs_dir}")
         return models
 
     except Exception as e:

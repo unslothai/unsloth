@@ -130,7 +130,7 @@ def info_has_local_gguf(info) -> bool:
 def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local GGUF entry.
 
-    Scans the same roots Studio's model picker lists (./models, the active plus
+    Scans the same roots Unsloth's model picker lists (./models, the active plus
     legacy/default HF caches, LM Studio dirs, and user scan folders) so a named
     local model is never missed and silently served as the loaded one. Ollama's
     scanner is skipped: it creates symlinks as a side effect and this runs on the
@@ -146,6 +146,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _is_hidden_model,
     )
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
+    from utils.hf_cache_settings import known_hf_hub_caches
 
     index: dict[str, _LocalGgufEntry] = {}
     seen_hf: set[str] = set()
@@ -174,7 +175,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: ./models scan failed: %s", exc)
     try:
-        for hf_dir in (_resolve_hf_cache_dir(), legacy_hf_cache_dir(), hf_default_cache_dir()):
+        for hf_dir in (
+            *known_hf_hub_caches(),
+            _resolve_hf_cache_dir(),
+            legacy_hf_cache_dir(),
+            hf_default_cache_dir(),
+        ):
             found += _scan_hf_once(hf_dir)
     except Exception as exc:
         logger.debug("auto-switch: HF cache scan failed: %s", exc)
@@ -199,9 +205,13 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         raw_id = getattr(info, "id", None)
         if not raw_id:
             continue
-        # Skip what Studio hides from its pickers (validation probe, RAG embed
+        # Skip what Unsloth hides from its pickers (validation probe, RAG embed
         # weights): not chat models, so never an auto-switch target.
-        if _is_hidden_model(raw_id, getattr(info, "path", None)):
+        if _is_hidden_model(
+            raw_id,
+            getattr(info, "model_id", None),
+            getattr(info, "path", None),
+        ):
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)

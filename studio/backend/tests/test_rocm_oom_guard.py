@@ -36,7 +36,7 @@ class TestIsIntegratedSignal:
     """hipDeviceProp_t.integrated wins when truthy; 0/absent never downgrades.
 
     Same universal gate PR #5988's UMA safetensors fast-load uses -- keeps
-    Studio's two unified-memory consumers on one signal."""
+    Unsloth's two unified-memory consumers on one signal."""
 
     def test_integrated_upgrades_unknown_apu(self) -> None:
         # gfx1103 Phoenix iGPU: outside the hardcoded arch set, but the
@@ -163,6 +163,9 @@ class TestDeviceNameFallback:
             "AMD Radeon 8060S",
             "Radeon 8050S Graphics",  # cut-down Strix Halo SKU
             "AMD Radeon 8050S",
+            # gfx1151 Gorgon Halo (Ryzen AI Max 400 refresh)
+            "Radeon 8065S Graphics",  # Ryzen AI Max+ 495
+            "AMD Radeon 8065S",
             # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",

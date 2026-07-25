@@ -36,6 +36,13 @@ if (!rootElement) {
 
 initializeLocale();
 
+// Rasterization follows the browser OS, not the potentially remote server.
+// This adjustment is calibrated for desktop Linux, so exclude Android.
+const uaLower = navigator.userAgent.toLowerCase();
+if (uaLower.includes("linux") && !uaLower.includes("android")) {
+  document.documentElement.classList.add("render-linux");
+}
+
 createRoot(rootElement).render(
   <StrictMode>
     <App />

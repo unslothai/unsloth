@@ -196,8 +196,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     !isLoginMode &&
     (currentPassword.length < 8 ||
       newPassword.length < 8 ||
+      /\s/.test(newPassword) ||
       newPassword !== confirmPassword ||
       currentPassword === newPassword);
+  const showWhitespaceWarning = !isLoginMode && /\s/.test(newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
@@ -220,6 +222,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
       if (newPassword.length < 8) {
         setError("New password must be at least 8 characters.");
+        return;
+      }
+      if (/\s/.test(newPassword)) {
+        setError("New password cannot contain spaces.");
         return;
       }
       if (newPassword !== confirmPassword) {
@@ -298,7 +304,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // reset-password"), which the installer puts on PATH on every platform.
       // Do NOT rewrite it to a relative Windows path like
       // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
-      // the Studio home dir and fails with CommandNotFoundException elsewhere.
+      // the Unsloth home dir and fails with CommandNotFoundException elsewhere.
       // Show the backend message as-is.
       const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
@@ -425,13 +431,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             </div>
             <p
               className={`min-h-4 text-xs ${
-                showPasswordMismatchWarning ? "text-destructive" : "text-muted-foreground"
+                showWhitespaceWarning || showPasswordMismatchWarning
+                  ? "text-destructive"
+                  : "text-muted-foreground"
               }`}
               aria-live="polite"
             >
-              {showPasswordMismatchWarning
-                ? "Please ensure passwords match."
-                : "Must be at least 8 characters."}
+              {showWhitespaceWarning
+                ? "New password cannot contain spaces."
+                : showPasswordMismatchWarning
+                  ? "Please ensure passwords match."
+                  : "Must be at least 8 characters."}
             </p>
           </>
         )}
@@ -439,7 +449,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         {helperText && (
           <p className="text-center text-sm text-amber-600">{helperText}</p>
         )}
-        {error && <p className="text-center text-sm text-destructive">{error}</p>}
+        {error && (
+          <p className="text-center text-sm text-destructive [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        )}
 
         <Button
           type="submit"

@@ -285,9 +285,6 @@ _cross_entropy_backward = triton.heuristics(
 )(_cross_entropy_backward)
 
 
-MAX_FUSED_SIZE = 65536  # 2**16
-
-
 class Fast_CrossEntropyLoss(torch.autograd.Function):
     @staticmethod
     def forward(

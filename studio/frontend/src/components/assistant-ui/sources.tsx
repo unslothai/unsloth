@@ -52,7 +52,7 @@ function SourceIcon({
       <span
         data-slot="source-icon-fallback"
         className={cn(
-          `flex ${sizeClass} shrink-0 items-center justify-center rounded-sm bg-muted font-medium text-[10px]`,
+          `flex ${sizeClass} shrink-0 items-center justify-center rounded-sm bg-muted font-medium text-ui-10`,
           className,
         )}
         {...props}
@@ -104,7 +104,7 @@ function Source({
       variant={variant}
       size={size}
       className={cn(
-        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "rounded-full cursor-pointer outline-none hover:bg-chat-icon-bg-hover! hover:text-chat-icon-fg-hover! focus-visible:border-ring",
         className,
       )}
     >

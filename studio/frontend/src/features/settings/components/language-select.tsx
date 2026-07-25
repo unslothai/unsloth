@@ -9,22 +9,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  AUTO_LOCALE,
   LOCALES,
-  isSupportedLocale,
+  isLocalePreference,
   setLocale,
   useT,
-  useLocale,
+  useLocalePreference,
 } from "@/i18n";
 
 export function LanguageSelect() {
   const t = useT();
-  const locale = useLocale();
+  const preference = useLocalePreference();
 
   return (
     <Select
-      value={locale}
+      value={preference}
       onValueChange={(value) => {
-        if (isSupportedLocale(value)) setLocale(value);
+        if (isLocalePreference(value)) setLocale(value);
       }}
     >
       <SelectTrigger
@@ -34,7 +35,14 @@ export function LanguageSelect() {
       >
         <SelectValue />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent
+        style={{
+          maxHeight: "min(18rem, var(--radix-select-content-available-height))",
+        }}
+      >
+        <SelectItem value={AUTO_LOCALE}>
+          {t("settings.appearance.language.autoDetect")}
+        </SelectItem>
         {Object.entries(LOCALES).map(([value, metadata]) => (
           <SelectItem key={value} value={value}>
             {metadata.nativeLabel}

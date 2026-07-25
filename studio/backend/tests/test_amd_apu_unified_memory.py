@@ -91,7 +91,7 @@ class TestApuRamShortfall:
     """On a unified-memory APU the weights load into system RAM, so a model
     larger than available RAM (the field case: a 64.6 GB GGUF on a WSL VM capped
     well below the ROCm-reported APU budget) must be refused before spawning,
-    not left to OOM-kill the Studio process."""
+    not left to OOM-kill the Unsloth process."""
 
     def test_field_case_wsl_cap_refuses(self):
         # 64.6 GB weights, ~46 GB available (WSL VM): refuse with guidance.

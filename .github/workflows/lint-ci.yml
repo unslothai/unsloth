@@ -13,10 +13,10 @@
 #     committed YAML / JSON config.
 #
 # TypeScript and Rust are NOT duplicated here on purpose:
-#   - Studio Frontend CI runs `npm run typecheck` (= `tsc --noEmit`)
+#   - Unsloth Frontend CI runs `npm run typecheck` (= `tsc --noEmit`)
 #     and `npm run build` (vite/swc) on every studio/frontend/**
 #     change, which is a full TS AST + type check.
-#   - Studio Tauri CI runs `tauri build --debug --no-bundle` on
+#   - Unsloth Tauri CI runs `tauri build --debug --no-bundle` on
 #     every studio/src-tauri/** or studio/frontend/** change, which
 #     compiles the Rust crate (= cargo check + cargo build).
 # Each is a stricter check than a parse-only step would be, so a

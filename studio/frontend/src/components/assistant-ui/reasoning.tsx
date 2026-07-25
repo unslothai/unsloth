@@ -6,7 +6,6 @@
 /* eslint-disable react-refresh/only-export-components */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
-import { MessageResponseModelBadge } from "@/components/assistant-ui/message-response-details-sheet";
 import {
   Collapsible,
   CollapsibleContent,
@@ -164,7 +163,7 @@ function ReasoningContent({
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-[13.5px] outline-none",
+        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -393,15 +392,12 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     >
       <div className="flex min-w-0 items-center gap-2">
         <ReasoningTrigger
-          className="min-w-0 flex-none"
+          className="min-w-0 flex-1"
           active={isReasoningStreaming}
           // Prefer server timing when available.
           duration={persistedDuration || duration}
         />
-        <span className="hidden min-w-0 max-w-[12rem] group-hover/assistant-message:inline-flex group-focus-within/assistant-message:inline-flex sm:max-w-[16rem]">
-          <MessageResponseModelBadge className="min-w-0" />
-        </span>
-        <div className="ml-auto flex w-16 shrink-0 justify-end">
+        <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (
             <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
           )}

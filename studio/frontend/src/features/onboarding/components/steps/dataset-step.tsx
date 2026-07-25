@@ -322,8 +322,8 @@ export function DatasetStep() {
             <button
               type="button"
               className={cn(
-                "border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer hover:border-primary/50 hover:bg-muted/50",
-                uploadedFile && "border-primary/50 bg-primary/5",
+                "border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer hover:border-ring hover:bg-muted/50",
+                uploadedFile && "border-ring-strong bg-primary/5",
               )}
               onClick={handleFileUpload}
             >

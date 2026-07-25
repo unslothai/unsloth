@@ -14,6 +14,9 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+// Mirrors MIN_AUTO_UNLOAD_IDLE_SECONDS in the backend settings store.
+const MIN_IDLE_SECONDS = 60;
+
 export function ModelAutoSwitchSection() {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
@@ -45,24 +48,32 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse the idle-seconds draft to a non-negative integer; empty/invalid -> null.
+  // Parse the idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
   const parseIdleSeconds = (): number | null => {
     if (!draftIdleSeconds.trim()) {
       return null;
     }
     const parsed = Number(draftIdleSeconds);
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+    if (!Number.isInteger(parsed)) {
+      return null;
+    }
+    return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
   };
 
   const persist = async (
     enabled: boolean,
-    idleSeconds: number,
+    idleSeconds: number | undefined,
     syncDraft = true,
+    keepKv?: boolean,
   ) => {
     setIsSaving(true);
     setError(null);
     try {
-      const saved = await updateOpenAIAutoSwitchSettings(enabled, idleSeconds);
+      const saved = await updateOpenAIAutoSwitchSettings(
+        enabled,
+        idleSeconds,
+        keepKv,
+      );
       setSettings(saved);
       if (syncDraft) {
         setDraftIdleSeconds(String(saved.autoUnloadIdleSeconds));
@@ -101,6 +112,11 @@ export function ModelAutoSwitchSection() {
     void persist(true, idleSeconds);
   };
 
+  const handleKeepKvToggle = (keepKv: boolean) => {
+    if (!settings) return;
+    void persist(settings.enabled, undefined, false, keepKv);
+  };
+
   return (
     <SettingsSection title={t("settings.general.modelAutoSwitch.sectionTitle")}>
       <SettingsRow
@@ -121,7 +137,7 @@ export function ModelAutoSwitchSection() {
       >
         <div className="flex flex-col items-end gap-1">
           <div className="flex items-center gap-2">
-            <div className="relative w-28">
+            <div className="flex items-center gap-1.5">
               <Input
                 type="number"
                 min={0}
@@ -130,9 +146,9 @@ export function ModelAutoSwitchSection() {
                 aria-label="Idle auto-unload seconds"
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
-                className="h-8 w-full pr-8"
+                className="h-8 w-24"
               />
-              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+              <span className="text-xs font-medium text-muted-foreground">
                 s
               </span>
             </div>
@@ -160,6 +176,18 @@ export function ModelAutoSwitchSection() {
           ) : null}
         </div>
       </SettingsRow>
+      {settings?.idleUnloadActive ? (
+        <SettingsRow
+          label={t("settings.general.modelAutoSwitch.keepKv")}
+          description={t("settings.general.modelAutoSwitch.keepKvDescription")}
+        >
+          <Switch
+            checked={settings.autoUnloadKeepKv}
+            disabled={isSaving}
+            onCheckedChange={handleKeepKvToggle}
+          />
+        </SettingsRow>
+      ) : null}
     </SettingsSection>
   );
 }

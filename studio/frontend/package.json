@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
-    "catalog:check": "node --experimental-strip-types --no-warnings src/components/assistant-ui/model-selector/model-catalog.check.ts",
+    "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
   },
@@ -63,7 +63,6 @@
     "lucide-react": "^1.7.0",
     "mammoth": "^1.11.0",
     "motion": "^12.34.0",
-    "next-themes": "^0.4.6",
     "node-forge": "^1.4.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.4",

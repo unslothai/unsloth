@@ -136,7 +136,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Built bundle must not contain Studio's unstable_Provider call site
+      - name: Built bundle must not contain Unsloth's unstable_Provider call site
         run: |
           set -e
           JS=$(ls dist/assets/index-*.js | head -1)
@@ -144,7 +144,7 @@ jobs:
           echo "main bundle: $JS"
           echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
           if [ "$HITS" -gt 3 ]; then
-            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Studio bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
+            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Unsloth bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
             exit 1
           fi
 
