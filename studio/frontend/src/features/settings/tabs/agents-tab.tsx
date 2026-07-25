@@ -267,10 +267,10 @@ function activeGgufSelection(
     return null;
   }
   return {
+    // Status reports the selected quant for path-based loads too, where the
+    // identifier carries no ":variant" suffix to parse.
     model: active.repo,
-    variant: isHuggingFaceRepo(active.repo)
-      ? (status.gguf_variant ?? active.variant)
-      : active.variant,
+    variant: status.gguf_variant ?? active.variant,
   };
 }
 
@@ -426,14 +426,14 @@ function quoteShellArg(value: string, windows: boolean): string {
 function SubagentSection({
   agent,
   baseCommand,
-  commandModelArg,
+  modelArgs,
 }: {
   agent: AgentDetails;
   baseCommand: string;
-  commandModelArg: string;
+  modelArgs: string;
 }) {
   const t = useT();
-  const command = `${baseCommand} --as-subagent --model ${commandModelArg}`;
+  const command = `${baseCommand} --as-subagent ${modelArgs}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -535,6 +535,9 @@ export function AgentsTab() {
   const [detectedAgents, setDetectedAgents] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
   const [models, setModels] = useState<string[]>([EXAMPLE_MODEL_REPO]);
+  const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
+    {},
+  );
   const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
@@ -576,10 +579,19 @@ export function AgentsTab() {
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
   const selectedAgentDetails = detailsFor(selectedAgent);
-  const commandModel = selectedVariant
-    ? `${selectedModel}:${selectedVariant}`
-    : selectedModel;
+  // A GGUF outside the active HF cache only loads by its snapshot path, and a
+  // path takes its quant via --gguf-variant since it has no ":variant" suffix.
+  const modelId = cachedLoadIds[selectedModel] ?? selectedModel;
+  const suffixVariant = isHuggingFaceRepo(modelId);
+  const commandModel =
+    selectedVariant && suffixVariant
+      ? `${modelId}:${selectedVariant}`
+      : modelId;
   const commandModelArg = quoteShellArg(commandModel, isWindowsClient);
+  const modelArgs =
+    selectedVariant && !suffixVariant
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsClient)}`
+      : `--model ${commandModelArg}`;
   // Browser commands must target the Studio origin the user is viewing. The
   // desktop app instead uses the backend URL reported by /api/health; its
   // window origin is a Tauri URL and is not reachable by the CLI.
@@ -589,7 +601,7 @@ export function AgentsTab() {
     isWindowsClient ? "windows" : "unix",
     selectedAgent,
   );
-  const command = `${commandBase} --model ${commandModelArg}`;
+  const command = `${commandBase} ${modelArgs}`;
   const {
     copied,
     copy: handleCopy,
@@ -658,6 +670,14 @@ export function AgentsTab() {
           info?.models ?? [],
           cachedGgufs.map((cached) => cached.repo_id),
         );
+        // A GGUF outside the active HF cache only loads by its snapshot path,
+        // so keep that load_id for --model while listing it by repo id.
+        const loadIds: Record<string, string> = {};
+        for (const cached of cachedGgufs) {
+          if (cached.load_id && cached.load_id !== cached.repo_id) {
+            loadIds[cached.repo_id] = cached.load_id;
+          }
+        }
         const active = activeGgufSelection(status);
         const models = active
           ? [
@@ -673,6 +693,7 @@ export function AgentsTab() {
           setSelectedVariant(active.variant);
         }
         setModels(models);
+        setCachedLoadIds(loadIds);
         setKnownVariants((current) => ({
           ...current,
           ...knownVariants,
@@ -1066,7 +1087,7 @@ export function AgentsTab() {
         <SubagentSection
           key={`${selectedAgent}:${commandModel}`}
           baseCommand={commandBase}
-          commandModelArg={commandModelArg}
+          modelArgs={modelArgs}
           agent={selectedAgentDetails}
         />
 
