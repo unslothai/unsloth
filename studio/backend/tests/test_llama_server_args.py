@@ -77,7 +77,8 @@ validate_extra_args = _lsa.validate_extra_args
         ["-rea", "auto"],
         # Soft-managed: user flags last-wins over Unsloth's auto-set version.
         # --parallel / -np / --n-parallel are hard-denied (KV-cache + slot
-        # count would desync); use `unsloth studio run --parallel N` instead.
+        # count would desync); use the Studio run settings (Parallel Slots /
+        # LoadRequest.n_parallel) or `unsloth studio run --parallel N` instead.
         ["-c", "131072"],
         ["--ctx-size", "8192"],
         ["--flash-attn", "off"],
@@ -122,7 +123,8 @@ def test_non_flag_token_passes_through():
 @pytest.mark.parametrize(
     "denied",
     [
-        # Parallel slots -- owned by the typer --parallel flag.
+        # Parallel slots -- owned by the typer --parallel flag and the
+        # per-load LoadRequest.n_parallel field.
         "-np",
         "--parallel",
         "--n-parallel",
@@ -196,8 +198,9 @@ def test_denylist_rejects_all_aliases(denied):
     "args,offending",
     [
         # Pass-through --parallel would last-wins-override the real slot
-        # count while Unsloth's KV-cache fit + llama_parallel_slots stay at
-        # the typer value -- plan vs. process disagree.
+        # count while Unsloth's KV-cache fit and committed slot bookkeeping
+        # stay at the per-load resolved value (LoadRequest.n_parallel, else
+        # the typer --parallel default) -- plan vs. process disagree.
         (["--parallel", "8"], "--parallel"),
         (["--parallel=8"], "--parallel"),
         (["--n-parallel", "16"], "--n-parallel"),
@@ -207,7 +210,8 @@ def test_denylist_rejects_all_aliases(denied):
         # `["-np8"]` must still resolve to managed.
         (["-np8"], "-np"),
         (["-np64"], "-np"),
-        # Out-of-range values that would bypass the typer 1..64 guard.
+        # Out-of-range values that would bypass the shared PARALLEL_MIN/MAX
+        # bounds (typer guard + LoadRequest.n_parallel validation).
         (["--parallel", "999"], "--parallel"),
         (["-np", "0"], "-np"),
         (["-np999"], "-np"),
@@ -294,7 +298,8 @@ def test_is_managed_flag_true_for_denied():
     assert is_managed_flag("--api-key") is True
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--model") is True
-    # Parallel slots owned by the typer --parallel flag.
+    # Parallel slots owned by the typer --parallel flag and the per-load
+    # LoadRequest.n_parallel field.
     assert is_managed_flag("--parallel") is True
     assert is_managed_flag("--n-parallel") is True
     assert is_managed_flag("-np") is True
