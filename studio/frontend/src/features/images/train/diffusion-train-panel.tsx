@@ -990,7 +990,7 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 sm:px-9">
+    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-3 sm:px-9">
       {/* Left: configure */}
       <div className="bg-card corner-squircle flex w-[380px] min-w-0 shrink-0 flex-col gap-4 overflow-y-auto overflow-x-hidden rounded-3xl p-5 ring-1 ring-foreground/10">
         <div>

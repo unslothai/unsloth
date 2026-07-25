@@ -39,11 +39,11 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
+import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
   IMAGE_CATALOG,
   catalogToModelOptions,
@@ -2226,30 +2226,36 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />
-          {/* Create | Train page-mode switch, on the left next to the model selector
-              (the selector itself stays leftmost: its position is shared with Chat's).
-              Create is the generation workspace; Train is the LoRA training workspace. */}
-          <Tabs value={pageMode} onValueChange={(v) => setPageMode(v as "create" | "train")}>
-            <TabsList className="h-[34px]">
-              {/* Same icons as the sidebar's New Chat / Train entries, so the
-                  two workspaces read as the same actions everywhere. */}
-              {/* TabsTrigger renders children inside a plain inline span (and preflight
-                  makes svg display:block), so the icon and label need their own flex
-                  row to stay on one line. */}
-              <TabsTrigger value="create" className="w-[84px]">
-                <span className="flex items-center gap-1.5">
+          {/* Create | Train page-mode switch, next to the model selector (which stays
+              leftmost: its position is shared with Chat's). PillTabs is the app's
+              segmented control, so this matches the picker and Hub toggles. Icons match
+              the sidebar's New chat / Train rows. Height pinned to the row's 34px. */}
+          <PillTabs
+            ariaLabel="Page mode"
+            value={pageMode}
+            onValueChange={(v) => setPageMode(v as "create" | "train")}
+            fit={true}
+            className="h-[34px] [&>button]:h-[34px]"
+            tabs={[
+              {
+                value: "create",
+                label: "Create",
+                icon: (
                   <HugeiconsIcon icon={PencilEdit02Icon} className="size-3.5" />
-                  Create
-                </span>
-              </TabsTrigger>
-              <TabsTrigger value="train" className="w-[84px]">
-                <span className="flex items-center gap-1.5">
-                  <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" />
-                  Train
-                </span>
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
+                ),
+              },
+              {
+                value: "train",
+                label: "Train",
+                icon: (
+                  <HugeiconsIcon
+                    icon={TestTubeOutlineIcon}
+                    className="size-3.5"
+                  />
+                ),
+              },
+            ]}
+          />
         </div>
         <div className="flex items-center gap-2">
           {/* Single fixed toggle for the right-docked Advanced panel (mirrors Chat's settings
@@ -2290,8 +2296,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         />
       ) : (
       /* ── Controls rail + preview canvas. Padding mirrors the other tabs
-          (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. ── */
-      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 sm:px-9">
+          (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. pt-3 keeps the
+          cards off the model selector row. ── */
+      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-3 sm:px-9">
         {/* The controls rail. Plain card (the gray surface) with no header —
             the prompt + Generate button make the panel self-explanatory. */}
         <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
