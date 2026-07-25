@@ -165,6 +165,7 @@ export function DatasetSection() {
     removeTrainingDataset,
     updateTrainingDataset,
     datasetSource,
+    setDatasetSource,
     selectHfDataset,
     selectLocalDataset,
     selectS3Source,
@@ -203,6 +204,7 @@ export function DatasetSection() {
       removeTrainingDataset: s.removeTrainingDataset,
       updateTrainingDataset: s.updateTrainingDataset,
       datasetSource: s.datasetSource,
+      setDatasetSource: s.setDatasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
       selectS3Source: s.selectS3Source,
@@ -356,7 +358,21 @@ export function DatasetSection() {
   function handleDatasetSelect(id: string | null) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "huggingface";
-    if (id && isAddingDataset) {
+    if (!id) {
+      setIsAddingDataset(false);
+      setSearchQuery("");
+      return;
+    }
+    if (isAddingDataset || trainingDatasets.length > 0) {
+      if (
+        trainingDatasets.some(
+          (entry) => entry.source === "huggingface" && entry.path === id,
+        )
+      ) {
+        toast.info("Dataset already added");
+        setIsAddingDataset(false);
+        return;
+      }
       addTrainingDataset({ source: "huggingface", path: id });
       setIsAddingDataset(false);
       setSearchQuery("");
@@ -368,7 +384,16 @@ export function DatasetSection() {
   function handleLocalDatasetSelect(path: string) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "local";
-    if (isAddingDataset) {
+    if (isAddingDataset || trainingDatasets.length > 0) {
+      if (
+        trainingDatasets.some(
+          (entry) => entry.source === "upload" && entry.path === path,
+        )
+      ) {
+        toast.info("Dataset already added");
+        setIsAddingDataset(false);
+        return;
+      }
       addTrainingDataset({ source: "upload", path });
       setIsAddingDataset(false);
       setSearchQuery("");
@@ -379,6 +404,11 @@ export function DatasetSection() {
 
   function clearSelectionForTab(tab: "huggingface" | "local") {
     pendingSourceTabRef.current = tab;
+    if (trainingDatasets.length > 0 || isAddingDataset) {
+      setIsAddingDataset(false);
+      setSearchQuery("");
+      return;
+    }
     if (tab === "huggingface") {
       handleDatasetSelect(null);
       return;
@@ -498,13 +528,15 @@ export function DatasetSection() {
   const comboboxItems =
     pickerTab === "huggingface" ? hfResultIds : localResultIds;
   const comboboxValue =
-    pickerTab === "huggingface"
-      ? datasetSource === "huggingface"
-        ? dataset
-        : null
-      : datasetSource === "upload"
-        ? selectedLocalId
-        : null;
+    trainingDatasets.length > 0
+      ? null
+      : pickerTab === "huggingface"
+        ? datasetSource === "huggingface"
+          ? dataset
+          : null
+        : datasetSource === "upload"
+          ? selectedLocalId
+          : null;
   const isHfDatasetSelected =
     datasetSource === "huggingface" &&
     !!dataset &&
@@ -739,6 +771,19 @@ export function DatasetSection() {
                     aria-checked={datasetSource === item.value}
                     onClick={() => {
                       if (item.value === datasetSource) return;
+                      if (trainingDatasets.length > 0 && item.value === "s3") {
+                        toast.info(
+                          "Remove the selected training datasets before switching to Amazon S3.",
+                        );
+                        return;
+                      }
+                      if (trainingDatasets.length > 0) {
+                        setDatasetSource(item.value);
+                        setPickerTab(
+                          item.value === "upload" ? "local" : "huggingface",
+                        );
+                        return;
+                      }
                       if (item.value === "huggingface") {
                         selectHfDataset(dataset);
                       } else if (item.value === "upload") {
