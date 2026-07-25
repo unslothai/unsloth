@@ -44,9 +44,7 @@ def _is_main_guard(node: ast.AST) -> bool:
     left = node.test.left
     if not (isinstance(left, ast.Name) and left.id == "__name__"):
         return False
-    return any(
-        isinstance(c, ast.Constant) and c.value == "__main__" for c in node.test.comparators
-    )
+    return any(isinstance(c, ast.Constant) and c.value == "__main__" for c in node.test.comparators)
 
 
 def _import_time_calls(tree: ast.Module):
