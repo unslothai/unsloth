@@ -2422,6 +2422,59 @@ def test_connect_error_retry_is_bounded(monkeypatch):
     assert len(payloads) == 2
 
 
+def test_pre_header_transport_errors_also_respawn(monkeypatch):
+    """A child that dies during prefill already accepted the socket, so it does
+    not surface as ConnectError. Nothing has streamed yet, so replay is safe."""
+    import httpx
+    for exc in (
+        httpx.RemoteProtocolError("server disconnected without sending a response"),
+        httpx.ReadError("connection reset by peer"),
+        httpx.WriteError("broken pipe"),
+    ):
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch, [exc, [_sse({"content": "Recovered."}), _done()]], payloads
+        )
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+        events = list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "hello"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                max_tool_iterations = 1,
+            )
+        )
+
+        assert respawn_calls == [True], type(exc).__name__
+        assert len(payloads) == 2, type(exc).__name__
+        assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
+
+
+def test_prefill_timeout_is_not_retried(monkeypatch):
+    """A slow-but-alive server must not have its first-token budget spent twice."""
+    import httpx
+    for exc in (httpx.ReadTimeout("no first token"), httpx.PoolTimeout("pool")):
+        payloads: list[dict] = []
+        backend = _make_backend(monkeypatch, [exc], payloads)
+        respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+
+        raised = False
+        try:
+            list(
+                backend.generate_chat_completion_with_tools(
+                    messages = [{"role": "user", "content": "hello"}],
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_tool_iterations = 1,
+                )
+            )
+        except httpx.TimeoutException:
+            raised = True
+
+        assert raised, type(exc).__name__
+        assert respawn_calls == [], type(exc).__name__
+        assert len(payloads) == 1, type(exc).__name__
+
+
 def test_mtp_crash_recovery_wins_over_respawn(monkeypatch):
     """An MTP crash reloads without MTP, so never respawn the same config on top."""
     import httpx

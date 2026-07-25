@@ -528,6 +528,25 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     release.set()
 
 
+def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
+    # The single-flight "already recovering" False must not read as "not an MTP
+    # crash": respawning would replay the crashing MTP kwargs and make the
+    # in-flight no-MTP reload abort on its "newer load is active" check.
+    b = _recovery_backend()
+    b._mtp_runtime_fallback_in_progress = True
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == []
+
+    # Once that reload finishes, an ordinary respawn works again.
+    b._mtp_runtime_fallback_in_progress = False
+    b._process.returncode = -9  # only the respawn path logs it
+    assert b._respawn_if_dead() is True
+    assert [kw.get("speculative_type") for kw in loads] == ["auto"]
+
+
 def test_runtime_recovery_rechecks_cancel_before_reload():
     # recover() must re-check the cancel flag after the death poll (load_model
     # clears it), so a reload scheduled just before /unload can't resurrect it.

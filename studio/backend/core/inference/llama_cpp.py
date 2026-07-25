@@ -10544,6 +10544,13 @@ class LlamaCppBackend:
                 # Process is alive: either a concurrent caller already respawned
                 # it (healthy), or this connection error wasn't a dead server.
                 return self._healthy
+            with self._mtp_runtime_fallback_lock:
+                if self._mtp_runtime_fallback_in_progress:
+                    # An MTP-free reload already owns this corpse. Replaying the
+                    # old kwargs would restart the crashing MTP config and make
+                    # that reload abort on its "newer load is active" check.
+                    logger.info("Respawn skipped: an MTP-free reload is already recovering.")
+                    return False
             kwargs = self._last_load_kwargs
             if not kwargs:
                 return False
@@ -10569,6 +10576,12 @@ class LlamaCppBackend:
         effects. Resolve ``base_url`` on each attempt because a respawn may use a new
         port. The one-retry budget is per model request, not per chat turn, so a long
         tool loop never discards a completed tool just because an earlier turn recovered.
+
+        A child that dies during prefill has already accepted the socket, so it
+        surfaces as ReadError/WriteError/RemoteProtocolError rather than
+        ConnectError; all of them mean the transport is gone. Timeouts are excluded
+        on purpose: they mean the server is slow, not dead, and replaying one would
+        just spend the first-token budget twice.
         """
         for attempt in range(2):
             response_opened = False
@@ -10578,7 +10591,7 @@ class LlamaCppBackend:
                     response_opened = True
                     yield opened
                     return
-            except httpx.ConnectError as exc:
+            except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 if response_opened:
                     raise
                 if self._maybe_recover_from_mtp_crash(exc):
