@@ -293,9 +293,7 @@ class TestGfx211AllowlistParity:
         assert (
             "function Test-RocmGfx211Leaf" in text
         ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        m = re.search(
-            r"function test-rocmgfx211leaf[\s\S]{0,400}?@\(([^)]*)\)", text.lower()
-        )
+        m = re.search(r"function test-rocmgfx211leaf[\s\S]{0,400}?@\(([^)]*)\)", text.lower())
         assert m, "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
         assert self._leaves(m.group(1)) == self.EXPECTED, (
             f"Test-RocmGfx211Leaf holds {sorted(self._leaves(m.group(1)))}, "
