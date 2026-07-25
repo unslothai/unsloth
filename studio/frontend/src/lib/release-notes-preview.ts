@@ -8,14 +8,22 @@ const PREVIEW_ITEM_MAX_CHARS = 120;
 const NESTED_INDENT_TOLERANCE = 1;
 const TAB_WIDTH = 4;
 
-const FENCE = /^\s*(`{3,}|~{3,})/;
+const FENCE = /^\s*(`{3,}|~{3,})(.*)$/;
 const HEADING = /^#{1,6}\s+/;
 const BULLET = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
 const BLOCKQUOTE = /^\s*>\s?/;
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 const HTML_TAG = /<[^>]*>/g;
-const EMPHASIS = /(\*\*|__|\*|_|`)/g;
+// Paired emphasis only. Underscores inside identifiers are literal, so
+// UNSLOTH_DISABLE_UPDATE_CHECK keeps its name.
+const BOLD_STAR = /\*\*(?=\S)([\s\S]*?\S)\*\*/g;
+const BOLD_UNDERSCORE = /(^|[^\w])__(?=\S)([\s\S]*?\S)__(?=[^\w]|$)/g;
+const ITALIC_STAR = /\*(?=\S)([^*\n]*?\S)\*/g;
+const ITALIC_UNDERSCORE = /(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)/g;
+const BACKTICK = /`/g;
+const CODE_SPAN = /`+([^`\n]+)`+/g;
+const PARKED = /\uE000(\d+)\uE001/g;
 const WHITESPACE = /\s+/g;
 // Sentence end followed by something that actually starts a sentence.
 const SENTENCE_BREAK = /[.!?]\s+(?=["'“‘]?[A-Z0-9])/;
@@ -37,8 +45,23 @@ function stripHtmlTags(text: string): string {
 
 /** Inline markdown stripped to plain text. */
 function toPlainText(markdown: string): string {
-  return stripHtmlTags(markdown.replace(IMAGE, "").replace(LINK, "$1"))
-    .replace(EMPHASIS, "")
+  // Code spans are literal, so park them before emphasis stripping and put
+  // them back after: `__version__` must survive intact.
+  const codes: string[] = [];
+  const parked = stripHtmlTags(
+    markdown.replace(IMAGE, "").replace(LINK, "$1"),
+  ).replace(CODE_SPAN, (_match, code: string) => {
+    codes.push(code);
+    return `\uE000${codes.length - 1}\uE001`;
+  });
+
+  return parked
+    .replace(BOLD_STAR, "$1")
+    .replace(BOLD_UNDERSCORE, "$1$2")
+    .replace(ITALIC_STAR, "$1")
+    .replace(ITALIC_UNDERSCORE, "$1$2")
+    .replace(BACKTICK, "")
+    .replace(PARKED, (_match, index: string) => codes[Number(index)] ?? "")
     .replace(WHITESPACE, " ")
     .trim();
 }
@@ -71,12 +94,16 @@ function contentLines(markdown: string): ContentLine[] {
     const fence = FENCE.exec(line);
     if (fence) {
       const marker = fence[1] ?? "";
+      const rest = fence[2] ?? "";
       if (openFence === null) {
         openFence = marker;
       } else if (
         marker[0] === openFence[0] &&
-        marker.length >= openFence.length
+        marker.length >= openFence.length &&
+        rest.trim() === ""
       ) {
+        // A closer carries nothing after it, so a ```` line with trailing
+        // text inside a ```` block is content, not the end of the block.
         openFence = null;
       }
       lines.push({ text: "", indent: 0 });

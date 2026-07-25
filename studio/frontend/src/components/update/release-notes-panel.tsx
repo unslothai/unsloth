@@ -71,7 +71,9 @@ export function ReleaseNotesPanel({
     }
   }, [open, markdown]);
 
-  const notesUrl = notes?.releaseNotesUrl ?? releaseNotesUrl;
+  // Caller's URL wins: the API only ever returns the generic changelog, while
+  // the desktop banner passes the exact release page for this version.
+  const notesUrl = releaseNotesUrl ?? notes?.releaseNotesUrl;
   const link = notesUrl ? <ChangelogLink href={notesUrl} /> : null;
 
   // Nothing to preview yet: keep the collapsed popup compact.
@@ -88,7 +90,7 @@ export function ReleaseNotesPanel({
       data-notes-open={open}
     >
       {/* borderless fill, lighter than the card in dark mode */}
-      <div className="rounded-2xl bg-muted/40 px-3 py-1 dark:bg-white/[0.06]">
+      <div className="rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-white/[0.06]">
         {markdown ? (
           open ? (
             <section

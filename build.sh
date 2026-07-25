@@ -110,6 +110,9 @@ cp CHANGELOG.md studio/CHANGELOG.md
 # 5. Build wheel/sdist
 python -m build
 
+# Drop the snapshot so a source checkout never serves a stale copy.
+rm -f studio/CHANGELOG.md
+
 if [ "${1:-}" = "publish" ]; then
     python scripts/stamp_studio_release.py --verify-dist dist --expected "$STUDIO_STAMPED_VERSION"
 fi

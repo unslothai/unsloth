@@ -38,7 +38,9 @@ CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
 _HEADING_PATTERN = re.compile(r"^##\s+(?P<title>.*?)\s*$")
-_FENCE_PATTERN = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})")
+_FENCE_PATTERN = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
+_COMMENT_OPEN = "<!--"
+_COMMENT_CLOSE = "-->"
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
@@ -97,6 +99,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     version: str | None = None
     body: list[str] = []
     open_fence: str | None = None
+    in_comment = False
 
     def flush() -> None:
         if version is not None and heading is not None:
@@ -110,10 +113,18 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
 
     for line in text.splitlines():
         fence = _FENCE_PATTERN.match(line)
-        if fence:
-            open_fence = _next_fence_state(open_fence, fence.group("marker"))
+        if fence and not in_comment:
+            open_fence = _next_fence_state(
+                open_fence, fence.group("marker"), fence.group("rest")
+            )
+            visible = ""
+        elif open_fence:
+            visible = ""
+        else:
+            # Commented-out sections are not rendered, so they are not releases.
+            visible, in_comment = _strip_comments(line, in_comment)
         # A `##` inside a fenced block is sample markdown, not a real heading.
-        match = None if open_fence else _HEADING_PATTERN.match(line)
+        match = _HEADING_PATTERN.match(visible) if visible else None
         if match is None:
             if version is not None:
                 body.append(line)
@@ -256,10 +267,13 @@ def _local_changelog_candidates() -> list[Path]:
     if override:
         candidates.append(Path(override).expanduser())
 
-    here = Path(__file__).resolve()
-    # changelog.py -> utils -> backend -> studio -> repo root
-    for parent in here.parents[1:5]:
-        candidates.append(parent / CHANGELOG_FILENAME)
+    # changelog.py -> utils -> backend -> studio -> repo root. Repo root first:
+    # in a source checkout the editable file must win over the build snapshot
+    # that packaging writes into studio/.
+    parents = Path(__file__).resolve().parents
+    for index in (3, 2, 1, 4):
+        if index < len(parents):
+            candidates.append(parents[index] / CHANGELOG_FILENAME)
 
     seen: set[Path] = set()
     unique: list[Path] = []
@@ -270,17 +284,40 @@ def _local_changelog_candidates() -> list[Path]:
     return unique
 
 
-def _next_fence_state(open_fence: str | None, marker: str) -> str | None:
+def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | None:
     """Track the open fence marker.
 
-    Only a same-character run at least as long closes it, so a ``` sample
-    inside a ```` block does not end the block early.
+    A closer must be the same character, at least as long, and carry nothing
+    after it. So neither a ``` sample nor a ```` line with trailing text ends
+    a ```` block early, while an opening fence may still have an info string.
     """
     if open_fence is None:
         return marker
-    if marker[0] == open_fence[0] and len(marker) >= len(open_fence):
+    if marker[0] == open_fence[0] and len(marker) >= len(open_fence) and not rest.strip():
         return None
     return open_fence
+
+
+def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    """Return the line with HTML-comment spans removed, and the trailing state."""
+    visible: list[str] = []
+    index = 0
+    while index < len(line):
+        if in_comment:
+            close = line.find(_COMMENT_CLOSE, index)
+            if close == -1:
+                return "".join(visible), True
+            index = close + len(_COMMENT_CLOSE)
+            in_comment = False
+            continue
+        opening = line.find(_COMMENT_OPEN, index)
+        if opening == -1:
+            visible.append(line[index:])
+            break
+        visible.append(line[index:opening])
+        index = opening + len(_COMMENT_OPEN)
+        in_comment = True
+    return "".join(visible), in_comment
 
 
 def _version_from_heading(heading: str) -> str | None:

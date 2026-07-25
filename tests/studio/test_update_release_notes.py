@@ -197,6 +197,54 @@ def test_non_unix_line_endings(changelog_module, newline):
     assert "\r" not in entry.body
 
 
+def test_closing_fence_must_carry_nothing_after_it(changelog_module):
+    """CommonMark: a closer is the delimiter plus whitespace only. A ```` line
+    with trailing text inside a ```` block is content, not the end."""
+    text = "## 1.0\n\n````md\n```` not a closer\n## 9.9.9\n````\n\n- real\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    # An opening fence may still carry an info string.
+    info = "## 1.0\n\n```python\n## 9.9.9\n```\n\n- real\n"
+    assert [e.version for e in changelog_module.parse_changelog(info)] == ["1.0"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "## 1.0\n\n- real\n\n<!--\n## 9.9.9\n\n- unpublished\n-->\n",
+        "## 1.0\n\n- real\n\n<!-- ## 9.9.9 -->\n",
+    ],
+)
+def test_commented_out_sections_are_not_releases(changelog_module, text):
+    """Markdown does not render them, so they are not published notes."""
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    assert changelog_module.find_release_notes(text, "9.9.9") is None
+
+
+def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_module):
+    """build.sh writes studio/CHANGELOG.md; the edited root file must win."""
+    paths = [str(p) for p in changelog_module._local_changelog_candidates()]
+    root = next(i for i, p in enumerate(paths) if p.endswith(f"/unsloth/{changelog_module.CHANGELOG_FILENAME}"))
+    packaged = next(i for i, p in enumerate(paths) if p.endswith(f"/studio/{changelog_module.CHANGELOG_FILENAME}"))
+    assert root < packaged
+    build = (REPO / "build.sh").read_text(encoding = "utf-8")
+    assert "rm -f studio/CHANGELOG.md" in build, "snapshot must not linger after a build"
+
+
+def test_preview_keeps_identifier_underscores():
+    """UNSLOTH_DISABLE_UPDATE_CHECK must not render as UNSLOTHDISABLEUPDATECHECK."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "BOLD_UNDERSCORE" in src and "ITALIC_UNDERSCORE" in src
+    assert "CODE_SPAN" in src, "code spans are parked so their underscores survive"
+    assert "const EMPHASIS" not in src, "the blanket emphasis strip is gone"
+
+
+def test_panel_prefers_the_callers_release_url():
+    """The API only returns the generic changelog; the desktop banner passes
+    the exact release page for the version being offered."""
+    src = PANEL.read_text(encoding = "utf-8")
+    assert "releaseNotesUrl ?? notes?.releaseNotesUrl" in src
+
+
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""
