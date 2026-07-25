@@ -17,6 +17,19 @@ export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
+/** One independently configured input to the training mixture. */
+export interface TrainingDatasetSelection {
+  source: DatasetSource;
+  /** Hugging Face repository id or local uploaded path. */
+  path: string;
+  subset?: string | null;
+  split?: string | null;
+  format?: DatasetFormat;
+  columnMapping?: DatasetManualMapping;
+  /** Relative probability used when interleaving streaming inputs. */
+  samplingWeight?: number | null;
+}
+
 export interface TrainingConfigState {
   currentStep: StepNumber;
   modelType: ModelType | null;
@@ -24,6 +37,7 @@ export interface TrainingConfigState {
   projectName: string;
   trainingMethod: TrainingMethod;
   hfToken: string;
+  trainingDatasets: TrainingDatasetSelection[];
   datasetSource: DatasetSource;
   datasetFormat: DatasetFormat;
   dataset: string | null;
@@ -105,6 +119,9 @@ export interface TrainingConfigActions {
   setTrainingMethod: (method: TrainingMethod) => void;
   setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
+  addTrainingDataset: (dataset?: Partial<TrainingDatasetSelection>) => void;
+  removeTrainingDataset: (index: number) => void;
+  updateTrainingDataset: (index: number, patch: Partial<TrainingDatasetSelection>) => void;
   selectHfDataset: (dataset: string | null) => void;
   selectLocalDataset: (file: string | null) => void;
   selectS3Source: () => void;

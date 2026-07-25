@@ -53,6 +53,11 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
+  const structuredDatasets = config.trainingDatasets.length > 0
+    ? config.trainingDatasets
+    : hfDataset
+      ? [{ source: "huggingface" as const, path: hfDataset, subset: config.datasetSubset, split: config.datasetSplit }]
+      : localDatasets.map((path) => ({ source: "upload" as const, path }));
   let customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
@@ -72,6 +77,15 @@ export function buildTrainingStartPayload(
   }
 
   return {
+    training_datasets: structuredDatasets.map((entry) => ({
+      hf_dataset: entry.source === "huggingface" ? entry.path : null,
+      local_path: entry.source === "upload" ? entry.path : null,
+      subset: entry.subset ?? null,
+      split: entry.split ?? "train",
+      format_type: entry.format ?? config.datasetFormat,
+      column_mapping: entry.columnMapping ?? null,
+      sampling_weight: entry.samplingWeight ?? null,
+    })),
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
     training_type: toBackendTrainingType(config.trainingMethod),
