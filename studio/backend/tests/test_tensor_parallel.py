@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
 import sys
 import threading
 import time
@@ -759,6 +760,70 @@ def test_respawn_still_recovers_an_ordinary_crash(monkeypatch):
 
     assert b._respawn_if_dead() is True
     assert len(loads) == 1
+
+
+class _NeverReapable(_FakeProcess):
+    """A child that stays unreapable, so only the port can tell alive from dead."""
+
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
+    # The reap grace must not be charged to a server that never died: the sleep is
+    # held under _respawn_lock, so a full grace per caller serialises into N seconds
+    # of added latency on an install that is working fine.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    try:
+        b = _recovery_backend()
+        b._healthy = True
+        b._process = _NeverReapable()
+        b._port = listener.getsockname()[1]
+        loads: list[dict] = []
+        monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+        started = time.monotonic()
+        assert b._respawn_if_dead() is True
+        elapsed = time.monotonic() - started
+
+        assert loads == [], "a live server must not be reloaded"
+        assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2, (
+            f"waited {elapsed:.2f}s on a server that is still accepting"
+        )
+    finally:
+        listener.close()
+
+
+def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
+    # The other half: no listener means the server really is gone, so the grace
+    # still runs and the reap-race fix is preserved.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    dead_port = probe.getsockname()[1]
+    probe.close()
+
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(code = -9)
+    b._port = dead_port
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    assert b._respawn_if_dead() is True
+    assert len(loads) == 1
+
+
+def test_socket_probe_is_false_without_a_port():
+    # Unloaded backends have no port; the probe must not raise, and the caller
+    # then falls back to the poll-based grace.
+    b = _recovery_backend()
+    b._port = None
+    assert b._server_socket_is_open() is False
 
 
 def test_runtime_recovery_rechecks_cancel_before_reload():

@@ -10540,6 +10540,21 @@ class LlamaCppBackend:
         finally:
             _cancel_closed.set()
 
+    def _server_socket_is_open(self, timeout_s: float = 0.15) -> bool:
+        """True if anything still accepts on the server port.
+
+        The listening socket dies with the process, so this tells a live server
+        from a dead one without waiting for the child to become reapable.
+        """
+        port = self._port
+        if not port:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout = timeout_s):
+                return True
+        except OSError:
+            return False
+
     def _respawn_if_dead(self) -> bool:
         """Relaunch the llama-server if its process has exited.
 
@@ -10561,6 +10576,10 @@ class LlamaCppBackend:
                 # Replaced while we queued: this child never served our request.
                 return self._healthy
             if proc.poll() is None:
+                # Still serving, so the error was transient. Charging it the grace below
+                # would cost a second per caller, serialised under this lock.
+                if self._server_socket_is_open():
+                    return self._healthy
                 # A closing server can beat its own exit status: calling it alive returns
                 # the stale _healthy and spends the retry on the corpse.
                 deadline = time.monotonic() + _RESPAWN_REAP_GRACE_S
