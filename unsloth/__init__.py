@@ -16,6 +16,14 @@ import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Hosted notebooks keep secrets outside the process environment. Resolve the
+# conventional HF_TOKEN secret before Hugging Face libraries freeze their auth
+# configuration during import.
+from .notebook_token import detect_notebook_hf_token as _detect_notebook_hf_token
+
+_detect_notebook_hf_token()
+del _detect_notebook_hf_token
+
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
 if platform.system() == "Darwin" and platform.machine() == "arm64":
