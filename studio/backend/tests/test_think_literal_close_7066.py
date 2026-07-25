@@ -315,8 +315,7 @@ def test_quoted_close_split_at_token_boundaries_stays_in_reasoning():
     """
     ex = _ResponsesReasoningExtractor(reasoning_prefilled = True)
     parts = [
-        ex.feed(chunk)
-        for chunk in ("user echoed ", '"', _RESPONSES_THINK_CLOSE, '"', " verbatim.")
+        ex.feed(chunk) for chunk in ("user echoed ", '"', _RESPONSES_THINK_CLOSE, '"', " verbatim.")
     ]
     parts.append(ex.finish())
     reasoning = "".join(r for r, _ in parts)

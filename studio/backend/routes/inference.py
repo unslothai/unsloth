@@ -11192,7 +11192,11 @@ def _responses_marker_holdback(text: str, markers: tuple[str, ...]) -> int:
     return 0
 
 
-def _should_hold_quoted_think_close(buffer: str, close_idx: int, prev_char: str = "") -> bool:
+def _should_hold_quoted_think_close(
+    buffer: str,
+    close_idx: int,
+    prev_char: str = "",
+) -> bool:
     """Wait for a closing quote when a close tag follows an opening quote.
 
     ``prev_char`` is the last char of the already-consumed span and supplies the
