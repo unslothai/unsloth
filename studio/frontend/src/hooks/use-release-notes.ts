@@ -55,6 +55,7 @@ function toReleaseNotes(value: unknown, version: string): ReleaseNotes | null {
 
 async function fetchReleaseNotes(
   version: string,
+  refresh = false,
 ): Promise<ReleaseNotes | null> {
   const token = getAuthToken();
   if (!token) {
@@ -63,10 +64,10 @@ async function fetchReleaseNotes(
 
   const headers = new Headers();
   headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(
-    apiUrl(`/api/studio/release-notes?version=${encodeURIComponent(version)}`),
-    { headers },
-  );
+  const query = `version=${encodeURIComponent(version)}${refresh ? "&refresh=true" : ""}`;
+  const res = await fetch(apiUrl(`/api/studio/release-notes?${query}`), {
+    headers,
+  });
   if (!res.ok) {
     throw new Error(`Release notes request failed: ${res.status}`);
   }
@@ -83,11 +84,11 @@ export function useReleaseNotes({
   // Version the current state belongs to; a change invalidates it.
   const requestedVersionRef = useRef<string | null>(null);
 
-  const load = useCallback((target: string) => {
+  const load = useCallback((target: string, refresh = false) => {
     requestedVersionRef.current = target;
     setState("loading");
     setNotes(null);
-    fetchReleaseNotes(target)
+    fetchReleaseNotes(target, refresh)
       .then((next) => {
         // A newer request owns the state now.
         if (requestedVersionRef.current !== target) {
@@ -117,9 +118,18 @@ export function useReleaseNotes({
   const retry = useCallback(() => {
     if (version) {
       requestedVersionRef.current = null;
-      load(version);
+      // Bypass the cached remote failure, or retry cannot recover until it
+      // expires.
+      load(version, true);
     }
   }, [version, load]);
 
-  return { state, notes, retry };
+  // Never hand back another version's notes: on the render where `version`
+  // changes, state still describes the previous one until the effect runs.
+  const matchesVersion = notes !== null && notes.version === version;
+  return {
+    state: notes !== null && !matchesVersion ? "loading" : state,
+    notes: matchesVersion ? notes : null,
+    retry,
+  };
 }

@@ -17,6 +17,7 @@ const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 // Real tags only: a name character must follow "<", so a version constraint
 // like "Support Python <3.15 and >3.9" keeps its operators.
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
+const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1/g;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
 // Paired emphasis only. Underscores inside identifiers are literal, so
@@ -110,6 +111,15 @@ function stripCommentSpans(
     if (open === -1) {
       visible += line.slice(index);
       break;
+    }
+    // A delimiter inside inline code is literal, not a comment opener.
+    CODE_SPAN_INLINE.lastIndex = index;
+    const span = CODE_SPAN_INLINE.exec(line);
+    if (span && span.index <= open && span.index + span[0].length > open) {
+      const end = span.index + span[0].length;
+      visible += line.slice(index, end);
+      index = end;
+      continue;
     }
     visible += line.slice(index, open);
     index = open + COMMENT_OPEN.length;

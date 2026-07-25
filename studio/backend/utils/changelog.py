@@ -41,6 +41,7 @@ _HEADING_PATTERN = re.compile(r"^##\s+(?P<title>.*?)\s*$")
 _FENCE_PATTERN = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
+_CODE_SPAN_PATTERN = re.compile(r"(`+)(?:.*?)\1")
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
@@ -154,8 +155,12 @@ def find_release_notes(text: str, version: str) -> ChangelogEntry | None:
     return None
 
 
-def get_release_notes(version: str) -> dict[str, Any]:
-    """Return release notes for exactly `version` for the update popup."""
+def get_release_notes(version: str, refresh: bool = False) -> dict[str, Any]:
+    """Return release notes for exactly `version` for the update popup.
+
+    `refresh` retries a cached remote failure, so the UI's retry action is not
+    stuck behind the failure TTL once connectivity returns.
+    """
     version = version.strip()
     if not is_supported_version_query(version):
         return _notes_response(version = version, error = "Unsupported version.")
@@ -163,7 +168,7 @@ def get_release_notes(version: str) -> dict[str, Any]:
     local = _read_local_changelog()
     remote = ChangelogSource(text = None, source = None)
     if os.environ.get(DISABLE_ENV_VAR) != "1":
-        remote = get_remote_changelog()
+        remote = get_remote_changelog(refresh = refresh)
 
     # Remote first: the offered version is newer than the local copy.
     for candidate in (remote, local):
@@ -184,9 +189,16 @@ def get_release_notes(version: str) -> dict[str, Any]:
     return _notes_response(version = version, error = remote.error)
 
 
-def get_remote_changelog() -> ChangelogSource:
+def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
     """Fetch CHANGELOG.md from the repo using a small in-process TTL cache."""
     global _remote_cache, _remote_fetching
+
+    if refresh:
+        # Only a cached failure is dropped: a successful fetch stays cached so
+        # retries cannot be used to hammer the remote.
+        with _cache_condition:
+            if _remote_cache and _remote_cache.source.text is None:
+                _remote_cache = None
 
     while True:
         now = time.monotonic()
@@ -299,7 +311,11 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
 
 
 def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
-    """Return the line with HTML-comment spans removed, and the trailing state."""
+    """Return the line with HTML-comment spans removed, and the trailing state.
+
+    Delimiters inside inline code are literal, so a note documenting `<!--`
+    does not put the parser into comment state.
+    """
     visible: list[str] = []
     index = 0
     while index < len(line):
@@ -310,10 +326,18 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
             index = close + len(_COMMENT_CLOSE)
             in_comment = False
             continue
+
         opening = line.find(_COMMENT_OPEN, index)
         if opening == -1:
             visible.append(line[index:])
             break
+
+        span = _CODE_SPAN_PATTERN.search(line, index)
+        if span and span.start() <= opening < span.end():
+            visible.append(line[index : span.end()])
+            index = span.end()
+            continue
+
         visible.append(line[index:opening])
         index = opening + len(_COMMENT_OPEN)
         in_comment = True

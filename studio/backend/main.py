@@ -1121,12 +1121,14 @@ def studio_update_status(_current_subject: str = Depends(get_current_subject)):
 
 @app.get("/api/studio/release-notes")
 def studio_release_notes(
-    version: str = Query(..., max_length = 64), _current_subject: str = Depends(get_current_subject)
+    version: str = Query(..., max_length = 64),
+    refresh: bool = Query(False),
+    _current_subject: str = Depends(get_current_subject),
 ):
     """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
     if not is_supported_version_query(version):
         raise HTTPException(status_code = 422, detail = "Invalid version.")
-    return get_release_notes(version)
+    return get_release_notes(version, refresh = refresh)
 
 
 @app.get(

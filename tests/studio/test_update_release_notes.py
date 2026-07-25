@@ -289,6 +289,62 @@ def test_hook_treats_a_reported_failure_as_retryable():
     assert "next.error !== null" in src
 
 
+def test_comment_delimiter_in_inline_code_is_literal(changelog_module):
+    """A note documenting `<!--` used to put the parser into comment state,
+    swallowing every release below it."""
+    text = "## 2.0\n\n- Type `<!--` to begin a comment\n\n## 1.0\n\n- older\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+    assert changelog_module.find_release_notes(text, "1.0") is not None
+    assert "older" not in changelog_module.find_release_notes(text, "2.0").body
+
+
+def test_refresh_retries_a_cached_remote_failure(changelog_module, tmp_path, monkeypatch):
+    """Retry must reach the network again once connectivity returns, rather
+    than replaying the cached failure until its TTL expires."""
+    monkeypatch.delenv(changelog_module.DISABLE_ENV_VAR, raising = False)
+    local = tmp_path / "CHANGELOG.md"
+    local.write_text("## 1.0\n\n- old\n", encoding = "utf-8")
+    monkeypatch.setenv(changelog_module.CHANGELOG_PATH_ENV_VAR, str(local))
+
+    hits = {"count": 0}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib naming
+            hits["count"] += 1
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        monkeypatch.setenv(
+            changelog_module.CHANGELOG_URL_ENV_VAR,
+            f"http://127.0.0.1:{server.server_port}/CHANGELOG.md",
+        )
+        changelog_module.reset_changelog_cache()
+        changelog_module.get_release_notes("2.0")
+        changelog_module.get_release_notes("2.0")
+        assert hits["count"] == 1, "the failure should be cached"
+        changelog_module.get_release_notes("2.0", refresh = True)
+        assert hits["count"] == 2, "refresh must bypass the cached failure"
+    finally:
+        server.shutdown()
+        server.server_close()
+        changelog_module.reset_changelog_cache()
+
+
+def test_hook_never_returns_another_versions_notes():
+    """On the render where the offered version changes, state still describes
+    the previous one until the effect runs."""
+    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    assert "notes.version === version" in src
+    assert "refresh" in src, "retry must ask the backend to bypass its cache"
+
+
 def test_desktop_updater_metadata_maps_published_field_names():
     """latest.json publishes Tauri's `notes`/`pub_date`; the manual Linux path
     must read those, not `body`/`date`, or its release notes are always empty."""
