@@ -152,7 +152,9 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# `if`/`while`/`until` are followed by a CONDITION the shell executes, so a
+# command right after them is at command position (if rm -rf x; then :; fi).
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -2796,6 +2798,41 @@ _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
 # A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that
 # precedes the real command, so it is not mistaken for the command itself.
 _WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+# Wrapper options whose VALUE is a separate token (env -u NAME, stdbuf -o L,
+# timeout --signal TERM, nice -n 5, xargs -I {}). Without consuming the value
+# it is mistaken for the wrapped command, so `env -u FOO rm -rf x` reads as
+# the command `FOO` and the real `rm` is never judged.
+_WRAPPER_VALUE_FLAGS = frozenset(
+    {
+        # -C/--chdir is deliberately NOT here: env -C is gated as a chdir
+        # (it enables a relative sensitive read), so it must not be skipped.
+        "-u",
+        "--unset",
+        "-i",
+        "--input",
+        "-o",
+        "--output",
+        "-e",
+        "--error",
+        "-s",
+        "--signal",
+        "-k",
+        "--kill-after",
+        "-n",
+        "--adjustment",
+        "-p",
+        "--pid",
+        "-I",
+        "-L",
+        "-P",
+        "-d",
+        "--delimiter",
+        "-a",
+        "--arg-file",
+        "--userspec",
+        "--groups",
+    }
+)
 # Non-shell interpreters running an inline program (python -c, node -e, perl -E,
 # php -r): the terminal path never screens that program the way the python tool
 # does, so an arbitrary destructive script would run unprompted. sh/bash -c are
@@ -3145,6 +3182,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         current_command = ""  # the resolved command whose flags / git subcommand we judge
         git_subcommand = ""  # the first positional after `git`
         shell_c_pending = False  # a shell `-c` precedes its inline payload
+        wrapper_value_pending = False  # a wrapper option precedes its value
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
         for _tok_idx, token in enumerate(tokens):
@@ -3164,6 +3202,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 continue
             if token.startswith("-"):
                 flag = token.split("=", 1)[0]
+                # A wrapper option that takes a SEPARATE value (env -u NAME,
+                # stdbuf -o L, timeout --signal TERM): the next token is that
+                # value, not the wrapped command, so consume it and keep looking.
+                if prefix_pending and "=" not in token and flag in _WRAPPER_VALUE_FLAGS:
+                    wrapper_value_pending = True
+                    continue
                 # An interpreter running inline code (python -c, python3.11 -Bc,
                 # node -e, perl -E) executes an arbitrary program the terminal path
                 # never screens. Match the long --eval/--exec forms, and any short
@@ -3196,7 +3240,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 if current_command in _SHELL_C_INTERPRETERS:
                     payload = _short_flag_arg(token, "c")
                     if payload is not None:
-                        if payload:
+                        # A short run of plain letters after `c` (bash -ce, -cl)
+                        # is more bash OPTIONS, not an attached payload: bash
+                        # still reads the command string from the next token.
+                        if payload and payload.isalpha() and len(payload) <= 4:
+                            shell_c_pending = True
+                        elif payload:
                             if _depth < 3 and _terminal_is_high_risk(payload, _depth + 1):
                                 return True
                         else:
@@ -3275,6 +3324,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             # The value of a git global option (git -C repo clean): not the subcommand.
             if git_glob_pending:
                 git_glob_pending = False
+                continue
+            # The value of a wrapper option (env -u FOO, stdbuf -o L): not the
+            # command, so skip it and keep looking for the wrapped command.
+            if wrapper_value_pending:
+                wrapper_value_pending = False
                 continue
             # A wrapper's bare duration argument (timeout 5 rm) is not the command.
             if prefix_pending and _WRAPPER_DURATION_RE.fullmatch(raw):
@@ -3433,6 +3487,14 @@ def _python_is_high_risk(code: str) -> bool:
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
                         destructive_fs_aliases.add(tgt.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.target, ast.Name)
+        ):
+            # An annotated binding (f: object = os.remove) is the same alias.
+            if _is_destructive_attr(node.value.attr, node.value.value):
+                destructive_fs_aliases.add(node.target.id)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue

@@ -508,6 +508,24 @@ def test_terminal_classifier(command, unsafe):
         ("launchctl submit -l updater -- payload", True),
         # --- inline eval exposed as a subcommand rather than a flag ---
         ("deno eval \"Deno.removeSync('x')\"", True),
+        # --- bash option clusters after -c still take the NEXT token as code ---
+        ("bash -ce 'rm -rf build'", True),
+        ("bash -cl 'rm -rf build'", True),
+        ("bash -lc 'ls'", False),  # a benign payload still runs
+        # --- a wrapper option's value is not the wrapped command ---
+        ("env -u FOO rm -rf build", True),
+        ("stdbuf -o L rm -rf build", True),
+        ("timeout --signal TERM 5 rm -rf build", True),
+        ("nice -n 5 rm -rf x", True),
+        ("stdbuf -o L python train.py", False),
+        ("env -u FOO python train.py", False),
+        ("timeout 5 python train.py", False),
+        # --- if/while/until are followed by a command the shell executes ---
+        ("if rm -rf build; then :; fi", True),
+        ("while rm -rf build; do :; done", True),
+        ("until rm -rf x; do :; done", True),
+        ("if true; then echo ok; fi", False),
+        ("while read l; do echo $l; done", False),
         # --- a bare redirect truncates; a redirect after a command does not ---
         ("> notes.txt", True),
         (": > notes.txt", True),
@@ -693,6 +711,8 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("import os\nos.killpg(1, 9)", True),
         # a file handle's truncate zeroes the file; pandas truncate does not
         ("f = open('a', 'r+')\nf.truncate(0)", True),
+        # an annotated binding is the same alias as a plain one
+        ("import os\nf: object = os.remove\nf('important.py')", True),
         ("import pandas as pd\ndf = pd.read_csv('x')\ndf.truncate(before=1)", False),
         # --- prompt: dynamically built code run past the static checks ---
         ("eval(input())", True),
