@@ -282,8 +282,13 @@
 	/* Standard interactive-icon size for nav, menus, action bars, and
 	   in-message code-block actions. Sized one step above body text so
 	   icons read as minimally larger than adjacent labels (~14px text).
+	   Follows the UI font size preference; 18px at the default.
 	   Theme-independent — declared once in :root. */
-	--icon-size: 18px;
+	/* Standard icon size follows the UI font size itself: matches it below
+	   the 16px default, grows at half the change above it (setting 20 ->
+	   18px), so icons read slightly smaller than enlarged text. */
+	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
+	--icon-size: var(--ui-icon-size);
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
@@ -1265,8 +1270,8 @@ html[data-chat-font] .aui-root {
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"] svg,
 	.app-user-menu [data-slot="dropdown-menu-sub-trigger"] svg {
-		width: 19px !important;
-		height: 19px !important;
+		width: var(--ui-icon-size) !important;
+		height: var(--ui-icon-size) !important;
 		flex-shrink: 0;
 	}
 	.app-user-menu [data-slot="dropdown-menu-item"]:focus,
@@ -1561,20 +1566,20 @@ html[data-chat-font] .aui-root {
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
 	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {
-		@apply relative inline-flex w-[19px] shrink-0 items-center justify-center transition-opacity;
+		@apply relative inline-flex w-[var(--ui-icon-size)] shrink-0 items-center justify-center transition-opacity;
 	}
 
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[19px] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
+		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
 	}
 
 	/* Icon-only (compact) pills are too small for the circle, so show a bare x. */
 	[data-pill-compact="true"]
 		.composer-pill-btn:not([data-keep-label])
 		.composer-pill-x {
-		@apply size-[15px] bg-transparent p-0 dark:bg-transparent;
+		@apply size-[min(calc(15px*var(--ui-font-scale,1)),calc(7.5px+7.5px*var(--ui-font-scale,1)))] bg-transparent p-0 dark:bg-transparent;
 	}
 
 	/* Compact pills hide their labels, so surface the name as a hover
@@ -1853,8 +1858,8 @@ html[data-chat-font] .aui-root {
 
 	/* Smaller tick for selected Thinking options. */
 	.unsloth-tick {
-		width: 0.8rem !important;
-		height: 0.8rem !important;
+		width: min(calc(0.8rem * var(--ui-font-scale, 1)), calc(0.4rem + 0.4rem * var(--ui-font-scale, 1))) !important;
+		height: min(calc(0.8rem * var(--ui-font-scale, 1)), calc(0.4rem + 0.4rem * var(--ui-font-scale, 1))) !important;
 	}
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
@@ -1943,9 +1948,9 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-item"],
 			[data-slot="dropdown-menu-sub-trigger"]
 		)
-		svg {
-		width: 1.15rem;
-		height: 1.15rem;
+		svg:not(.unsloth-tick) {
+		width: var(--ui-icon-size) !important;
+		height: var(--ui-icon-size) !important;
 	}
 
 	/* Destructive items keep red text and a red-tinted hover, not the grey one. */
@@ -2769,4 +2774,97 @@ html[data-chat-font] .aui-root {
 [data-slot="select-content"] [data-radix-select-viewport]::-webkit-scrollbar {
 	display: block !important;
 	width: 8px;
+}
+
+/* Icons that sit beside scaled labels follow the UI font size itself:
+   glyphs at or above a 16px base render at --ui-icon-size (12 -> 12px,
+   16 -> 16px, 20 -> 18px), so icons track the text below the default and
+   read slightly smaller than it above. Sub-16px glyphs keep their
+   proportions through the same curve as a factor. Menu, select and closed select trigger surfaces, popovers, toasts,
+   the chat thread and both composers. Only glyphs scale; hit targets,
+   paddings and surface geometry stay fixed. Identity at the default. */
+:is(
+	[data-slot='dropdown-menu-content'],
+	[data-slot='dropdown-menu-sub-content'],
+	[data-slot='select-content'],
+	[data-slot='select-trigger'],
+	[data-slot='combobox-content'],
+	[data-slot='combobox-trigger'],
+	[data-slot='context-menu-content'],
+	[data-slot='context-menu-sub-content'],
+	[data-slot='menubar-content'],
+	[data-slot='popover-content'],
+	[data-slot='command'],
+	[data-sonner-toast],
+	.composer-action-wrapper,
+	.aui-composer-action-wrapper,
+	.aui-action-bar-more-content,
+	.aui-root
+) {
+	& svg.size-2\.5 { width: min(calc(0.625rem * var(--ui-font-scale, 1)), calc(0.3125rem + 0.3125rem * var(--ui-font-scale, 1))); height: min(calc(0.625rem * var(--ui-font-scale, 1)), calc(0.3125rem + 0.3125rem * var(--ui-font-scale, 1))); }
+	& svg.size-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
+	& svg.size-3\.5 { width: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); height: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); }
+	& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-4\.5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-5 { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-6 { width: min(calc(1.5rem * var(--ui-font-scale, 1)), calc(0.75rem + 0.75rem * var(--ui-font-scale, 1))); height: min(calc(1.5rem * var(--ui-font-scale, 1)), calc(0.75rem + 0.75rem * var(--ui-font-scale, 1))); }
+	& svg.size-\[5px\] { width: min(calc(5px * var(--ui-font-scale, 1)), calc(2.5px + 2.5px * var(--ui-font-scale, 1))); height: min(calc(5px * var(--ui-font-scale, 1)), calc(2.5px + 2.5px * var(--ui-font-scale, 1))); }
+	& svg.size-\[6px\] { width: min(calc(6px * var(--ui-font-scale, 1)), calc(3px + 3px * var(--ui-font-scale, 1))); height: min(calc(6px * var(--ui-font-scale, 1)), calc(3px + 3px * var(--ui-font-scale, 1))); }
+	& svg.size-\[10px\] { width: min(calc(10px * var(--ui-font-scale, 1)), calc(5px + 5px * var(--ui-font-scale, 1))); height: min(calc(10px * var(--ui-font-scale, 1)), calc(5px + 5px * var(--ui-font-scale, 1))); }
+	& svg.size-\[11px\] { width: min(calc(11px * var(--ui-font-scale, 1)), calc(5.5px + 5.5px * var(--ui-font-scale, 1))); height: min(calc(11px * var(--ui-font-scale, 1)), calc(5.5px + 5.5px * var(--ui-font-scale, 1))); }
+	& svg.size-\[12px\] { width: min(calc(12px * var(--ui-font-scale, 1)), calc(6px + 6px * var(--ui-font-scale, 1))); height: min(calc(12px * var(--ui-font-scale, 1)), calc(6px + 6px * var(--ui-font-scale, 1))); }
+	& svg.size-\[13px\] { width: min(calc(13px * var(--ui-font-scale, 1)), calc(6.5px + 6.5px * var(--ui-font-scale, 1))); height: min(calc(13px * var(--ui-font-scale, 1)), calc(6.5px + 6.5px * var(--ui-font-scale, 1))); }
+	& svg.size-\[14px\] { width: min(calc(14px * var(--ui-font-scale, 1)), calc(7px + 7px * var(--ui-font-scale, 1))); height: min(calc(14px * var(--ui-font-scale, 1)), calc(7px + 7px * var(--ui-font-scale, 1))); }
+	& svg.size-\[15px\] { width: min(calc(15px * var(--ui-font-scale, 1)), calc(7.5px + 7.5px * var(--ui-font-scale, 1))); height: min(calc(15px * var(--ui-font-scale, 1)), calc(7.5px + 7.5px * var(--ui-font-scale, 1))); }
+	& svg.size-\[15\.5px\] { width: min(calc(15.5px * var(--ui-font-scale, 1)), calc(7.75px + 7.75px * var(--ui-font-scale, 1))); height: min(calc(15.5px * var(--ui-font-scale, 1)), calc(7.75px + 7.75px * var(--ui-font-scale, 1))); }
+	& svg.size-\[16px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[17px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[18px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[18\.5px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[20px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[21px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[22px\] { width: var(--ui-icon-size); height: var(--ui-icon-size); }
+	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
+	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
+	& svg.h-3 { height: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
+	& svg.w-3\.5 { width: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); }
+	& svg.h-3\.5 { height: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1))); }
+	& svg.w-4 { width: var(--ui-icon-size); }
+	& svg.h-4 { height: var(--ui-icon-size); }
+	& svg.w-5 { width: var(--ui-icon-size); }
+	& svg.h-5 { height: var(--ui-icon-size); }
+	/* Buttons default un-classed icons to size-4 the same way. Sonner's
+	   close button keeps its compact 12px glyph inside a fixed control. */
+	& button:not([class*=':size-3'], [data-close-button]) svg:not([class*='size-'], [class*='w-'], [class*='h-'], .unsloth-tick) {
+		width: var(--ui-icon-size);
+		height: var(--ui-icon-size);
+	}
+	/* Menu items default un-classed icons to size-4. */
+	& [data-slot*='item'] svg:not([class*='size-'], [class*='w-'], [class*='h-']) {
+		width: var(--ui-icon-size);
+		height: var(--ui-icon-size);
+	}
+}
+
+/* Sonner injects fixed 13px toast text and 12px action labels at runtime;
+   text follows the preference at full rate. Line heights are unitless so
+   they track automatically. */
+[data-sonner-toast][data-styled='true'] {
+	font-size: calc(13px * var(--ui-font-scale, 1)) !important;
+}
+[data-sonner-toast][data-styled='true'] [data-description] {
+	font-size: calc(13px * var(--ui-font-scale, 1)) !important;
+}
+[data-sonner-toast][data-styled='true'] [data-button] {
+	font-size: calc(12px * var(--ui-font-scale, 1)) !important;
+}
+/* Sonner's icon well is a fixed 16px box; track the glyph. */
+[data-sonner-toast][data-styled='true'] [data-icon] {
+	width: var(--ui-icon-size) !important;
+	height: var(--ui-icon-size) !important;
+}
+/* Defensive: the built-in loader is unused (a custom loading icon is always
+   passed) but keep its fixed --size on the scale in case that changes. */
+[data-sonner-toast] .sonner-loading-wrapper {
+	--size: var(--ui-icon-size) !important;
 }

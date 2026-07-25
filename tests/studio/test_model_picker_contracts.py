@@ -217,6 +217,24 @@ def test_local_picker_rows_require_chat_capability():
     assert "row.capabilities.canChat" in memo.group(0)
 
 
+def test_model_picker_toolbar_reflows_before_crossing_picker_edge():
+    """The content-sized section tabs and fixed-width dropdowns must reflow,
+    while an oversized tab group must shrink labels but preserve its icons."""
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    assert '"flex flex-wrap items-center gap-2"' in picker
+    assert 'hasConnected ? "-mr-4" : "-mr-2"' in picker
+    assert '"flex max-w-full min-w-0 flex-wrap items-center gap-2"' in picker
+
+    tabs = _read("features/model-picker/components/model-selector/pill-tabs.tsx")
+    assert 'fit ? "min-w-0 shrink" : "min-w-0 flex-1"' in tabs
+    assert '<span className="min-w-0 truncate">{tab.label}</span>' in tabs
+
+    selector = _read("features/model-picker/components/model-selector.tsx")
+    assert 'icon={StarIcon} className="size-3.5 shrink-0"' in selector
+    assert 'icon={Download01Icon} className="size-3.5 shrink-0"' in selector
+    assert 'icon={CloudIcon} className="size-3.5 shrink-0"' in selector
+
+
 def test_native_picked_gguf_template_read_through_lease():
     """A native (picked / drag-drop) GGUF's path lives only in its signed lease,
     and the picker chat-template GET has no lease plumbing, so the default
