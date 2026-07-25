@@ -240,6 +240,30 @@ def neutralize_tools_control_markup(tools):
     return neutralize_control_markup_deep(tools, schema = True)
 
 
+def _neutralize_tool_arguments_json(args: str) -> str:
+    """Neutralize a JSON-string argument payload, keeping its object keys.
+
+    Argument names mirror the schema property keys this pass preserves, so a
+    plain string rewrite would rename one and hand the template an argument the
+    client never declared, and disagree with the parsed-dict path. Payloads
+    without a marker keep their exact bytes; only a payload that has one is
+    parsed and re-serialized (#7066).
+    """
+    neutral = neutralize_non_assistant_control_markup(args)
+    if neutral == args:
+        return args
+    try:
+        parsed = json.loads(args)
+    except (TypeError, ValueError):
+        return neutral  # not JSON: nothing to key-preserve, rewrite the text
+    if not isinstance(parsed, (dict, list)):
+        return neutral
+    cleaned = neutralize_control_markup_deep(parsed)
+    if cleaned is parsed:
+        return args
+    return json.dumps(cleaned, ensure_ascii = False)
+
+
 def neutralize_tool_call_arguments(tool_calls):
     """Neutralize control markers inside assistant tool-call argument strings.
 
@@ -258,7 +282,7 @@ def neutralize_tool_call_arguments(tool_calls):
             if isinstance(fn, dict) and fn.get("arguments") is not None:
                 args = fn["arguments"]
                 if isinstance(args, str):
-                    new_args = neutralize_non_assistant_control_markup(args)
+                    new_args = _neutralize_tool_arguments_json(args)
                 else:
                     # Strict tool templates take the retry path where
                     # _normalize_tool_call_arguments() has already parsed the
@@ -305,6 +329,11 @@ def neutralize_message_content_for_role(role: Optional[str], content):
     return content
 
 
+# Message fields carrying a replayed thought: free text the template wraps in
+# its own thinking delimiters, never structural markup itself (#7066).
+_ASSISTANT_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
 def neutralize_control_markup_in_messages(messages: list) -> list:
     """Return a copy of ``messages`` with non-assistant control markup neutralized.
 
@@ -322,14 +351,25 @@ def neutralize_control_markup_in_messages(messages: list) -> list:
         content = msg.get("content")
         new_content = neutralize_message_content_for_role(msg.get("role"), content)
         content_changed = new_content is not content and new_content != content
+        # A replayed assistant thought is free text that the template wraps in
+        # its own delimiters (gemma-4 renders it between <|channel>thought and
+        # <channel|>), so a literal marker inside it would close that channel
+        # early. Its `content` still keeps real structural tags (#7066).
+        reasoning_updates = {}
+        for field in _ASSISTANT_REASONING_FIELDS:
+            value = msg.get(field)
+            if isinstance(value, str) and value:
+                new_value = neutralize_non_assistant_control_markup(value)
+                if new_value != value:
+                    reasoning_updates[field] = new_value
         # Assistant tool-call arguments are user/model-derived data, not prose,
         # so neutralize their control markers even though assistant content is
         # preserved (#7066).
         tool_calls = msg.get("tool_calls")
         new_tool_calls = neutralize_tool_call_arguments(tool_calls)
         tool_calls_changed = new_tool_calls is not tool_calls and new_tool_calls != tool_calls
-        if content_changed or tool_calls_changed:
-            new_msg = {**msg}
+        if content_changed or tool_calls_changed or reasoning_updates:
+            new_msg = {**msg, **reasoning_updates}
             if content_changed:
                 new_msg["content"] = new_content
             if tool_calls_changed:

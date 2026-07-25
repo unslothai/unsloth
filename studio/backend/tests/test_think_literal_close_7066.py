@@ -954,6 +954,55 @@ def test_assistant_tool_call_arguments_are_neutralized():
     assert out[1]["content"] is None
 
 
+def test_tool_call_arguments_json_keeps_object_keys():
+    """An argument NAME mirrors a schema key, which this pass preserves (#7066)."""
+    out = neutralize_tool_call_arguments(
+        [
+            {
+                "function": {
+                    "name": "f",
+                    "arguments": '{"q</think>": "a </think> value"}',
+                }
+            }
+        ]
+    )
+    args = json.loads(out[0]["function"]["arguments"])
+    assert list(args) == ["q</think>"]  # identifier survives, as the schema key does
+    assert "</think>" not in args["q</think>"]  # the value does not
+    # Non-JSON argument text still gets the plain rewrite.
+    broken = neutralize_tool_call_arguments(
+        [{"function": {"name": "f", "arguments": "not json </think> here"}}]
+    )
+    assert "</think>" not in broken[0]["function"]["arguments"]
+
+
+def test_assistant_reasoning_is_neutralized_before_replay():
+    """Replayed thoughts are free text the template wraps itself (#7066).
+
+    gemma-4 concatenates ``reasoning_content`` between ``<|channel>thought`` and
+    ``<channel|>``, so a literal sentinel in a historical thought closes that
+    channel early when the turn is rendered again.
+    """
+    messages = [
+        {
+            "role": "assistant",
+            "content": "<think>real</think>answer",
+            "reasoning_content": "quoting <channel|> and </think> here",
+        }
+    ]
+    out = neutralize_control_markup_in_messages(messages)
+    assert out is not messages
+    # The thought is sanitized ...
+    assert "<channel|>" not in out[0]["reasoning_content"]
+    assert "</think>" not in out[0]["reasoning_content"]
+    assert "quoting" in out[0]["reasoning_content"]
+    # ... while the assistant's own structural tags are untouched.
+    assert out[0]["content"] == "<think>real</think>answer"
+    # Clean history keeps the byte-identical fast path.
+    clean = [{"role": "assistant", "content": "hi", "reasoning_content": "plain"}]
+    assert neutralize_control_markup_in_messages(clean) is clean
+
+
 def test_tool_call_arguments_helper_noop_returns_same_object():
     calls = [{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]
     assert neutralize_tool_call_arguments(calls) is calls
