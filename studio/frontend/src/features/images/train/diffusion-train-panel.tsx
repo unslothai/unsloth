@@ -990,7 +990,7 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-3 sm:px-9">
+    <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
       {/* Left: configure */}
       <div className="bg-card corner-squircle flex w-[380px] min-w-0 shrink-0 flex-col gap-4 overflow-y-auto overflow-x-hidden rounded-3xl p-5 ring-1 ring-foreground/10">
         <div>
@@ -1218,7 +1218,9 @@ export function DiffusionTrainPanel({
           front) plus the previous-runs history; during/after a run the live view takes
           over (progress with Stop, then the saved-adapter card ABOVE the charts).
           Selecting a previous run re-plots its persisted logs read-only. */}
-      <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto">
+      {/* p-px so the cards' ring-1 (drawn outside the box) isn't clipped by this
+          scroll container. */}
+      <div className="relative flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-px">
         {viewRun && !hasRun ? (
           <>
             <div className="bg-card corner-squircle flex flex-col gap-3 rounded-3xl p-5 ring-1 ring-foreground/10">

@@ -4,16 +4,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown01Icon,
+  ArrowExpand01Icon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
   CheckmarkCircle02Icon,
   Delete02Icon,
   Download01Icon,
+  Edit03Icon,
   ImageAdd02Icon,
+  ImageUpload01Icon,
   InformationCircleIcon,
+  MagicWand01Icon,
   LayoutAlignRightIcon,
+  PaintBrush02Icon,
   PencilEdit02Icon,
   Settings02Icon,
+  ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -98,42 +104,55 @@ const WORKFLOW_TABS: Array<{
   id: WorkflowId;
   label: string;
   requires: string | null;
+  icon: typeof PencilEdit02Icon;
   hint?: string;
 }> = [
-  { id: "create", label: "Create", requires: null, hint: "Generate a new image from a prompt" },
+  {
+    id: "create",
+    label: "Create",
+    requires: null,
+    icon: PencilEdit02Icon,
+    hint: "Generate a new image from a prompt",
+  },
   {
     id: "transform",
     label: "Transform",
+    icon: MagicWand01Icon,
     requires: "img2img",
     hint: "Redraw an uploaded image guided by your prompt (img2img)",
   },
   {
     id: "inpaint",
     label: "Inpaint",
+    icon: PaintBrush02Icon,
     requires: "inpaint",
     hint: "Paint over a region to regenerate just that area, keeping the rest",
   },
   {
     id: "extend",
     label: "Extend",
+    icon: ArrowExpand01Icon,
     requires: "outpaint",
     hint: "Outpaint: grow the canvas and fill the new edges from your prompt",
   },
   {
     id: "upscale",
     label: "Upscale",
+    icon: ZoomInAreaIcon,
     requires: "upscale",
     hint: "Hires fix: enlarge an uploaded image and re-detail it at higher resolution",
   },
   {
     id: "reference",
     label: "Reference",
+    icon: ImageUpload01Icon,
     requires: "reference",
     hint: "Generate a new image guided by a reference image + your prompt (FLUX.2)",
   },
   {
     id: "edit",
     label: "Edit",
+    icon: Edit03Icon,
     requires: "edit",
     hint: "Instruction editing: change an image with a prompt (Qwen-Image-Edit)",
   },
@@ -2313,7 +2332,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       /* ── Controls rail + preview canvas. Padding mirrors the other tabs
           (Export, Data Recipes): px-5 / sm:px-9, with a roomy bottom. pt-3 keeps the
           cards off the model selector row. ── */
-      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-3 sm:px-9">
+      <div className="flex min-h-0 min-w-0 flex-1 gap-4 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
         {/* The controls rail. Plain card (the gray surface) with no header —
             the prompt + Generate button make the panel self-explanatory. */}
         <div className="bg-card corner-squircle flex w-[340px] shrink-0 flex-col gap-4 overflow-y-auto rounded-3xl p-5 ring-1 ring-foreground/10">
@@ -2322,59 +2341,69 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               its hint, and each row explains itself. A row is disabled until the
               loaded model supports it (status.workflows), with the reason in place of
               the hint. New workflows slot in without shrinking anything. */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild={true}>
-              <button
-                type="button"
-                aria-label="Workflow"
-                className="corner-squircle flex w-full items-center gap-2 rounded-xl bg-muted/50 px-3 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block text-xs font-medium text-foreground">
+          <div className="grid gap-1.5">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild={true}>
+                <button
+                  type="button"
+                  aria-label="Workflow"
+                  className="corner-squircle flex h-9 w-full items-center gap-2 rounded-xl bg-muted/50 px-3 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <HugeiconsIcon
+                    icon={activeWorkflowTab.icon}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
                     {activeWorkflowTab.label}
                   </span>
-                  <span className="block truncate text-ui-10 text-muted-foreground">
-                    {activeWorkflowTab.hint}
-                  </span>
-                </span>
-                <HugeiconsIcon
-                  icon={ArrowDown01Icon}
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-              </button>
-            </DropdownMenuTrigger>
-            {/* DropdownMenuContent already tracks the trigger width, so the rows get
-                the full rail width for their hints. */}
-            <DropdownMenuContent align="start">
-              {WORKFLOW_TABS.map((t) => {
-                const enabled = workflowEnabled(t);
-                return (
-                  <DropdownMenuItem
-                    key={t.id}
-                    disabled={!enabled}
-                    onSelect={() => setWorkflow(t.id)}
-                    className="items-start gap-2"
-                  >
-                    <HugeiconsIcon
-                      icon={CheckmarkCircle02Icon}
-                      className={cn(
-                        "mt-0.5 size-3.5 shrink-0",
-                        workflow === t.id ? "text-foreground" : "invisible",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-xs font-medium">{t.label}</span>
-                      <span className="block text-ui-10 text-muted-foreground">
-                        {enabled
-                          ? t.hint
-                          : `Needs a loaded model that supports ${t.label.toLowerCase()}`}
+                  <HugeiconsIcon
+                    icon={ArrowDown01Icon}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                </button>
+              </DropdownMenuTrigger>
+              {/* DropdownMenuContent already tracks the trigger width, so the rows get
+                  the full rail width for their hints. */}
+              <DropdownMenuContent align="start">
+                {WORKFLOW_TABS.map((t) => {
+                  const enabled = workflowEnabled(t);
+                  return (
+                    <DropdownMenuItem
+                      key={t.id}
+                      disabled={!enabled}
+                      onSelect={() => setWorkflow(t.id)}
+                      className="items-start gap-2"
+                    >
+                      <HugeiconsIcon
+                        icon={t.icon}
+                        className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs font-medium">{t.label}</span>
+                        <span className="block text-ui-10 text-muted-foreground">
+                          {enabled
+                            ? t.hint
+                            : `Needs a loaded model that supports ${t.label.toLowerCase()}`}
+                        </span>
                       </span>
-                    </span>
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                      <HugeiconsIcon
+                        icon={CheckmarkCircle02Icon}
+                        className={cn(
+                          "mt-0.5 size-3.5 shrink-0",
+                          workflow === t.id ? "text-foreground" : "invisible",
+                        )}
+                      />
+                    </DropdownMenuItem>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {/* Description sits under the closed trigger, matching the Field hints
+                below it, so the button itself stays one line. */}
+            <p className="px-0.5 text-ui-10 leading-snug text-muted-foreground">
+              {activeWorkflowTab.hint}
+            </p>
+          </div>
 
           {workflow === "transform" && (
             <>
