@@ -2257,7 +2257,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            className="h-[34px] [&>button]:h-[34px] [&>button]:px-4"
+            // ml-5 sets it off from the selector rather than sitting against it.
+            className="ml-5 h-[34px] [&>button]:h-[34px] [&>button]:px-4"
             tabs={[
               {
                 value: "create",
@@ -2318,12 +2319,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         />
       ) : (
       /* ── Controls rail + preview canvas. No card: both sit on the page background
-          like the Hub, divided by a rule, so nothing is spent on box chrome. Padding
-          mirrors the other tabs (Export, Data Recipes): px-5 / sm:px-9. ── */
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
-        <div className="flex w-[330px] shrink-0 flex-col overflow-hidden border-r border-border/60">
+          like the Hub, divided by a rule, so nothing is spent on box chrome. No bottom
+          padding either, so the rule runs the full page height; the panes pad their own
+          content instead. ── */
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-5 pt-5 sm:px-9">
+        <div className="flex w-[392px] shrink-0 flex-col overflow-hidden border-r border-border/60">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-1 pl-0.5 pr-6">
+          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
             {/* Workflow picker. Seven workflows don't fit a segmented strip in this rail,
                 so it's a dropdown; a row stays disabled until the loaded model supports
                 it (status.workflows). New workflows slot in without shrinking anything. */}

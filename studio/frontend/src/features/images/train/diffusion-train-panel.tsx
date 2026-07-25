@@ -1024,12 +1024,12 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-8 pt-6 sm:px-9">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-5 pt-5 sm:px-9">
       {/* Left: configure. No card here or on the right: both panes sit on the page
-          background like the Hub, divided by a rule. */}
-      <div className="flex w-[370px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
+          background like the Hub, divided by a rule that runs the full page height. */}
+      <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-        <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pb-1 pl-0.5 pr-6">
+        <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
           <div>
             <h2 className="text-sm font-semibold">Train a LoRA</h2>
             <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
@@ -1284,7 +1284,7 @@ export function DiffusionTrainPanel({
           Selecting a previous run re-plots its persisted logs read-only. */}
       {/* Sections here carry no card of their own: spacing and a rule separate them.
           p-1.5 keeps the chart cards' outer ring from being clipped. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pl-6">
+      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pb-7 pl-6">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
