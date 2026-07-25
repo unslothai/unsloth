@@ -487,6 +487,103 @@ def test_lease_release_is_idempotent_under_concurrent_calls():
     asyncio.run(_run())
 
 
+def test_releasing_a_stale_lease_does_not_free_someone_elses_slot():
+    # The concurrent test above passes without the _released guard: the racing
+    # calls all target a still-live slot, which the bitmask already absorbs. The
+    # case the guard exists for is a slot released twice with a reuse in between.
+    # It is live: _wait_for_openai_admission_non_streaming releases and re-raises,
+    # then the caller's finally cancels the reservation and releases the same
+    # lease again, by which point the slot can belong to another request.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        stale = queue.reserve(capacity = 1, config = config).lease_nowait()
+        stale.release()
+        other = queue.reserve(capacity = 1, config = config).lease_nowait()
+        assert other.slot == stale.slot  # the slot got reused
+
+        stale.release()
+        assert queue.snapshot().active == 1, "stale release handed back a live slot"
+        other.release()
+        assert queue.snapshot().active == 0
+
+    asyncio.run(_run())
+
+
+def test_grant_reclaims_the_slot_when_the_waiters_loop_is_gone():
+    # _grant_waiters_locked takes the slot before scheduling delivery, so if the
+    # schedule fails the bit is already set. Leaving it set strands the slot for
+    # good, because _free is rebuilt from the bitmask.
+    queue = get_llama_admission_queue("http://llama.test")
+    config = LlamaAdmissionConfig()
+    held = None
+
+    dead = asyncio.new_event_loop()
+    try:
+        async def _fill_and_queue():
+            nonlocal held
+            held = queue.reserve(capacity = 1, config = config).lease_nowait()
+            assert queue.reserve(capacity = 1, config = config).lease_nowait() is None
+
+        dead.run_until_complete(_fill_and_queue())
+    finally:
+        dead.close()
+
+    held.release()  # grant path now hits the closed loop
+    assert queue.snapshot().active == 0
+    assert queue.is_idle()
+
+
+def test_cancel_returns_the_granted_slot_when_the_waiters_loop_is_gone():
+    # Routes cancel() from finally blocks, so a raise here would mask their
+    # exception and skip the release that hands the granted slot back.
+    queue = get_llama_admission_queue("http://llama.test")
+    config = LlamaAdmissionConfig()
+    held = reservation = None
+
+    dead = asyncio.new_event_loop()
+    try:
+        async def _fill_and_queue():
+            nonlocal held, reservation
+            held = queue.reserve(capacity = 1, config = config).lease_nowait()
+            reservation = queue.reserve(capacity = 1, config = config)
+
+        dead.run_until_complete(_fill_and_queue())
+        held.release()  # promotes the waiter, so cancel() has a lease to return
+    finally:
+        dead.close()
+
+    reservation.cancel()
+    assert queue.snapshot().active == 0
+    assert queue.is_idle()
+
+
+def test_delivery_to_an_already_finished_waiter_releases_the_slot():
+    # A slot is taken before delivery is scheduled, so if the waiter finishes in
+    # that window someone has to hand it back. _deliver_lease does it twice over,
+    # in the dead-waiter branch and in the InvalidStateError backstop; this pins
+    # the outcome, not which one. Reaches into the waiter because no public call
+    # leaves that window open: queue.cancel() reclaims granted_lease itself.
+    async def _run():
+        queue = get_llama_admission_queue("http://llama.test")
+        config = LlamaAdmissionConfig()
+
+        held = queue.reserve(capacity = 1, config = config).lease_nowait()
+        reservation = queue.reserve(capacity = 1, config = config)
+        waiter = reservation._waiter
+
+        held.release()             # schedules _deliver_lease, sets granted_lease
+        waiter.future.cancel()     # finishes the future before the callback runs
+        assert waiter.granted_lease is not None
+        await asyncio.sleep(0)     # let the callback run
+
+        assert queue.snapshot().active == 0
+        assert queue.is_idle()
+
+    asyncio.run(_run())
+
+
 def test_new_key_evicts_idle_prior_load_queues():
     # Each model load carries a fresh ephemeral port, so a new base_url key must
     # not leave the drained queues from earlier loads accumulating forever.
@@ -599,6 +696,12 @@ def test_explicit_queue_per_slot_is_not_floored(monkeypatch):
     # Unset, the default multiplier is floored instead.
     monkeypatch.delenv(ADMISSION_QUEUE_PER_SLOT_ENV, raising = False)
     assert llama_admission_config_from_env().queue_limit(1) == 64
+
+    # A value that does not parse falls back to the default multiplier, so it has
+    # to keep the default's floor. Otherwise a typo quietly shrinks the line 4x.
+    for garbage in ("abc", "1e3", "16.0"):
+        monkeypatch.setenv(ADMISSION_QUEUE_PER_SLOT_ENV, garbage)
+        assert llama_admission_config_from_env().queue_limit(1) == 64, garbage
 
 
 def test_module_imports_on_python_39(monkeypatch):

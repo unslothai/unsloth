@@ -1142,7 +1142,7 @@ def _openai_admission_request_path(request: Optional[Request]) -> Optional[str]:
         return None
 
 
-def _openai_admission_log(
+def _llama_admission_log(
     event: str,
     reservation: Optional[LlamaAdmissionReservation] = None,
     *,
@@ -1160,7 +1160,7 @@ def _openai_admission_log(
         wait_ms = int(max(0.0, time.monotonic() - wait_started_at) * 1000)
     log = getattr(logger, level, logger.debug)
     log(
-        "openai admission %s: mode=%s path=%s completion_id=%s "
+        "llama admission %s: mode=%s path=%s completion_id=%s "
         "pool=%s/%s free=%s queued=%s wait_ms=%s",
         event,
         mode,
@@ -8311,7 +8311,7 @@ async def openai_chat_completions(
                     llama_backend = llama_backend,
                 )
             except LlamaAdmissionQueueFull as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -8549,7 +8549,7 @@ async def openai_chat_completions(
                 admission_wait_started_at = None
                 if stream_lease is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -8574,7 +8574,7 @@ async def openai_chat_completions(
                                     yield wait_item
                                     continue
                                 lease = wait_item
-                                _openai_admission_log(
+                                _llama_admission_log(
                                     "granted-after-wait",
                                     reservation,
                                     request = request,
@@ -8605,7 +8605,7 @@ async def openai_chat_completions(
                                 cancelled = stream_cancelled,
                             )
                     except LlamaAdmissionTimeout as exc:
-                        _openai_admission_log(
+                        _llama_admission_log(
                             "timeout",
                             reservation,
                             request = request,
@@ -8619,7 +8619,7 @@ async def openai_chat_completions(
                             _openai_admission_error_body(exc, status_code = 503)
                         )
                     except LlamaAdmissionCancelled:
-                        _openai_admission_log(
+                        _llama_admission_log(
                             "cancelled-before-upstream",
                             reservation,
                             request = request,
@@ -8730,7 +8730,7 @@ async def openai_chat_completions(
             try:
                 if reservation.lease_nowait() is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -8745,7 +8745,7 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 if admission_wait_started_at is not None:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -8816,7 +8816,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise
             except LlamaAdmissionTimeout as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "timeout",
                     reservation,
                     request = request,
@@ -8831,7 +8831,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
             except LlamaAdmissionCancelled as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
                     request = request,
@@ -8911,7 +8911,7 @@ async def openai_chat_completions(
                 )
             except LlamaAdmissionQueueFull as exc:
                 _tracker.__exit__(None, None, None)
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -9083,7 +9083,7 @@ async def openai_chat_completions(
             admission_wait_started_at = None
             if stream_lease is None:
                 admission_wait_started_at = time.monotonic()
-                _openai_admission_log(
+                _llama_admission_log(
                     "queued",
                     reservation,
                     request = request,
@@ -9108,7 +9108,7 @@ async def openai_chat_completions(
                                 yield wait_item
                                 continue
                             lease = wait_item
-                            _openai_admission_log(
+                            _llama_admission_log(
                                 "granted-after-wait",
                                 reservation,
                                 request = request,
@@ -9139,7 +9139,7 @@ async def openai_chat_completions(
                             cancelled = stream_cancelled,
                         )
                 except LlamaAdmissionTimeout as exc:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "timeout",
                         reservation,
                         request = request,
@@ -9153,7 +9153,7 @@ async def openai_chat_completions(
                         _openai_admission_error_body(exc, status_code = 503)
                     )
                 except LlamaAdmissionCancelled:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "cancelled-before-upstream",
                         reservation,
                         request = request,
@@ -9209,7 +9209,7 @@ async def openai_chat_completions(
                     llama_backend = llama_backend,
                 )
             except LlamaAdmissionQueueFull as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
                     request = request,
@@ -9228,7 +9228,7 @@ async def openai_chat_completions(
             try:
                 if reservation.lease_nowait() is None:
                     admission_wait_started_at = time.monotonic()
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "queued",
                         reservation,
                         request = request,
@@ -9243,7 +9243,7 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 if admission_wait_started_at is not None:
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -9265,7 +9265,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise
             except LlamaAdmissionTimeout as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "timeout",
                     reservation,
                     request = request,
@@ -9280,7 +9280,7 @@ async def openai_chat_completions(
                 _tracker.__exit__(None, None, None)
                 raise _openai_admission_http_exception(exc, status_code = 503)
             except LlamaAdmissionCancelled as exc:
-                _openai_admission_log(
+                _llama_admission_log(
                     "cancelled-before-upstream",
                     reservation,
                     request = request,
@@ -11738,7 +11738,7 @@ async def _responses_stream(
             llama_backend = llama_backend,
         )
     except LlamaAdmissionQueueFull as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -12596,7 +12596,7 @@ async def _responses_stream(
         try:
             if lease is None:
                 admission_wait_started_at = time.monotonic()
-                _openai_admission_log(
+                _llama_admission_log(
                     "queued",
                     reservation,
                     request = request,
@@ -12614,7 +12614,7 @@ async def _responses_stream(
                         yield wait_item
                         continue
                     lease = wait_item
-                    _openai_admission_log(
+                    _llama_admission_log(
                         "granted-after-wait",
                         reservation,
                         request = request,
@@ -12646,7 +12646,7 @@ async def _responses_stream(
                     cancelled = stream_cancelled,
                 )
         except LlamaAdmissionTimeout as exc:
-            _openai_admission_log(
+            _llama_admission_log(
                 "timeout",
                 reservation,
                 request = request,
@@ -12658,7 +12658,7 @@ async def _responses_stream(
             api_monitor.fail(monitor_id, str(exc))
             yield _responses_admission_failed_sse(exc, status_code = 503)
         except LlamaAdmissionCancelled:
-            _openai_admission_log(
+            _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
                 request = request,
@@ -13262,9 +13262,11 @@ async def anthropic_messages(
     # Bound concurrent llama-server generations to the backend's serving slots via a
     # FIFO queue keyed by base_url (shared with /v1/chat/completions, same slots).
     # Excess requests queue; a streaming waiter gets SSE keep-alives, the queue 429s
-    # once full. Mirrors the OpenAI passthrough admission wiring. Streaming holds the
-    # slot only while the body iterates (the upstream stream opens on iteration); the
-    # non-stream path holds it across the single awaited generation.
+    # once full. Mirrors the OpenAI passthrough admission wiring. Streaming takes the
+    # slot when the response is built and drops it when the body finishes or is
+    # abandoned; the non-stream path holds it across the single awaited generation.
+    _anthropic_admission_mode = "anthropic_stream" if payload.stream else "anthropic_nonstream"
+
     async def _admitted_anthropic_stream(
         orig_body,
         reservation,
@@ -13275,8 +13277,13 @@ async def anthropic_messages(
         lease = stream_lease
         stream_cancelled = False
         body_started = False
+        wait_started_at = None
         try:
             if lease is None:
+                wait_started_at = time.monotonic()
+                _llama_admission_log(
+                    "queued", reservation, request = request, mode = _anthropic_admission_mode,
+                )
                 async for wait_item in _openai_admission_wait_stream_chunks(
                     reservation,
                     admission_config,
@@ -13288,6 +13295,10 @@ async def anthropic_messages(
                         continue
                     lease = wait_item
                     break
+                _llama_admission_log(
+                    "granted-after-wait", reservation, request = request,
+                    mode = _anthropic_admission_mode, wait_started_at = wait_started_at,
+                )
             if lease is None:
                 return
             body_started = True
@@ -13300,11 +13311,19 @@ async def anthropic_messages(
             raise
         except LlamaAdmissionTimeout as exc:
             api_monitor.fail(monitor_id, str(exc))
+            _llama_admission_log(
+                "timeout", reservation, request = request, mode = _anthropic_admission_mode,
+                wait_started_at = wait_started_at, level = "warning",
+            )
             yield build_anthropic_sse_event(
                 "error",
                 anthropic_error_body(str(exc), status = 503),
             )
         except LlamaAdmissionCancelled:
+            _llama_admission_log(
+                "cancelled-before-upstream", reservation, request = request,
+                mode = _anthropic_admission_mode, wait_started_at = wait_started_at,
+            )
             return
         finally:
             # Closing can raise (a raw body re-raises CancelledError after
@@ -13336,6 +13355,13 @@ async def anthropic_messages(
         except LlamaAdmissionQueueFull as exc:
             coro.close()
             api_monitor.fail(monitor_id, str(exc))
+            _llama_admission_log(
+                "queue-full",
+                snapshot = getattr(exc, "snapshot", None),
+                request = request,
+                mode = _anthropic_admission_mode,
+                level = "warning",
+            )
             raise _anthropic_admission_http_exception(exc, status_code = 429)
         except BaseException:
             # Reserving never awaited the generation, so close it rather than
@@ -13349,18 +13375,16 @@ async def anthropic_messages(
             # cancel now, exactly as the un-admitted path did; the upstream generation is
             # deferred to body iteration, so the slot is only held while tokens flow.
             try:
+                # Token counting calls llama-server, so a dead backend raises here
+                # with the slot already taken. cancel() covers both cases: it
+                # releases the lease if one was granted, else drops the waiter.
                 monitored = await _monitored_anthropic(coro)
             except BaseException:
-                if stream_lease is not None:
-                    stream_lease.release()
                 reservation.cancel()
                 raise
             orig_body = getattr(monitored, "body_iterator", None)
             if orig_body is None:
-                if stream_lease is not None:
-                    stream_lease.release()
-                else:
-                    reservation.cancel()
+                reservation.cancel()
                 return monitored
 
             # Replacing body_iterator would strand the response's own pre-start
@@ -13371,10 +13395,12 @@ async def anthropic_messages(
             async def _unstarted_cleanup() -> None:
                 # The body never ran, so nothing else closes out the monitor entry.
                 api_monitor.finish(monitor_id, "cancelled")
-                await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
-                if stream_lease is not None:
-                    stream_lease.release()
-                reservation.cancel()
+                try:
+                    await _release_unstarted_anthropic_stream(orig_body, prior_cleanup)
+                finally:
+                    # A BaseException here is swallowed upstream, so releasing
+                    # outside the finally would shrink the pool silently.
+                    reservation.cancel()
 
             monitored.body_iterator = _admitted_anthropic_stream(
                 orig_body, reservation, admission_config, stream_lease, prior_cleanup
@@ -14904,7 +14930,7 @@ async def _openai_passthrough_stream(
         )
     except LlamaAdmissionQueueFull as exc:
         _tracker.__exit__(None, None, None)
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -14949,7 +14975,7 @@ async def _openai_passthrough_stream(
         )
 
     admission_wait_started_at = time.monotonic()
-    _openai_admission_log(
+    _llama_admission_log(
         "queued",
         reservation,
         request = request,
@@ -14973,7 +14999,7 @@ async def _openai_passthrough_stream(
                 if isinstance(wait_item, str):
                     yield wait_item
                     continue
-                _openai_admission_log(
+                _llama_admission_log(
                     "granted-after-wait",
                     reservation,
                     request = request,
@@ -15018,7 +15044,7 @@ async def _openai_passthrough_stream(
                             await cleanup()
                 return
         except LlamaAdmissionTimeout as exc:
-            _openai_admission_log(
+            _llama_admission_log(
                 "timeout",
                 reservation,
                 request = request,
@@ -15030,7 +15056,7 @@ async def _openai_passthrough_stream(
             api_monitor.fail(monitor_id, str(exc))
             yield _openai_stream_error_sse(_openai_admission_error_body(exc, status_code = 503))
         except LlamaAdmissionCancelled:
-            _openai_admission_log(
+            _llama_admission_log(
                 "cancelled-before-upstream",
                 reservation,
                 request = request,
@@ -15807,7 +15833,7 @@ async def _openai_passthrough_non_streaming(
             llama_backend = llama_backend,
         )
     except LlamaAdmissionQueueFull as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "queue-full",
             snapshot = exc.snapshot,
             request = request,
@@ -15822,7 +15848,7 @@ async def _openai_passthrough_non_streaming(
     try:
         if reservation.lease_nowait() is None:
             admission_wait_started_at = time.monotonic()
-            _openai_admission_log(
+            _llama_admission_log(
                 "queued",
                 reservation,
                 request = request,
@@ -15836,7 +15862,7 @@ async def _openai_passthrough_non_streaming(
             cancel_event = cancel_event,
         )
         if admission_wait_started_at is not None:
-            _openai_admission_log(
+            _llama_admission_log(
                 "granted-after-wait",
                 reservation,
                 request = request,
@@ -15858,7 +15884,7 @@ async def _openai_passthrough_non_streaming(
             cancel_event = cancel_event,
         )
     except LlamaAdmissionTimeout as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "timeout",
             reservation,
             request = request,
@@ -15869,7 +15895,7 @@ async def _openai_passthrough_non_streaming(
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 503)
     except LlamaAdmissionCancelled as exc:
-        _openai_admission_log(
+        _llama_admission_log(
             "cancelled-before-upstream",
             reservation,
             request = request,

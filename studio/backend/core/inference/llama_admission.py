@@ -20,9 +20,10 @@ from dataclasses import dataclass
 from typing import Deque, Optional
 
 
-# dataclass(slots = True) drops the per-instance __dict__, which is worth having
-# on types the gate allocates per request. It is 3.10+ and this package declares
-# >=3.9, so gate it rather than dropping it. Empty on 3.9 means plain dataclass.
+# dataclass(slots = True) halves per-instance overhead. Measured as perf-neutral
+# here, not a speed win: it costs a little on construction and gains it back on
+# access. It is 3.10+ and this package declares >=3.9, so gate it rather than
+# dropping it outright. Empty on 3.9 means a plain dataclass.
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
 
 
@@ -64,8 +65,8 @@ class LlamaAdmissionConfig:
     keepalive_interval_s: float = DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S
     max_queue: Optional[int] = DEFAULT_ADMISSION_MAX_QUEUE
     queue_per_slot: Optional[int] = DEFAULT_ADMISSION_QUEUE_PER_SLOT
-    # Only floors the default multiplier, so an operator who sets QUEUE_PER_SLOT
-    # deliberately gets exactly the depth they asked for. None disables it.
+    # Unconditional floor on the scaled line. The env path clears it when the
+    # operator sets QUEUE_PER_SLOT, so only the default multiplier is floored.
     min_queue: Optional[int] = DEFAULT_ADMISSION_MIN_QUEUE
 
     def queue_limit(self, capacity: int) -> Optional[int]:
@@ -178,13 +179,15 @@ def _queue_limits_from_env() -> tuple[Optional[int], Optional[int], Optional[int
     floor applies only to the default multiplier: setting QUEUE_PER_SLOT means
     the operator wants that exact depth, however shallow.
     """
+    # Explicit means it parsed, not just that something was set: a typo falls back
+    # to the default multiplier, so it has to keep the default's floor too.
     raw_per_slot = _raw_env(ADMISSION_QUEUE_PER_SLOT_ENV)
-    explicit_per_slot = bool(raw_per_slot and raw_per_slot.strip())
-    per_slot = _optional_positive_int_env(
-        ADMISSION_QUEUE_PER_SLOT_ENV,
-        DEFAULT_ADMISSION_QUEUE_PER_SLOT,
-    )
-    min_queue = None if explicit_per_slot else DEFAULT_ADMISSION_MIN_QUEUE
+    try:
+        per_slot = int((raw_per_slot or "").strip())
+    except ValueError:
+        per_slot, min_queue = DEFAULT_ADMISSION_QUEUE_PER_SLOT, DEFAULT_ADMISSION_MIN_QUEUE
+    else:
+        per_slot, min_queue = (per_slot if per_slot > 0 else None), None
     raw = _raw_env(ADMISSION_MAX_QUEUE_ENV)
     if raw is None or not raw.strip():
         return None, per_slot, min_queue
@@ -336,9 +339,10 @@ class LlamaAdmissionQueue:
     The pool mirrors llama-server's own ``--parallel`` slots: ``capacity`` slot ids
     are each either free or held by exactly one caller. A caller that finds every
     slot busy waits in arrival order and is handed the next slot to free, so no
-    caller is starved. This bounds the callers that reserve, meaning the OpenAI
-    and Anthropic API surfaces; Studio's own chat endpoint does not reserve, so
-    it is not a global cap. Waiting is unbounded in time by default (``queue_timeout_s``
+    caller is starved. This bounds only the callers that reserve: chat completions
+    and messages do, while /v1/completions, Studio's own chat endpoint and RAG
+    captioning all reach llama-server directly, so it is not a global cap.
+    Waiting is unbounded in time by default (``queue_timeout_s``
     None); the wait line itself is bounded, and only how many may line up before
     new arrivals are rejected. By default that is ``16 x slots`` floored at 64,
     not unlimited: an unbounded line takes ``max_queue`` or ``queue_per_slot``
@@ -444,7 +448,13 @@ class LlamaAdmissionQueue:
                 lease_to_release = waiter.granted_lease
                 waiter.granted_lease = None
             if not waiter.future.done():
-                waiter.loop.call_soon_threadsafe(waiter.future.cancel)
+                try:
+                    waiter.loop.call_soon_threadsafe(waiter.future.cancel)
+                except RuntimeError:
+                    # Loop gone. Routes call cancel() from finally blocks, so
+                    # raising here would both mask their exception and skip the
+                    # release below, stranding the slot for the process lifetime.
+                    pass
         if lease_to_release is not None:
             lease_to_release.release()
 

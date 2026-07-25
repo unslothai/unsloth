@@ -14,18 +14,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 import os
 import sys
+import threading
 import time
+import warnings
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 import routes.inference as inf_mod
-from routes.inference import anthropic_messages
+from routes.inference import (
+    _anthropic_passthrough_retry_url,
+    _anthropic_passthrough_stream,
+    anthropic_messages,
+)
 from models.inference import AnthropicMessagesRequest
 from core.inference.api_monitor import ApiMonitor
 from core.inference.llama_admission import (
@@ -47,6 +55,7 @@ _KEY = "http://llama.admission.test:9999"
 def _isolate(monkeypatch):
     reset_llama_admission_queues()
     monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 64))
+    monkeypatch.setattr(inf_mod, "_CANCEL_REGISTRY", {})
     for name in (
         ADMISSION_CONTROL_ENV,
         ADMISSION_QUEUE_TIMEOUT_ENV,
@@ -80,6 +89,7 @@ def _install_backend(
     *,
     slots = 1,
     base_url = _KEY,
+    count_tokens = None,
 ):
     def _gen_plain(**_kwargs):
         yield "ok"
@@ -94,7 +104,7 @@ def _install_backend(
         supports_tool_passthrough = False,
         model_identifier = "test-model",
         context_length = 2048,
-        count_chat_tokens = lambda *a, **k: 2,
+        count_chat_tokens = count_tokens or (lambda *a, **k: 2),
         generate_chat_completion = _gen_plain,
         generate_chat_completion_with_tools = _gen_tools,
         effective_parallel_slots = slots,
@@ -163,11 +173,51 @@ def test_non_streaming_queue_full_returns_429(monkeypatch):
             await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         assert exc.value.status_code == 429
         # rate_limit_error is what Anthropic SDKs back off on; overloaded_error is 529.
-        assert exc.value.detail["error"]["type"] == "rate_limit_error"
+        # The type string alone does not pin the envelope, since OpenAI's 429 uses the
+        # same word. Assert the shape too, or emitting an OpenAI body still passes.
+        detail = exc.value.detail
+        assert detail["type"] == "error"
+        assert "request_id" in detail
+        assert set(detail["error"]) == {"type", "message"}
+        assert detail["error"]["type"] == "rate_limit_error"
         for lease in held:
             lease.release()
 
     asyncio.run(_run())
+
+
+def test_admission_events_are_logged_on_the_anthropic_surface(monkeypatch):
+    # The OpenAI passthrough logs queue-full/queued/granted-after-wait/timeout with a
+    # mode. Without the same on /v1/messages an operator debugging a slow Anthropic
+    # client has nothing to look at, and the pool is shared, so it is the same triage.
+    # Records through the logger rather than caplog: this one is a structlog bound
+    # logger, so it never reaches the stdlib handlers caplog installs.
+    records = []
+
+    def _record(level):
+        return lambda fmt, *args: records.append((level, fmt % args))
+
+    monkeypatch.setattr(inf_mod, "logger", SimpleNamespace(
+        debug = _record("debug"), info = _record("info"), warning = _record("warning"),
+    ))
+    monkeypatch.setenv(ADMISSION_MAX_QUEUE_ENV, "1")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig(max_queue = 1)
+        )
+        with pytest.raises(HTTPException):
+            await anthropic_messages(_payload(), request = _Request(), current_subject = "t")
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())
+    full = [msg for level, msg in records if "queue-full" in msg]
+    assert full, records
+    assert "llama admission queue-full" in full[0]
+    assert "mode=anthropic_nonstream" in full[0]
 
 
 def test_non_streaming_times_out_returns_503(monkeypatch):
@@ -668,5 +718,166 @@ def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
         with contextlib.suppress(Exception):
             await asyncio.wait_for(task, timeout = 2)  # upstream is not mocked
         assert _snapshot().active == 0 and _snapshot().queued == 0
+
+    asyncio.run(_run())
+
+
+def test_stream_setup_failure_returns_the_slot(monkeypatch):
+    # count_chat_tokens makes a blocking HTTP call to llama-server, so a dead
+    # server raises here: after lease_nowait() took the slot, before a body
+    # exists to release it. Nothing else can hand the slot back.
+    def _boom(*_a, **_k):
+        raise RuntimeError("tokenizer unreachable")
+
+    _install_backend(monkeypatch, slots = 1, count_tokens = _boom)
+
+    async def _run():
+        with pytest.raises(RuntimeError):
+            await anthropic_messages(
+                _payload(stream = True), request = _Request(), current_subject = "t"
+            )
+        snap = _snapshot()
+        assert snap.active == 0, f"slot leaked after stream setup failed: {snap}"
+        # And the pool still serves the next caller.
+        again = get_llama_admission_queue(_KEY).reserve(
+            capacity = 1, config = LlamaAdmissionConfig()
+        )
+        assert again.lease_nowait() is not None
+
+    asyncio.run(_run())
+
+
+def test_queued_non_stream_cancel_does_not_leak_a_coroutine(monkeypatch):
+    # The non-stream path builds the generation coroutine before reserving and
+    # only awaits it once admitted. Giving up while queued must close it.
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)
+        task = asyncio.create_task(
+            anthropic_messages(_payload(), request = _Request(), current_subject = "t")
+        )
+        await asyncio.sleep(0.1)
+        assert _snapshot().queued == 1
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        for lease in held:
+            lease.release()
+
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(_run())
+        gc.collect()
+    leaked = [w for w in caught if "never awaited" in str(w.message)]
+    assert not leaked, [str(w.message) for w in leaked]
+
+
+def test_stream_timeout_marks_the_monitor_entry_as_error(monkeypatch):
+    # The finally finishes the entry as "cancelled"; without the fail() first, a
+    # timed-out request is indistinguishable from a client hang-up in the
+    # monitor. api_monitor.finish is a no-op on an already terminal entry.
+    monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.15")
+    monkeypatch.setenv(ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.05")
+    _install_backend(monkeypatch, slots = 1)
+
+    async def _run():
+        held = _occupy(_KEY, 1, 1)  # never released, so the waiter times out
+        response = await anthropic_messages(
+            _payload(stream = True), request = _Request(), current_subject = "t"
+        )
+        async for _ in response.body_iterator:
+            pass
+        entries = inf_mod.api_monitor.snapshot()
+        assert entries and entries[0]["status"] == "error", entries
+        for lease in held:
+            lease.release()
+
+    asyncio.run(_run())
+
+
+class _RespawnBackend:
+    """Backend whose base_url moves to a new port once respawned."""
+
+    def __init__(self, *, mtp_handled = False, fallback_in_progress = False):
+        self.base_url = "http://127.0.0.1:57953"
+        self.context_length = 4096
+        self.respawn_calls = 0
+        self._mtp_handled = mtp_handled
+        self._mtp_runtime_fallback_in_progress = fallback_in_progress
+
+    def count_chat_tokens(self, *_a, **_k):
+        return 2
+
+    def _maybe_recover_from_mtp_crash(self, _exc):
+        return self._mtp_handled
+
+    def _respawn_if_dead(self):
+        self.respawn_calls += 1
+        self.base_url = "http://127.0.0.1:62933"
+        return True
+
+
+def test_retry_url_stands_down_while_an_mtp_fallback_is_reloading():
+    # Only the first caller gets True from _maybe_recover_from_mtp_crash; the rest
+    # see False and must still stand down, or they respawn the same MTP config
+    # underneath the fallback already reloading without it.
+    backend = _RespawnBackend(mtp_handled = False, fallback_in_progress = True)
+
+    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+
+    assert url is None
+    assert backend.respawn_calls == 0
+
+
+class _PtRequest:
+    async def is_disconnected(self):
+        return False
+
+
+async def _passthrough_response(backend):
+    return await _anthropic_passthrough_stream(
+        _PtRequest(),
+        threading.Event(),
+        backend,
+        [{"role": "user", "content": "hi"}],
+        [],
+        0.7,
+        0.95,
+        20,
+        16,
+        "msg_tracker_probe",
+        "test-model",
+    )
+
+
+def test_disconnect_during_the_opening_lines_exits_the_tracker():
+    # Suspended inside emitter.start()'s yields the generator has not reached the
+    # try/finally that exits the tracker, so those yields need their own.
+    backend = _RespawnBackend()
+
+    async def _run():
+        response = await _passthrough_response(backend)
+        body = response.body_iterator
+        await asyncio.wait_for(body.__anext__(), timeout = 2)  # first start line
+        assert inf_mod._CANCEL_REGISTRY, "tracker should be registered"
+        await body.aclose()
+        assert inf_mod._CANCEL_REGISTRY == {}, "tracker leaked"
+
+    asyncio.run(_run())
+
+
+def test_cancel_during_the_opening_lines_exits_the_tracker():
+    # Same window, delivered the way _SameTaskStreamingResponse delivers it.
+    backend = _RespawnBackend()
+
+    async def _run():
+        response = await _passthrough_response(backend)
+        body = response.body_iterator
+        await asyncio.wait_for(body.__anext__(), timeout = 2)
+        assert inf_mod._CANCEL_REGISTRY, "tracker should be registered"
+        with pytest.raises(asyncio.CancelledError):
+            await body.athrow(asyncio.CancelledError())
+        assert inf_mod._CANCEL_REGISTRY == {}, "tracker leaked"
 
     asyncio.run(_run())
