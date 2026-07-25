@@ -21,6 +21,7 @@ import {
   useChatRuntimeStore,
   normalizeSpeculativeType,
 } from "../stores/chat-runtime-store";
+import { currentGpuIndexKind } from "@/hooks/use-gpu-info";
 
 /** Load/runtime knobs saved in a chat preset (excludes per-model-only blobs). */
 export type PresetLoadConfig = Pick<
@@ -212,6 +213,13 @@ export function applyPresetLoadConfig(
     gpuLayers: config.gpuLayers,
     nCpuMoe: config.nCpuMoe,
     selectedGpuIds: store.selectedGpuIds,
+    // Carry the live pick's index space with the retained ids: without it the
+    // pick applies as an unstamped (physical) config, so on a Vulkan host the
+    // warm reconcile sees a cross-space mismatch and clears the selection.
+    selectedGpuIdsIndexKind:
+      store.selectedGpuIds == null
+        ? undefined
+        : ((store.selectedGpuIdsKind ?? currentGpuIndexKind()) ?? undefined),
   });
 }
 

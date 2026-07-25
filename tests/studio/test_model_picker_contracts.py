@@ -620,16 +620,20 @@ def test_igpu_only_vulkan_budget_falls_back_to_the_torch_total():
     nothing else. The iGPU exclusion in the GGUF budget would make that 0, so the
     Hub renders "0 GiB" and every GGUF row labels OOM against a box whose pool is
     real and reported by torch. Fall back to the torch total for that shape only;
-    a masked-to-iGPU-beside-a-dGPU host (torch sees more devices than the probe
-    enumerated) must stay on 0, which is what the exclusion exists for.
+    a masked-to-iGPU-beside-a-dGPU host (torch's device is a different discrete
+    card, absent from the iGPU-only probe) must stay on 0, which is what the
+    exclusion exists for.
     """
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
-    # All-iGPU inventory detection, and the device-count guard that keeps the
-    # mixed masked host on the conservative 0.
+    # All-iGPU inventory detection, and the device-identity guard (not a bare
+    # count) that keeps the mixed masked host on the conservative 0: every torch
+    # device must also appear in the probed inventory by normalized name.
     assert (
         "const ggufIgpuOnly = ggufDevices.length > 0 && "
         "ggufDevices.every((d) => d.is_igpu === true);" in src
     )
-    assert "ggufIgpuOnly && devices.length <= ggufDevices.length" in src
+    assert "ggufIgpuOnly && torchDevicesAreAllProbed" in src
+    assert "const torchDevicesAreAllProbed =" in src
+    assert "normalizedDeviceName(gd.name) === tn" in src
     # Training/safetensors budgets must stay on the torch total regardless.
     assert "memoryTotalGb," in src

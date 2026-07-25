@@ -193,6 +193,14 @@ export function useLlamaUpdateCheck({
       ) {
         reloadNotifiedForRef.current = job.finished_at;
         setHandledReloadAt(job.finished_at);
+        // A reload-required terminal job means the llama phase landed and the
+        // backend may have swapped (e.g. ROCm -> Vulkan). Refresh hardware info
+        // and drop the /api/system GPU cache here -- centralized so every path
+        // that reaches this (poll, surfaceIfAvailable, apply's stale-click, and
+        // the chained-update error branch), not just polling success, re-probes
+        // the new index space instead of stranding pins in the old one.
+        void refreshHardwareInfo();
+        invalidateGpuInfoCache();
         onReloadRequiredRef.current?.();
       }
     },
@@ -212,17 +220,13 @@ export function useLlamaUpdateCheck({
         setApplying(false);
         if (s.job.state === "success") {
           setVisible(false);
-          void refreshHardwareInfo();
-          // A llama.cpp update can swap the backend (e.g. ROCm -> Vulkan), which
-          // flips the gpu_ids index space. Drop the separate /api/system GPU
-          // cache too so currentGpuIndexKind()/the next reconcile re-probe the
-          // new space instead of stranding pins stamped under the old one.
-          invalidateGpuInfoCache();
           // The update unloads the running model server-side, so the chat
           // runtime still points at a model that now 400s on send. Let the
           // consumer drop the selector to "select model" instead of waiting for
           // a page reload. Fires here (not just from apply's onDone) so a
-          // cross-tab update mirrored through this poll is covered too.
+          // cross-tab update mirrored through this poll is covered too. It also
+          // refreshes hardware info and invalidates the GPU cache on a
+          // reload-required swap (see notifyReloadIfNeeded).
           notifyReloadIfNeeded(s.job);
           onDone?.({
             ok: true,

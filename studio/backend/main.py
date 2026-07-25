@@ -1156,15 +1156,23 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     return {"status": "shutting_down"}
 
 
-def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
-    """Return merged GPU visibility/utilization with bounded live-probe churn."""
+def _get_cached_system_gpu_info(logger, force_refresh: bool = False) -> dict[str, Any]:
+    """Return merged GPU visibility/utilization with bounded live-probe churn.
+
+    ``force_refresh`` skips both the 10s GPU-visibility cache and the 60s Vulkan
+    inventory cache and re-probes live. The frontend passes it right after a
+    llama.cpp backend swap: without it, a /api/system read in the seconds after
+    the swap would return the pre-swap inventory (and the frontend would then
+    cache that stale snapshot indefinitely), so pins could target the wrong
+    index space until the TTLs expired.
+    """
     import time
     from utils.hardware import get_backend_visible_gpu_info, get_visible_gpu_utilization
 
     global _system_gpu_cache
     now = time.monotonic()
     with _system_gpu_cache_lock:
-        if _system_gpu_cache is not None:
+        if _system_gpu_cache is not None and not force_refresh:
             cached_at, cached_gpu_info = _system_gpu_cache
             if now - cached_at < _SYSTEM_GPU_CACHE_TTL_SECONDS:
                 return cached_gpu_info
@@ -1216,6 +1224,7 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             if LlamaCppBackend._is_vulkan_backend():
                 if (
                     _gguf_devices_cache is not None
+                    and not force_refresh
                     and now - _gguf_devices_cache[0] < _GGUF_DEVICES_CACHE_TTL_SECONDS
                 ):
                     gguf_devices = _gguf_devices_cache[1]
@@ -1281,12 +1290,19 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
 
 
 @app.get("/api/system")
-def get_system_info(current_subject: str = Depends(get_current_subject)):
+def get_system_info(
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
     """Get system information.
 
     Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
     fingerprint a host, which matters in -H 0.0.0.0 / Colab / Tauri-relayed
     setups where remote callers can reach /api/system.
+
+    ``refresh=1`` bypasses the GPU-visibility / Vulkan-inventory caches to
+    re-probe live; the frontend uses it right after a llama.cpp backend swap so
+    the GPU index space it reports isn't stale.
     """
     import platform
     import psutil
@@ -1298,7 +1314,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     logger = logging.getLogger(__name__)
 
-    gpu_info = _get_cached_system_gpu_info(logger)
+    gpu_info = _get_cached_system_gpu_info(logger, force_refresh=refresh)
 
     memory = psutil.virtual_memory()
 

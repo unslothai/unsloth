@@ -52,6 +52,20 @@ const DEFAULT_GPU: GpuInfo = {
 // One module-level cache so every GPU hook shares a single /api/system fetch.
 let cachedSystem: SystemInfoResponse | null = null;
 let systemPromise: Promise<SystemInfoResponse | null> | null = null;
+// Bumped by invalidateGpuInfoCache so an in-flight fetch that started before a
+// backend swap can't write its now-stale snapshot back over the fresh one.
+let cacheGeneration = 0;
+// Mounted GPU hooks register here so an invalidation (backend swap) can push the
+// refetched data to them, instead of leaving an open Hub / GPU settings surface
+// on the pre-swap inventory until it unmounts or the page reloads.
+const gpuInfoSubscribers = new Set<() => void>();
+
+function subscribeGpuInfo(cb: () => void): () => void {
+  gpuInfoSubscribers.add(cb);
+  return () => {
+    gpuInfoSubscribers.delete(cb);
+  };
+}
 
 // Persisted gpu_ids picks are bare numbers, so they only mean "these cards"
 // within the index space they were saved in: physical CUDA/ROCm ids, or ggml
@@ -67,6 +81,12 @@ function systemGpuIndexKind(
   data: SystemInfoResponse | null,
 ): GpuIndexKind | null {
   if (!data) return null;
+  // gguf_backend_is_vulkan is authoritative for the pin space: a Vulkan build
+  // pins by ggml Vulkan ordinals even when the device probe transiently returned
+  // an empty gguf_devices list (inventory emptiness only means the ordinal set is
+  // currently unverifiable, not that the space is physical). Fall back to the
+  // inventory only for older backends that don't report the flag.
+  if (data.gpu?.gguf_backend_is_vulkan === true) return "vulkan";
   return (data.gpu?.gguf_devices ?? []).length ? "vulkan" : "physical";
 }
 
@@ -86,25 +106,53 @@ export function currentGpuIndexKind(): GpuIndexKind | null {
  * backend, or dropping valid Vulkan pins after a swap back -- until a full page
  * reload. Invalidating here lets the next ensureGpuDeviceCache() re-probe. */
 export function invalidateGpuInfoCache(): void {
+  // Bump first so any fetch already in flight (started under the old backend)
+  // fails its generation check on resolve and won't restore the stale snapshot.
+  cacheGeneration += 1;
   cachedSystem = null;
   systemPromise = null;
+  // Kick a fresh fetch (also covers non-React callers reading currentGpuIndexKind
+  // next) and notify mounted hooks so they re-read and re-render on the new data.
+  // force=true bypasses the backend's own GPU/Vulkan caches (10s/60s TTL) so the
+  // refetch can't pick up the pre-swap inventory and cache it here indefinitely.
+  void fetchSystemOnce(true);
+  for (const cb of gpuInfoSubscribers) cb();
 }
 
-async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
-  if (cachedSystem) return cachedSystem;
+async function fetchSystemOnce(force = false): Promise<SystemInfoResponse | null> {
+  if (cachedSystem && !force) return cachedSystem;
   if (systemPromise) return systemPromise;
+  const generation = cacheGeneration;
   systemPromise = (async () => {
     try {
-      const res = await authFetch("/api/system");
+      const res = await authFetch(force ? "/api/system?refresh=1" : "/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      cachedSystem = (await res.json()) as SystemInfoResponse;
+      const data = (await res.json()) as SystemInfoResponse;
+      // A backend swap (invalidateGpuInfoCache) during this request bumped the
+      // generation and already started a fresh fetch; drop this stale snapshot
+      // rather than caching the pre-swap inventory indefinitely.
+      if (generation !== cacheGeneration) return null;
+      cachedSystem = data;
       return cachedSystem;
     } catch {
-      systemPromise = null; // reset so a later call retries (backend not ready)
+      // reset so a later call retries (backend not ready) -- but only if a swap
+      // hasn't already replaced systemPromise with a newer in-flight fetch.
+      if (generation === cacheGeneration) systemPromise = null;
       return null;
     }
   })();
   return systemPromise;
+}
+
+// The torch view (physical ids) and the ggml Vulkan inventory (ordinals) share
+// no index space, so the only way to tell they describe the same card is the
+// name. Strip vendor decoration so a ROCm "AMD Radeon(TM) 8060S Graphics"
+// matches its Vulkan "Radeon 8060S Graphics"; "" (no usable name) never matches.
+function normalizedDeviceName(name: string | undefined): string {
+  return (name ?? "")
+    .toLowerCase()
+    .replace(/\((?:tm|r)\)|\btm\b|amd|radeon|graphics/g, "")
+    .replace(/[^a-z0-9]+/g, "");
 }
 
 function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
@@ -136,13 +184,21 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
   // see a dGPU llama-server never enumerated, and reusing that total would let
   // fit checks pass against VRAM /load can't actually place.
   const isVulkanBuild = gpuData?.gguf_backend_is_vulkan === true;
-  // An all-iGPU inventory that torch sees no extra device beyond means there is
-  // no discrete card anywhere (an APU box, e.g. Strix Halo on a Vulkan build).
-  // The exclusion above would budget 0 and label it "0 GiB"; the APU's pool is
-  // real and torch reports it, so use that. The device-count check keeps the
-  // masked-to-iGPU-beside-a-dGPU case on 0, which is what the exclusion is for.
+  // An all-iGPU inventory whose devices are exactly the ones torch sees means
+  // there is no discrete card anywhere (an APU box, e.g. Strix Halo on a Vulkan
+  // build). The exclusion above would budget 0 and label it "0 GiB"; the APU's
+  // pool is real and torch reports it, so use that. Matching by device identity
+  // (name), not count, keeps the masked-to-iGPU-beside-a-dGPU case on 0 -- there
+  // the single torch device is a different (discrete) card llama-server won't
+  // use, so it is absent from the iGPU-only inventory and the guard stays off.
   const ggufIgpuOnly =
     ggufDevices.length > 0 && ggufDevices.every((d) => d.is_igpu === true);
+  const torchDevicesAreAllProbed =
+    devices.length > 0 &&
+    devices.every((td) => {
+      const tn = normalizedDeviceName(td.name);
+      return tn !== "" && ggufDevices.some((gd) => normalizedDeviceName(gd.name) === tn);
+    });
   if (!gpuData?.available || !devices.length) {
     // Torch sees no GPU (training stays CPU-bound / unavailable), but a Vulkan
     // llama.cpp build may still drive GPUs for GGUF: surface that budget alone.
@@ -158,7 +214,7 @@ function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb,
     ggufMemoryTotalGb: ggufDevices.length
-      ? ggufIgpuOnly && devices.length <= ggufDevices.length
+      ? ggufIgpuOnly && torchDevicesAreAllProbed
         ? memoryTotalGb
         : ggufDeviceTotalGb
       : isVulkanBuild
@@ -206,61 +262,50 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
     }));
 }
 
-/** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
-export function useGpuInfo(): GpuInfo {
-  const [gpu, setGpu] = useState<GpuInfo>(
-    cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,
-  );
+/** Shared subscription to the /api/system snapshot: seeds from the module cache,
+ *  fetches on mount, and re-derives whenever the cache is invalidated (a backend
+ *  swap) so mounted consumers update in place instead of showing pre-swap state.
+ *  `select` must be a stable module-level function (the effect keys on it). */
+function useGpuSystemDerived<T>(
+  select: (data: SystemInfoResponse | null) => T,
+): T {
+  const [value, setValue] = useState<T>(() => select(cachedSystem));
   useEffect(() => {
     // No early return on cachedSystem: a consumer mounting as the cache fills
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
-    fetchSystemOnce().then((d) => {
-      if (!cancelled) setGpu(toGpuInfo(d));
-    });
+    const refresh = () => {
+      void fetchSystemOnce().then((d) => {
+        if (!cancelled) setValue(select(d));
+      });
+    };
+    refresh();
+    // Re-read after an invalidation too, not just on mount, so a backend swap
+    // repaints this surface without waiting for an unmount or page reload.
+    const unsubscribe = subscribeGpuInfo(refresh);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
-  }, []);
-  return gpu;
+  }, [select]);
+  return value;
+}
+
+/** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
+export function useGpuInfo(): GpuInfo {
+  return useGpuSystemDerived(toGpuInfo);
 }
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
 export function useGpuDevices(): SystemGpuDevice[] {
-  const [devices, setDevices] = useState<SystemGpuDevice[]>(
-    cachedSystem ? toGpuDevices(cachedSystem) : [],
-  );
-  useEffect(() => {
-    // No early return on cachedSystem: a consumer mounting as the cache fills
-    // (between render and effect) would otherwise stay stuck at the default.
-    let cancelled = false;
-    fetchSystemOnce().then((d) => {
-      if (!cancelled) setDevices(toGpuDevices(d));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return devices;
+  return useGpuSystemDerived(toGpuDevices);
 }
 
-/** Reactive currentGpuIndexKind(): re-renders when /api/system loads, so a
- *  component reading a pick's index space (e.g. the active model's) updates
- *  once the cache warms instead of being stuck at the cold-cache null. */
+/** Reactive currentGpuIndexKind(): re-renders when /api/system loads or is
+ *  invalidated, so a component reading a pick's index space (e.g. the active
+ *  model's) tracks a cold-cache warm-up and an in-session backend swap alike. */
 export function useCurrentGpuIndexKind(): GpuIndexKind | null {
-  const [kind, setKind] = useState<GpuIndexKind | null>(() =>
-    systemGpuIndexKind(cachedSystem),
-  );
-  useEffect(() => {
-    let cancelled = false;
-    fetchSystemOnce().then((d) => {
-      if (!cancelled) setKind(systemGpuIndexKind(d));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return kind;
+  return useGpuSystemDerived(systemGpuIndexKind);
 }
 
 /**

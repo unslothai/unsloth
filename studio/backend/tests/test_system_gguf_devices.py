@@ -147,6 +147,40 @@ def test_vulkan_inventory_survives_gpu_cache_refreshes_without_reprobing(main_mo
     assert second["gguf_devices"] == first["gguf_devices"]
 
 
+def test_force_refresh_bypasses_both_caches_and_reprobes(main_module, monkeypatch):
+    # After a llama.cpp backend swap the frontend requests /api/system?refresh=1;
+    # force_refresh must skip both the 10s GPU cache and the 60s Vulkan-inventory
+    # cache so it re-probes live instead of returning the pre-swap inventory.
+    import utils.hardware as hw
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    calls = {"n": 0}
+
+    def counting_inventory(binary = None):
+        calls["n"] += 1
+        return list(_VULKAN_INVENTORY)
+
+    monkeypatch.setattr(hw, "get_backend_visible_gpu_info", lambda: dict(_TORCH_VIEW))
+    monkeypatch.setattr(hw, "get_visible_gpu_utilization", lambda: {"devices": []})
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary = None: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "vulkan_device_inventory", staticmethod(counting_inventory)
+    )
+    monkeypatch.setattr(main_module, "_system_gpu_cache", None)
+    monkeypatch.setattr(main_module, "_gguf_devices_cache", None)
+
+    logger = logging.getLogger(__name__)
+    main_module._get_cached_system_gpu_info(logger)  # warms both caches (probe 1)
+    # A plain read stays cached (no reprobe); a forced read bypasses and reprobes.
+    main_module._get_cached_system_gpu_info(logger)
+    assert calls["n"] == 1
+    main_module._get_cached_system_gpu_info(logger, force_refresh = True)
+    assert calls["n"] == 2
+
+
 def test_non_vulkan_build_reports_no_gguf_inventory(main_module, monkeypatch):
     info = _gpu_info(main_module, monkeypatch, is_vulkan = False, inventory = _VULKAN_INVENTORY)
     # CUDA/ROCm llama builds see the same devices torch does; no separate list.
