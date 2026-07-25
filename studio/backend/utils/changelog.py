@@ -39,6 +39,10 @@ RELEASE_NOTES_MAX_CHARS = 20_000
 
 _HEADING_PATTERN = re.compile(r"^ {0,3}##\s+(?P<title>.*?)\s*$")
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
+# CommonMark type 1 HTML blocks: contents are literal until the closing tag.
+# <details> and friends are type 6 and do contain Markdown, so they are not here.
+_RAW_HTML_OPEN = re.compile(r"^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)", re.IGNORECASE)
+_RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE)
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 _CODE_SPAN_PATTERN = re.compile(r"(`+)(?:.*?)\1")
@@ -101,6 +105,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     body: list[str] = []
     open_fence: str | None = None
     in_comment = False
+    in_raw_html = False
 
     def flush() -> None:
         if version is not None and heading is not None:
@@ -122,6 +127,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         else:
             # Commented-out sections are not rendered, so they are not releases.
             visible, in_comment = _strip_comments(line, in_comment)
+            # Nor is anything inside a raw HTML block such as <pre>.
+            visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
         if match is None:
@@ -342,6 +349,22 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
         index = opening + len(_COMMENT_OPEN)
         in_comment = True
     return "".join(visible), in_comment
+
+
+def _strip_raw_html(line: str, in_raw_html: bool) -> tuple[str, bool]:
+    """Drop the parts of a line inside a raw HTML block, and return the state."""
+    if in_raw_html:
+        close = _RAW_HTML_CLOSE.search(line)
+        return (line[close.end() :], False) if close else ("", True)
+
+    # A block only opens at the start of a line; mid-line tags are inline HTML.
+    opening = _RAW_HTML_OPEN.match(line)
+    if opening is None:
+        return line, False
+
+    rest = line[opening.end() :]
+    close = _RAW_HTML_CLOSE.search(rest)
+    return (rest[close.end() :], False) if close else ("", True)
 
 
 def _version_from_heading(heading: str) -> str | None:

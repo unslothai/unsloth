@@ -518,3 +518,33 @@ def test_notes_toggle_shares_the_action_row(banner, toggle, action):
     toggle_line = next(line for line in src.splitlines() if toggle in line)
     toggle_block = src[src.index("Button", row) : src.index(toggle_line)]
     assert "text-ui-13" in toggle_block and "whitespace-nowrap" in toggle_block
+
+
+def test_headings_inside_a_raw_html_block_are_not_releases(changelog_module):
+    """<pre> content is literal, so a sample heading in it must not become a
+    section and must not cut the real section's body short."""
+    text = "## 1.0\n\n<pre>\n## 9.9.9\n</pre>\n\n- real note\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    assert "real note" in changelog_module.find_release_notes(text, "1.0").body
+    assert changelog_module.find_release_notes(text, "9.9.9") is None
+
+
+def test_details_blocks_still_contain_markdown(changelog_module):
+    """<details> is a CommonMark type 6 block: headings inside it still count,
+    so collapsible sections keep working."""
+    text = "## 2.0\n\n<details>\n<summary>More</summary>\n\n- note\n\n</details>\n\n## 1.0\n\n- older\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+
+
+def test_inline_raw_html_tag_does_not_open_a_block(changelog_module):
+    """A block opens only at the start of a line. A tag named mid-sentence is
+    inline HTML and must not swallow the releases below it."""
+    text = "## 2.0\n\n- Warn when a <script> tag is pasted\n\n## 1.0\n\n- older\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+
+
+def test_preview_skips_raw_html_blocks():
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "stripRawHtml" in src
+    # Anchored: only a line-leading tag opens a block, matching the parser.
+    assert "/^ {0,3}<(pre|script|style|textarea)" in src

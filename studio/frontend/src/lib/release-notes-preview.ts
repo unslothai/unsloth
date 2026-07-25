@@ -23,6 +23,10 @@ const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
 // <https://x> and <a@b.c> are Markdown autolinks: keep the text they render.
 const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
 const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1/g;
+// CommonMark type 1 HTML blocks render literally. <details> is type 6 and
+// does contain Markdown, so it is deliberately absent here.
+const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
+const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
 // Paired emphasis only. Underscores inside identifiers are literal, so
@@ -157,10 +161,30 @@ function stripCommentSpans(
   return [visible, inComment];
 }
 
+function stripRawHtml(line: string, startInRaw: boolean): [string, boolean] {
+  if (startInRaw) {
+    const close = RAW_HTML_CLOSE.exec(line);
+    return close
+      ? [line.slice(close.index + close[0].length), false]
+      : ["", true];
+  }
+  // A block only opens at the start of a line; mid-line tags are inline HTML.
+  const open = RAW_HTML_OPEN.exec(line);
+  if (!open) {
+    return [line, false];
+  }
+  const rest = line.slice(open[0].length);
+  const close = RAW_HTML_CLOSE.exec(rest);
+  return close
+    ? [rest.slice(close.index + close[0].length), false]
+    : ["", true];
+}
+
 function contentLines(markdown: string): ContentLine[] {
   const lines: ContentLine[] = [];
   let openFence: string | null = null;
   let inComment = false;
+  let inRawHtml = false;
 
   for (const rawLine of markdown.split("\n")) {
     const line = rawLine.replace(/\t/g, " ".repeat(TAB_WIDTH));
@@ -188,11 +212,15 @@ function contentLines(markdown: string): ContentLine[] {
     // Commented-out notes are not rendered, so they are not previewed either.
     const [uncommented, stillInComment] = stripCommentSpans(line, inComment);
     inComment = stillInComment;
-    if (!uncommented.trim()) {
+    // Raw HTML blocks such as <pre> render literally, so their lines are not
+    // release notes.
+    const [visible, stillInRaw] = stripRawHtml(uncommented, inRawHtml);
+    inRawHtml = stillInRaw;
+    if (!visible.trim()) {
       lines.push({ text: "", indent: 0 });
       continue;
     }
-    const stripped = uncommented.replace(BLOCKQUOTE, "");
+    const stripped = visible.replace(BLOCKQUOTE, "");
     lines.push({
       text: stripped.trim(),
       indent: stripped.length - stripped.trimStart().length,
