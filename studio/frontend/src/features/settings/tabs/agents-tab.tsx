@@ -26,9 +26,11 @@ import {
   type BackendModelDetails,
   type GgufVariantDetail,
   type InferenceStatusResponse,
+  type LocalModelInfo,
   getInferenceStatus,
   listCachedGguf,
   listGgufVariants,
+  listLocalModels,
   listModels,
 } from "@/features/chat";
 import { useHfTokenStore } from "@/features/hub";
@@ -45,7 +47,7 @@ import {
   Copy01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
@@ -60,6 +62,7 @@ const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
 const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
 const MODEL_RESULT_LIMIT = 7;
+const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
@@ -253,11 +256,39 @@ function discoverGgufModels(
   return { models, variants };
 }
 
+// Scanned local GGUFs (./models, LM Studio, custom folders) that the caches above
+// miss. /api/models/local ids are load ids, which for an out-of-cache repo is an
+// on-disk path, and a path cannot be named as --model, so take the clean repo id.
+function localGgufRepos(models: LocalModelInfo[]): string[] {
+  const repos: string[] = [];
+  for (const model of models) {
+    if ((model.model_format ?? "").toLowerCase() !== "gguf") {
+      continue;
+    }
+    const repo = model.model_id ?? model.id;
+    if (repo && isHuggingFaceRepo(repo)) {
+      repos.push(repo);
+    }
+  }
+  return repos;
+}
+
 function activeGgufSelection(
   status: InferenceStatusResponse | null,
-): { model: string; variant: string | null } | null {
-  if (!(status?.is_gguf && status.model_identifier)) {
+): { model: string; variant: string | null; named: boolean } | null {
+  if (!status?.is_gguf) {
     return null;
+  }
+  if (!status.model_identifier) {
+    // A native file grant withholds the host path, so this GGUF is resident but
+    // has no id to pass. Carry its label and attach with a bare command instead.
+    return status.active_model
+      ? {
+          model: status.active_model,
+          variant: status.gguf_variant ?? null,
+          named: false,
+        }
+      : null;
   }
   const active = splitModelVariant(status.model_identifier);
   if (!active.repo) {
@@ -267,6 +298,7 @@ function activeGgufSelection(
     // Status reports the quant for path loads too, whose id has no ":variant" suffix.
     model: active.repo,
     variant: status.gguf_variant ?? active.variant,
+    named: true,
   };
 }
 
@@ -427,7 +459,8 @@ function SubagentSection({
   modelArgs: string;
 }) {
   const t = useT();
-  const command = `${baseCommand} --as-subagent ${modelArgs}`;
+  // modelArgs is empty when attaching to a resident model that has no id to name.
+  const command = `${baseCommand} --as-subagent${modelArgs ? ` ${modelArgs}` : ""}`;
   const prompt =
     agent.id === "opencode"
       ? t("settings.agents.subagent.opencodePrompt")
@@ -516,8 +549,10 @@ export function AgentsTab() {
   const t = useT();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
-  // Copied commands run on the client, so pick the shell from the client platform, not
-  // deviceType. Anchor the match: a bare includes("win") also matches "darwin".
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const isWindowsHost = deviceType === "windows";
+  // The remote snippet runs on the client, so use the client platform, not deviceType.
+  // Anchor the match: a bare includes("win") would also match "darwin".
   const [isWindowsClient] = useState(() => {
     const p = getClientPlatform();
     return p.startsWith("win") || p.includes("windows");
@@ -540,6 +575,8 @@ export function AgentsTab() {
   const [activeStatusModel, setActiveStatusModel] = useState<string | null>(
     null,
   );
+  // Set only for a native-grant GGUF, which is resident but has no id to pass.
+  const [attachOnlyModel, setAttachOnlyModel] = useState<string | null>(null);
   const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
@@ -595,24 +632,32 @@ export function AgentsTab() {
     selectedVariant && suffixVariant
       ? `${modelId}:${selectedVariant}`
       : modelId;
-  const commandModelArg = quoteShellArg(commandModel, isWindowsClient);
-  const modelArgs =
-    selectedVariant && !suffixVariant
-      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsClient)}`
+  const commandModelArg = quoteShellArg(commandModel, isWindowsHost);
+  // A bare `unsloth start` attaches to whatever is loaded, which is the only way
+  // to reach a native-grant GGUF: naming it would switch the server to another model.
+  const attachOnly = selectedModel === attachOnlyModel;
+  const modelArgs = attachOnly
+    ? ""
+    : selectedVariant && !suffixVariant
+      ? `--model ${commandModelArg} --gguf-variant ${quoteShellArg(selectedVariant, isWindowsHost)}`
       : `--model ${commandModelArg}`;
   // Browser commands target the viewed origin; a desktop window origin is a Tauri URL the
   // CLI cannot reach, so use the backend URL from /api/health (getApiBase until it lands).
   // No key is passed: the CLI caches an explicit one per base, overwriting a working saved
   // key. Omitting it replays the saved key; the remote section covers first-time setup.
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const commandOs = isWindowsClient ? "windows" : "unix";
+  // The built command runs where the CLI is, i.e. this Studio's host, so quote and
+  // pick the shell from deviceType like the API usage panel does. The browser OS
+  // would say Windows for a WSL Studio viewed from Windows and emit PowerShell
+  // $env: syntax that WSL's bash rejects; any non-windows deviceType is POSIX.
+  const commandOs = isWindowsHost ? "windows" : "unix";
   const commandBase = buildAgentCommand(
     studioBase,
     null,
     commandOs,
     selectedAgent,
   );
-  const command = `${commandBase} ${modelArgs}`;
+  const command = attachOnly ? commandBase : `${commandBase} ${modelArgs}`;
   // The fixed examples below target the same Studio, not a bare 127.0.0.1:8888.
   const example = (agentId: string, flags: string) =>
     `${buildAgentCommand(studioBase, null, commandOs, agentId)} ${flags}`;
@@ -674,15 +719,16 @@ export function AgentsTab() {
       listModels().catch(() => null),
       listCachedGguf().catch(() => []),
       getInferenceStatus().catch(() => null),
+      listLocalModels().catch(() => null),
     ])
-      .then(([info, cachedGgufs, status]) => {
+      .then(([info, cachedGgufs, status, local]) => {
         if (cancelled) {
           return;
         }
-        const discovered = discoverGgufModels(
-          info?.models ?? [],
-          cachedGgufs.map((cached) => cached.repo_id),
-        );
+        const discovered = discoverGgufModels(info?.models ?? [], [
+          ...cachedGgufs.map((cached) => cached.repo_id),
+          ...localGgufRepos(local?.models ?? []),
+        ]);
         // Keep the snapshot load_id for --model while listing the model by repo id.
         const loadIds: Record<string, string> = {};
         for (const cached of cachedGgufs) {
@@ -707,6 +753,7 @@ export function AgentsTab() {
         setModels(models);
         setCachedLoadIds(loadIds);
         setActiveStatusModel(active?.model ?? null);
+        setAttachOnlyModel(active && !active.named ? active.model : null);
         setKnownVariants((current) => ({
           ...current,
           ...knownVariants,
@@ -719,6 +766,56 @@ export function AgentsTab() {
       cancelled = true;
     };
   }, []);
+
+  // List the resident model and follow it, unless the user picked one explicitly.
+  const adoptActiveModel = useCallback(
+    (active: { model: string; variant: string | null }) => {
+      setModels((current) =>
+        current.includes(active.model) ? current : [active.model, ...current],
+      );
+      if (active.variant) {
+        setKnownVariants((current) => ({
+          ...current,
+          [active.model]: active.variant as string,
+        }));
+      }
+      if (!modelSelectionChanged.current) {
+        setSelectedModel(active.model);
+        setSelectedVariant(active.variant);
+      }
+    },
+    [],
+  );
+
+  // Another client, or a load that finishes after this tab opens, can change what
+  // is resident on a shared server. Keep tracking it rather than pinning the model
+  // seen at mount, or the command would name a stale one and switch the server
+  // back, unloading it for every attached session. An explicit pick still wins.
+  useEffect(() => {
+    let cancelled = false;
+    const sync = () => {
+      getInferenceStatus()
+        .then((status) => {
+          if (cancelled) {
+            return;
+          }
+          const active = activeGgufSelection(status);
+          setActiveStatusModel(active?.model ?? null);
+          setAttachOnlyModel(active && !active.named ? active.model : null);
+          if (active) {
+            adoptActiveModel(active);
+          }
+        })
+        .catch(() => {
+          // A failed poll just leaves the last known selection in place.
+        });
+    };
+    const timer = window.setInterval(sync, STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [adoptActiveModel]);
 
   useEffect(() => {
     let cancelled = false;
