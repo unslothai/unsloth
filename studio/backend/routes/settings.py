@@ -61,6 +61,7 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.checkpoint_settings import get_checkpoint_location, set_checkpoint_location
 
 router = APIRouter()
 
@@ -104,6 +105,18 @@ class HuggingFaceCacheResponse(BaseModel):
     available: bool
     writable: bool
     free_bytes: Optional[int] = None
+    environment_variable: Optional[str] = None
+
+
+class CheckpointLocationPayload(BaseModel):
+    path: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class CheckpointLocationResponse(BaseModel):
+    path: str
+    source: Literal["default", "studio", "environment", "colab", "kaggle"]
+    editable: bool
+    is_custom: bool
     environment_variable: Optional[str] = None
 
 
@@ -155,6 +168,34 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
 
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
+
+
+def _checkpoint_location_response() -> CheckpointLocationResponse:
+    location = get_checkpoint_location()
+    return CheckpointLocationResponse(
+        path = str(location.path), source = location.source, editable = location.editable,
+        is_custom = location.is_custom, environment_variable = location.environment_variable,
+    )
+
+
+@router.get("/checkpoint-location", response_model = CheckpointLocationResponse)
+def get_checkpoint_saving_location(
+    current_subject: str = Depends(get_current_subject),
+) -> CheckpointLocationResponse:
+    return _checkpoint_location_response()
+
+
+@router.put("/checkpoint-location", response_model = CheckpointLocationResponse)
+def update_checkpoint_saving_location(
+    payload: CheckpointLocationPayload, current_subject: str = Depends(get_current_subject)
+) -> CheckpointLocationResponse:
+    try:
+        set_checkpoint_location(payload.path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _checkpoint_location_response()
 
 
 @router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
