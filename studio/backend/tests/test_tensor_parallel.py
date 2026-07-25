@@ -792,9 +792,9 @@ def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
         elapsed = time.monotonic() - started
 
         assert loads == [], "a live server must not be reloaded"
-        assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2, (
-            f"waited {elapsed:.2f}s on a server that is still accepting"
-        )
+        assert (
+            elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2
+        ), f"waited {elapsed:.2f}s on a server that is still accepting"
     finally:
         listener.close()
 
