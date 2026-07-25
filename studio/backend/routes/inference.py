@@ -13364,6 +13364,7 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                promote_reasoning_only = False,
             )
 
         if payload.stream:
@@ -13403,6 +13404,7 @@ async def anthropic_messages(
             max_tokens = payload.max_tokens,
             stop = stop,
             cancel_event = cancel_event,
+            promote_reasoning_only = False,
         )
 
     if payload.stream:
