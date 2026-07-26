@@ -129,16 +129,24 @@ def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
 
     # Works normally through the real shell path Claude uses.
     denied = subprocess.run(
-        command, input = json.dumps({"permission_mode": "plan"}),
-        shell = True, capture_output = True, text = True, timeout = 30,
+        command,
+        input = json.dumps({"permission_mode": "plan"}),
+        shell = True,
+        capture_output = True,
+        text = True,
+        timeout = 30,
     )
     assert denied.returncode == 0
     assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     (plugin / "hooks" / "plan_gate.py").unlink()
     gone = subprocess.run(
-        command, input = json.dumps({"permission_mode": "default"}),
-        shell = True, capture_output = True, text = True, timeout = 30,
+        command,
+        input = json.dumps({"permission_mode": "default"}),
+        shell = True,
+        capture_output = True,
+        text = True,
+        timeout = 30,
     )
     assert gone.returncode != 2, "exit 2 blocks the tool in every mode"
     assert gone.stdout.strip() == ""

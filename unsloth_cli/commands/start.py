@@ -2098,7 +2098,7 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
                                     # error and would deny the tool in every mode.
                                     "command": (
                                         f'"{sys.executable}" -c '
-                                        f'"import runpy; runpy.run_path(r\'\'\'{gate}\'\'\')"'
+                                        f"\"import runpy; runpy.run_path(r'''{gate}''')\""
                                     ),
                                     # A hook with no timeout stalls the parent for as
                                     # long as it hangs; measured unbounded past 400s.
