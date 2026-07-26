@@ -48,6 +48,7 @@ import functools
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
+import traceback
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
@@ -4589,6 +4590,11 @@ def _unsloth_save_torchao_with_given_config(
         # would otherwise still be resident while the original is restored.
         quantized_model = None
         del quantized_model
+        # A failed save leaves a live traceback whose frames still reference the
+        # quantized copy, so dropping the local alone does not free its VRAM.
+        _exc = sys.exc_info()[1]
+        if _exc is not None:
+            traceback.clear_frames(_exc.__traceback__)
         for _ in range(3):
             gc.collect()
             if torch.cuda.is_available():
@@ -4700,7 +4706,9 @@ def _snapshot_dispatch_state(root):
     # to one no longer reach the other.
     # Skip meta tensors: accelerate parks every CPU/disk-offloaded parameter on
     # meta, and they all report pointer 0, which would otherwise collapse into one
-    # enormous fake "tied" group of differently shaped tensors.
+    # enormous fake "tied" group of differently shaped tensors. Nothing is lost --
+    # offloading already replaced each side of a tie with its own meta placeholder,
+    # so there is no shared object or storage left to record.
     groups = {}
     for name, tensor in named:
         if tensor.device.type == "meta":

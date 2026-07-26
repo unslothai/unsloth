@@ -153,3 +153,97 @@ def test_load_checkpoint_forwards_balanced_device_map(monkeypatch, tmp_path):
 def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
     kwargs = _load_text_checkpoint(monkeypatch, tmp_path, {})
     assert "device_map" not in kwargs  # loader default (sequential) untouched
+
+
+# ── a load that succeeds but offloads to CPU/disk ──
+
+
+def test_cpu_offloaded_modules_counts_cpu_and_disk(monkeypatch):
+    mod = _export_mod(monkeypatch)
+    model = types.SimpleNamespace(
+        hf_device_map = {"a": 0, "b": "cpu", "c": 1, "d": "disk"}
+    )
+    assert mod._cpu_offloaded_modules(model) == 2
+
+
+def test_cpu_offloaded_modules_ignores_gpu_only_and_missing_maps(monkeypatch):
+    mod = _export_mod(monkeypatch)
+    assert mod._cpu_offloaded_modules(types.SimpleNamespace(hf_device_map = {"a": 0})) == 0
+    assert mod._cpu_offloaded_modules(types.SimpleNamespace(hf_device_map = None)) == 0
+    assert mod._cpu_offloaded_modules(types.SimpleNamespace()) == 0
+
+
+class _SpillThenCleanLoader:
+    """First call offloads to CPU (bf16 accepts it silently), second is clean."""
+
+    calls: list[dict] = []
+
+    @classmethod
+    def from_pretrained(cls, **kwargs):
+        cls.calls.append(kwargs)
+        device_map = {"model.layers.0": 0} if len(cls.calls) > 1 else {"model.layers.0": "cpu"}
+        return types.SimpleNamespace(hf_device_map = device_map), types.SimpleNamespace()
+
+
+def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
+    mod = _export_mod(monkeypatch)
+    _SpillThenCleanLoader.calls = []
+    monkeypatch.setattr(mod, "FastLanguageModel", _SpillThenCleanLoader)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: device_map_kwargs)
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+    return ok, message, _SpillThenCleanLoader.calls
+
+
+def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch, tmp_path):
+    # Nothing raises, so only inspecting hf_device_map catches it; the parameters
+    # would otherwise stay on meta and kill the export inside safetensors.
+    ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {"device_map": "balanced"})
+    assert ok, message
+    assert len(calls) == 2
+    assert calls[0]["device_map"] == "balanced"
+    assert "device_map" not in calls[1]
+
+
+def test_single_gpu_offload_is_left_alone(monkeypatch, tmp_path):
+    # No multi-GPU map was requested, so there is nothing to retry on and the
+    # pre-#7053 behaviour must be preserved exactly.
+    ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {})
+    assert ok, message
+    assert len(calls) == 1
+
+
+def test_retry_result_is_kept_even_if_it_also_offloads(monkeypatch, tmp_path):
+    # The retry runs with _device_map_override set, so it must never recurse again.
+    mod = _export_mod(monkeypatch)
+
+    class _AlwaysSpills:
+        calls: list[dict] = []
+
+        @classmethod
+        def from_pretrained(cls, **kwargs):
+            cls.calls.append(kwargs)
+            return types.SimpleNamespace(hf_device_map = {"a": "cpu"}), types.SimpleNamespace()
+
+    monkeypatch.setattr(mod, "FastLanguageModel", _AlwaysSpills)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "balanced"})
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+    assert ok, message
+    assert len(_AlwaysSpills.calls) == 2

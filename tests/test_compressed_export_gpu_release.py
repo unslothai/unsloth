@@ -14,6 +14,7 @@ module itself needs torch/transformers), and exercises them with fakes.
 from __future__ import annotations
 
 import ast
+import gc
 import sys
 import types
 from pathlib import Path
@@ -609,3 +610,45 @@ def test_torchao_releases_the_quantized_copy_in_finally():
     assert finally_block.index("del quantized_model") < finally_block.index(
         "_restore_model_after_quantize_subprocess"
     )
+    # dropping the local is not enough on the failure path: the live traceback still
+    # holds the frames that built the copy
+    assert "traceback.clear_frames" in finally_block
+    assert finally_block.index("traceback.clear_frames") < finally_block.index(
+        "_restore_model_after_quantize_subprocess"
+    )
+
+
+def test_a_live_traceback_pins_the_failed_copy_until_its_frames_are_cleared():
+    """Why the clear_frames call above is load-bearing, on plain objects."""
+    import sys
+    import traceback
+    import weakref
+
+    class _Copy:
+        pass
+
+    def _build_and_fail(sink):
+        copy = _Copy()  # noqa: F841 -- the point is that the frame retains it
+        sink.append(weakref.ref(copy))
+        raise RuntimeError("save_pretrained failed")
+
+    def _run(clear_frames):
+        # try/finally with the exception still in flight, exactly as in save.py
+        sink = []
+        alive = None
+        try:
+            try:
+                _build_and_fail(sink)
+            finally:
+                if clear_frames:
+                    exc = sys.exc_info()[1]
+                    if exc is not None:
+                        traceback.clear_frames(exc.__traceback__)
+                gc.collect()
+                alive = sink[0]() is not None
+        except RuntimeError:
+            pass
+        return alive
+
+    assert _run(clear_frames = False), "expected the traceback to pin the copy"
+    assert not _run(clear_frames = True), "clear_frames must release it"

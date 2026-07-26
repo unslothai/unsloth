@@ -144,6 +144,23 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
     return "dispatched on the cpu or the disk" in str(exc).lower()
 
 
+class _CpuSpillRetry(Exception):
+    """A multi-GPU load that succeeded but left modules offloaded to CPU/disk."""
+
+
+def _cpu_offloaded_modules(model) -> int:
+    """Count the modules a load parked on CPU or disk.
+
+    Only bitsandbytes refuses such a map. A full-precision load accepts it, so the
+    parameters stay on meta and the export dies much later in safetensors with
+    "Cannot copy out of meta tensor". Nothing raises at load time, so the map has
+    to be inspected directly. PEFT re-dispatches after attaching an adapter and
+    clears the offload, so in practice this catches merged checkpoints.
+    """
+    device_map = getattr(model, "hf_device_map", None) or {}
+    return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -487,6 +504,13 @@ class ExportBackend:
                     **_device_map_kw,
                 )
 
+            # Only when we asked for the multi-GPU map: a single-GPU host has no
+            # second placement to retry on, so leave its behaviour untouched.
+            _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
+            if _device_map_override is None and _offloaded:
+                del model
+                raise _CpuSpillRetry(f"{_offloaded} module(s) offloaded to CPU/disk")
+
             if _IS_MLX:
                 # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
                 self.is_peft = adapter_config.exists()
@@ -517,7 +541,11 @@ class ExportBackend:
             # Fall back once before giving up.
             if (
                 _device_map_override is None
-                and (_is_oom_error(e) or _is_cpu_spill_rejection(e))
+                and (
+                    isinstance(e, _CpuSpillRetry)
+                    or _is_oom_error(e)
+                    or _is_cpu_spill_rejection(e)
+                )
                 and _multi_gpu_device_map_kwargs()
             ):
                 # Retry outside this block: the live traceback pins the half-built
@@ -531,7 +559,7 @@ class ExportBackend:
                 return False, f"Failed to load checkpoint: {str(e)}"
 
         logger.warning(
-            f"Multi-GPU export load failed ({retry_reason}); retrying on "
+            f"Multi-GPU export load unusable ({retry_reason}); retrying on "
             f"the single-device loader default."
         )
         self.cleanup_memory()
