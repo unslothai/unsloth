@@ -50,9 +50,19 @@ COMPAT_PATH = REPO_ROOT / "docker" / "unsloth_nb_compat.py"
 # Every distinct transformers pin across the 433 shipped notebooks, and the
 # sidecar each must resolve to once 4.57.6 and 5.3.0 are gone.
 SHIPPED_PINS = [
-    "4.48", "4.52.3", "4.55.4", "4.56.1", "4.56.2",
-    "4.57.0", "4.57.1", "4.57.3", "5.2.0", "5.3.0",
-    "5.5.0", "5.10.1", "5.11.0",
+    "4.48",
+    "4.52.3",
+    "4.55.4",
+    "4.56.1",
+    "4.56.2",
+    "4.57.0",
+    "4.57.1",
+    "4.57.3",
+    "5.2.0",
+    "5.3.0",
+    "5.5.0",
+    "5.10.1",
+    "5.11.0",
 ]
 
 
@@ -125,13 +135,13 @@ def test_build_verifies_every_sidecar_against_the_baked_vllm(sidecar_block: str)
 def test_build_verification_needs_no_gpu(sidecar_block: str):
     # `import unsloth` raises NotImplementedError("cannot find any torch
     # accelerator") on the build host, so it can never be the gate.
-    assert "import unsloth" not in sidecar_block, (
-        "the sidecar gate must not import unsloth: the build host has no GPU"
-    )
+    assert (
+        "import unsloth" not in sidecar_block
+    ), "the sidecar gate must not import unsloth: the build host has no GPU"
 
 
 def test_an_unverifiable_sidecar_is_deleted_not_shipped(sidecar_block: str):
-    assert re.search(r'DROPPED', sidecar_block), "a failed candidate must be reported"
+    assert re.search(r"DROPPED", sidecar_block), "a failed candidate must be reported"
     assert re.search(r'rm -rf "\$DEST"', sidecar_block), (
         "a sidecar the baked vLLM cannot import must be removed, not shipped: it "
         "can never be selected safely and it costs image size"
@@ -139,9 +149,9 @@ def test_an_unverifiable_sidecar_is_deleted_not_shipped(sidecar_block: str):
 
 
 def test_build_records_the_selection_floor(sidecar_block: str):
-    assert ".vllm_min_transformers" in sidecar_block, (
-        "the lowest verified version must be recorded for unsloth_nb_compat"
-    )
+    assert (
+        ".vllm_min_transformers" in sidecar_block
+    ), "the lowest verified version must be recorded for unsloth_nb_compat"
     assert "sort -V | head -1" in sidecar_block, "the floor is the LOWEST survivor"
 
 
@@ -176,12 +186,19 @@ def test_floor_is_read_back(fixed_root):
     "pin, expected",
     [
         # every pin below the floor clamps UP to the lowest eligible sidecar
-        ("4.48", "t_5_5_0"), ("4.52.3", "t_5_5_0"), ("4.55.4", "t_5_5_0"),
-        ("4.56.1", "t_5_5_0"), ("4.56.2", "t_5_5_0"), ("4.57.0", "t_5_5_0"),
-        ("4.57.1", "t_5_5_0"), ("4.57.3", "t_5_5_0"), ("5.2.0", "t_5_5_0"),
+        ("4.48", "t_5_5_0"),
+        ("4.52.3", "t_5_5_0"),
+        ("4.55.4", "t_5_5_0"),
+        ("4.56.1", "t_5_5_0"),
+        ("4.56.2", "t_5_5_0"),
+        ("4.57.0", "t_5_5_0"),
+        ("4.57.1", "t_5_5_0"),
+        ("4.57.3", "t_5_5_0"),
+        ("5.2.0", "t_5_5_0"),
         ("5.3.0", "t_5_5_0"),
         # at and above the floor, the ceiling still decides
-        ("5.5.0", "t_5_5_0"), ("5.10.1", "t_5_10_2"),
+        ("5.5.0", "t_5_5_0"),
+        ("5.10.1", "t_5_10_2"),
         # newer than every sidecar -> the baked transformers
         ("5.11.0", None),
     ],
@@ -196,9 +213,10 @@ def test_no_shipped_pin_can_reach_an_incompatible_sidecar(stale_root):
     for pin in SHIPPED_PINS:
         got = compat.sidecar_for(pin)
         name = Path(got).name if got else None
-        assert name not in ("t_4_57_6", "t_5_3_0"), (
-            f"pin {pin} selected {name}, which the baked vLLM cannot import"
-        )
+        assert name not in (
+            "t_4_57_6",
+            "t_5_3_0",
+        ), f"pin {pin} selected {name}, which the baked vLLM cannot import"
 
 
 def test_model_tier_fallback_is_clamped_too(stale_root):

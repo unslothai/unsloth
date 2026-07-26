@@ -73,7 +73,11 @@ def shim(tmp_path, monkeypatch):
     return mod
 
 
-def _run(shim, args, tool = "pip"):
+def _run(
+    shim,
+    args,
+    tool = "pip",
+):
     """Return the args that reached the real tool after `install`, or None when
     the shim no-op'd. The always-injected protected-constraints pair is dropped."""
     argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
@@ -99,26 +103,54 @@ def _run(shim, args, tool = "pip"):
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "pkg",
-    ["trl", "peft", "datasets", "accelerate", "torchao", "torchcodec",
-     "huggingface-hub", "tokenizers", "safetensors"],
+    [
+        "trl",
+        "peft",
+        "datasets",
+        "accelerate",
+        "torchao",
+        "torchcodec",
+        "huggingface-hub",
+        "tokenizers",
+        "safetensors",
+    ],
 )
 def test_training_stack_is_protected(shim, pkg):
-    assert pkg in shim._KEEP, (
-        f"{pkg} is baked and tested; a notebook pin replacing it invalidates the image"
-    )
+    assert (
+        pkg in shim._KEEP
+    ), f"{pkg} is baked and tested; a notebook pin replacing it invalidates the image"
 
 
 def test_the_original_gpu_stack_is_still_protected(shim):
-    for pkg in ["torch", "torchvision", "torchaudio", "triton", "xformers",
-                "vllm", "bitsandbytes", "unsloth", "unsloth-zoo"]:
+    for pkg in [
+        "torch",
+        "torchvision",
+        "torchaudio",
+        "triton",
+        "xformers",
+        "vllm",
+        "bitsandbytes",
+        "unsloth",
+        "unsloth-zoo",
+    ]:
         assert pkg in shim._KEEP
 
 
 def test_unrelated_packages_are_not_swept_in(shim):
     # The criterion is "invalidates the tested stack", not "a notebook mentions
     # it". These are all installed by shipped notebooks and must stay installable.
-    for pkg in ["snac", "causal-conv1d", "mamba-ssm", "omegaconf", "timm",
-                "librosa", "trackio", "open-spiel", "protobuf", "sentencepiece"]:
+    for pkg in [
+        "snac",
+        "causal-conv1d",
+        "mamba-ssm",
+        "omegaconf",
+        "timm",
+        "librosa",
+        "trackio",
+        "open-spiel",
+        "protobuf",
+        "sentencepiece",
+    ]:
         assert pkg not in shim._KEEP, f"{pkg} must still install for the notebooks that need it"
 
 
@@ -133,8 +165,14 @@ def test_the_shipped_trl_cell_installs_nothing(shim):
 def test_a_mixed_cell_keeps_only_the_unbaked_package(shim):
     execd = _run(
         shim,
-        ["--no-deps", "trl==0.22.2", "peft==0.14.0", "datasets==3.0.0",
-         "accelerate==1.0.0", UNBAKED],
+        [
+            "--no-deps",
+            "trl==0.22.2",
+            "peft==0.14.0",
+            "datasets==3.0.0",
+            "accelerate==1.0.0",
+            UNBAKED,
+        ],
     )
     assert execd == ["--no-deps", UNBAKED], execd
 
@@ -148,8 +186,9 @@ def test_cuda_matched_wheels_are_not_replaced_by_pypi_builds(shim):
 def test_transformers_companions_cannot_desynchronise_the_sidecars(shim):
     # Each sidecar ships its own matched huggingface_hub/tokenizers/safetensors;
     # replacing the base-venv copies desynchronises every sidecar at once.
-    assert _run(shim, ["huggingface_hub==0.30.0", "tokenizers==0.20.0",
-                       "safetensors==0.4.0"]) is None
+    assert (
+        _run(shim, ["huggingface_hub==0.30.0", "tokenizers==0.20.0", "safetensors==0.4.0"]) is None
+    )
 
 
 def test_an_unbaked_package_still_installs(shim):

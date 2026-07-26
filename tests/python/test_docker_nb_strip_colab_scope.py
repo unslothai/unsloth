@@ -59,8 +59,13 @@ def md(*lines):
 
 
 def code(src):
-    return {"cell_type": "code", "metadata": {}, "execution_count": None,
-            "outputs": [], "source": [src]}
+    return {
+        "cell_type": "code",
+        "metadata": {},
+        "execution_count": None,
+        "outputs": [],
+        "source": [src],
+    }
 
 
 def nb(*cells):

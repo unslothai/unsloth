@@ -51,16 +51,16 @@ def test_the_refresh_is_still_detached(sync: str):
     # The whole point of the child is that a 60s ls-remote + clone must not delay
     # container startup. A fix that simply made the refresh synchronous would
     # pass every other test here and regress boot time.
-    assert re.search(r'UNSLOTH_NB_REFRESH_CHILD=1 "\$0" >/dev/null 2>&1 &', sync), (
-        "the GitHub refresh must stay a detached child"
-    )
+    assert re.search(
+        r'UNSLOTH_NB_REFRESH_CHILD=1 "\$0" >/dev/null 2>&1 &', sync
+    ), "the GitHub refresh must stay a detached child"
 
 
 def test_an_exclusive_lock_serialises_the_two_processes(sync: str):
     assert "lock_acquire()" in sync and "lock_release()" in sync
-    assert re.search(r"flock -w \"\$LOCK_WAIT\" 9", sync), (
-        "the lock must be a real exclusive flock, and must not block forever"
-    )
+    assert re.search(
+        r"flock -w \"\$LOCK_WAIT\" 9", sync
+    ), "the lock must be a real exclusive flock, and must not block forever"
 
 
 def test_the_lock_is_taken_before_anything_mutates_the_tree(sync: str):
@@ -91,9 +91,9 @@ def test_the_parent_finalizes_before_it_forks(sync: str):
 
 def test_finalize_runs_at_most_once(sync: str):
     block = sync[sync.index("finalize() {") : sync.index("trap 'finalize; lock_release' EXIT")]
-    assert '[ "$_FINALIZED" = "1" ] && return 0' in block, (
-        "the explicit pre-fork call and the EXIT trap must not strip twice"
-    )
+    assert (
+        '[ "$_FINALIZED" = "1" ] && return 0' in block
+    ), "the explicit pre-fork call and the EXIT trap must not strip twice"
     assert "_FINALIZED=1" in block
 
 
@@ -113,8 +113,9 @@ def test_the_child_does_not_repeat_the_parents_finalize(sync: str):
 
 def test_the_child_re_arms_the_finalize_only_after_it_copies(sync: str):
     tail = sync[sync.index("refreshed from GitHub") :]
-    assert re.search(r'if \[ "\$updated" -gt 0 \]; then\s*\n\s*_FINALIZED=0\s*\n\s*finalize',
-                     tail), (
+    assert re.search(
+        r'if \[ "\$updated" -gt 0 \]; then\s*\n\s*_FINALIZED=0\s*\n\s*finalize', tail
+    ), (
         "freshly copied notebooks arrive with the upstream Colab intro and have "
         "to be stripped, but only when something was actually copied"
     )
