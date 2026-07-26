@@ -33,11 +33,31 @@ _INTRO_PREFIX = "to run this, press"
 _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 
+def _is_intro_line(line):
+    """True for the Colab run announcement in either shipped spelling.
+
+    Most notebooks open the line with the sentence itself, but two (NeMo-Gym-*)
+    ship it inside a single-line HTML comment:
+
+        <!-- To run this, press "*Runtime*" ... instance! -->
+
+    Only a comment that OPENS AND CLOSES on the same line is matched, so
+    dropping it can never leave a dangling `<!--` that swallows the rest of the
+    cell."""
+    stripped = line.strip()
+    low = stripped.lower()
+    if low.startswith(_INTRO_PREFIX):
+        return True
+    if low.startswith("<!--") and stripped.endswith("-->"):
+        return stripped[4:-3].strip().lower().startswith(_INTRO_PREFIX)
+    return False
+
+
 def _strip_lines(lines):
     """Drop the intro line (and an immediately-following blank). Return new list
     or None if there was nothing to strip."""
     for i, line in enumerate(lines):
-        if line.lstrip().lower().startswith(_INTRO_PREFIX):
+        if _is_intro_line(line):
             out = lines[:i] + lines[i + 1 :]
             if i < len(out) and out[i].strip() == "":
                 out = out[:i] + out[i + 1 :]
@@ -45,14 +65,8 @@ def _strip_lines(lines):
     return None
 
 
-def _strip_intro(nb):
-    """Strip the Colab intro sentence from cells[0]. Return True if changed."""
-    cells = nb.get("cells")
-    if not isinstance(cells, list) or not cells:
-        return False
-    cell = cells[0]
-    if not isinstance(cell, dict) or cell.get("cell_type") != "markdown":
-        return False
+def _strip_cell(cell):
+    """Strip the intro line out of ONE markdown cell. Return True if changed."""
     src = cell.get("source")
     if isinstance(src, str):
         lines = src.splitlines(keepends = True)
@@ -67,6 +81,29 @@ def _strip_intro(nb):
         return False
     cell["source"] = "".join(new_lines) if as_str else new_lines
     return True
+
+
+def _strip_intro(nb):
+    """Strip the Colab intro sentence from the LEADING markdown block.
+
+    Scanning cells[0] alone missed 23 of the 433 shipped notebooks: 21 put the
+    Colab badge `<a href=...>` in cells[0] and the sentence in cells[1]
+    (Advanced_Llama3_2_(3B)_GRPO_LoRA, Falcon_H1-Alpaca, gpt-oss-(20B)-GRPO,
+    ...), and 2 (NeMo-Gym-*) wrap it in an HTML comment cells[0]-only matching
+    never saw. The scan stops at the first non-markdown cell, so it only ever
+    touches the header block a notebook opens with (at most 5 cells across the
+    shipped set) and can never reach explanatory prose between code cells.
+    Return True if any cell changed."""
+    cells = nb.get("cells")
+    if not isinstance(cells, list):
+        return False
+    changed = False
+    for cell in cells:
+        if not isinstance(cell, dict) or cell.get("cell_type") != "markdown":
+            break  # the first code cell ends the header block
+        if _strip_cell(cell):
+            changed = True
+    return changed
 
 
 def _clean_widgets(nb):

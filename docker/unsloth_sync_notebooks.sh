@@ -31,7 +31,9 @@ DEST="${UNSLOTH_NOTEBOOKS_DIR:-/workspace/unsloth-notebooks}"
 REMOTE="${UNSLOTH_NOTEBOOKS_REPO:-https://github.com/unslothai/notebooks}"
 STATE="$DEST/.unsloth_sync_state"     # "sha256  relpath" of what we last wrote
 SYNCED="$DEST/.unsloth_sync_commit"   # upstream commit we last synced to
+LOCK="$DEST/.unsloth_sync.lock"       # serialises this script against itself
 TIMEOUT="${UNSLOTH_NOTEBOOK_FETCH_TIMEOUT:-60}"
+LOCK_WAIT="${UNSLOTH_NOTEBOOK_LOCK_TIMEOUT:-600}"
 
 # Resolve a helper script ($1 override, $2 PATH command, $3 sibling filename),
 # echoing the path or nothing. Used for SIG, VIEW and STRIP helpers.
@@ -63,6 +65,40 @@ middle_unchanged() {
 mkdir -p "$DEST" 2>/dev/null || exit 0
 
 hash_of() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
+
+# --- mutual exclusion --------------------------------------------------------
+# Every phase below mutates $DEST and rewrites $STATE, and the GitHub refresh
+# runs in a DETACHED child of this same script, so two copies are live at once by
+# design. Without a lock the parent's strip/view pass interleaved with the child's
+# `cp -a` + state rewrite: six identical boots reported "cleaned" 279/289/293/297/
+# 300/306/307/315/330 notebooks, and every notebook the child copied while the
+# parent was hashing it ended up permanently marked user-edited (its recorded
+# hash no longer matched), so it was skipped by every later strip.
+#
+# One exclusive lock covers a whole invocation. The child therefore cannot start
+# until the parent has finished and exited, which also fixes the ORDER: strip and
+# view rebuild always run over a quiesced tree. flock is best-effort -- when it is
+# unavailable, or $DEST cannot hold the lock file, we fall back to running
+# unlocked (the parent still finalizes before forking, see below).
+_LOCK_HELD=0
+lock_acquire() {
+    [ "$_LOCK_HELD" = "1" ] && return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    # Group-redirect, not `exec ... 2>/dev/null`: bash reports a failed exec
+    # redirection before the redirection it was given applies, so a read-only
+    # $DEST would print "Permission denied" into the container log.
+    { exec 9>>"$LOCK"; } 2>/dev/null || return 0
+    flock -w "$LOCK_WAIT" 9 2>/dev/null || return 0
+    _LOCK_HELD=1
+    return 0
+}
+lock_release() {
+    [ "$_LOCK_HELD" = "1" ] || return 0
+    _LOCK_HELD=0
+    flock -u 9 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    return 0
+}
 
 # --- categorized folder view + Docker-only Colab cleanups --------------------
 # AMD/HIP detection: AMD-*.ipynb are shown only on an AMD GPU. UNSLOTH_NB_GPU
@@ -107,8 +143,22 @@ strip_colab_intros() {
 
 # Apply both on EVERY exit after the basic guards, so the view + cleanups also
 # run on the common "nothing to refresh" / offline paths. Both are idempotent.
-finalize() { strip_colab_intros; build_categorized_view; }
-trap finalize EXIT
+# Run-once: the parent calls this explicitly BEFORE it forks the refresh child
+# (so the strip can never overlap the child's copy even where flock is missing),
+# and the EXIT trap then has nothing left to do.
+_FINALIZED=0
+finalize() {
+    [ "$_FINALIZED" = "1" ] && return 0
+    _FINALIZED=1
+    strip_colab_intros
+    build_categorized_view
+    return 0
+}
+trap 'finalize; lock_release' EXIT
+
+# Everything past this point mutates $DEST / $STATE, so hold the lock for the
+# whole run. A detached refresh child blocks here until its parent has exited.
+lock_acquire
 
 # Record "<hash>  <relpath>" for every file currently under DEST (skip metadata).
 record_state() {
@@ -117,6 +167,7 @@ record_state() {
         rel="${rel#./}"
         case "$rel" in
             .unsloth_sync_state|.unsloth_sync_state.tmp|.unsloth_sync_commit) continue ;;
+            .unsloth_sync.lock) continue ;;
         esac
         printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$STATE.tmp"
     done
@@ -180,9 +231,22 @@ fi
 command -v git >/dev/null 2>&1 || exit 0
 command -v sha256sum >/dev/null 2>&1 || exit 0
 if [ "${UNSLOTH_NB_REFRESH_CHILD:-0}" != "1" ]; then
+    # Finalize BEFORE the fork, not from the EXIT trap after it: the trap used to
+    # fire while the child was already copying refreshed notebooks in, which is
+    # what made "cleaned N" differ on every boot. Doing it here also keeps the
+    # ordering deterministic on hosts without flock. Container startup is not
+    # delayed any further -- the trap ran exactly this work in the parent before.
+    finalize
+    lock_release
     UNSLOTH_NB_REFRESH_CHILD=1 "$0" >/dev/null 2>&1 &
     exit 0
 fi
+
+# --- refresh child -----------------------------------------------------------
+# The parent has already stripped + built the view for the tree as it stands, so
+# suppress the EXIT-trap finalize; it is re-armed below only if this refresh
+# actually rewrites notebooks, which keeps an up-to-date boot a true no-op.
+_FINALIZED=1
 
 last="$(cat "$SYNCED" 2>/dev/null || true)"
 remote="$(timeout "$TIMEOUT" git ls-remote "$REMOTE" HEAD 2>/dev/null | cut -f1)"
@@ -246,4 +310,11 @@ mv "$TMPSTATE" "$STATE" 2>/dev/null || rm -f "$TMPSTATE"
 echo "$remote" > "$SYNCED" 2>/dev/null || true
 rm -rf "$TMP"
 echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits), $unchanged kept (only header/footer changed upstream)"
+# Freshly copied notebooks arrive with the upstream Colab intro, and new files
+# have to enter the view, so re-arm the finalize -- but only when something was
+# actually copied. Still under the lock, so nothing else is touching the tree.
+if [ "$updated" -gt 0 ]; then
+    _FINALIZED=0
+    finalize
+fi
 exit 0
