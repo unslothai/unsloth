@@ -33,8 +33,7 @@ for key, value in sorted(os.environ.items()):
         print(f"export {key}={shlex.quote(value)}")
 PY
 
-# --- Jupyter -----------------------------------------------------------------
-# Hash the password with jupyter's helper; never store plaintext. No fixed
+# Hash the Jupyter password with jupyter's helper; never store plaintext. No fixed
 # default: when JUPYTER_PASSWORD is unset, generate a random one and print it once.
 JUPYTER_CONFIG_DIR=/root/.jupyter
 JUPYTER_NOTE="password from JUPYTER_PASSWORD env"
@@ -79,8 +78,7 @@ EOF
     fi
 fi
 
-# --- sshd (opt-in) -----------------------------------------------------------
-# Enabled only when a public key is provided; root password login is never
+# sshd is enabled only when a public key is provided; root password login is never
 # allowed. Cloud GPU platforms (e.g. runpod-style hosts) inject PUBLIC_KEY.
 PUBLIC_SSH_KEY="${SSH_KEY:-${PUBLIC_KEY:-}}"
 export UNSLOTH_ENABLE_SSHD=false
@@ -95,7 +93,6 @@ fi
 
 mkdir -p /workspace
 
-# --- Branding / AGPLv3 attribution integrity gate (whole container) -----------
 # This image ships under the GNU AGPLv3. Refuse to start if the Unsloth
 # attribution (Help/About, splash, login, theme, AGPLv3 license + source links)
 # is stripped or altered. The same checker runs as a jupyter_server extension and

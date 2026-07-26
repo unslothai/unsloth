@@ -106,7 +106,7 @@ def check_tiny_train(cap: tuple[int, int]) -> None:
     from unsloth import FastLanguageModel
     import torch
 
-    # Small, public, no-gate. ~125M params.
+    # Small, public, no-gate.
     model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
     print(f"loading     {model_name}")
     model, tokenizer = FastLanguageModel.from_pretrained(

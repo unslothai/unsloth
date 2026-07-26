@@ -42,9 +42,7 @@ def check(
         _failures.append(name)
 
 
-# --------------------------------------------------------------------------
 # 1. Colab cell-magic compatibility (#@title then %%capture)
-# --------------------------------------------------------------------------
 def test_colab_compat() -> None:
     print("colab cell-magic compat (unsloth_colab_compat):")
     m = importlib.import_module("unsloth_colab_compat")
@@ -64,9 +62,7 @@ def test_colab_compat() -> None:
     check("safe magic (%%bash) hoisted", m.colab_cell_magic_fix(bash)[0] == "%%bash\n")
 
 
-# --------------------------------------------------------------------------
 # 2. Notebook categorisation (clean_section) + README parsing
-# --------------------------------------------------------------------------
 def test_nb_view() -> None:
     print("notebook view (unsloth_nb_view):")
     v = importlib.import_module("unsloth_nb_view")
@@ -82,9 +78,7 @@ def test_nb_view() -> None:
     )
 
 
-# --------------------------------------------------------------------------
 # 3. Colab-intro + stale-widget stripping
-# --------------------------------------------------------------------------
 def test_strip() -> None:
     print("notebook strip (unsloth_nb_strip_colab):")
     s = importlib.import_module("unsloth_nb_strip_colab")
@@ -142,9 +136,7 @@ def test_strip() -> None:
     check("strip idempotent", not s._strip_intro(nb) and not s._clean_widgets(nb))
 
 
-# --------------------------------------------------------------------------
 # 4. Sidecar-log gating
-# --------------------------------------------------------------------------
 def test_sidecar_log_gate() -> None:
     print("sidecar log gate (unsloth_nb_compat):")
     c = importlib.import_module("unsloth_nb_compat")
@@ -161,9 +153,7 @@ def test_sidecar_log_gate() -> None:
             os.environ["UNSLOTH_ENABLE_LOGGING"] = old
 
 
-# --------------------------------------------------------------------------
 # 5. JupyterLab defaults (overrides.json)
-# --------------------------------------------------------------------------
 def test_overrides() -> None:
     print("jupyterlab defaults (jupyter/overrides.json):")
     path = os.path.join(JUPYTER, "overrides.json")
@@ -200,9 +190,7 @@ def test_overrides() -> None:
     )
 
 
-# --------------------------------------------------------------------------
 # 6. Labextension source (plugins) + login branding assets
-# --------------------------------------------------------------------------
 def test_labext_and_branding() -> None:
     print("labextension + branding assets:")
     pkg = os.path.join(LABEXT, "package.json")

@@ -74,7 +74,6 @@ def register_ipython():
 
         return _magic
 
-    # Override the built-in %pip / %uv so they route through the shim too.
     ip.register_magic_function(_make("pip"), "line", "pip")
     ip.register_magic_function(_make("pip"), "line", "pip3")
     ip.register_magic_function(_make("uv"), "line", "uv")

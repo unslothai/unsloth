@@ -17,7 +17,6 @@
 
 ARG BASE_IMAGE=unsloth-blackwell:test
 
-# --- builder stage: prebuild the Unsloth JupyterLab extension -----------------
 # Builds the "Unsloth Dark" (Monokai) theme + Colab-style cell-nav keymap. Node
 # lives only in this throwaway stage; the final image copies just the prebuilt
 # labextension (runtime stays Node-free). Uses the base's bundled jlpm+jupyterlab.

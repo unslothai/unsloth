@@ -103,7 +103,7 @@ function applyTitle(cell: Cell): void {
     barEl.className = 'unsloth-title-bar unsloth-collapsed';
     const caret = document.createElement('span');
     caret.className = 'unsloth-title-caret';
-    caret.textContent = '▾'; // down-pointing triangle
+    caret.textContent = '▾';
     const text = document.createElement('span');
     text.className = 'unsloth-title-text';
     barEl.appendChild(caret);

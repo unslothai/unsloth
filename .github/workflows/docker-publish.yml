@@ -59,12 +59,10 @@ permissions:
   contents: read
 
 jobs:
-  # ---------------------------------------------------------------------------
   # Resolve every upstream ref ONCE (llama tag + unsloth/zoo shas + notebooks
   # commit) so both arch legs and Studio bake identical bits. A dispatch input
   # pins a frozen value; else a branch/tag is frozen to a sha via ls-remote, and
   # llama "latest" follows the /releases/latest redirect (mirrors build.sh).
-  # ---------------------------------------------------------------------------
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -154,11 +152,9 @@ jobs:
           echo "commit=${SHA}" >> "$GITHUB_OUTPUT"
           echo "notebooks commit: ${SHA}"
 
-  # ---------------------------------------------------------------------------
   # Per-arch build: two parallel jobs on native runners, each pushing a single-arch
   # image by digest (no tag); the merge job stitches them into one manifest. Avoids
   # the "last push wins" race of two jobs pushing the same tag.
-  # ---------------------------------------------------------------------------
   build:
     needs: prepare
     strategy:
@@ -248,10 +244,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ---------------------------------------------------------------------------
   # Merge the two per-arch digests into a multi-platform manifest under the real
   # user-facing tag(s). Runs only after both build legs succeed.
-  # ---------------------------------------------------------------------------
   merge:
     runs-on: ubuntu-latest
     needs: build
@@ -326,12 +320,10 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "base manifest: ${TAG} @ ${DIGEST}"
 
-  # ---------------------------------------------------------------------------
   # Full image: base + Unsloth Studio + JupyterLab + sshd (Dockerfile.studio).
   # This is :latest. Same by-digest build + merge pattern as the base, FROMing the
   # base manifest digest from the merge job. The arm64 leg builds Studio's vite
   # frontend natively (the long pole), hence the larger timeout.
-  # ---------------------------------------------------------------------------
   build-studio:
     # `merge` for the freshly-published base manifest digest; `prepare` for the
     # one resolved zoo ref (job outputs only flow through direct `needs`).
@@ -470,10 +462,8 @@ jobs:
               docker buildx imagetools inspect "$tag"
           done
 
-  # ---------------------------------------------------------------------------
   # Optional: pull the freshly published image onto a self-hosted GPU runner and
   # run smoke_test.py. Skipped when no GPU runner is registered.
-  # ---------------------------------------------------------------------------
   smoke-test:
     needs: [merge, merge-studio]
     if: ${{ vars.HAS_GPU_RUNNER == 'true' }}

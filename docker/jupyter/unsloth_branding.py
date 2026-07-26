@@ -28,10 +28,8 @@ import json
 import os
 import sys
 
-# ---------------------------------------------------------------------------
 # Canonical attribution strings. Plain text; keep in sync with the TS mirror
 # unsloth_labext/src/branding.ts (the guard greps the built bundle for these).
-# ---------------------------------------------------------------------------
 PRODUCT = "Unsloth Docker Studio"
 SHORT_LABEL = "Built by the Unsloth team"
 # Loading-splash caption; distinct from SHORT_LABEL (see branding.ts).

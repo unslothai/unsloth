@@ -7,7 +7,6 @@
 # Bypass for offline tooling/docs/CI: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
-# --- CUDA JIT toolchain selection (device-gated) ----------------------------
 # The image bakes CUDA 13 ptxas + NVRTC only for sm_103 (B300/GB300) and sm_121
 # (GB10/DGX Spark), which cu12.8 can't target. Both ship on >=580 drivers, which a
 # cu13 cubin needs. Every other arch uses cu12.8 on the 570-579 floor, where a
@@ -87,9 +86,8 @@ if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
     fi
 fi
 
-# --- Check 1: nvidia-smi present and enumerates at least one GPU ------------
-# nvidia-smi is injected by nvidia-container-toolkit on a GPU request, not baked
-# in; a missing binary means "no GPU attached", same class as an empty -L.
+# Check 1: nvidia-smi is injected by nvidia-container-toolkit on a GPU request,
+# not baked in; a missing binary means "no GPU attached", same as an empty -L.
 if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
     err "No GPU visible inside the container."
     cat >&2 <<'MSG'
@@ -126,8 +124,8 @@ MSG
     exit 1
 fi
 
-# --- Check 2: torch can actually use the GPU --------------------------------
-# Catches host-driver-too-old (nvidia-smi enumerates but CUDA contexts fail).
+# Check 2: torch can use the GPU. Catches host-driver-too-old (nvidia-smi
+# enumerates but CUDA contexts fail).
 python - >&2 <<'PY' || exit 1
 import sys
 import torch
@@ -148,7 +146,7 @@ print("Then upgrade the driver to match.")
 sys.exit(1)
 PY
 
-# --- Check 3: compute capability is supported -------------------------------
+# Check 3: compute capability is supported.
 python - >&2 <<'PY' || exit 1
 import sys
 import torch
@@ -193,7 +191,6 @@ for d in range(1, n):
         print("         exclude it with CUDA_VISIBLE_DEVICES or --gpus device=<supported>.")
 PY
 
-# --- arm64 note: baked llama.cpp is a CUDA 13 build -------------------------
 # Upstream ships no CUDA 12 arm64 llama.cpp, so the arm64 image bakes cu13 while
 # torch (cu128) runs on 570+. A cu13 cubin can't load on 570-579, so below 580
 # GGUF export / Studio chat fail even though training works -- warn up front.

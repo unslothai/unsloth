@@ -61,7 +61,7 @@ def parse_readme(readme_path):
         text = f.read()
 
     rows = []
-    seen_pairs = set()  # (section, filename) already emitted
+    seen_pairs = set()
     section = None
     # Reset on ANY markdown heading, not just `###`: `#`/`##` domain headers carry
     # their own nb/*.ipynb tables, so matching only `###` mis-filed those links.
@@ -190,7 +190,7 @@ def _clear_view(path, dest_real):
     for root, dirs, files in os.walk(path, topdown = False):
         for name in files:
             p = os.path.join(root, name)
-            if os.path.islink(p) and _points_into(p, dest_real):  # our notebook symlinks only
+            if os.path.islink(p) and _points_into(p, dest_real):
                 try:
                     os.remove(p)
                 except OSError:

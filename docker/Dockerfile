@@ -33,9 +33,7 @@ ARG CUDA_VERSION=12.8.1
 ARG UBUNTU_VERSION=24.04
 ARG PYTHON_VERSION=3.12
 
-# =============================================================================
-# Stage 1: builder  -- toolkit + dev headers, builds any source extensions
-# =============================================================================
+# Stage 1: builder -- toolkit + dev headers, builds any source extensions.
 FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
 
 # TARGETARCH (buildx: amd64/arm64) selects the unsloth extras matching the
@@ -277,12 +275,12 @@ RUN set -eux \
     done \
  && { du -sh ${VENV}/tf-sidecars || true; }
 
-# 5) Informational pin record (NOT byte-reproducible: pip freeze omits wheel
-#    hashes and unsloth/vllm --pre float from VCS/nightly).
+# Informational pin record (NOT byte-reproducible: pip freeze omits wheel hashes
+# and unsloth/vllm --pre float from VCS/nightly).
 RUN ${VENV}/bin/pip freeze --exclude-editable > ${VENV}/requirements.lock.txt \
  && head -50 ${VENV}/requirements.lock.txt
 
-# 6) Strip pip cache & __pycache__ to shrink the runtime layer. The `-name tests`
+# Strip pip cache & __pycache__ to shrink the runtime layer. The `-name tests`
 # strip excludes numpy's tests dirs (numpy 2.4 needs numpy/_core/tests/ or
 # `import numpy` breaks). Other verified-safe cuts:
 #   * npp: torchcodec dlopens only libnppicc + libnppc; drop the rest (~388MB).
@@ -357,19 +355,14 @@ for pkg in LIGHT_IMPORTS:
     importlib.import_module(pkg)
 print(f"OK: {' + '.join(LIGHT_IMPORTS)} import cleanly on no-GPU host")
 
-# `unsloth train` / `export` / `chat` / `list-checkpoints` all import
-# studio.backend.core.*, whose dependency closure (structlog, and starlette by
-# way of the logging handlers) is NOT part of unsloth[huggingface]. Missing any
-# of it turns every one of those commands into a ModuleNotFoundError traceback,
-# which no functional test here would otherwise catch. Runs last in the builder,
-# after vLLM, because that is what pulls starlette in.
+# Guard for the studio.backend.core.* closure the unsloth CLI needs (structlog,
+# plus starlette via the logging handlers). Runs last in the builder, after vLLM,
+# because that is what pulls starlette in.
 from studio.backend.core.export import ExportBackend  # noqa: F401
 print("OK: the unsloth CLI can reach the studio export backend")
 PY
 
-# =============================================================================
-# Stage 2: runtime  -- slim runtime image, no nvcc, no cuDNN/cuBLAS layers
-# =============================================================================
+# Stage 2: runtime -- slim, no nvcc, no cuDNN/cuBLAS layers.
 # The "-base-" variant drops ~2.7 GB of system CUDA libs we never load: torch
 # wheels bake their own cuDNN/cuBLAS into torch/lib/ and resolve via RPATH. The
 # base still provides nvidia-smi + libcuda stubs + libnvidia-ml.
@@ -472,13 +465,9 @@ RUN set -eux \
 # export hits install_llama_cpp()'s prompt + slow source build.
 #
 # NOT studio/install_llama_prebuilt.py: it selects a bundle for the CURRENT host,
-# but the build must never introspect the host, so pin release + asset by build
-# target (see fetch_llama_prebuilt.py):
-#   * amd64 -> app-<tag>-linux-x64-cuda12-portable.tar.gz   (sm_70..sm_120)
-#     arm64 -> app-<tag>-linux-arm64-cuda13-portable.tar.gz (sm_90..sm_121)
-#   * portable bundles carry their own ggml backends, so they also run CPU-only
-#   * sha256-verified against the release's llama-prebuilt-sha256.json
-#   * converter + gguf-py from the SAME release's source tarball (mappings match)
+# but the build must never introspect the host, so release + asset are pinned by
+# build target instead (see fetch_llama_prebuilt.py).
+#
 # /opt (not /root) so it survives `docker run --user`. Default "latest" resolves
 # the newest release; build.sh pins a concrete tag so the cache busts only on new
 # releases. --build-arg LLAMA_PREBUILT_TAG=<tag> for a frozen build.
@@ -530,7 +519,6 @@ WORKDIR /workspace
 RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR} \
  && chmod -R a+rwX /workspace
 
-# ---------------------------------------------------------------------------
 # Per-notebook transformers version activation -- run unslothai/notebooks
 # UNCHANGED (see unsloth_nb_compat.py). Pieces:
 #   * unsloth_nb_compat.py: tier detection + sidecar resolution + IPython hook.
@@ -540,7 +528,6 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR} \
 #     same shim so in-process installs can't bypass PATH.
 #   * IPython startup hook: activates the right sidecar before the first model cell.
 #   * unsloth-run: headless `unsloth-run <notebook|url>`, the robust driven path.
-# ---------------------------------------------------------------------------
 COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
@@ -584,23 +571,17 @@ RUN set -eux \
  && rm -rf /opt/unsloth-notebooks/.git \
  && du -sh /opt/unsloth-notebooks
 
-# JupyterLab lives in the venv. notebooks are pre-populated into
-# /workspace/unsloth-notebooks on boot; mount a volume on /workspace to persist.
+# Mount a volume on /workspace to persist the notebooks and caches.
 EXPOSE 8888
 
 COPY smoke_test.py /workspace/smoke_test.py
 COPY entrypoint.sh /usr/local/bin/unsloth-entrypoint
 RUN chmod +x /usr/local/bin/unsloth-entrypoint
 
-# Entrypoint runs three fast pre-flight checks before user code:
-#   1. nvidia-smi sees at least one GPU       (catches missing --gpus all)
-#   2. torch.cuda.is_available() is True      (catches host driver too old)
-#   3. compute capability >= sm_80            (catches pre-Ampere GPUs)
-# Each check fails with an actionable error pointing to the fix.
-# Bypass for offline tooling:  docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
+# Fast GPU pre-flight checks before user code, each with an actionable error (see
+# entrypoint.sh). Bypass for offline tooling: docker run -e UNSLOTH_SKIP_GPU_CHECK=1
 ENTRYPOINT ["/usr/local/bin/unsloth-entrypoint"]
 
-# Default command: interactive python REPL.
 # Override examples:
 #   docker run --gpus all unsloth/unsloth:latest python /workspace/smoke_test.py
 #   docker run --gpus all -it unsloth/unsloth:latest bash
