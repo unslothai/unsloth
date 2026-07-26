@@ -154,6 +154,42 @@ def test_list_cached_gguf_reports_snapshot_load_id_for_inactive_cache(monkeypatc
     assert "load_id" not in rows["Org/Here"]
 
 
+def test_list_cached_gguf_load_id_follows_snapshot_dir_mtime(monkeypatch, tmp_path):
+    """Pick the snapshot variant discovery reads: newest directory, not newest blob."""
+    import os
+
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Multi"
+    older, newer = repo_dir / "snapshots" / "rev-a", repo_dir / "snapshots" / "rev-b"
+    for path in (older, newer):
+        path.mkdir(parents = True)
+    os.utime(older, (1_000, 1_000))
+    os.utime(newer, (2_000, 2_000))
+
+    repo = _repo(
+        "Org/Multi",
+        [],
+        repo_dir,
+        revisions = [
+            # The older directory holds the newer blob, which is what diverges.
+            SimpleNamespace(
+                files = [_file("Q4_K_M.gguf", 5_000, blob_path = "b1")], snapshot_path = older
+            ),
+            SimpleNamespace(
+                files = [_file("Q8_0.gguf", 6_000, blob_path = "b2")], snapshot_path = newer
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(models_route, "_blob_mtime", lambda f: 9_000 if f.blob_path == "b1" else 1.0)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert rows[0]["load_id"] == str(newer)
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",

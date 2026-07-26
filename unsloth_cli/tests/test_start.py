@@ -1343,11 +1343,18 @@ def test_subagent_model_id_pins_the_quant_for_repo_ids(capsys):
 
 
 def test_public_model_id_leaves_repo_ids_alone():
-    """Only a path gets reduced; a repo id must not match some unrelated model."""
+    """Only a path gets reduced; a repo id must not match some unrelated model.
+
+    Relative and multi-segment paths are covered too: _looks_like_path is defined
+    twice in this module (the WSLENV one wins), so this must use its own classifier.
+    """
     assert start._public_model_id("unsloth/gemma-4-E4B-it-GGUF") is None
     assert start._public_model_id("org/model") is None
     assert start._public_model_id("/srv/models/Qwen3-Q4_K_M.gguf") == "Qwen3-Q4_K_M"
     assert start._public_model_id("/a/b/snapshots/rev1") == "rev1"
+    assert start._public_model_id("./models/foo") == "foo"
+    assert start._public_model_id("cache/snapshots/rev") == "rev"
+    assert start._public_model_id("a/b/c") == "c"
 
 
 def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):

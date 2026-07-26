@@ -3029,14 +3029,23 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
             return None
     except (OSError, RuntimeError, ValueError):
         pass
+    # Order by snapshot directory mtime, matching hub.utils.gguf.iter_hf_cache_snapshots,
+    # which is what variant discovery reads. Blob mtimes would disagree with it whenever
+    # Hugging Face reuses an older blob in a newer snapshot, and the command would then
+    # name a snapshot that does not hold the quant the picker offered.
     newest_snapshot, newest_mtime = None, -1.0
     for revision in repo_info.revisions:
         snapshot = getattr(revision, "snapshot_path", None)
         if snapshot is None:
             continue
-        for f in revision.files:
-            if _is_main_gguf_filename(f.file_name) and _blob_mtime(f) > newest_mtime:
-                newest_snapshot, newest_mtime = snapshot, _blob_mtime(f)
+        if not any(_is_main_gguf_filename(f.file_name) for f in revision.files):
+            continue
+        try:
+            mtime = Path(snapshot).stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if mtime > newest_mtime:
+            newest_snapshot, newest_mtime = snapshot, mtime
     return str(newest_snapshot) if newest_snapshot is not None else None
 
 

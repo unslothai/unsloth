@@ -1392,9 +1392,13 @@ def _is_hub_model_id(value: object) -> bool:
     return True
 
 
-def _looks_like_path(value: str) -> bool:
+def _is_model_path(value: str) -> bool:
     """Mirrors core.inference.model_ids._looks_like_path: a repo id is exactly
-    ``org/model``; anything else with a separator, drive, prefix or .gguf is a path."""
+    ``org/model``; anything else with a separator, drive, prefix or .gguf is a path.
+
+    Deliberately not named _looks_like_path: that name is taken further down by the
+    WSLENV classifier, which only matches absolute paths and would shadow this one.
+    """
     if value.lower().endswith(".gguf"):
         return True
     if value.startswith(("/", "\\", "./", "../", ".\\", "..\\", "~")):
@@ -1411,7 +1415,7 @@ def _public_model_id(value: Optional[str]) -> Optional[str]:
     with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so
     a path we asked to load has to be matched by that name too.
     """
-    if not value or not _looks_like_path(value):
+    if not value or not _is_model_path(value):
         return None
     name = os.path.basename(value.replace("\\", "/").rstrip("/"))
     if name.lower().endswith(".gguf"):

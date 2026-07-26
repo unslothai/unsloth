@@ -610,6 +610,10 @@ export function AgentsTab() {
   });
   const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
   const modelSelectionChanged = useRef(false);
+  // The model status last reported, for the discovery scan to preserve.
+  const activeModelRef = useRef<string | null>(null);
+  // Only the newest status request may apply; a slow earlier one must not win.
+  const statusSeq = useRef(0);
   // A quant picked by hand, scoped to its repo: polling and refetches must not
   // overwrite it, but it must not follow the selection onto a different repo.
   const chosenVariant = useRef<{ model: string; variant: string } | null>(null);
@@ -743,10 +747,9 @@ export function AgentsTab() {
     Promise.all([
       listModels().catch(() => null),
       listCachedGguf().catch(() => []),
-      getInferenceStatus().catch(() => null),
       listLocalModels().catch(() => null),
     ])
-      .then(([info, cachedGgufs, status, local]) => {
+      .then(([info, cachedGgufs, local]) => {
         if (cancelled) {
           return;
         }
@@ -767,27 +770,18 @@ export function AgentsTab() {
             loadIds[entry.label] = entry.loadId;
           }
         }
-        const active = activeGgufSelection(status);
-        const models = active
-          ? [
-              active.model,
-              ...discovered.models.filter((model) => model !== active.model),
-            ]
-          : discovered.models;
-        const knownVariants = active?.variant
-          ? { ...discovered.variants, [active.model]: active.variant }
-          : discovered.variants;
-        if (active && !modelSelectionChanged.current) {
-          setSelectedModel(active.model);
-          setSelectedVariant(active.variant);
-        }
-        setModels(models);
+        // Status is applied on its own schedule now, so keep whatever model it has
+        // already adopted rather than dropping it when this slower scan lands.
+        setModels(() => {
+          const active = activeModelRef.current;
+          return active && !discovered.models.includes(active)
+            ? [active, ...discovered.models]
+            : discovered.models;
+        });
         setCachedLoadIds(loadIds);
-        setActiveStatusModel(active?.model ?? null);
-        setAttachOnlyModel(active && !active.named ? active.model : null);
         setKnownVariants((current) => ({
           ...current,
-          ...knownVariants,
+          ...discovered.variants,
         }));
       })
       .catch(() => {
@@ -854,6 +848,7 @@ export function AgentsTab() {
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
       const active = activeGgufSelection(status);
+      activeModelRef.current = active?.model ?? null;
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -882,17 +877,18 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
     const sync = () => {
+      const seq = ++statusSeq.current;
       getInferenceStatus()
         .then((status) => {
-          if (cancelled) {
-            return;
+          if (!cancelled && seq === statusSeq.current) {
+            applyStatus(status);
           }
-          applyStatus(status);
         })
         .catch(() => {
           // A failed poll just leaves the last known selection in place.
         });
     };
+    sync();
     const timer = window.setInterval(sync, STATUS_POLL_MS);
     return () => {
       cancelled = true;
@@ -903,7 +899,9 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
 
-    if (!isHuggingFaceRepo(selectedModel)) {
+    // A scanned local directory is not repo-shaped but still has a path to scan,
+    // so only a model with neither is genuinely variantless.
+    if (!(isHuggingFaceRepo(selectedModel) || cachedLoadId)) {
       queueMicrotask(() => {
         if (cancelled) {
           return;
@@ -919,7 +917,7 @@ export function AgentsTab() {
       };
     }
 
-    // A programmatic model change reaches here too, so clear the previous repo's
+    // A programmatic model change reaches here too, so clear the previous model's
     // quants up front rather than leaving them selectable until this resolves.
     setVariants([]);
     setDefaultVariant(null);
