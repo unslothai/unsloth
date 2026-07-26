@@ -174,9 +174,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             # No format classification here: nothing on this path reads model_format,
             # and its recursive walk would duplicate the one _local_gguf_entry already
             # does per snapshot, on the request path.
-            return _scan_hf_cache(
-                directory, active_cache = rp == active_root, classify_format = False
-            )
+            return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []

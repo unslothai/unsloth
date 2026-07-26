@@ -373,7 +373,10 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
 
 
 def _scan_hf_cache(
-    cache_dir: Path, *, active_cache: bool = True, classify_format: bool = True
+    cache_dir: Path,
+    *,
+    active_cache: bool = True,
+    classify_format: bool = True,
 ) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
