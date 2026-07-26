@@ -3058,6 +3058,7 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     # download would otherwise beat an older snapshot that can still load. Scanning
     # stops at the first complete snapshot, so the usual case walks one directory.
     from hub.utils import inventory_scan
+
     for _, snapshot in candidates:
         if inventory_scan._completed_gguf_variants(Path(snapshot)):
             return snapshot
