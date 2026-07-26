@@ -186,32 +186,21 @@ def _save_pretrained_gguf(
     if tokenizer is None:
         tokenizer = self.tokenizer
 
-    # 4. Patch environment so Unsloth treats this embedding model correctly
-    @contextlib.contextmanager
-    def patch_unsloth_gguf_save():
-        # Prevent deletion of the directory self.save_pretrained just created
-        original_rmtree = shutil.rmtree
-        try:
-            yield
-        finally:
-            shutil.rmtree = original_rmtree
+    # 4. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
+    result = unsloth_save_pretrained_gguf(
+        inner_model,
+        save_directory = transformer_dir,
+        tokenizer = tokenizer,
+        quantization_method = quantization_method,
+        first_conversion = first_conversion,
+        push_to_hub = False,  # Force local first to move files
+        token = token,
+        max_shard_size = max_shard_size,
+        temporary_location = temporary_location,
+        maximum_memory_usage = maximum_memory_usage,
+    )
 
-    # 5. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
-    with patch_unsloth_gguf_save():
-        result = unsloth_save_pretrained_gguf(
-            inner_model,
-            save_directory = transformer_dir,
-            tokenizer = tokenizer,
-            quantization_method = quantization_method,
-            first_conversion = first_conversion,
-            push_to_hub = False,  # Force local first to move files
-            token = token,
-            max_shard_size = max_shard_size,
-            temporary_location = temporary_location,
-            maximum_memory_usage = maximum_memory_usage,
-        )
-
-    # 6. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
+    # 5. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
     gguf_files = result.get("gguf_files", [])
 
     new_gguf_locations = []
@@ -241,7 +230,7 @@ def _save_pretrained_gguf(
 
     result["gguf_files"] = new_gguf_locations
 
-    # 7. Add branding
+    # 6. Add branding
     try:
         FastSentenceTransformer._add_unsloth_branding(save_directory)
 
@@ -256,7 +245,7 @@ def _save_pretrained_gguf(
     except:
         pass
 
-    # 8. Handle Push to Hub if requested
+    # 7. Handle Push to Hub if requested
     if push_to_hub:
         if token is None:
             token = get_token()
