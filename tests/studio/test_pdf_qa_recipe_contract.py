@@ -193,7 +193,6 @@ class _MockOpenAIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-@pytest.mark.pdf_qa_integration
 def test_pdf_qa_recipe_runs_with_pinned_data_designer(tmp_path, monkeypatch):
     if os.environ.get("UNSLOTH_PDF_QA_MANAGED_INTEGRATION") != "1":
         pytest.skip("set UNSLOTH_PDF_QA_MANAGED_INTEGRATION=1 to run this integration")
