@@ -724,3 +724,36 @@ def test_chat_picker_routes_diffusion_picks_to_their_page():
     assert "diffusionPageForTask" in body and "navigateToPage" in body
     # Task-scoped pickers (already on those pages) must select normally.
     assert "if (!task)" in body
+
+
+def test_staged_download_callbacks_only_answer_their_own_variant():
+    """subscribeJobListeners is per repo, not per job, so a staged entry hears every job on
+    that repo (the Models tab fetching a chat quant of the same repo, say). Each callback
+    carries the variant it fired for: without comparing it, a sibling job's completion advanced
+    the staged queue and started a load whose scoped files were still downloading, and its
+    failure wiped a queue that was still running."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    for callback in ("onComplete", "onError", "onCancelled"):
+        handler = re.search(rf"{callback}: \(variant\) => \{{\n(.*?)\n    \}},", src, re.S)
+        assert handler, f"{callback} does not take the variant"
+        assert "(variant ?? null) !== activeVariant" in handler.group(1), callback
+
+
+def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
+    """Each gallery record's src is a blob holding the whole MP4 until the page closes, so
+    fetching a full page of them up front pinned hundreds of MB (gigabytes across "load more"
+    pages) for cards the user may never scroll to. Fetch on visibility instead, and always
+    fetch the selected clip, since that is the one the preview player plays."""
+    src = _read("features/video/video-page.tsx")
+    assert "new IntersectionObserver(" in src
+    assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
+    assert 'root.querySelectorAll("[data-clip-id]")' in src
+    # rootMargin is added to the root box only, so the strip (the clipping scroller) has to
+    # BE the root, or the prefetch margin never reaches a card clipped past its edge.
+    assert '{ root, rootMargin: "0px 600px" }' in src
+    # The only surviving whole-page fetches are the no-IntersectionObserver fallbacks.
+    eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
+    assert eager, "the jsdom/old-webview fallback fetch is missing"
+    for match in eager:
+        assert 'typeof IntersectionObserver === "undefined"' in src[max(0, match.start() - 260) : match.start()]
+    assert re.search(r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);", src)

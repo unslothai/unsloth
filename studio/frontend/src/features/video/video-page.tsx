@@ -701,6 +701,48 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  // Fetching a clip pulls its whole MP4 into an object URL that lives until the page closes, so
+  // fetching a full gallery page (PAGE_SIZE records, each tens to hundreds of MB for a longer
+  // clip) up front pinned hundreds of MB -- gigabytes over a few "load more" pages -- for cards
+  // the user may never scroll to, and starved the one they were waiting on. Fetch a card as it
+  // nears the viewport instead; the tile already shows a spinner until its src lands.
+  // The cards are observed from here rather than through a ref on each tile: the tile is a
+  // Tooltip trigger, whose asChild clone owns that ref. Re-runs per page of records, so cards
+  // appended by "load more" are picked up and removed ones are dropped with the observer.
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = stripRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const id = (entry.target as HTMLElement).dataset.clipId;
+          const clip = id ? videos.find((v) => v.id === id) : undefined;
+          if (clip) void ensureSrc(clip);
+        }
+      },
+      // rootMargin is added to the ROOT's box only, never to an intermediate clipping ancestor,
+      // so the root has to be the strip itself: a card scrolled past its right edge is clipped
+      // by the strip, and a margin on the default viewport root would never reach it. The strip
+      // scrolls horizontally, so the sideways margin is the one that matters -- it starts a
+      // card's fetch a few tiles before it is scrolled to, so it is ready on arrival.
+      { root, rootMargin: "0px 600px" },
+    );
+    for (const card of root.querySelectorAll("[data-clip-id]")) io.observe(card);
+    return () => io.disconnect();
+  }, [videos, ensureSrc]);
+
+  // The preview player is what the user actually watches, so the selected clip is fetched
+  // whether or not its card is on screen: a selection restored across a tab switch, a freshly
+  // generated clip, or a pick made just before the strip scrolls it out of view.
+  useEffect(() => {
+    if (!selected) return;
+    void (async () => {
+      await ensureSrc(selected);
+    })();
+  }, [selected, ensureSrc]);
+
   const loadGallery = useCallback(async () => {
     try {
       const page = await getVideoGallery(0, PAGE_SIZE);
@@ -708,7 +750,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       galleryCache.hasMore = page.has_more;
       setVideos(page.videos);
       setHasMore(page.has_more);
-      page.videos.forEach((video) => void ensureSrc(video));
+      // No visibility signal without IntersectionObserver (jsdom / an old webview), so keep the
+      // eager fetch there rather than render a strip of permanent spinners.
+      if (typeof IntersectionObserver === "undefined") {
+        page.videos.forEach((video) => void ensureSrc(video));
+      }
     } catch {
       // Best-effort: a failed gallery load shouldn't block the page.
     }
@@ -727,7 +773,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       });
       galleryCache.hasMore = page.has_more;
       setHasMore(page.has_more);
-      page.videos.forEach((video) => void ensureSrc(video));
+      if (typeof IntersectionObserver === "undefined") {
+        page.videos.forEach((video) => void ensureSrc(video));
+      }
     } catch {
       // transient; the user can scroll again to retry
     } finally {
@@ -1810,6 +1858,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
           {(videos.length > 0 || busy === "generating") && (
             <div
+              ref={stripRef}
               className="hover-scrollbar flex shrink-0 items-stretch gap-2 overflow-x-auto border-t border-foreground/10 p-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
@@ -1829,6 +1878,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                 <TooltipTrigger asChild={true}>
                 <button
                   type="button"
+                  data-clip-id={video.id}
                   onClick={() => setSelectedId(video.id)}
                   className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >

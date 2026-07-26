@@ -4395,7 +4395,7 @@ async def _load_model_impl(
         # validation so a doomed load (bad id, unsupported gpu_ids on GGUF, training 409) can't
         # evict a working image/video model and then error. Mirrors the image/video loaders,
         # which validate before acquire_for.
-        from core.inference.gpu_arbiter import acquire_for, current_owner, CHAT
+        from core.inference.gpu_arbiter import acquire_for, current_owner, release, CHAT
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
@@ -4433,8 +4433,11 @@ async def _load_model_impl(
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
                 # Requested GGUF chat model already resident: assert CHAT ownership (no-op when
                 # held) to correct a drifted arbiter owner. Guaranteed-success path, so evicting
-                # here is correct.
-                await asyncio.to_thread(acquire_for, CHAT)
+                # here is correct -- unless the resident server is a confirmed zero-VRAM one
+                # (manual zero offload, GPUs hidden from the child), which coexists with an
+                # image/video pipeline and so must not evict it to re-announce itself.
+                if not llama_backend.holds_no_vram:
+                    await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label
@@ -4645,13 +4648,36 @@ async def _load_model_impl(
         # image and video loads do: a chat load holds no llama-server process until its GGUF has
         # downloaded, so a competing Images/Video acquire in that window found nothing to evict
         # and both then allocated VRAM at once. With the marker, that evictor cancels this load.
-        from core.inference.llama_cpp import chat_load_in_flight
+        from core.inference.llama_cpp import chat_load_in_flight, zero_vram_chat_load
 
-        await asyncio.to_thread(
-            acquire_for,
-            CHAT,
-            lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+        # ...but only when this load will actually use the GPU, exactly as the image and video
+        # loaders gate on their resolved device. A manual gpu_layers=0 GGUF load runs on the CPU
+        # with the GPUs hidden from the child, so taking the arbiter for it would cancel a
+        # running image/video generation for a model that needs no VRAM, and leave CHAT recorded
+        # as owner so the next GPU workload pointlessly unloads it.
+        chat_load_needs_gpu = not (
+            config.is_gguf
+            and await asyncio.to_thread(
+                zero_vram_chat_load,
+                request.gpu_memory_mode,
+                request.gpu_layers,
+                extra_llama_args,
+                bool(config.is_vision and not extra_args_disable_mmproj(extra_llama_args)),
+                request.speculative_type,
+            )
         )
+        if chat_load_needs_gpu:
+            await asyncio.to_thread(
+                acquire_for,
+                CHAT,
+                lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+            )
+        else:
+            # The marker still goes up (the download manager's handshake reads it, and it keeps
+            # this load cancellable). Any stale CHAT claim is dropped AFTER the load, not here:
+            # this load may still be replacing a GPU-backed chat model, and releasing up front
+            # would let an image/video load allocate alongside the model not yet unloaded.
+            gguf_load_stack.enter_context(chat_load_in_flight())
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
@@ -4816,8 +4842,9 @@ async def _load_model_impl(
             # An Images/Video acquire can land in the gap between the acquire above and
             # load_model clearing the cancel event, so its cancellation is lost and this load
             # spawns anyway. Ownership survives that gap: whoever took the GPU keeps it, and this
-            # load undoes itself rather than leaving two models resident on one device.
-            if current_owner() != CHAT:
+            # load undoes itself rather than leaving two models resident on one device. A
+            # zero-VRAM load never took ownership, so it has nothing to lose and never yields.
+            if chat_load_needs_gpu and current_owner() != CHAT:
                 await asyncio.to_thread(llama_backend.unload_model)
                 raise HTTPException(
                     status_code = 409,
@@ -4826,6 +4853,13 @@ async def _load_model_impl(
                         "so the load was cancelled. Unload that model, then try again."
                     ),
                 )
+            if not chat_load_needs_gpu:
+                # Zero-VRAM load done, and whatever GPU-backed chat model it replaced went with
+                # it, so drop a now-stale CHAT claim: leaving it would make the next image/video
+                # load "evict" a server holding nothing. Owner-guarded, so it no-ops when an
+                # image/video model took the GPU while this was loading -- which is fine, they
+                # coexist.
+                await asyncio.to_thread(release, CHAT)
 
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
@@ -4943,6 +4977,23 @@ async def _load_model_impl(
             raise HTTPException(
                 status_code = 500,
                 detail = f"Failed to load model: {model_log_label if native_grant_backed else config.display_name}",
+            )
+
+        # Same guard the GGUF branch runs above: an Images/Video acquire can land in the gap
+        # between this load's cancellation and its publish, so the eviction is lost and the
+        # model lands anyway. Ownership survives that gap, so this load undoes itself rather
+        # than leaving two models resident on one device.
+        if current_owner() != CHAT:
+            await asyncio.to_thread(backend.unload_model, config.identifier)
+            # The worker's base CUDA context outlives the model unload, so kill it too --
+            # that VRAM is exactly what the image/video pipeline just took the GPU for.
+            await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An image or video model took the GPU while this model was loading, "
+                    "so the load was cancelled. Unload that model, then try again."
+                ),
             )
 
         logger.info(

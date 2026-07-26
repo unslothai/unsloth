@@ -249,3 +249,104 @@ def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
     # The marker is released with the load, so a later eviction is a no-op again.
     arb._evict_chat()
     assert unloaded == [True]
+
+
+def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
+    # The orchestrator publishes active_model_name only once its worker reports success, so an
+    # in-flight safetensors load is visible ONLY as an entry in loading_models. Gating the
+    # cancellation on active_model_name let that worker finish after ownership transferred and
+    # allocate the model alongside the image/video pipeline.
+    import core.inference as core_inference
+    import routes.inference as routes_inference
+
+    cancelled: list[str] = []
+
+    class _FakeLlama:
+        is_active = False
+        is_loaded = False
+
+        def unload_model(self):
+            pass
+
+        def _wait_for_vram_settle(self, *, since_kill):
+            pass
+
+    class _FakeOrchestrator:
+        active_model_name = None  # not published yet: the load is still running
+        loading_models = {"unsloth/Qwen3-4B"}
+
+        def unload_model(self, name):
+            raise AssertionError("unload_model must not run for an unpublished load")
+
+        def cancel_load(self, name):
+            cancelled.append(name)
+            return True
+
+        def _shutdown_subprocess(self, timeout = 5.0):
+            pass
+
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _FakeOrchestrator())
+
+    arb._evict_chat()
+
+    assert cancelled == ["unsloth/Qwen3-4B"]
+
+
+def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch):
+    # cancel_load discards the marker it cancels, so iterate a snapshot rather than the live
+    # set (mutating during iteration raises) and cancel each pending entry.
+    import core.inference as core_inference
+    import routes.inference as routes_inference
+
+    cancelled: list[str] = []
+
+    class _FakeLlama:
+        is_active = False
+        is_loaded = False
+
+        def unload_model(self):
+            pass
+
+        def _wait_for_vram_settle(self, *, since_kill):
+            pass
+
+    class _FakeOrchestrator:
+        active_model_name = None
+
+        def __init__(self):
+            self.loading_models = {"a/one", "b/two"}
+
+        def cancel_load(self, name):
+            self.loading_models.discard(name)
+            cancelled.append(name)
+            return True
+
+        def _shutdown_subprocess(self, timeout = 5.0):
+            pass
+
+    orchestrator = _FakeOrchestrator()
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: orchestrator)
+
+    arb._evict_chat()
+
+    assert sorted(cancelled) == ["a/one", "b/two"]
+    assert orchestrator.loading_models == set()
+
+
+def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
+    # Mirror of the GGUF branch's guard: an Images/Video acquire can land in the gap between the
+    # eviction and the load's publish, so the load has to undo itself instead of leaving two
+    # models resident. Without it only the GGUF branch was safe.
+    from pathlib import Path
+
+    route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    load_impl = route_src[route_src.index("async def _load_model_impl") :]
+    unsloth_load = load_impl.index("success = await asyncio.to_thread(\n            backend.load_model,")
+    tail = load_impl[unsloth_load:]
+    guard = tail.index("if current_owner() != CHAT:")
+    assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
+    assert tail.index("status_code = 409", guard) > guard

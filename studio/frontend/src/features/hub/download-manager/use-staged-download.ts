@@ -59,14 +59,27 @@ export function useStagedDownload({
     kind: DOWNLOAD_KIND.MODEL,
     repoId: current?.repoId ?? "__staged_download_idle__",
     activeVariant,
-    onComplete: () => {
+    // The listener subscription is per REPO, not per job, and one repo can have several jobs in
+    // flight -- the Models tab downloading a chat quant of the same repo, say. Each callback
+    // carries the variant it fired for, so drop the ones that aren't this staged entry: a
+    // sibling's completion would otherwise advance the queue (and load a model whose scoped
+    // files are still downloading), and its failure would wipe a queue still running. The chat
+    // page's auto-load filters the same way.
+    onComplete: (variant) => {
+      if ((variant ?? null) !== activeVariant) return;
       const remaining = (queue ?? []).slice(1);
       advance();
       // Every entry is on disk, so the load will find its cache warm.
       if (remaining.length === 0) onReady();
     },
-    onError: () => setQueue(null),
-    onCancelled: () => setQueue(null),
+    onError: (variant) => {
+      if ((variant ?? null) !== activeVariant) return;
+      setQueue(null);
+    },
+    onCancelled: (variant) => {
+      if ((variant ?? null) !== activeVariant) return;
+      setQueue(null);
+    },
   });
 
   useEffect(() => {

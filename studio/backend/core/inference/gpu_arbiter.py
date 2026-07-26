@@ -45,6 +45,14 @@ def _evict_chat() -> None:
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
+    # An in-flight safetensors load has no active_model_name yet (it is published only once the
+    # worker reports success), so the unload above misses it and the load would finish onto the
+    # GPU we just granted away. cancel_load discards the loading marker BEFORE tearing the worker
+    # down, so a load parked between retries (or in _wait_response) observes the removal and
+    # aborts instead of publishing. It runs off the lifecycle gate, which the load itself holds
+    # for its whole duration, so this cannot deadlock.
+    for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
+        orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
     # The driver reclaims the killed VRAM asynchronously; wait for it to settle before diffusion
