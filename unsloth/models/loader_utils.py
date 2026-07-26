@@ -213,8 +213,14 @@ def _get_new_mapper():
 
 
 def _resolve_with_mappers(
-    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit,
-    fp8_block = None, fp8_row = None,
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
+    fp8_block = None,
+    fp8_row = None,
 ):
     # fp8_block/fp8_row default to the installed tables; the newer-mapper probe passes the
     # fetched ones so it can answer for new FP8 repos without rebinding the installed ones.
