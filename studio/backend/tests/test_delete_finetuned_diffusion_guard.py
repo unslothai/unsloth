@@ -26,7 +26,14 @@ from routes.models import router as models_router
 class _Backend:
     """Minimal stand-in for the Images engine / Video backend delete-guard surface."""
 
-    def __init__(self, *, loaded=None, base=None, loading=(), extra=()):
+    def __init__(
+        self,
+        *,
+        loaded = None,
+        base = None,
+        loading = (),
+        extra = (),
+    ):
         self._loaded = loaded
         self._base = base
         self._loading = tuple(loading)

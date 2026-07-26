@@ -369,7 +369,6 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
         return None
     try:
         import torch
-
         def probe(owner: Any) -> bool:
             # Each accelerator is probed on its own: one missing or throwing probe must not
             # decide the other two. torch.mps.is_available() only exists from torch 2.5 and

@@ -31,7 +31,9 @@ FILES = ["model_index.json", "transformer/diffusion_pytorch_model.safetensors"]
 def offline(monkeypatch, tmp_path):
     """A worker whose metadata lookups all fail, pointed at a snapshot dir we control."""
     monkeypatch.setattr(
-        hf_download, "_model_info_with_retry", lambda *a, **k: (_ for _ in ()).throw(OSError("no net"))
+        hf_download,
+        "_model_info_with_retry",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("no net")),
     )
     monkeypatch.setattr(hf_download, "_protected_blob_hashes", lambda: frozenset())
     monkeypatch.setattr(hf_download, "_preflight_disk_space", lambda *a, **k: None)

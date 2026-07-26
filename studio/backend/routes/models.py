@@ -2595,7 +2595,11 @@ async def delete_finetuned_model(
             continue
         try:
             status = backend.status()
-            held = [status.get(key) for key in ("repo_id", "base_repo")] if status.get("loaded") else []
+            held = (
+                [status.get(key) for key in ("repo_id", "base_repo")]
+                if status.get("loaded")
+                else []
+            )
             held += list(getattr(backend, "loaded_repo_ids", tuple)())
             if any(h and _loaded_model_matches_deleted_path(str(h), target_path) for h in held):
                 raise HTTPException(
