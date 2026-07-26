@@ -1134,3 +1134,36 @@ def test_a_version_line_is_not_an_ordered_list_marker(changelog_module):
     assert [
         e.version for e in changelog_module.parse_changelog("## 1.0\n\nText.\n9) one\n   ## 2.0\n")
     ] == ["1.0", "2.0"]
+
+
+def test_a_wrapped_setext_heading_is_still_a_release(changelog_module):
+    """CommonMark promotes the whole paragraph, so a heading that wraps keeps
+    the version in its first token. Reading only the last line left the release
+    unindexed and its notes unreachable."""
+    text = "2026.7.5 - Release\nJuly 25\n---\n\n- note\n"
+    entries = changelog_module.parse_changelog(text)
+    assert [e.version for e in entries] == ["2026.7.5"]
+    # The heading lines are the heading, not the body.
+    assert entries[0].body == "- note"
+    assert "July 25" not in entries[0].body
+
+
+def test_a_lowercase_declaration_is_not_a_raw_block(changelog_module):
+    """Only `<!` plus an uppercase letter opens one, so prose that mentions
+    `<!note` must not hide every release under it."""
+    assert [
+        e.version for e in changelog_module.parse_changelog("<!note\n\n## 1.0\n\n- real\n")
+    ] == ["1.0"]
+    # A real declaration still hides its own block.
+    assert [
+        e.version for e in changelog_module.parse_changelog("<!DOCTYPE\n## 9.9.9\n>\n\n## 1.0\n")
+    ] == ["1.0"]
+
+
+def test_an_escaped_mark_makes_an_image_a_link():
+    """`\\![alt](path)` renders as a link, so it resolves to the file's page on
+    GitHub rather than to the raw-content host."""
+    links = LINKS.read_text(encoding = "utf-8")
+    assert 'const image = bang === "!" && !isEscaped(line, offset);' in links
+    # The reference pre-scan has to skip it too, or the definition flips host.
+    assert "isEscaped(line, match.index)" in links

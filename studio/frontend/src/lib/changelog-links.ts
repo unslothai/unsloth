@@ -127,7 +127,9 @@ function rewriteLine(
     if (insideSpan(spans, base + offset) || isEscaped(line, opener)) {
       return match;
     }
-    const resolved = absolute(unwrap(target), bang === "!");
+    // `\\!` is a literal mark, so what follows is a link, not an image.
+    const image = bang === "!" && !isEscaped(line, offset);
+    const resolved = absolute(unwrap(target), image);
     // A badge nests an image inside a link, so the label is rewritten too.
     const inner = text.includes("](")
       ? rewriteLine(text, imageLabels, codeSpans(text), 0, false)
@@ -252,7 +254,11 @@ export function resolveChangelogLinks(markdown: string): string {
       match !== null;
       match = IMAGE_REFERENCE.exec(line)
     ) {
-      if (insideSpan(spans, (offsets[index] ?? 0) + match.index)) {
+      // An escaped mark makes it a link, so its definition stays a page URL.
+      if (
+        insideSpan(spans, (offsets[index] ?? 0) + match.index) ||
+        isEscaped(line, match.index)
+      ) {
         continue;
       }
       const explicit = match[2] ?? "";

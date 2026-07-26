@@ -54,7 +54,9 @@ _RAW_BLOCKS = (
     (_RAW_HTML_OPEN, _RAW_HTML_CLOSE),
     (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
     (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
-    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
+    # A declaration needs an uppercase letter, so `<!note` stays ordinary text
+    # rather than hiding every release below it.
+    (re.compile(r"^ {0,3}<![A-Z]"), re.compile(r">")),
 )
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
 # once a blank line has closed the block. Open and close tags both start one.
@@ -69,6 +71,10 @@ _NOT_PARAGRAPH = re.compile(
 _PARAGRAPH_TEXT = re.compile(r"^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S")
 # A line of = or - under a paragraph line makes that line a heading.
 _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+# A paragraph inside a blockquote can be continued by lines without the marker,
+# so those lines belong to the quote rather than to the document.
+_BLOCK_QUOTE = re.compile(r"^ {0,3}>")
+_QUOTE_MARKER = re.compile(r"^ {0,3}>[ \t]?")
 # A list item holds the lines indented to where its own content starts, so a
 # heading at that column belongs to the item, not to the document. The marker
 # needs whitespace after it, so `2.0` is a version rather than an item.
@@ -178,7 +184,8 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     in_raw_html: int | None = None
     in_html_block = False
     after_paragraph = False
-    previous_visible = ""
+    paragraph: list[str] = []
+    in_quote = False
     lists = _ListState()
 
     def flush() -> None:
@@ -226,22 +233,26 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
         setext = (
             after_paragraph
             and match is None
-            and previous_visible != ""
+            and paragraph != []
             and _SETEXT_UNDERLINE.match(visible) is not None
             and (visible.strip()[:1] == "-")
-            # Dedented out of the list item holding the paragraph, it is a
-            # thematic break that closes the item instead.
-            and not (lists.columns and _indent_width(visible) < lists.columns[0])
+            # Never a release boundary while a list item is open: dedented out
+            # of it the dashes are a thematic break, and at its content column
+            # the heading belongs to the item.
+            and not lists.columns
         )
         if setext:
-            if version is not None and body:
-                # The heading text was read as body a line ago.
-                body.pop()
+            if version is not None:
+                # The whole paragraph is the heading, and it was read as body
+                # as it arrived.
+                del body[len(body) - len(paragraph) :]
             flush()
-            heading = previous_visible
+            # A wrapped heading keeps every line, so its first token is still
+            # the version.
+            heading = "\n".join(paragraph)
             version = _version_from_heading(heading)
             body = []
-            previous_visible = ""
+            paragraph = []
             after_paragraph = False
             continue
         # A dashed underline is not a list marker, so lists are tracked only
@@ -253,12 +264,14 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             match = None
         # The line at its own nesting level: past the container's indentation
         # and past a marker on the same line, so `- ## 2.0` reads as a heading.
-        content = _strip_indent(visible, lists.columns[-1] if lists.columns else 0)
+        column = lists.columns[-1] if lists.columns else 0
+        content = _strip_indent(visible, column)
         if (item := _LIST_ITEM.match(content)) is not None:
             content = content[item.end() :]
         # Only ordinary text continues a paragraph. A heading, a block or an
-        # indented code line (four spaces, outside a paragraph) ends one.
-        indented_code = not after_paragraph and line[:4] == "    "
+        # indented code line ends one. Four spaces past the container, not past
+        # the margin: inside a list item the item's own indent does not count.
+        indented_code = not after_paragraph and _indent_width(visible) - column >= 4
         # `===` with no paragraph above it is ordinary text, not an underline.
         # A row of dashes there is a thematic break either way.
         underline = _SETEXT_UNDERLINE.match(visible) is not None and (
@@ -272,11 +285,28 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             and _NOT_PARAGRAPH.match(visible) is None
             and not underline
         )
-        previous_visible = (
-            visible.strip()
-            if after_paragraph and _PARAGRAPH_TEXT.match(visible) is not None
-            else ""
+        # A quote's paragraph runs on until something other than plain text, and
+        # every line of it belongs to the quote. An empty quote holds no
+        # paragraph, so the line below it starts one of the document's own.
+        flush_left = visible.lstrip(" \t")
+        in_quote = (
+            _may_be_lazy(_quote_content(visible))
+            if _BLOCK_QUOTE.match(visible)
+            else in_quote and _may_be_lazy(flush_left)
         )
+        # The lines a later underline turns into one heading. A paragraph starts
+        # only on plain text, so `- first` over dashes is a list and a rule.
+        # Once open it runs on until something interrupts it, at whatever
+        # indentation the wrapped lines carry.
+        continues = (
+            not _interrupts_paragraph(flush_left)
+            if paragraph
+            else _PARAGRAPH_TEXT.match(flush_left) is not None
+        )
+        if after_paragraph and not in_quote and continues:
+            paragraph = [*paragraph, visible.strip()]
+        else:
+            paragraph = []
         if match is None:
             if version is not None:
                 body.append(line)
@@ -646,6 +676,30 @@ def _strip_indent(line: str, columns: int) -> str:
     return line[index:]
 
 
+def _interrupts_paragraph(line: str) -> bool:
+    """Whether `line` starts a block that can break into an open paragraph.
+
+    A quote marker always can. A list item can only when it has content, and an
+    ordered one only when it starts at 1: anything else is text of the
+    paragraph it appears to interrupt."""
+    if _BLOCK_QUOTE.match(line):
+        return True
+    item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
+    if item is None:
+        return False
+    marker = item.group("marker")
+    if not line[item.end() :].strip():
+        return False
+    return marker[-1] not in ".)" or marker[:-1] == "1"
+
+
+def _quote_content(line: str) -> str:
+    """What a blockquote line holds, with its markers stripped."""
+    while (marker := _QUOTE_MARKER.match(line)) is not None:
+        line = line[marker.end() :]
+    return line
+
+
 def _may_be_lazy(line: str) -> bool:
     """Whether `line` can continue a paragraph it is indented out of.
 
@@ -672,18 +726,24 @@ def _open_lists(line: str, state: _ListState, after_paragraph: bool) -> _ListSta
         # outside it.
         return _ListState(columns[:-1] if state.empty_item else columns)
     indent = _indent_width(line)
+    item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
+    empty = item is not None and not line[item.end() :].strip()
+    # Only a marker inside the item holding the paragraph has to interrupt it;
+    # one to the left closes that item and opens a sibling instead.
+    if (
+        item is not None
+        and after_paragraph
+        and (not columns or indent >= columns[-1])
+        and not _interrupts_paragraph(line)
+    ):
+        # A lazy continuation or an underline, so the open items are untouched.
+        return state
     if not (after_paragraph and _may_be_lazy(line)):
         while columns and indent < columns[-1]:
             columns = columns[:-1]
-    if _THEMATIC_BREAK.match(line) or (item := _LIST_ITEM.match(line)) is None:
+    if item is None:
         return _ListState(columns)
     marker = item.group("marker")
-    empty = not line[item.end() :].strip()
-    ordered = marker[-1] in ".)"
-    if after_paragraph and (empty or (ordered and marker[:-1] != "1")):
-        # An item interrupts a paragraph only when it has content, and an
-        # ordered one only when it starts at 1.
-        return _ListState(columns)
     padding = _indent_width(item.group("space"))
     if padding == 0 or padding > _MAX_ITEM_PADDING:
         # An empty or over-indented item still holds one column of content.
