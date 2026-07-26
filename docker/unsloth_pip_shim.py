@@ -11,9 +11,15 @@ carefully-resolved cu128 torch/vLLM/transformers stack:
   * `transformers==X`  -> NOT installed into the base venv. The version X is
     recorded so the sidecar mechanism (unsloth_nb_compat) activates it for the
     model cells. The base stack stays intact.
-  * torch / torchvision / torchaudio / triton / xformers / vllm / bitsandbytes /
-    flashinfer / nvidia-* -> SKIPPED (the baked, ABI-matched versions are kept;
-    a notebook reinstall here only ever breaks the GPU stack).
+  * torch / torchvision / torchaudio / torchao / torchcodec / triton / xformers /
+    vllm / bitsandbytes / flashinfer / nvidia-* -> SKIPPED (the baked,
+    ABI-matched versions are kept; a notebook reinstall here only ever breaks
+    the GPU stack).
+  * trl / peft / datasets / accelerate / huggingface_hub / tokenizers /
+    safetensors -> SKIPPED for the same reason one level up: 382 of the shipped
+    notebooks end their install cell with `pip install --no-deps trl==0.22.2`,
+    which used to walk straight past this shim and downgrade the tested
+    trl 0.24.0 / peft 0.19.1 / datasets 4.3.0 on every single run.
   * everything else (omegaconf, snac, causal-conv1d, ...) -> passed through to the
     real tool unchanged, so notebooks that genuinely need extra packages still
     get them.
@@ -30,10 +36,32 @@ REAL = {"pip": "/opt/unsloth-venv/bin/pip", "uv": "/opt/unsloth-venv/bin/uv"}
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
 
 # Packages whose baked version must never be changed by a notebook install cell.
+#
+# Membership criterion: replacing this package silently invalidates the stack the
+# image was BUILT and TESTED against, or breaks unsloth outright. That is either
+# (a) an ABI/CUDA-matched wheel the Dockerfile resolved deliberately (a PyPI
+# reinstall swaps a +cu128 build for a generic or cu13 one), or (b) a library
+# unsloth/unsloth_zoo monkey-patches by version at import time. Anything else --
+# including packages the notebook genuinely needs and the image does not bake
+# (snac, causal-conv1d, omegaconf, mamba-ssm, ...) -- installs normally.
+#
+# Measured over the 433 shipped notebooks (probe_notebook_pins.py), the entries
+# below the original torch/vLLM group cover:
+#   trl         382 notebooks pin an older release (0.22.2 x378, 0.15.2 x4) vs baked 0.24.0
+#   torchao       2 pin 0.15.0, and 271 more reinstall it, replacing 0.17.0+cu128
+#   torchcodec   26 pin 0.5 / 0.7.0, replacing the 0.11.0+cu128 wheel paired with torch 2.11
+#   datasets    254 reinstall it; a trl 0.22.2 resolve pulled it back to 3.0.0 from 4.3.0
+#   peft        225 reinstall it; observed dropping 0.19.1 -> 0.14.0
+#   accelerate  225 reinstall it (Trainer/torch glue, patched by unsloth_zoo)
+#   hf hub      240 reinstall it; tokenizers 64. Both are version-locked to
+#               transformers, and the sidecars ship their own matched copies, so a
+#               base-venv swap desynchronises every sidecar at once.
 _KEEP = {
     "torch",
     "torchvision",
     "torchaudio",
+    "torchao",
+    "torchcodec",
     "triton",
     "triton-rocm",
     "pytorch-triton",
@@ -45,6 +73,14 @@ _KEEP = {
     "unsloth",
     "unsloth-zoo",
     "unsloth_zoo",
+    "trl",
+    "peft",
+    "datasets",
+    "accelerate",
+    "huggingface-hub",
+    "huggingface_hub",
+    "tokenizers",
+    "safetensors",
 }
 _KEEP_PREFIX = ("nvidia-", "nvidia_")
 # pip/uv flags that consume the next token as a value (not a requirement).
