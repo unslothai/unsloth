@@ -89,12 +89,11 @@ export interface TrainingStartRequest {
   output_dir?: string | null;
   in_place_continuation?: boolean;
   copy_checkpoint_to_local?: boolean;
-  /** Opaque, short-lived proof returned by checkpoint inspection. */
-  checkpoint_import_token?: string | null;
+  /** Externally selected checkpoint that passed the import inspection endpoint. */
+  imported_resume_checkpoint?: string | null;
 }
 
 export interface CheckpointInspection {
-  inspectionToken: string;
   checkpointPath: string;
   checkpointName: string;
   globalStep: number;

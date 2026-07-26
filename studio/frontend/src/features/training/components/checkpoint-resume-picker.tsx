@@ -71,7 +71,6 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
     setConfirmed(false);
     setError(null);
     onInspectionChange(null, false, next !== "none");
-    if (next === "browse") setBrowserOpen(true);
   }
 
   function setConfirmation(value: boolean) {
