@@ -718,8 +718,20 @@ _smart_apt_install() {
                     exit 1
                     ;;
             esac
-            sudo apt-get update -y </dev/null
-            sudo apt-get install -y $_STILL_MISSING </dev/null
+            # Mirror the headless branch: on a sudoers denial, a wrong password
+            # or an apt error, say what to run by hand instead of letting set -e
+            # abort on a bare sudo/apt message.
+            if sudo apt-get update -y </dev/null &&
+                sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                :
+            else
+                echo ""
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    See the error above."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
+                echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                exit 1
+            fi
         else
             # Nobody can answer a prompt or type a password here. -n makes sudo
             # refuse rather than prompt into a closed stdin, which is how #7307
@@ -4091,9 +4103,11 @@ echo ""
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
 if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
-    printf "  Start Unsloth Studio now? [Y/n] "
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
-    if [ -r /dev/tty ]; then
+    # Prompt only when something can answer: `test -r` passes on the unopenable
+    # /dev/tty found in containers, leaving a dangling question in the log.
+    if _can_read_tty; then
+        printf "  Start Unsloth Studio now? [Y/n] "
         read -r _reply </dev/tty || _reply="n"
     else
         _reply="n"
