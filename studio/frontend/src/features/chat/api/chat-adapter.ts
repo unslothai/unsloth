@@ -1453,6 +1453,7 @@ export async function buildLocalTokenCountExtras(
     ragTopK,
     ragAutoInject,
     ragAutoInjectMinScore,
+    autoHealToolCalls,
     params,
   } = runtime;
 
@@ -1482,6 +1483,9 @@ export async function buildLocalTokenCountExtras(
 
   return {
     enable_tools: true,
+    // Auto-Heal off leaves leaked tool markup in the real prompt, so the count
+    // has to be told not to strip it either.
+    auto_heal_tool_calls: autoHealToolCalls,
     enabled_tools: [
       ...(ragEnabled || projectRagEnabled ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),

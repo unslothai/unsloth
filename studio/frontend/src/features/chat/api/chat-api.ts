@@ -154,6 +154,7 @@ export async function countChatInputTokens(payload: {
   enabled_tools?: string[];
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
+  auto_heal_tool_calls?: boolean;
 }): Promise<{ input_tokens: number }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",

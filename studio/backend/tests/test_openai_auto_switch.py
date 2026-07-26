@@ -3204,6 +3204,84 @@ def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
     assert "Here you go." in assistant[0]["content"]
 
 
+def test_chat_count_tokens_honours_auto_heal_off(monkeypatch):
+    # Codex P2: with Auto-Heal off the real prompt keeps the markup, so forcing
+    # the strip on here would count a different prompt than the next completion.
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.supports_tools = True
+    captured = {}
+
+    def _count(messages, system, tools, strict = False):
+        captured["messages"] = messages
+        return 12
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _select_tools(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "search for cats"),
+            ChatMessage(
+                role = "assistant",
+                content = "<tool_call>{\"name\": \"web_search\"}</tool_call>Here you go.",
+            ),
+        ],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        auto_heal_tool_calls = False,
+    )
+    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assistant = [m for m in captured["messages"] if m.get("role") == "assistant"]
+    assert assistant, captured["messages"]
+    assert "<tool_call>" in assistant[0]["content"]
+
+
+def test_chat_count_tokens_collapses_system_turns(monkeypatch):
+    # Codex P2: the completion path joins every system/developer turn into one
+    # leading system message; the count has to render the same shape.
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    captured = {}
+
+    def _count(messages, system, tools, strict = False):
+        captured["messages"] = messages
+        return 13
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(role = "system", content = "Runtime rules."),
+            ChatMessage(role = "system", content = "Studio prompt."),
+            ChatMessage(role = "user", content = "hello"),
+        ],
+    )
+    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    systems = [m for m in captured["messages"] if m.get("role") in ("system", "developer")]
+    assert len(systems) == 1, captured["messages"]
+    assert captured["messages"][0]["role"] == "system"
+    assert "Runtime rules." in systems[0]["content"]
+    assert "Studio prompt." in systems[0]["content"]
+
+
 def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
     # Codex P2: the recount has no abort signal, so a count naming the model that
     # was loaded when it started must not drag the backend back to it after the

@@ -17,19 +17,23 @@ let refreshGeneration = 0;
 
 type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 
-let runtimeMessagesGetter: RuntimeMessagesGetter | null = null;
+// Compare mode mounts several providers at once, so this is a stack rather than
+// a slot: the newest mount is the one to ask, and unmounting it uncovers the
+// provider underneath instead of leaving nothing registered.
+const runtimeMessagesGetters: RuntimeMessagesGetter[] = [];
 
-/**
- * Register the mounted runtime's message list and return its own disposer.
- * Compare mode mounts several providers, so a departing one must only clear the
- * slot while it still owns it, or unmounting one pane would blind the survivor.
- */
+function currentRuntimeMessagesGetter(): RuntimeMessagesGetter | null {
+  return runtimeMessagesGetters.at(-1) ?? null;
+}
+
+/** Register the mounted runtime's message list; returns its own disposer. */
 export function registerRuntimeMessagesGetter(
   getter: RuntimeMessagesGetter,
 ): () => void {
-  runtimeMessagesGetter = getter;
+  runtimeMessagesGetters.push(getter);
   return () => {
-    if (runtimeMessagesGetter === getter) runtimeMessagesGetter = null;
+    const index = runtimeMessagesGetters.lastIndexOf(getter);
+    if (index >= 0) runtimeMessagesGetters.splice(index, 1);
   };
 }
 
@@ -162,7 +166,7 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
 function runtimeSelectedBranch(
   records: MessageRecord[],
 ): readonly ThreadMessage[] | null {
-  const runtimeMessages = runtimeMessagesGetter?.();
+  const runtimeMessages = currentRuntimeMessagesGetter()?.();
   if (!runtimeMessages || runtimeMessages.length === 0) return null;
   const tailId = runtimeMessages[runtimeMessages.length - 1].id;
   return records.some((record) => record.id === tailId)
@@ -272,7 +276,7 @@ export async function refreshContextUsage(options?: {
       runMessages =
         threadId &&
         threadId === useChatRuntimeStore.getState().activeThreadId
-          ? (runtimeMessagesGetter?.() ?? [])
+          ? (currentRuntimeMessagesGetter()?.() ?? [])
           : [];
     }
 
@@ -309,19 +313,15 @@ export async function refreshContextUsage(options?: {
 
     const toolExtras = await buildLocalTokenCountExtras(payloadThreadId, outbound);
 
-    // Tool schemas and the tool/RAG nudge the backend injects are prompt tokens
-    // in their own right, so an empty transcript with tools enabled still has a
-    // prompt to count. buildLocalTokenCountExtras returns {} when nothing is
-    // enabled, which is the only case that is genuinely zero.
-    let inputTokens = 0;
-    if (outbound.length > 0 || Object.keys(toolExtras).length > 0) {
-      const result = await countChatInputTokens({
-        model: capturedCheckpoint,
-        messages: outbound,
-        ...toolExtras,
-      });
-      inputTokens = result.input_tokens;
-    }
+    // Always ask the server, even with nothing to send: the template itself has
+    // tokens, and a process-level policy (unsloth run --enable-tools) injects
+    // tool schemas and their nudge that the client cannot see.
+    const result = await countChatInputTokens({
+      model: capturedCheckpoint,
+      messages: outbound,
+      ...toolExtras,
+    });
+    const inputTokens = result.input_tokens;
 
     if (generation !== refreshGeneration) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {

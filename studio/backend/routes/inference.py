@@ -12956,6 +12956,11 @@ async def chat_count_tokens(
             )
         )
     )
+    # Same system-turn normalization the completion path applies: collapse every
+    # system/developer turn into one leading system message, so a runtime system
+    # turn plus the configured prompt renders exactly as the next request will.
+    _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
     openai_tools = payload.tools or None
     model_name = _llama_public_model_id(llama_backend, payload.model)
 
@@ -12988,13 +12993,19 @@ async def chat_count_tokens(
             # over replayed history, gated on the enabled tool names so documented
             # inactive examples survive. Without it the count prices markup the
             # next completion would have removed.
+            # Auto-Heal off means the real prompt keeps that markup, so the count must too.
+            _count_auto_heal = (
+                payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True
+            )
             _count_history_gate = _display_tool_name_gate(tools_to_use)
             openai_messages = [dict(msg) for msg in openai_messages]
             for _msg in openai_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
                     _msg["content"] = _strip_tool_xml_for_display(
                         _msg["content"],
-                        auto_heal_tool_calls = True,
+                        auto_heal_tool_calls = _count_auto_heal,
                         enabled_tool_names = _count_history_gate,
                     ).strip()
 
