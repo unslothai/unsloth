@@ -231,6 +231,15 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
+      - name: Recipe persistence synchronization lifecycle (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_recipe_persistence
+        run: |
+          mkdir -p logs/playwright_recipe_persistence
+          python tests/studio/playwright_recipe_persistence.py
+
       - name: UI font size scaling regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
@@ -361,6 +370,7 @@ jobs:
             logs/playwright
             logs/playwright-permissions-*
             logs/playwright_extra
+            logs/playwright_recipe_persistence
             logs/playwright_fontscale
             logs/playwright_modelcfg
             logs/playwright_ime
