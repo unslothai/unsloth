@@ -621,6 +621,7 @@ def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
     with pytest.raises(ValueError, match = "untrusted"):
         common._assert_trusted_base_model("evil/base")
 
+
 def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkeypatch):
     # Clicking Start on a GPU-less host evicted the resident Images pipeline, downloaded the text
     # encoders, and only then died in the child: diffusers' bitsandbytes quantizer refuses 4-bit

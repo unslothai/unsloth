@@ -1151,9 +1151,7 @@ class TestRouteErrors(unittest.TestCase):
             patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
             patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
             # The chat handoff passes a `register` hook (the in-flight marker), so accept it.
-            patch.object(
-                arb, "acquire_for", lambda owner, register = None: acquired.append(owner)
-            ),
+            patch.object(arb, "acquire_for", lambda owner, register = None: acquired.append(owner)),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(

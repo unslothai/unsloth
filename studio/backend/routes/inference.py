@@ -4614,9 +4614,11 @@ async def _load_model_impl(
         # requirement exactly as it does for the load.
         if config.is_gguf and config.gguf_hf_repo:
             from core.inference.llama_cpp import gguf_load_in_flight
+
             gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
 
             from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+
             if await asyncio.to_thread(
                 _hub_download_blocks_gguf_load,
                 config.gguf_hf_repo,

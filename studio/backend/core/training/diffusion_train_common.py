@@ -369,6 +369,7 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
         return None
     try:
         import torch
+
         xpu = getattr(torch, "xpu", None)
         mps = getattr(torch, "mps", None)
         if (
