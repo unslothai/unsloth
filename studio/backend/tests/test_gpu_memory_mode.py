@@ -1192,6 +1192,19 @@ def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
     assert zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"]) is True
 
 
+def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
+    # "off" is a canonical mode the UI persists and sends, and the resolver emits no drafter for it,
+    # so a CPU-only load carrying it holds no VRAM either. Legacy spellings canonicalize the same way,
+    # while every mode that MAY resolve to a drafter stays GPU-bearing.
+    zero = llama_cpp_module.zero_vram_chat_load
+    assert zero("manual", 0, [], False, "off") is True
+    assert zero("manual", 0, [], False, " OFF ") is True
+    assert zero("manual", 0, [], False, "") is True
+    assert zero("manual", 0, [], False, "auto") is False
+    assert zero("manual", 0, [], False, "mtp") is False
+    assert zero("manual", 0, [], False, "default") is False
+
+
 def test_zero_vram_chat_load_is_skipped_on_vulkan(monkeypatch):
     # Vulkan builds are exempt from the CPU-only mask at launch, so the arbiter gate must match.
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a, **k: True))

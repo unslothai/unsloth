@@ -2291,6 +2291,19 @@ def _detect_image_column(features) -> Optional[str]:
     return None
 
 
+def _detect_image_column_from_row(row: dict) -> Optional[str]:
+    """Image column picked from one materialized row, for a streamed dataset that arrives with no
+    feature metadata to inspect."""
+    try:
+        from PIL.Image import Image as PILImage
+    except Exception:  # noqa: BLE001 -- no Pillow -> the caller reports "no image column"
+        return None
+    for col, value in row.items():
+        if isinstance(value, PILImage):
+            return col
+    return None
+
+
 def _detect_caption_column(entry: dict, columns: list[str]) -> Optional[str]:
     """Pick the caption column: the entry's declared one if present, else a common name."""
     declared = entry.get("caption_column")
@@ -2310,18 +2323,38 @@ def _materialize_hf_dataset(entry: dict, dest: Path, cap: int) -> int:
     kwargs = {"split": "train"}
     if entry.get("no_checks"):
         kwargs["verification_mode"] = "no_checks"
-    ds = load_dataset(entry["repo"], **kwargs)
-    image_col = _detect_image_column(ds.features)
-    if image_col is None:
+    # Stream rather than prepare the whole split: the loop keeps at most `cap` rows (10-100) while
+    # these curated repos run to 49,859 rows / 328 MB (m1guelpf/nouns) and 1,000 rows / 237 MB
+    # (huggan/smithsonian_butterflies_subset), all of which a prepared load downloads and converts
+    # before the first row is read. A repo that cannot stream (loading script, no listed data files)
+    # falls back to the prepared load so the one-click import still works.
+    try:
+        ds = load_dataset(entry["repo"], streaming = True, **kwargs)
+        features = ds.features
+    except Exception:  # noqa: BLE001 -- not streamable; the prepared load is the fallback
+        ds = load_dataset(entry["repo"], **kwargs)
+        features = ds.features
+    # Streaming can hand back a dataset whose features are only known once a row is read, so the
+    # columns are resolved from the first row in that case.
+    image_col = _detect_image_column(features) if features else None
+    if image_col is None and features:
         raise HTTPException(
             status_code = 502,
             detail = f"'{entry['repo']}' has no image column to import.",
         )
-    caption_col = _detect_caption_column(entry, list(ds.features.keys()))
+    caption_col = _detect_caption_column(entry, list(features.keys())) if features else None
     written = 0
     for row in ds:
         if written >= cap:
             break
+        if image_col is None:
+            image_col = _detect_image_column_from_row(row)
+            if image_col is None:
+                raise HTTPException(
+                    status_code = 502,
+                    detail = f"'{entry['repo']}' has no image column to import.",
+                )
+            caption_col = _detect_caption_column(entry, list(row.keys()))
         img = row[image_col]
         if img is None:
             continue

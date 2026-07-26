@@ -305,17 +305,21 @@ class _FakeDS:
         return iter(self._rows)
 
 
-def _install_fake_load_dataset(monkeypatch, n_rows):
-    calls = {"count": 0}
+def _install_fake_load_dataset(monkeypatch, n_rows, features = "default", streamable = True):
+    calls = {"count": 0, "streaming": [], "features": features}
     rows = [
         {"image": Image.new("RGB", (8, 8), (i * 30 % 255, 60, 90)), "prompt": f"caption {i}"}
         for i in range(n_rows)
     ]
-    features = {"image": _FakeImageFeature(), "prompt": object()}
+    if features == "default":
+        features = {"image": _FakeImageFeature(), "prompt": object()}
 
     def fake_load(repo, **kwargs):
         calls["count"] += 1
+        calls["streaming"].append(bool(kwargs.get("streaming")))
         assert kwargs.get("split") == "train"
+        if kwargs.get("streaming") and not streamable:
+            raise ValueError("Loading a dataset cached in a LocalFileSystem is not supported")
         return _FakeDS(rows, features)
 
     import datasets
@@ -365,6 +369,48 @@ def test_import_example_respects_cap(client, ds_root, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json()["imported"] == 2
     assert r.json()["image_count"] == 2
+
+
+def test_import_example_streams_instead_of_preparing_the_whole_split(
+    client, ds_root, monkeypatch
+):
+    # The cap keeps 10-100 rows, while the curated repos run to 49,859 rows / 328 MB
+    # (m1guelpf/nouns), all of which a prepared load downloads and converts before the first row is
+    # read. The import must ask for a streamed split.
+    calls = _install_fake_load_dataset(monkeypatch, n_rows = 3)
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 3
+    assert calls["streaming"] == [True]
+
+
+def test_import_example_falls_back_when_the_repo_cannot_stream(client, ds_root, monkeypatch):
+    # A repo with a loading script or no listed data files cannot stream; the one-click import must
+    # still work through the prepared load rather than 502.
+    calls = _install_fake_load_dataset(monkeypatch, n_rows = 3, streamable = False)
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 3
+    assert calls["streaming"] == [True, False]
+
+
+def test_import_example_resolves_columns_from_the_first_row_without_features(
+    client, ds_root, monkeypatch
+):
+    # A streamed dataset can arrive with no feature metadata to inspect, so the image and caption
+    # columns come from the first row instead.
+    _install_fake_load_dataset(monkeypatch, n_rows = 2, features = None)
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
+    assert r.status_code == 200, r.text
+    assert r.json()["imported"] == 2
+    assert r.json()["caption_count"] == 2
+
+
+def test_import_example_without_an_image_column_maps_to_502(client, ds_root, monkeypatch):
+    # No image anywhere in the row: still a clean 502, not a KeyError 500.
+    _install_fake_load_dataset(monkeypatch, n_rows = 2, features = {"prompt": object()})
+    r = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "tuxemon"})
+    assert r.status_code == 502
 
 
 def test_import_example_unknown_id_404(client, ds_root):

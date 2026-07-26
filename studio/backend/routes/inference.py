@@ -10,7 +10,10 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+import hashlib as _hashlib
+import hmac as _hmac
+import secrets as _secrets
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, List, Literal, Optional, Union
@@ -16500,11 +16503,69 @@ def _parse_openai_image_size(size: str) -> tuple[int, int]:
     return width, height
 
 
-def _absolute_image_url(request: Request, relative: str) -> str:
-    """Join a relative gallery path onto the request's own scheme+host, for the
-    response_format=url links. Like every Studio route, the target needs the
-    bearer token; b64_json avoids that for clients that can't carry it."""
+# response_format=url links have to be fetchable by whoever received them: an OpenAI client hands
+# data[].url back to the caller, who downloads it with a plain GET and no Authorization header, so a
+# link to the bearer-gated gallery route answered 401 and the default response format was unusable.
+# Mint a short-lived HMAC link instead -- the shape RAG already uses to feed pdf.js range requests --
+# and leave the gallery route itself bearer-only. One hour matches OpenAI's own URL lifetime, and the
+# per-process secret means a restart invalidates every outstanding link.
+_IMAGE_LINK_TTL = 3600
+_IMAGE_LINK_SECRET = _secrets.token_bytes(32)
+
+
+def _sign_image_id(image_id: str) -> str:
+    exp = int(time.time()) + _IMAGE_LINK_TTL
+    payload = f"{image_id}.{exp}"
+    sig = _hmac.new(_IMAGE_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _verify_image_link_token(token: str) -> Optional[str]:
+    """The image id a valid, unexpired token names, else None. Gallery ids are
+    ``[A-Za-z0-9_-]`` so the two dots always split id / expiry / signature."""
+    try:
+        image_id, exp_s, sig = token.rsplit(".", 2)
+    except ValueError:
+        return None
+    expected = _hmac.new(
+        _IMAGE_LINK_SECRET, f"{image_id}.{exp_s}".encode(), _hashlib.sha256
+    ).hexdigest()
+    if not _hmac.compare_digest(sig, expected):
+        return None
+    try:
+        if int(exp_s) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    return image_id
+
+
+def _absolute_image_url(request: Request, image_id: str) -> str:
+    """The absolute, directly fetchable link for one gallery image, on the request's own
+    scheme+host. Signed rather than bearer-gated (see above), so a standard image client can
+    download it; b64_json still avoids the round trip entirely."""
+    relative = f"/api/inference/images/gallery/{image_id}/file-signed?token={_sign_image_id(image_id)}"
     return str(request.base_url).rstrip("/") + relative
+
+
+@studio_router.get("/images/gallery/{image_id}/file-signed")
+async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
+    """Serve one gallery PNG gated by the HMAC token instead of the bearer, for the
+    response_format=url links a plain image client downloads. Same ownership gate as the
+    authenticated route, and the token names the single image it may serve."""
+    from core.inference import image_gallery
+
+    if _verify_image_link_token(token) != image_id:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired image link.")
+    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    data = await asyncio.to_thread(path.read_bytes)
+    return Response(
+        content = data,
+        media_type = "image/png",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 @router.post(
@@ -16627,7 +16688,7 @@ async def openai_image_generations(
                     raise RuntimeError("generated image could not be read back for encoding")
                 items.append(ImageGenerationData(b64_json = encoded))
             else:
-                items.append(ImageGenerationData(url = _absolute_image_url(request, record["url"])))
+                items.append(ImageGenerationData(url = _absolute_image_url(request, record["id"])))
         return items
 
     try:

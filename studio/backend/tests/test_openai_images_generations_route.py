@@ -207,7 +207,9 @@ def test_url_response_shape(client):
     assert len(body["data"]) == 1
     item = body["data"][0]
     assert "url" in item and "b64_json" not in item  # exclude_none drops the unused key
-    assert item["url"].endswith("/file")
+    # Signed link, not the bearer-gated /file route: an OpenAI client downloads this URL with a plain
+    # GET and no Authorization header.
+    assert "/images/gallery/img0/file-signed?token=" in item["url"]
     # Z-Image-Turbo defaults (9 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
         prompt = "a sloth", width = 256, height = 256, steps = 9, guidance = 0.0, batch_size = 1
@@ -381,3 +383,69 @@ def test_auth_required():
     # No dependency override: the real auth dependency runs and rejects.
     resp = TestClient(app).post("/v1/images/generations", json = {"prompt": "p"})
     assert resp.status_code in (401, 403)
+
+
+def _signed_link_app(monkeypatch, backend, png: "object"):
+    """An app carrying BOTH surfaces: /v1 for the compat POST and /api/inference for the gallery,
+    which is where the returned link points. get_current_subject is overridden for the POST only in
+    the sense that the signed route never depends on it."""
+    from routes.inference import studio_router
+
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(router, prefix = "/v1")
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    monkeypatch.setattr(gallery_module, "owned_image_path", lambda i: png if i == "img0" else None)
+    return TestClient(app)
+
+
+def test_url_response_link_is_fetchable_without_the_bearer(monkeypatch, tmp_path):
+    # The point of response_format=url: an image client hands data[].url to a plain downloader that
+    # sends no Authorization header. Fetch the returned link with the auth header stripped and assert
+    # the PNG comes back.
+    png = tmp_path / "img0.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    backend = _FakeBackend()
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    store = {}
+
+    def _save(image, meta):
+        image_id = f"img{len(store)}"
+        record = {**meta, "id": image_id, "url": f"/api/inference/images/gallery/{image_id}/file"}
+        store[image_id] = record
+        return record
+
+    monkeypatch.setattr(gallery_module, "save", _save)
+    cli = _signed_link_app(monkeypatch, backend, png)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 200
+    url = resp.json()["data"][0]["url"]
+
+    fetched = cli.get(url.replace("http://testserver", ""), headers = {})
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "image/png"
+    assert fetched.content == b"\x89PNG\r\n\x1a\nfake"
+
+
+def test_signed_image_link_rejects_tampering_and_expiry(monkeypatch, tmp_path):
+    # The token names one image and carries its own expiry, so a swapped id, a forged signature and a
+    # stale link all 401 rather than serving the gallery.
+    import routes.inference as inference_routes
+
+    png = tmp_path / "img0.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    backend = _FakeBackend()
+    cli = _signed_link_app(monkeypatch, backend, png)
+    token = inference_routes._sign_image_id("img0")
+
+    base = "/api/inference/images/gallery"
+    assert cli.get(f"{base}/img0/file-signed?token={token}").status_code == 200
+    # Same signature, different image.
+    assert cli.get(f"{base}/img1/file-signed?token={token}").status_code == 401
+    assert cli.get(f"{base}/img0/file-signed?token=img0.9999999999.dead").status_code == 401
+    assert cli.get(f"{base}/img0/file-signed?token=nonsense").status_code == 401
+    monkeypatch.setattr(inference_routes, "_IMAGE_LINK_TTL", -1)
+    expired = inference_routes._sign_image_id("img0")
+    assert cli.get(f"{base}/img0/file-signed?token={expired}").status_code == 401

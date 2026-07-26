@@ -116,17 +116,61 @@ def _transcode_webm(path: Path) -> bytes:
             # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at
             # a small quality cost, right for a download button.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
-            for frame in src.decode(in_v):
-                for packet in out_v.encode(frame.reformat(format = "yuv420p")):
-                    dst.mux(packet)
+            # An LTX-2 clip carries a synchronized audio track, and WebM is offered as the web-embed
+            # format, so dropping the track would silently hand back half the generated result. Opus is
+            # WebM's audio codec: resample to its 48 kHz grid and hand the encoder whole frames through a
+            # FIFO (libopus takes a fixed 20 ms frame, 960 samples at 48 kHz).
+            in_a = src.streams.audio[0] if src.streams.audio else None
+            out_a = fifo = resampler = None
+            if in_a is not None:
+                try:
+                    stereo = (getattr(in_a.codec_context.layout, "nb_channels", 1) or 1) > 1
+                    layout = "stereo" if stereo else "mono"
+                    out_a = dst.add_stream("libopus", rate = 48000, layout = layout)
+                    resampler = av.audio.resampler.AudioResampler(
+                        format = out_a.format.name, layout = layout, rate = 48000
+                    )
+                    fifo = av.audio.fifo.AudioFifo()
+                except Exception:  # noqa: BLE001 -- a build without libopus still exports the video
+                    out_a = fifo = resampler = None
+
+            def _drain_audio(flush: bool = False) -> None:
+                # frame_size is 0 until the container starts writing; 960 is libopus' own frame.
+                size = out_a.frame_size or 960
+                while True:
+                    frame = fifo.read(size, partial = flush)
+                    if frame is None:
+                        break
+                    for packet in out_a.encode(frame):
+                        dst.mux(packet)
+
+            # Demux both streams together so the muxer sees them interleaved rather than buffering
+            # every video packet until the audio arrives.
+            for packet in src.demux(*([in_v] + ([in_a] if out_a is not None else []))):
+                if packet.dts is None:  # flush packet from the demuxer
+                    continue
+                if packet.stream is in_v:
+                    for frame in packet.decode():
+                        for out_packet in out_v.encode(frame.reformat(format = "yuv420p")):
+                            dst.mux(out_packet)
+                    continue
+                for frame in packet.decode():
+                    for resampled in resampler.resample(frame):
+                        # Let the FIFO time the output: the resampler's frames do not line up with
+                        # Opus' fixed frame size.
+                        resampled.pts = None
+                        fifo.write(resampled)
+                    _drain_audio()
             for packet in out_v.encode():
                 dst.mux(packet)
+            if out_a is not None:
+                _drain_audio(flush = True)
+                for packet in out_a.encode():
+                    dst.mux(packet)
     except RuntimeError:
         raise
     except Exception as exc:  # noqa: BLE001 -- surface as "encoder unavailable"
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
-    # Audio dropped: Opus muxing needs a 48 kHz resample chain and most clips are silent (the
-    # original MP4 keeps the audio).
     return buf.getvalue()
 
 

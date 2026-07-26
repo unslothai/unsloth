@@ -354,6 +354,97 @@ def _real_mp4_bytes(
     return buf.getvalue()
 
 
+def _real_mp4_with_audio(seconds: int = 1, size: int = 32, rate: int = 8) -> bytes:
+    # An LTX-2-shaped clip: video plus a synchronized audio track (a 440 Hz tone), so the WebM
+    # export can be checked for the track rather than assumed silent.
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    import io
+    import math
+    from fractions import Fraction
+
+    arate = 44100
+    buf = io.BytesIO()
+    with av.open(buf, "w", format = "mp4") as out:
+        video = out.add_stream("mpeg4", rate = rate)
+        video.width = video.height = size
+        video.pix_fmt = "yuv420p"
+        audio = out.add_stream("aac", rate = arate)
+        audio.layout = "stereo"
+        for i in range(seconds * rate):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((size, size, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
+            )
+            for packet in video.encode(frame):
+                out.mux(packet)
+        written = 0
+        while written < seconds * arate:
+            count = min(1024, seconds * arate - written)
+            tone = np.array(
+                [
+                    int(20000 * math.sin(2 * math.pi * 440 * (written + k) / arate))
+                    for k in range(count)
+                ],
+                dtype = np.int16,
+            )
+            # Packed s16 is one interleaved row.
+            frame = av.AudioFrame.from_ndarray(
+                np.repeat(tone, 2).reshape(1, count * 2), format = "s16", layout = "stereo"
+            )
+            frame.sample_rate = arate
+            frame.pts = written
+            frame.time_base = Fraction(1, arate)
+            for packet in audio.encode(frame):
+                out.mux(packet)
+            written += count
+        for packet in video.encode():
+            out.mux(packet)
+        for packet in audio.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def test_webm_export_keeps_the_audio_track():
+    """WebM is offered as the web-embed format, so a clip generated with synchronized audio (LTX-2)
+    must not come back mute: the exporter has to mux the track as Opus, WebM's audio codec."""
+    av = pytest.importorskip("av")
+    import io
+
+    record = gallery.save(_real_mp4_with_audio(), _meta())
+    webm = gallery.transcode(record["id"], "webm")
+    assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+    with av.open(io.BytesIO(webm)) as container:
+        kinds = {(s.type, s.codec_context.name) for s in container.streams}
+    assert ("video", "vp9") in kinds
+    assert ("audio", "opus") in kinds
+    samples = 0
+    with av.open(io.BytesIO(webm)) as container:
+        for frame in container.decode(audio = 0):
+            samples += frame.samples
+    # A full second of 48 kHz audio survived (Opus pads its last 20 ms frame).
+    assert samples >= 48000, samples
+
+
+def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
+    # A PyAV build with no libopus must keep exporting the video rather than failing the download.
+    av = pytest.importorskip("av")
+    import io
+
+    real_add_stream = av.container.OutputContainer.add_stream
+
+    def _no_opus(self, codec_name = None, *args, **kwargs):
+        if codec_name == "libopus":
+            raise ValueError("unknown encoder 'libopus'")
+        return real_add_stream(self, codec_name, *args, **kwargs)
+
+    monkeypatch.setattr(av.container.OutputContainer, "add_stream", _no_opus)
+    record = gallery.save(_real_mp4_with_audio(), _meta())
+    webm = gallery.transcode(record["id"], "webm")
+    assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
+    with av.open(io.BytesIO(webm)) as container:
+        assert [s.type for s in container.streams] == ["video"]
+
+
 def test_transcode_gif_and_webm_produce_real_containers():
     record = gallery.save(_real_mp4_bytes(), _meta())
     gif = gallery.transcode(record["id"], "gif")
