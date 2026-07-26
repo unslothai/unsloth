@@ -369,12 +369,18 @@ def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
 
 
 def test_pick_best_gguf_prefers_base_quant_over_lower_ranked_exact():
-    assert gguf.pick_best_gguf(
-        ["model-Q6_K-MTP.gguf", "model-Q8_0.gguf"],
-    ) == "model-Q6_K-MTP.gguf"
-    assert gguf.pick_best_gguf(
-        ["model-IQ4_XS-3.53bpw.gguf", "model-F16.gguf"],
-    ) == "model-IQ4_XS-3.53bpw.gguf"
+    assert (
+        gguf.pick_best_gguf(
+            ["model-Q6_K-MTP.gguf", "model-Q8_0.gguf"],
+        )
+        == "model-Q6_K-MTP.gguf"
+    )
+    assert (
+        gguf.pick_best_gguf(
+            ["model-IQ4_XS-3.53bpw.gguf", "model-F16.gguf"],
+        )
+        == "model-IQ4_XS-3.53bpw.gguf"
+    )
 
 
 def test_list_local_gguf_variants_keeps_mtp_flavor_siblings_separate(tmp_path):
