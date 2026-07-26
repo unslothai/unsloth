@@ -846,9 +846,7 @@ def test_fallback_orders_by_resolved_quant_size():
     assert "sizeBytes: sizeOrUnknownBytes(variant.size_bytes)" in auto_load
     # The all-variant row sum only orders non-GGUF cached repos, whose
     # snapshot loads whole.
-    seed_block = auto_load.split(
-        "for (const repo of platform.chatOnly ? [] : modelRepos)", 1
-    )[1]
+    seed_block = auto_load.split("for (const repo of platform.chatOnly ? [] : modelRepos)", 1)[1]
     seed_block = seed_block.split("const resolveCachedGgufEntry", 1)[0]
     assert "sizeOrUnknownBytes(repo.size_bytes)" in seed_block
     assert auto_load.count("sizeOrUnknownBytes(repo.size_bytes)") == 1
@@ -941,10 +939,7 @@ def test_final_attempt_waits_for_pending_scans():
     order is complete."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert (
-        "if (pendingJobs > 0 && loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS - 1) {"
-        in auto_load
-    )
+    assert "if (pendingJobs > 0 && loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS - 1) {" in auto_load
 
 
 def test_resolution_workers_stop_on_terminal_result():
@@ -954,16 +949,11 @@ def test_resolution_workers_stop_on_terminal_result():
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
     assert "let resolutionStopped = false;" in auto_load
-    assert (
-        "while (!resolutionStopped && nextJob < resolutionJobs.length)"
-        in auto_load
-    )
+    assert "while (!resolutionStopped && nextJob < resolutionJobs.length)" in auto_load
     # The flag is set in a finally so every exit path (return, break, throw)
     # stops the workers.
     assert "resolutionStopped = true;" in auto_load
-    assert auto_load.index("} finally {") < auto_load.index(
-        "resolutionStopped = true;"
-    )
+    assert auto_load.index("} finally {") < auto_load.index("resolutionStopped = true;")
 
 
 def test_local_rows_apply_picker_platform_gate():
