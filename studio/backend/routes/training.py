@@ -1962,8 +1962,10 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
             if not isinstance(row, dict):
                 continue
             key = row.get("file_name") or row.get("image") or row.get("file")
-            if key and "text" in row:
-                out[str(key)] = str(row["text"])
+            value = row.get("text")
+            # A JSON null is "no caption", not the string "None".
+            if key and value is not None:
+                out[str(key)] = str(value)
     return out
 
 
@@ -2359,9 +2361,11 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
             except json.JSONDecodeError:
                 continue
             fn = row.get("file_name") or row.get("image") or row.get("file")
-            if fn and caption_col in row:
+            value = row.get(caption_col)
+            # A JSON null is "no caption", not the string "None".
+            if fn and value is not None:
                 # First writer wins over sorted manifests, for deterministic results.
-                captions.setdefault(Path(str(fn)).name, str(row[caption_col]))
+                captions.setdefault(Path(str(fn)).name, str(value))
     # Copy images (those with a caption first, so a cap keeps captioned pairs).
     images = sorted(
         p

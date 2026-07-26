@@ -21,7 +21,7 @@ import os
 import random
 import re
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -798,8 +798,10 @@ def discover_image_caption_pairs(
             if not isinstance(row, dict):
                 continue
             key = row.get("file_name") or row.get("image") or row.get("file")
-            if key and caption_column in row:
-                meta_caption[str(key)] = str(row[caption_column])
+            value = row.get(caption_column)
+            # A JSON null is "no caption", not the string "None".
+            if key and value is not None:
+                meta_caption[str(key)] = str(value)
 
     pairs: list[tuple[str, str]] = []
     for img in images:

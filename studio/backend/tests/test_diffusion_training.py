@@ -1096,6 +1096,31 @@ def test_diffusion_info_tolerates_non_object_jsonl(client, dataset_roots):
     assert summary["caption_count"] == 1
 
 
+def test_diffusion_info_skips_null_metadata_captions(client, dataset_roots):
+    # A JSON null caption is "no caption": str(None) would store the literal "None" and
+    # both count as captioned and train on that text.
+    ds_root, _ = dataset_roots
+    folder = ds_root / "null-caption"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "b.png").write_bytes(b"x")
+    (folder / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "a.png", "text": None}) + "\n"
+        + json.dumps({"file_name": "b.png", "text": "cap b"}) + "\n",
+        encoding = "utf-8",
+    )
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "null-caption")
+    assert summary["caption_count"] == 1
+
+    r2 = client.get("/api/train/diffusion/dataset/null-caption/images")
+    assert r2.status_code == 200, r2.text
+    by_name = {rec["filename"]: rec for rec in r2.json()["images"]}
+    assert by_name["a.png"]["caption"] in (None, "")
+    assert by_name["b.png"]["caption"] == "cap b"
+
+
 def test_diffusion_info_tolerates_invalid_utf8_jsonl(client, dataset_roots):
     # Invalid UTF-8 in a metadata file must not 500 the info endpoint; the file is skipped, not decoded.
     ds_root, _ = dataset_roots
