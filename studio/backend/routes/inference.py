@@ -12925,11 +12925,23 @@ async def chat_count_tokens(
     current_subject: str = Depends(get_current_subject),
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer."""
+    # count_chat_tokens renders /apply-template and tokenizes the text it returns,
+    # but llama-server swaps every image for a short media marker there and drops
+    # the decoded bytes, so an image thread would come back short by the whole
+    # embedding. Refuse before the auto-switch (a refused count must not move the
+    # loaded model) so the caller keeps the usage it already has instead of a
+    # confident undercount.
+    if _request_has_image(payload):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing images.",
+        )
+
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _request_has_image(payload),
+        require_vision = False,
     )
 
     llama_backend = get_llama_cpp_backend()

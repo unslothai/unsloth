@@ -3085,6 +3085,78 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     )
 
 
+def test_chat_count_tokens_refuses_image_messages(monkeypatch):
+    # Codex P2: /apply-template replaces images with a short media marker and
+    # drops the bytes, so counting one would undercount the thread by the whole
+    # embedding. Refuse instead, and refuse before the auto-switch so a count
+    # never moves the loaded model.
+    from fastapi import HTTPException
+
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    counted = {"called": False}
+
+    def _count(*args, **kwargs):
+        counted["called"] = True
+        return 1234
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    switched = {"called": False}
+
+    async def _switch(*args, **kwargs):
+        switched["called"] = True
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what is this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                    },
+                ],
+            )
+        ],
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
+    assert excinfo.value.status_code == 503
+    assert counted["called"] is False
+    assert switched["called"] is False
+
+
+def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
+    # Control for the guard above: a text-only payload is unaffected.
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.count_chat_tokens = lambda *args, **kwargs: 7
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = [{"type": "text", "text": "hello"}])
+        ],
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
+    import json
+
+    assert json.loads(response.body) == {"input_tokens": 7}
+
+
 def test_audio_generate_is_reload_only(monkeypatch):
     # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
     # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
