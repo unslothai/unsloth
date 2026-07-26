@@ -1020,15 +1020,11 @@ def test_forwarded_gfx_does_not_undo_visible_device_auto_vulkan(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
-    host = _windows_amd_host(
-        rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"]
-    )
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])
     host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1100")
     assert ilp._active_rocm_gfx_target(host) == "gfx1010"
     assert ilp._should_auto_vulkan_for_amd_windows(host) is True
-    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
-        host, FORK, "pin", force_cpu = False
-    )
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == UPSTREAM
     assert persist == "vulkan"
 
@@ -1044,9 +1040,7 @@ def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
     host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1151")
     assert ilp._active_rocm_gfx_target(host) == "gfx1151"
     assert ilp._should_auto_vulkan_for_amd_windows(host) is False
-    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
-        host, FORK, "pin", force_cpu = False
-    )
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
     assert persist is None
 
