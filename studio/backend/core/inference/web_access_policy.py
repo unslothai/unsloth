@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import zlib
 from typing import Any
 from urllib.parse import urlsplit
 
 _DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _MAX_DOMAINS_PER_LIST = 100
+# Most search engines stop honouring site: past a handful of OR terms.
+_SITE_FILTER_LIMIT = 8
 
 
 def normalize_domain(value: Any) -> str:
@@ -139,5 +142,12 @@ def scope_search_query(query: str, policy: dict[str, Any] | None) -> str:
         return query
     # Cap the site: filter (search engines limit OR operators) instead of dropping scoping
     # entirely for large allow lists, which returned unrelated results that all got filtered out.
-    site_filter = " OR ".join(f"site:{domain}" for domain in allowed[:8])
+    # Rotate the window by query so every allowed domain is reachable across a multi-step run;
+    # a fixed head made domains past the cap permanently undiscoverable. Keyed on the query so
+    # the same search is always scoped the same way.
+    window = allowed
+    if len(allowed) > _SITE_FILTER_LIMIT:
+        offset = zlib.crc32(query.encode("utf-8")) % len(allowed)
+        window = (allowed + allowed)[offset : offset + _SITE_FILTER_LIMIT]
+    site_filter = " OR ".join(f"site:{domain}" for domain in window)
     return f"{query} ({site_filter})"

@@ -50,6 +50,8 @@ logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
 _RAG_SEARCH_SLOT = threading.BoundedSemaphore(1)
+# Candidate multiplier when a website policy will filter the results after the search.
+_POLICY_OVERFETCH = 4
 _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
@@ -4640,13 +4642,19 @@ def _web_search(
         from .web_access_policy import check_url_access, scope_search_query
 
         effective_query = scope_search_query(query, website_policy)
-        results = DDGS(timeout = timeout).text(effective_query, max_results = max_results)
+        # The policy filters below, so ask for a deeper pool when one is set: otherwise a page
+        # whose top hits are all disallowed yields nothing even when valid results rank just
+        # under them, wasting a research step.
+        wanted = max_results * _POLICY_OVERFETCH if website_policy else max_results
+        results = DDGS(timeout = timeout).text(effective_query, max_results = wanted)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
             return "No results found."
         parts = []
         for r in results:
+            if len(parts) >= max_results:
+                break
             href = str(r.get("href") or "").strip()
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
