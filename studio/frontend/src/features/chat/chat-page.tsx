@@ -2825,7 +2825,14 @@ export function ChatPage({
           ) {
             return;
           }
-          store.setContextUsage(usage);
+          // Key by the thread this restore read, like the history loader: the
+          // listStoredChatMessages() await above can outlast a switch away from
+          // the view being restored, and an unkeyed write would file this
+          // thread's usage under the incoming one.
+          store.setThreadContextUsage(threadId, usage);
+          if (store.activeThreadId === threadId) {
+            store.setContextUsage(usage);
+          }
         })
         .catch((error) => {
           if (!isExpectedBackgroundChatStorageError(error)) {

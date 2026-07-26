@@ -2483,8 +2483,11 @@ export function createOpenAIStreamAdapter(
           // waitForRunEnd resolves instead of hanging: this gate fires
           // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
-          runtime.setThreadRunning(gatedThreadKey, true);
-          runtime.setThreadRunning(gatedThreadKey, false);
+          // Own token: siblings share "__default", so an ownerless clear here
+          // would drop their entries while they are still generating.
+          const gateOwner = () => {};
+          runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
+          runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
           clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }

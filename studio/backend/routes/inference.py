@@ -4352,6 +4352,41 @@ def _raise_or_cancel_active_generations(
     return cancelled
 
 
+_SIDECAR_SWAP_DRAIN_TIMEOUT_S = 5.0
+
+
+async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) -> None:
+    """Stop the chats a confirmed sidecar swap interrupts, then let them unwind.
+
+    The installer gates on the middleware's in-flight count, not on
+    active_generations, so cancelling is not enough on its own: a cancelled
+    stream is still counted until its response finishes. Wait for that, then let
+    the caller's own recheck decide.
+
+    Bounded on purpose. /load can wait forever because a request may abort it,
+    but this runs inside ``asyncio.shield`` while holding both the lifecycle gate
+    and the sidecar reservation, so an in-flight request that never observes its
+    cancel event (a non-streaming generation mid-decode) must not wedge the
+    process. On expiry the caller's recheck raises the same 409 as an
+    unconfirmed install, i.e. exactly today's behaviour.
+    """
+    from core.inference.llama_keepwarm import other_inference_request_count
+
+    _raise_or_cancel_active_generations(
+        force = True, action = "Installing a new transformers version"
+    )
+    deadline = time.monotonic() + (
+        _SIDECAR_SWAP_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
+    )
+    while (
+        other_inference_request_count(current_request_counted = False, include_pending = False)
+        > 0
+    ):
+        if time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(0.02)
+
+
 _UNRESOLVED_BACKEND_STATE = object()
 
 
@@ -5666,7 +5701,16 @@ async def install_latest_transformers_route(
             other_inference_request_count,
         )
 
-        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
+        # Only the fast path is skipped for a confirmed swap: the recheck under the
+        # gate still has to pass, so the guard is unchanged for anyone who did not
+        # confirm (second tab, desktop app, curl) and unchanged in what it protects.
+        if (
+            not request.force_cancel_active
+            and other_inference_request_count(
+                current_request_counted = False, include_pending = False
+            )
+            > 0
+        ):
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -5760,9 +5804,23 @@ async def install_latest_transformers_route(
                             "Retry the install."
                         ),
                     )
+                # Carry a confirmed swap's decision through: the client reached this
+                # install by picking a model whose /load raised the "stop N chats"
+                # prompt, and the user accepted it. Refusing here instead would make
+                # that answer unactionable -- the dialog's Retry cannot succeed while
+                # the same chats run, and nothing else in the flow stops them.
+                # Deliberately LAST, after every check above that can still reject the
+                # install (training, export, a load that beat us to the gate), so the
+                # cancel is only spent once nothing can turn this request away --
+                # /load's rule. The staged install below can still fail, exactly as
+                # /load's own load can once it has cancelled.
+                if request.force_cancel_active:
+                    await _cancel_and_drain_for_sidecar_swap()
                 # Recheck under the gate: new streams bump their in-flight count while
                 # holding it, so once held nothing slips past (the pre-gate check is only
-                # a fast path and can be outlasted by a wait on a long /load).
+                # a fast path and can be outlasted by a wait on a long /load). A forced
+                # install that could not drain in time lands here too, so its worst case
+                # is the same 409 it would have got without the flag.
                 if (
                     other_inference_request_count(
                         current_request_counted = False, include_pending = False

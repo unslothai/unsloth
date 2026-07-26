@@ -364,6 +364,14 @@ class InstallLatestTransformersRequest(BaseModel):
         description = "Exact transformers version to install; must match the current "
         "latest PyPI release reported by /validate.",
     )
+    force_cancel_active: bool = Field(
+        False,
+        description = (
+            "Stop chats still generating instead of refusing with 409. The install "
+            "is a step of the model swap that raised the same prompt, so a client "
+            "that already got consent for that swap can carry it through here."
+        ),
+    )
 
 
 class InstallLatestTransformersResponse(BaseModel):

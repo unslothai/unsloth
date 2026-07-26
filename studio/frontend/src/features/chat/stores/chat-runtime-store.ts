@@ -1583,6 +1583,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // An owner that is not in the list has already been cleared, or the key
         // belongs to siblings only: either way this run must change nothing.
         if (options?.owner && remaining.length === owners.length) return state;
+        // An ownerless clear predates per-run tracking, so it must not speak for
+        // runs that do own the key: leave them to clear themselves.
+        if (!options?.owner && owners.length > 0) return state;
         if (remaining.length > 0) {
           nextOwner[threadId] = remaining;
           if (remaining.some((o) => o.local)) {

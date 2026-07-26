@@ -831,6 +831,11 @@ export function useChatModelRuntime() {
                 upgrade: validation.transformers_upgrade,
                 // No installable release: custom-code models may fall back to the trust_remote_code gate below.
                 trustRemoteCodeFallback: validation.requires_trust_remote_code,
+                // The install refuses while chats generate and takes no force flag
+                // of its own, so without this the "Stop and reload" the user just
+                // confirmed dies here: the dialog's Retry hits the same 409, and
+                // this path deliberately leaves the chats running until /load.
+                forceCancelActive,
               });
               // The install unloads the previous model before the swap (even when
               // the swap then fails), so any exit after this point must roll back.

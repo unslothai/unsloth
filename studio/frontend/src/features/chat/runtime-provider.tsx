@@ -1115,7 +1115,16 @@ function useStudioRuntimeAdapters(
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
         if (savedUsage && withinLocalLimit && modelMatches) {
-          store.setContextUsage(savedUsage);
+          // Key by the thread this loader read, not by whichever is active when
+          // listStoredChatMessages() resolves: that await is two backend round
+          // trips, so a switch inside it would file this thread's usage under
+          // the incoming one, repaint its bar, and (since setActiveThreadId
+          // re-applies the map) keep showing the wrong value on every later
+          // switch back. Same rule the adapter's end-of-run write follows.
+          store.setThreadContextUsage(remoteId, savedUsage);
+          if (store.activeThreadId === remoteId) {
+            store.setContextUsage(savedUsage);
+          }
         }
 
         // If any message has a stored parentId, reconstruct the tree so

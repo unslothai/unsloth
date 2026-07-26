@@ -16,14 +16,20 @@ interface InstallLatestTransformersResponse {
   latest_version?: string | null;
 }
 
-/** Consented install of the latest transformers into the sidecar; synchronous, can take minutes. */
+/** Consented install of the latest transformers into the sidecar; synchronous, can take minutes.
+ *
+ * `forceCancelActive` carries the answer the user already gave the model swap's
+ * "stop N chats" prompt: without it the install refuses with 409 while those
+ * chats run, and nothing between the two dialogs stops them. Only ever true
+ * after that confirmation, so the guard still holds for every other caller. */
 export async function installLatestTransformers(
   version: string,
+  forceCancelActive = false,
 ): Promise<InstallLatestTransformersResponse> {
   const response = await authFetch("/api/inference/install-latest-transformers", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ version }),
+    body: JSON.stringify({ version, force_cancel_active: forceCancelActive }),
   });
   if (!response.ok) {
     throw new Error(await readFastApiError(response));

@@ -2084,3 +2084,154 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
         asyncio.run(inf_mod.generate_audio(payload, request = None, current_subject = "tester"))
 
     assert active_generations.count() == 0
+
+
+# ── sidecar install: carrying a confirmed swap through ─────────────────
+
+
+def _stub_install_route(monkeypatch, *, in_flight_events):
+    """Point POST /install-latest-transformers at an in-memory sidecar install.
+
+    ``in_flight_events`` stands in for the middleware's in-flight count: a
+    request is counted until its stream observes the cancel event and unwinds,
+    which is the coupling the installer's guard actually reads.
+    """
+    from types import SimpleNamespace
+
+    import core.inference.llama_keepwarm as keepwarm
+    import routes.inference as inf_mod
+    import utils.transformers_latest as latest_mod
+    import utils.transformers_version as version_mod
+
+    calls = {"installed": [], "released": 0}
+
+    monkeypatch.setattr(version_mod, "try_begin_sidecar_swap", lambda: True)
+
+    def _end_sidecar_swap():
+        calls["released"] += 1
+
+    monkeypatch.setattr(version_mod, "end_sidecar_swap", _end_sidecar_swap)
+
+    import core.export as export_mod
+    import core.training as training_mod
+
+    monkeypatch.setattr(
+        training_mod, "get_training_backend", lambda: SimpleNamespace(is_training_active = lambda: False)
+    )
+    monkeypatch.setattr(
+        export_mod,
+        "get_export_backend",
+        lambda: SimpleNamespace(is_export_active = lambda: False, current_checkpoint = None),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None, load_generation = 0),
+    )
+
+    def _fake_in_flight(current_request_counted = True, *, include_pending = True):
+        return sum(1 for ev in in_flight_events if not ev.is_set())
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _fake_in_flight)
+
+    def _install(version, before_swap, *args, **kwargs):
+        calls["installed"].append(version)
+        return {"success": True, "version": version, "message": "installed"}
+
+    monkeypatch.setattr(latest_mod, "install_latest_transformers", _install)
+    return inf_mod, calls
+
+
+def test_confirmed_install_stops_the_chats_it_was_given_permission_to_stop(monkeypatch):
+    # The install sits between the swap's "stop N chats" prompt and the /load
+    # that carries force_cancel_active, and it refuses while those same chats
+    # run. Unless the confirmation reaches it, the answer the user just gave is
+    # unactionable: the dialog's Retry hits the same 409 and nothing in the flow
+    # stops the chats (the load deliberately leaves them running until preflight
+    # clears). So a confirmed install cancels them itself and proceeds.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from models.inference import InstallLatestTransformersRequest
+
+    ev = threading.Event()
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev])
+
+    with active_generations.ActiveGeneration(ev, thread_id = "t1", model = "org/M-GGUF"):
+        response = asyncio.run(
+            inf_mod.install_latest_transformers_route(
+                InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                "tester",
+            )
+        )
+        assert ev.is_set()
+
+    assert response.success is True
+    assert calls["installed"] == ["5.0.0"]
+
+
+def test_unconfirmed_install_still_refuses_while_chats_stream(monkeypatch):
+    # The guard is unchanged for every caller that never confirmed (second tab,
+    # desktop app, curl): no flag, no cancel, and the chats keep streaming.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from models.inference import InstallLatestTransformersRequest
+
+    ev = threading.Event()
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev])
+
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inf_mod.install_latest_transformers_route(
+                    InstallLatestTransformersRequest(version = "5.0.0"),
+                    "tester",
+                )
+            )
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+
+    assert exc.value.status_code == 409
+    assert calls["installed"] == []
+
+
+def test_a_confirmed_install_that_cannot_drain_refuses_instead_of_swapping(monkeypatch):
+    # A cancelled request that never observes its event (a non-streaming
+    # generation mid-decode) keeps the in-flight count up. The drain is bounded
+    # so it cannot wedge the process holding the gate and the reservation, and
+    # the recheck behind it still refuses -- the swap never runs with live
+    # inference, forced or not.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from models.inference import InstallLatestTransformersRequest
+
+    ev = threading.Event()
+    stuck = threading.Event()
+    stuck.set()  # already "cancelled", yet still counted: it never unwinds
+    inf_mod, calls = _stub_install_route(monkeypatch, in_flight_events = [ev, stuck])
+    monkeypatch.setattr(inf_mod, "_SIDECAR_SWAP_DRAIN_TIMEOUT_S", 0.05)
+
+    def _never_unwinds(current_request_counted = True, *, include_pending = True):
+        return 1
+
+    import core.inference.llama_keepwarm as keepwarm
+
+    monkeypatch.setattr(keepwarm, "other_inference_request_count", _never_unwinds)
+
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inf_mod.install_latest_transformers_route(
+                    InstallLatestTransformersRequest(version = "5.0.0", force_cancel_active = True),
+                    "tester",
+                )
+            )
+
+    assert exc.value.status_code == 409
+    assert calls["installed"] == []
