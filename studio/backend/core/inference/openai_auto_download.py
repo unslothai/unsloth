@@ -234,6 +234,22 @@ def _gguf_variants(siblings) -> dict[str, int]:
     return sizes
 
 
+def _remaining_bytes(repo_id: str, plan, expected_bytes: int) -> int:
+    """Bytes still to fetch: a resumed quant or a companion shared with another
+    quant is already on disk, and charging for it can 507 a download that fits."""
+    try:
+        from hub.utils.download_registry import existing_blob_bytes
+
+        hashes = frozenset(
+            file.sha256 for file in getattr(plan, "expected_files", ()) or () if file.sha256
+        )
+        if not hashes:
+            return expected_bytes
+        return max(0, expected_bytes - existing_blob_bytes("model", repo_id, hashes))
+    except Exception:
+        return expected_bytes
+
+
 def _enough_disk(need_bytes: int) -> tuple[bool, int]:
     """(fits, free_bytes). Fail-open on an unreadable cache root: the download
     worker runs its own preflight, this only adds the reserve margin."""
@@ -320,6 +336,9 @@ async def _watch(active: _Active, hf_token: Optional[str]) -> None:
                         ),
                     )
                 continue
+            if state == "cancelled":
+                api_monitor.finish(active.monitor_id, status = "cancelled")
+                return
             if state == "complete":
                 # Drop the resolver cache so the next retry sees the new model.
                 await asyncio.to_thread(invalidate_index)
@@ -529,14 +548,20 @@ async def _admit_and_start(
         )
 
     expected_bytes = variants[variant]
-    fits, free = _enough_disk(expected_bytes)
+    from hub.utils.gguf_plan import build_gguf_variant_plans
+
+    plan = build_gguf_variant_plans(list(getattr(info, "siblings", None) or [])).get(
+        variant.lower()
+    )
+    need_bytes = _remaining_bytes(repo_id, plan, expected_bytes)
+    fits, free = _enough_disk(need_bytes)
     if not fits:
         _release(active)
         return AutoDownloadRefusal(
             status = 507,
             code = "insufficient_disk_space",
             message = (
-                f"'{_public_label(repo_id, variant)}' needs {_gb(expected_bytes)} plus "
+                f"'{_public_label(repo_id, variant)}' needs {_gb(need_bytes)} plus "
                 f"{_gb(_DISK_RESERVE_BYTES)} headroom, but only {_gb(free)} is free."
             ),
         )

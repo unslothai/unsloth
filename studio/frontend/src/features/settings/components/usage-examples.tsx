@@ -398,8 +398,9 @@ function useExampleModelName(): string | null {
           if (cancelled) return true;
           setCatalog(models);
           setAutoSwitch(enabled);
-          // Retry until a snippet would actually run, so switching turned on above lands.
-          return models.some((m) => m.loaded) || (enabled && models.length > 0);
+          // Only a resident model settles this: while nothing is loaded the answer
+          // still follows the switch above, which can be turned back off.
+          return models.some((m) => m.loaded);
         })
         .then((resolved) => {
           if (cancelled || resolved) return;

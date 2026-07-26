@@ -3797,6 +3797,33 @@ def _loaded_satisfies(requested: str) -> bool:
     return base in {active.lower(), (public_model_id(active) or "").lower()}
 
 
+def _resolves_to_resident(load_path: Optional[str]) -> bool:
+    """Whether a resolved on-disk path is what is already loaded."""
+    if not load_path:
+        return False
+    target = str(load_path).replace("\\", "/").rstrip("/").lower()
+    llama_backend = get_llama_cpp_backend()
+    for candidate in (
+        getattr(llama_backend, "gguf_path", None)
+        if getattr(llama_backend, "is_loaded", False)
+        else None,
+        getattr(llama_backend, "model_identifier", None)
+        if getattr(llama_backend, "is_loaded", False)
+        else None,
+        getattr(get_inference_backend(), "active_model_name", None),
+    ):
+        if not candidate:
+            continue
+        current = str(candidate).replace("\\", "/").rstrip("/").lower()
+        if (
+            current == target
+            or current.startswith(f"{target}/")
+            or target.startswith(f"{current}/")
+        ):
+            return True
+    return False
+
+
 async def _reject_unservable_model(
     requested_model: Optional[str], fastapi_request: Optional[Request]
 ) -> None:
@@ -3832,7 +3859,13 @@ async def _reject_unservable_model(
             or getattr(get_inference_backend(), "active_model_name", None)
         ):
             return
-        downloaded = await asyncio.to_thread(resolve_local_gguf, requested_model) is not None
+        resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+        # A manual load stores the on-disk path while the resolver advertises a
+        # publisher/model alias for it (LM Studio, custom folders), so compare the
+        # resolved path too before calling a resident model unservable.
+        if resolved is not None and _resolves_to_resident(resolved[0]):
+            return
+        downloaded = resolved is not None
         # The exact ref may miss on the quant alone, so ask about the repo too.
         here = downloaded or (
             variant is not None and await asyncio.to_thread(resolve_local_gguf, base) is not None

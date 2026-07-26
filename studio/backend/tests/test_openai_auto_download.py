@@ -24,9 +24,12 @@ class _Sibling:
         self,
         rfilename,
         size = 0,
+        blob_id = None,
     ):
         self.rfilename = rfilename
         self.size = size
+        # The plan identifies cached blobs by hash; None means "not known".
+        self.blob_id = blob_id
 
 
 class _Info:
@@ -1029,3 +1032,69 @@ def test_a_slashless_local_model_is_still_a_concrete_reference(monkeypatch):
     monkeypatch.setattr("core.inference.local_model_resolver.resolve_local_gguf", lambda name: None)
     assert asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req())) is None
     assert asyncio.run(inference_route._reject_unservable_model("default", _Req())) is None
+
+
+def test_a_cancelled_download_is_not_reported_as_failed(hub, monkeypatch):
+    # The monitor has its own cancelled state; routing every non-complete state
+    # through fail_open rendered a deliberate cancel as "Model download failed".
+    from core.inference import api_monitor as monitor_module
+
+    assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
+    active = hub["watched"][-1]
+
+    async def _cancelled(repo, variant):
+        return "cancelled", None
+
+    monkeypatch.setattr(auto_dl, "_job_state", _cancelled)
+    monkeypatch.setattr(auto_dl, "_WATCH_POLL_S", 0)
+    asyncio.run(hub["real_watch"](active, None))
+    [row] = [e for e in monitor_module.api_monitor.snapshot() if e["id"] == active.monitor_id]
+    assert row["status"] == "cancelled"
+    assert row.get("error") is None
+
+
+def test_disk_admission_counts_only_what_is_left_to_fetch(hub, monkeypatch):
+    # A resumed quant, or a companion already pulled in by another quant, is on
+    # disk; charging for it 507s a download that fits.
+    seen = {}
+
+    def _enough(need):
+        seen["need"] = need
+        return True, 10 * 1024**4
+
+    gb = 1024**3
+    hub["info"] = _Info(
+        [
+            _Sibling("model-UD-Q4_K_XL.gguf", 4 * gb, blob_id = "sha-main"),
+            _Sibling("mmproj-F16.gguf", 1 * gb, blob_id = "sha-mmproj"),
+            _Sibling("mtp-model.gguf", 1 * gb, blob_id = "sha-mtp"),
+        ]
+    )
+    monkeypatch.setattr(auto_dl, "_enough_disk", _enough)
+    monkeypatch.setattr(
+        "hub.utils.download_registry.existing_blob_bytes",
+        lambda repo_type, repo_id, hashes: 3 * gb,
+    )
+    assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
+    # 4 GB quant + 2 GB companions, 3 GB of which is already cached.
+    assert seen["need"] == 3 * gb
+
+
+def test_a_resolver_alias_for_the_resident_model_is_not_refused(monkeypatch):
+    # A manual load stores the on-disk path while /v1/models advertises
+    # publisher/model for it, so the alias must not read as unservable.
+    loaded = _Loaded("/models/publisher/model/weights.gguf", None)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf",
+        lambda name: ("/models/publisher/model/weights.gguf", None, "publisher/model"),
+    )
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: False
+    )
+    assert asyncio.run(inference_route._reject_unservable_model("publisher/model", _Req())) is None
