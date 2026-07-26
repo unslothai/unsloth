@@ -3747,9 +3747,7 @@ async def _maybe_auto_switch_model(
                             )
                         )
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
-                        if saved_gpu_ids and not _override_gpu_ids_still_resolve(
-                            saved_gpu_ids
-                        ):
+                        if saved_gpu_ids and not _override_gpu_ids_still_resolve(saved_gpu_ids):
                             # A pin saved before a GPU was removed, before a
                             # visibility-mask change, or on another host. Dropping the
                             # one dead field beats 400ing the whole load.

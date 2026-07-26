@@ -4036,9 +4036,7 @@ def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(monkeypatch):
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
 
     resp = settings_route.update_openai_auto_switch_override(
-        settings_route.ModelOverridePayload(
-            model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
-        ),
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096),
         "tester",
     )
     entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
@@ -4055,9 +4053,7 @@ def test_bare_repo_carry_over_does_not_split_a_windows_path(monkeypatch):
     settings.set_model_override("C", llama_extra_args = ["--flash-attn"])
 
     resp = settings_route.update_openai_auto_switch_override(
-        settings_route.ModelOverridePayload(
-            model_id = r"C:\models\x.gguf", max_seq_length = 4096
-        ),
+        settings_route.ModelOverridePayload(model_id = r"C:\models\x.gguf", max_seq_length = 4096),
         "tester",
     )
     assert "llama_extra_args" not in resp.overrides[r"C:\models\x.gguf"]
@@ -4095,9 +4091,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
         "get_model_override",
         lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
     )
-    monkeypatch.setattr(
-        inference_route, "_override_gpu_ids_still_resolve", lambda ids: False
-    )
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", lambda ids: False)
 
     _run_hook("unsloth/B-GGUF")
     req = rec.calls[0]
@@ -4116,12 +4110,8 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(
-        settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]}
-    )
-    monkeypatch.setattr(
-        inference_route, "_override_gpu_ids_still_resolve", lambda ids: True
-    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", lambda ids: True)
 
     _run_hook("unsloth/B-GGUF")
     assert rec.calls[0].gpu_ids == [0, 1]
