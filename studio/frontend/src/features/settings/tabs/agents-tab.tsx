@@ -419,7 +419,7 @@ function AgentIcon({
     <span
       aria-hidden={true}
       style={{ backgroundColor: color }}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md font-heading text-[11px] font-semibold text-white"
+      className="flex size-7 shrink-0 items-center justify-center rounded-md font-heading text-ui-11 font-semibold text-white"
     >
       {mark}
     </span>
@@ -543,21 +543,21 @@ function SubagentSection({
         >
           {t("settings.agents.subagent.title")}
         </span>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.agents.subagent.description", { agent: agent.name })}
         </p>
       </div>
 
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[11px] font-medium text-foreground">
+          <span className="text-ui-11 font-medium text-foreground">
             {t("settings.agents.subagent.setupCommand")}
           </span>
           <button
             type="button"
             onClick={commandCopy.copy}
             aria-label={t("settings.agents.subagent.copySetupCommand")}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
               icon={commandCopy.copied ? Tick02Icon : Copy01Icon}
@@ -571,21 +571,21 @@ function SubagentSection({
               : t("settings.agents.copy")}
           </button>
         </div>
-        <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+        <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
           {command}
         </code>
       </div>
 
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[11px] font-medium text-foreground">
+          <span className="text-ui-11 font-medium text-foreground">
             {t("settings.agents.subagent.usagePrompt", { agent: agent.name })}
           </span>
           <button
             type="button"
             onClick={promptCopy.copy}
             aria-label={t("settings.agents.subagent.copyUsagePrompt")}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
               icon={promptCopy.copied ? Tick02Icon : Copy01Icon}
@@ -599,7 +599,7 @@ function SubagentSection({
               : t("settings.agents.copy")}
           </button>
         </div>
-        <code className="block min-w-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+        <code className="block min-w-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
           {prompt}
         </code>
       </div>
@@ -1125,7 +1125,7 @@ export function AgentsTab() {
               aria-label={t("settings.agents.agentDocs", {
                 agent: selectedAgentDetails.name,
               })}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {t("settings.agents.docs")}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
@@ -1175,7 +1175,7 @@ export function AgentsTab() {
                       {localDetection &&
                       loaded &&
                       detectedAgents.has(agent.id) ? (
-                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
+                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                           {t("settings.agents.quickstart.installed")}
                         </span>
                       ) : null}
@@ -1266,7 +1266,7 @@ export function AgentsTab() {
                     ))}
                   </CommandList>
                   {matchingModels.length > visibleModels.length ? (
-                    <p className="border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">
+                    <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
                       {t("settings.agents.showingModels", {
                         shown: visibleModels.length,
                         total: matchingModels.length,
@@ -1323,7 +1323,7 @@ export function AgentsTab() {
                     <SelectItem key={variant.quant} value={variant.quant}>
                       <span className="font-mono text-xs">{variant.quant}</span>
                       {metadata.length > 0 ? (
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-ui-10 text-muted-foreground">
                           {metadata.join(" · ")}
                         </span>
                       ) : null}
@@ -1336,7 +1336,7 @@ export function AgentsTab() {
         </div>
 
         {variantsFailed ? (
-          <p className="text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+          <p className="text-ui-11 leading-relaxed text-amber-700 dark:text-amber-400">
             {t("settings.agents.quantizationLoadError")}
           </p>
         ) : null}
@@ -1350,7 +1350,7 @@ export function AgentsTab() {
               type="button"
               onClick={handleCopy}
               aria-label={t("settings.agents.copyGeneratedCommand")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon
                 icon={copied ? Tick02Icon : Copy01Icon}
@@ -1359,7 +1359,7 @@ export function AgentsTab() {
               {copied ? t("settings.agents.copied") : t("settings.agents.copy")}
             </button>
           </div>
-          <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground">
+          <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
             {command}
           </code>
         </div>
@@ -1371,7 +1371,7 @@ export function AgentsTab() {
           agent={selectedAgentDetails}
         />
 
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <p className="text-ui-11 leading-relaxed text-muted-foreground">
           {t("settings.agents.modelNote")}
         </p>
       </section>

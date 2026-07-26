@@ -655,6 +655,15 @@ _apt_distro_description() {
     )
 }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# The subshell is required: in dash a failed redirection on the special
+# builtin `:` exits the whole script.
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -695,24 +704,51 @@ _smart_apt_install() {
         echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
+        if _can_read_tty; then
+            printf "    Accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline,
+            # as the autostart prompt below does. Enter is still yes (a
+            # successful read of an empty line).
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    echo ""
+                    echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                    echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                    exit 1
+                    ;;
+            esac
+            sudo apt-get update -y </dev/null
+            sudo apt-get install -y $_STILL_MISSING </dev/null
         else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
+            # Nobody can answer a prompt or type a password here. -n makes sudo
+            # refuse rather than prompt into a closed stdin, which is how #7307
+            # died. Probe with the real commands: `sudo -l` answers whether they
+            # are *authorized*, not whether running them needs authentication.
+            # -k ignores any cached timestamp, so only a real NOPASSWD rule gets
+            # through, not someone's sudo in another shell minutes ago. Per
+            # sudo(8), -k alongside a command ignores the cached credentials and
+            # "will not update" them, so other sessions keep theirs.
+            echo "    No terminal to confirm on; trying passwordless sudo."
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                echo "    Installed with passwordless sudo."
+            else
                 echo ""
-                echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    Detected ${_ad_desc}."
+                # Either sudo refused, or apt failed on a bad repo, dpkg lock or
+                # network outage. sudo exits 1 on an auth/config problem and
+                # when the command cannot be executed, but otherwise passes the
+                # command's own status through, so state both causes.
+                echo "    Either sudo needs a password here, or apt-get itself"
+                echo "    failed; see the error above. With no terminal to"
+                echo "    authenticate on, this cannot be done unattended."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
                 echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 exit 1
-                ;;
-            *)
-                sudo apt-get update -y </dev/null
-                sudo apt-get install -y $_STILL_MISSING </dev/null
-                ;;
-        esac
+            fi
+        fi
     else
         echo ""
         echo "    sudo is not available on this system."
