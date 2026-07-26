@@ -50,6 +50,7 @@ export function StudioPage(): ReactElement {
   const closeDialog = useDatasetPreviewDialogStore((s) => s.close);
 
   const [requestedTab, setRequestedTab] = useState("configure");
+  const [isCheckpointResumeSelected, setIsCheckpointResumeSelected] = useState(false);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
 
@@ -204,9 +205,9 @@ export function StudioPage(): ReactElement {
               <div className="flex min-w-0 flex-col gap-4 md:gap-6">
                 <ModelSection />
                 <div className="grid min-w-0 grid-cols-1 items-start gap-4 md:grid-cols-2 md:gap-6 xl:grid-cols-3 xl:gap-6">
-                  <DatasetSection />
-                  <ParamsSection />
-                  <TrainingSection />
+                  <DatasetSection disabled={isCheckpointResumeSelected} />
+                  <ParamsSection disabled={isCheckpointResumeSelected} />
+                  <TrainingSection onResumeSelectedChange={setIsCheckpointResumeSelected} />
                 </div>
               </div>
             </TabsContent>

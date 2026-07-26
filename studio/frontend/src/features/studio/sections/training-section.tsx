@@ -41,7 +41,11 @@ const placeholderData = [
   { step: 50, loss: 0.8 },
 ];
 
-export function TrainingSection() {
+export function TrainingSection({
+  onResumeSelectedChange,
+}: {
+  onResumeSelectedChange?: (selected: boolean) => void;
+}) {
   const t = useT();
   const chartConfig = {
     loss: { label: t("studio.charts.loss"), color: "#3b82f6" },
@@ -186,13 +190,14 @@ export function TrainingSection() {
           setResumeInspection(value);
           setResumeConfirmed(confirmed);
           setResumeSelected(selected);
+          onResumeSelectedChange?.(selected);
         }} />
 
         {/* Start/Stop */}
         <Button
           data-tour="studio-start"
           className="w-full cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
-          onClick={() => void startTrainingRun({ checkpointImportToken: resumeInspection?.inspectionToken })}
+          onClick={() => void startTrainingRun({ resumeCheckpointPath: resumeInspection?.checkpointPath })}
           disabled={isStarting || resumeBlocked || isIncompatible || store.isCheckingDataset || isLoadingModel || !configValidation.ok}
         >
           <HugeiconsIcon icon={Rocket01Icon} className="size-4" />
