@@ -213,7 +213,9 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
     assert "4bit" in infos["z-image"]["default_base"].lower()
 
 
-def test_family_train_infos_sdxl_supports_compile_without_precision_modes(monkeypatch, dit_train_host):
+def test_family_train_infos_sdxl_supports_compile_without_precision_modes(
+    monkeypatch, dit_train_host
+):
     # Regional compile now applies to every family (the SDXL trainer compiles its U-Net blocks too),
     # but base_precision stays DiT-only, so SDXL advertises no precision modes while z-image keeps
     # its own. Pin the precision list so the assertion holds regardless of the host GPU.
