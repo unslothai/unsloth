@@ -748,12 +748,10 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
 
 
 def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatch, tmp_path):
-    # An incomplete cache (missing split shard, no disk space, offline hub) must
-    # surface from the pre-teardown _download_gguf, never from Phase 2 after the
-    # kill. A locally resolvable main/shard-1 file does NOT prove the variant is
-    # complete, so short-circuiting the preflight on it would classify a header
-    # and then tear the live server down on the Phase 2 download. Pin that the
-    # download runs first even when such a file is resolvable.
+    # An incomplete cache (missing shard, no disk space, offline hub) must surface
+    # from the pre-teardown _download_gguf, never from Phase 2 after the kill: a
+    # resolvable shard-1 file does not prove the variant is complete, so the
+    # download has to run first even when such a file is resolvable.
     import hub.utils.gguf as hub_gguf
 
     cached_shard = tmp_path / "model-00001-of-00003.gguf"
@@ -861,8 +859,7 @@ def _vulkan_pinned_backend(monkeypatch, killed: list) -> LlamaCppBackend:
 
 
 def test_local_vulkan_pre_teardown_reads_the_real_gguf_header(monkeypatch, tmp_path):
-    # The pre-teardown branch must classify from the header, not from the
-    # Vulkan + gpu_ids combination alone, so a normal GGUF still loads.
+    # Classify from the header, not from Vulkan + gpu_ids alone: normal GGUFs load.
     killed = []
     backend = _vulkan_pinned_backend(monkeypatch, killed)
     monkeypatch.setattr(
@@ -897,7 +894,7 @@ def test_local_vulkan_diffusion_header_rejects_before_teardown(monkeypatch, tmp_
 
 
 def test_local_vulkan_missing_gguf_is_reported_before_teardown(monkeypatch, tmp_path):
-    # The existence check the preflight needs must not cost the live model either.
+    # The preflight existence check must not cost the live model either.
     killed = []
     backend = _vulkan_pinned_backend(monkeypatch, killed)
 
