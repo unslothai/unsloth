@@ -483,3 +483,54 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     b._download_companion_gguf = _fake_companion
     assert b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF") is None
     assert reached.get("hit") is True
+
+
+# ── Pre-#7460 variant keys stay resumable ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "names,variant,expected",
+    [
+        # A download interrupted before the relabel stored the base key.
+        (["m-Q6_K-MTP.gguf"], "Q6_K", "m-Q6_K-MTP.gguf"),
+        (["m-Q6_K-MTP.gguf"], "Q6_K-MTP", "m-Q6_K-MTP.gguf"),
+        # An exact match still wins over the compatibility fallback.
+        (["m-Q6_K.gguf", "m-Q6_K-MTP.gguf"], "Q6_K", "m-Q6_K.gguf"),
+        (["m-Q6_K.gguf"], "Q6_K", "m-Q6_K.gguf"),
+    ],
+)
+def test_pre_upgrade_variant_key_resolves_a_plan(monkeypatch, names, variant, expected):
+    from hub.workers import hf_download
+
+    siblings = [_sib(name, 1_000, name) for name in names]
+    monkeypatch.setattr(
+        hf_download,
+        "_model_info_with_retry",
+        lambda *_a, **_k: SimpleNamespace(siblings = siblings),
+    )
+
+    plan = hf_download._gguf_variant_target_plan("org/repo", variant, None)
+
+    assert plan is not None and list(plan.target_filenames) == [expected]
+
+
+@pytest.mark.parametrize(
+    "names,variant",
+    [
+        # Several flavors share the base quant, so the old key is ambiguous.
+        (["m-Q6_K-MTP.gguf", "m-Q6_K-PT-MTP.gguf"], "Q6_K"),
+        # Never resolve across base quants.
+        (["m-Q4_K_M-MTP.gguf"], "Q6_K"),
+    ],
+)
+def test_ambiguous_or_unrelated_variant_key_has_no_plan(monkeypatch, names, variant):
+    from hub.workers import hf_download
+
+    siblings = [_sib(name, 1_000, name) for name in names]
+    monkeypatch.setattr(
+        hf_download,
+        "_model_info_with_retry",
+        lambda *_a, **_k: SimpleNamespace(siblings = siblings),
+    )
+
+    assert hf_download._gguf_variant_target_plan("org/repo", variant, None) is None

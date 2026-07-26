@@ -540,7 +540,16 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    return build_gguf_variant_plans(list(info.siblings)).get(variant.lower())
+    plans = build_gguf_variant_plans(list(info.siblings))
+    key = variant.lower()
+    if key in plans:
+        return plans[key]
+    # A download interrupted before #7460 stored the base key, so ``q6_k`` must
+    # still resume ``...-Q6_K-MTP.gguf``. Only when one flavor carries that base.
+    from hub.utils.gguf import _base_quant_for_preference
+
+    by_base = [k for k in plans if k != key and _base_quant_for_preference(k).lower() == key]
+    return plans[by_base[0]] if len(by_base) == 1 else None
 
 
 def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:
