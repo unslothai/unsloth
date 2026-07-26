@@ -4654,7 +4654,6 @@ class TestOutputCapturingTakesThe53Floor:
 
     def test_marker_is_classified_with_the_other_5x_modules(self):
         import utils.transformers_version as tv
-
         assert "transformers.utils.output_capturing" in tv._TRANSFORMERS_5_REMOTE_IMPORT_MARKERS
         assert "transformers.utils.output_capturing" not in (
             tv._TRANSFORMERS_510_REMOTE_IMPORT_MARKERS
@@ -4767,7 +4766,6 @@ class TestHubPaginationStaysOnTheConfiguredOrigin:
     )
     def test_origin_predicate(self, monkeypatch, url, expected):
         import utils.transformers_version as tv
-
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         assert tv._is_same_hub_origin(url) is expected
 
@@ -4780,7 +4778,12 @@ class TestOfflineAutoMapScanUsesTheHubCache:
         _clear_scan_caches()
 
     @staticmethod
-    def _snapshot(hub: Path, repo: str, modeling_src: str, auto_map: bool = True):
+    def _snapshot(
+        hub: Path,
+        repo: str,
+        modeling_src: str,
+        auto_map: bool = True,
+    ):
         repo_dir = hub / ("models--" + repo.replace("/", "--"))
         snap = repo_dir / "snapshots" / "deadbeef"
         snap.mkdir(parents = True)
@@ -4853,25 +4856,24 @@ class TestDynamicImportsOfVersionedModules:
 
     def _matches(self, src: str) -> bool:
         import utils.transformers_version as tv
-
         return tv._remote_auto_map_py_matches(self.MARKERS, [src])
 
     @pytest.mark.parametrize(
         "src",
         [
-            'import importlib\n'
+            "import importlib\n"
             'm = importlib.import_module("transformers.tokenization_utils_tokenizers")\n',
-            'from importlib import import_module\n'
+            "from importlib import import_module\n"
             'import_module("transformers.tokenization_utils_tokenizers")\n',
             '__import__("transformers.tokenization_utils_tokenizers")\n',
-            'import importlib\n'
-            'def load():\n'
+            "import importlib\n"
+            "def load():\n"
             '    return importlib.import_module("transformers.tokenization_utils_tokenizers")\n',
-            'import importlib\n'
-            'try:\n'
+            "import importlib\n"
+            "try:\n"
             '    importlib.import_module("transformers.tokenization_utils_tokenizers")\n'
-            'except ImportError:\n'
-            '    pass\n',
+            "except ImportError:\n"
+            "    pass\n",
         ],
     )
     def test_constant_string_dynamic_import_promotes(self, src):
@@ -4887,9 +4889,9 @@ class TestDynamicImportsOfVersionedModules:
             'import importlib\nimportlib.import_module("transformers." + suffix)\n',
             'import importlib\nimportlib.import_module(f"transformers.{mod}")\n',
             'import importlib\nimportlib.import_module(".tokenization_utils_tokenizers", __package__)\n',
-            'from typing import TYPE_CHECKING\n'
-            'import importlib\n'
-            'if TYPE_CHECKING:\n'
+            "from typing import TYPE_CHECKING\n"
+            "import importlib\n"
+            "if TYPE_CHECKING:\n"
             '    importlib.import_module("transformers.tokenization_utils_tokenizers")\n',
         ],
     )
@@ -4900,7 +4902,7 @@ class TestDynamicImportsOfVersionedModules:
     def test_dynamic_import_reaches_the_tier(self, tmp_path: Path):
         _auto_map_checkpoint(
             tmp_path,
-            'import importlib\n'
+            "import importlib\n"
             'importlib.import_module("transformers.tokenization_utils_tokenizers")\n',
         )
         assert _remote_auto_map_tier(str(tmp_path))[0] == "530"

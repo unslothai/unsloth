@@ -703,9 +703,7 @@ def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | N
             # Refusing is also the safe answer for the listing: success=False keeps a
             # truncated tree from passing as a complete one.
             if not _is_same_hub_origin(next_url):
-                logger.debug(
-                    "Refusing cross-origin Hub pagination link for %s: %s", path, next_url
-                )
+                logger.debug("Refusing cross-origin Hub pagination link for %s: %s", path, next_url)
                 return None, False
             url = next_url
         logger.debug("Hub API pagination exceeded %s pages for %s", _HF_API_MAX_PAGES, path)
