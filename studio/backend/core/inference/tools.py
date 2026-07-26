@@ -171,6 +171,7 @@ _COMMAND_PREFIXES = frozenset(
         "timeout",
         "ionice",
         "chroot",
+        "setpriv",
         "sudo",
         "doas",
         "su",
@@ -256,6 +257,14 @@ _CONTAINER_READ_SUBCOMMANDS = frozenset(
 )
 # Windows `if exist FILE cmd` / `if defined VAR cmd` put an operand between the
 # keyword and the command, so the command word is two tokens along.
+# awk runs its program text, which can shell out through the system() builtin
+# or by piping to a shell ("cmd" | "sh"). Screening the program keeps ordinary
+# field work (awk '{print $1}') running while the escape hatches ask.
+_AWK_COMMANDS = frozenset({"awk", "gawk", "mawk", "nawk", "busybox-awk"})
+_AWK_SHELL_ESCAPE_RE = re.compile(
+    r"\bsystem\s*\(|\|\s*&?\s*[\"']\s*(?:/\S*/)?(?:sh|bash|zsh|ksh|dash|cmd)\b|"
+    r"\bENVIRON\s*\[|\bprintf\s*\|"
+)
 _WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
@@ -3254,6 +3263,34 @@ _HIGH_RISK_COMMANDS = frozenset(
 # sysctl's write and load forms change kernel parameters; a read-only query
 # (sysctl -a, sysctl net.ipv4.ip_forward) stays automatic.
 _SYSCTL_WRITE_FLAGS = frozenset({"-w", "--write", "-p", "--load", "--system"})
+# setpriv changes privilege state and then execs its remaining arguments, so the
+# real command sits behind it. Kept out of _AUTO_SAFE_WRAPPERS (it is not safe in
+# its own right) and instead made transparent only for the high-risk scan, where
+# the flags that raise privilege are gated on their own.
+_PRIVILEGE_EXEC_WRAPPERS = frozenset({"setpriv"})
+_SETPRIV_PRIVILEGE_FLAGS = frozenset(
+    {
+        "--reuid",
+        "--regid",
+        "--ruid",
+        "--euid",
+        "--rgid",
+        "--egid",
+        "--groups",
+        "--init-groups",
+        "--inh-caps",
+        "--ambient-caps",
+        "--bounding-set",
+        "--securebits",
+        "--selinux-label",
+        "--apparmor-profile",
+    }
+)
+# fallocate replaces a range with a hole, zeroes it or removes it, destroying
+# file contents in place. Plain allocation (-l SIZE) only grows a file.
+_FALLOCATE_DESTRUCTIVE_FLAGS = frozenset(
+    {"-p", "--punch-hole", "-z", "--zero-range", "-c", "--collapse-range", "-d", "--dig-holes"}
+)
 # High risk only with a recursive flag (chmod -R 777 .); a scoped
 # `chmod +x build.sh` stays out.
 _HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
@@ -3308,6 +3345,22 @@ _LISTENER_PY_MODULE_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
     r"(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
     re.IGNORECASE,
+)
+# The same modules as the command-position regex, matched after wrapper
+# resolution so `env python -m http.server` and `timeout 60 python -m ...`
+# are seen too.
+_LISTENER_PY_MODULE_NAMES = frozenset(
+    {
+        "http.server",
+        "simplehttpserver",
+        "uvicorn",
+        "gunicorn",
+        "waitress",
+        "flask",
+        "twisted",
+        "websockets",
+        "aiohttp.web",
+    }
 )
 _LISTENER_BINARIES = frozenset({"uvicorn", "gunicorn", "waitress-serve", "hypercorn", "daphne"})
 _LISTENER_BIN_AT_CMD_RE = re.compile(
@@ -3395,6 +3448,23 @@ _WRAPPER_VALUE_FLAGS_BY_CMD = {
         {"-I", "-L", "-P", "-d", "--delimiter", "-a", "--arg-file", "-n", "-s", "-E"}
     ),
     "chroot": frozenset({"--userspec", "--groups"}),
+    # setpriv <options> <program>: only the value-taking options consume a token.
+    "setpriv": frozenset(
+        {
+            "--reuid",
+            "--regid",
+            "--groups",
+            "--inh-caps",
+            "--ambient-caps",
+            "--bounding-set",
+            "--securebits",
+            "--pdeathsig",
+            "--selinux-label",
+            "--apparmor-profile",
+            "--landlock-access",
+            "--landlock-rule",
+        }
+    ),
     # exec -a NAME runs cmd under NAME, so NAME is a value, not the command.
     "exec": frozenset({"-a"}),
     "setsid": frozenset(),
@@ -3604,6 +3674,15 @@ _CLIENT_WRAPPERS = frozenset(
 _CLIENT_WRAPPER_PREFIX = (
     r"(?:(?:env|command|timeout|nohup|nice|ionice|stdbuf|setsid|exec)\s+"
     r"(?:-\S+\s+|\d+(?:\.\d+)?[smhd]?\s+)*)*"
+)
+# The terminal sandbox shares the backend's installed environment, so removing
+# a package (pip uninstall torch) breaks the running process. Installing does
+# not, and is ordinary work, so only the removal verbs are gated.
+_PKG_REMOVE_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
+    r"(?:(?:python[0-9.]*\s+-m\s+)?pip[0-9]*|uv\s+pip|pipx|conda|mamba|micromamba)"
+    r"\s+(?:uninstall|remove)\b",
+    re.IGNORECASE,
 )
 _CURL_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
@@ -3824,6 +3903,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     # A script piped into a shell (printf '...' | bash) or fed as a herestring
     # (bash <<< '...') is executed without ever appearing at command position.
+    if _PKG_REMOVE_AT_CMD_RE.search(command):
+        return True
     if _PIPE_TO_INTERPRETER_RE.search(command.lower()):
         return True
     _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
@@ -3899,6 +3980,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_worktree_action = ""  # the action after `git worktree`
         win_operand_pending = False  # operand of a Windows `if exist`/`if defined`
         inline_python_pending = False  # next token is a `python -c` payload
+        py_module_pending = False  # next token is the module after `python -m`
+        git_submodule_action = ""  # the action after `git submodule`
+        awk_program_pending = False  # next positional is an awk program
         git_config_alias_pending = False  # `git config alias.x` precedes its body
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
@@ -3919,10 +4003,17 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_worktree_action = ""
                 win_operand_pending = False
                 inline_python_pending = False
+                py_module_pending = False
+                git_submodule_action = ""
+                awk_program_pending = False
                 shell_c_pending = False
                 git_glob_pending = False
                 chdir_pending = False
                 continue
+            if py_module_pending:
+                py_module_pending = False
+                if token.strip("\"'").lower() in _LISTENER_PY_MODULE_NAMES:
+                    return True
             if inline_python_pending:
                 inline_python_pending = False
                 if _depth >= 3 or _inline_python_is_high_risk(token):
@@ -3955,6 +4046,10 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     scan_forward = True
                     expect_command = True
                     continue
+                if current_command == "setpriv" and flag in _SETPRIV_PRIVILEGE_FLAGS:
+                    # Ahead of the wrapper-value skip below, which would otherwise
+                    # swallow `--reuid 0` before it is judged.
+                    return True
                 # A wrapper option taking a SEPARATE value (env -u NAME): the next
                 # token is that value, not the wrapped command.
                 if (
@@ -3973,6 +4068,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     else None
                 )
                 _current_is_python_family = current_command.startswith(("python", "pypy"))
+                if _current_is_python_family and flag == "-m":
+                    py_module_pending = True
+                    continue
                 if _inline_spec is not None and (
                     flag in _inline_spec[0] or _short_flag_arg(token, _inline_spec[1]) is not None
                 ):
@@ -4039,6 +4137,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     ):
                         return True
                 if current_command == "sysctl" and flag in _SYSCTL_WRITE_FLAGS:
+                    return True
+                if current_command == "fallocate" and (
+                    flag in _FALLOCATE_DESTRUCTIVE_FLAGS
+                    or any(f in _FALLOCATE_DESTRUCTIVE_FLAGS for f in _short_flag_cluster(token))
+                ):
                     return True
                 if (
                     current_command == "git"
@@ -4168,7 +4271,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             if ext in {".exe", ".com", ".bat", ".cmd"}:
                 base = stem
             if (expect_command or prefix_pending) and (
-                base in _AUTO_SAFE_WRAPPERS or base in _MULTICALL_BINARIES
+                base in _AUTO_SAFE_WRAPPERS
+                or base in _MULTICALL_BINARIES
+                or base in _PRIVILEGE_EXEC_WRAPPERS
             ):
                 # A wrapper (env/timeout) or a multicall binary (busybox rm)
                 # precedes the real command; keep seeking it, but track it so its
@@ -4217,6 +4322,8 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 current_command = base
                 if base in _CHDIR_COMMANDS:
                     chdir_pending = True
+                if base in _AWK_COMMANDS:
+                    awk_program_pending = True
             elif current_command == "git" and not git_subcommand:
                 # The first positional after `git` is its subcommand.
                 git_subcommand = base
@@ -4229,6 +4336,26 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     continue
                 if base in _HIGH_RISK_GIT_SUBCOMMANDS:
                     return True
+            elif awk_program_pending:
+                awk_program_pending = False
+                if _AWK_SHELL_ESCAPE_RE.search(raw):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "submodule"
+                and git_submodule_action == "foreach"
+            ):
+                # `git submodule foreach '<cmd>'` runs the argument in every
+                # submodule, so it is a command in its own right.
+                git_submodule_action = ""
+                if _depth >= 3 or _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "submodule"
+                and not git_submodule_action
+            ):
+                git_submodule_action = base
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
                 # The database name is the whole request; no path is mentioned.
                 return True
@@ -4407,6 +4534,33 @@ def _python_is_high_risk(code: str) -> bool:
             return True
         return attr in _PY_DESTRUCTIVE_FS_OS_ATTRS and _is_os_module_ref(value)
 
+    def _module_dict_target(value):
+        # The module namespace as a dict: vars(os) or os.__dict__.
+        if isinstance(value, ast.Attribute) and value.attr == "__dict__":
+            return value.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "vars"
+            and len(value.args) == 1
+        ):
+            return value.args[0]
+        return None
+
+    def _is_module_dict_lookup(node) -> bool:
+        # vars(os)["remove"] / os.__dict__["unlink"] is getattr spelled through
+        # the namespace dict, so screen the key the same way. Anchored to a
+        # filesystem module, leaving an ordinary d["remove"] alone.
+        if not isinstance(node, ast.Subscript):
+            return False
+        module = _module_dict_target(node.value)
+        if module is None:
+            return False
+        attr = _folded_str_literal(node.slice)
+        if attr is None:
+            return _is_fs_module_ref(module)
+        return _is_destructive_attr(attr, module)
+
     # `rm = getattr(os, "remove")` stores the lookup and calls it later, so the
     # direct getattr(...)(...) shape never sees it. Bind the name here instead.
     for node in ast.walk(tree):
@@ -4467,7 +4621,12 @@ def _python_is_high_risk(code: str) -> bool:
     # A bound reference (f = os.remove; f(x)) hides the call site behind a plain
     # Name, so record the target name as a destructive alias to catch f(...) below.
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Subscript):
+            if _is_module_dict_lookup(node.value):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        destructive_fs_aliases.add(tgt.id)
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
             if _is_destructive_attr(node.value.attr, node.value.value):
                 for tgt in node.targets:
                     if isinstance(tgt, ast.Name):
@@ -4489,6 +4648,9 @@ def _python_is_high_risk(code: str) -> bool:
                 return True
             if _is_process_kill(func):
                 return True
+        elif isinstance(func, ast.Subscript):
+            if _is_module_dict_lookup(func):
+                return True
         elif isinstance(func, ast.Name) and func.id in destructive_fs_aliases:
             return True
         elif isinstance(func, ast.NamedExpr):
@@ -4497,6 +4659,8 @@ def _python_is_high_risk(code: str) -> bool:
             if isinstance(inner, ast.Attribute) and _is_destructive_attr(inner.attr, inner.value):
                 return True
             if isinstance(inner, ast.Name) and inner.id in destructive_fs_aliases:
+                return True
+            if _is_module_dict_lookup(inner):
                 return True
         # getattr(os, "remove")(x) resolves the attribute at runtime. The name is
         # folded first ("un" + "link"); one that cannot be folded at all on a

@@ -857,6 +857,65 @@ def test_terminal_classifier(command, unsafe):
         ("wget https://x.io/data.zip", False),
         ("wget -T 10 https://x.io/data.zip", False),  # wget -T is a timeout, not upload
         ("curl -o out.bin https://x.io/f", False),  # -o output, not -O upload
+        # --- prompt: `git submodule foreach` runs its argument in every submodule ---
+        ("git submodule foreach 'rm -f victim'", True),
+        ("git submodule foreach --recursive 'rm -rf .'", True),
+        ("git submodule foreach 'chmod -R 777 .'", True),
+        # --- run: the other submodule actions take no command ---
+        ("git submodule foreach 'git status'", False),
+        ("git submodule update --init --recursive", False),
+        ("git submodule status", False),
+        ("git submodule add https://x.io/lib.git vendor/lib", False),
+        # --- prompt: an awk program shelling out through system() or a pipe ---
+        ("awk 'BEGIN { system(\"rm -f victim\") }'", True),
+        ("gawk 'BEGIN{system(\"id\")}'", True),
+        ('awk \'BEGIN { print "x" | "sh" }\'', True),
+        ("awk '{ print $1 | \"/bin/bash\" }' f", True),
+        # --- run: ordinary field work ---
+        ("awk '{print $1}' data.tsv", False),
+        ("awk -F, '{sum+=$2} END {print sum}' f.csv", False),
+        ("awk 'NR>1' data.csv > body.csv", False),
+        # --- prompt: setpriv execs what follows, after changing privilege ---
+        ("setpriv --nnp rm -f victim", True),
+        ("setpriv --reuid=1000 rm -rf build", True),
+        ("setpriv --reuid 0 bash", True),
+        ("setpriv --ambient-caps +CAP_SYS_ADMIN sh", True),
+        # --- run: setpriv only dropping privilege in front of ordinary work ---
+        ("setpriv --nnp echo hi", False),
+        ("setpriv --nnp python train.py", False),
+        ("setpriv --dump", False),
+        # --- prompt: fallocate destroying a range in place ---
+        ("fallocate -p -o 0 -l 4096 victim", True),
+        ("fallocate --punch-hole --offset 0 --length 4096 f", True),
+        ("fallocate -z -o 0 -l 100 f", True),
+        ("fallocate -c -o 0 -l 100 f", True),
+        ("fallocate -d f", True),
+        # --- run: plain allocation only grows a file ---
+        ("fallocate -l 1G bigfile", False),
+        ("fallocate --length 512M sparse.img", False),
+        # --- prompt: a python listener behind a wrapper is still a listener ---
+        ("env python -m http.server 8000", True),
+        ("timeout 60 python -m http.server", True),
+        ("nohup python -m uvicorn app:api", True),
+        ("nice -n 10 python3 -m gunicorn app:api", True),
+        # --- run: a mention of the module starts no listener ---
+        ("echo 'python -m http.server'", False),
+        ("grep -F 'python -m http.server' README.md", False),
+        ("python -m pytest tests/", False),
+        ("env python -m pip install -r requirements.txt", False),
+        # --- prompt: removing a package from the shared backend environment ---
+        ("pip uninstall -y torch", True),
+        ("pip3 uninstall -y unsloth", True),
+        ("python -m pip uninstall -y torch", True),
+        ("uv pip uninstall torch", True),
+        ("conda remove -y numpy", True),
+        # --- run: installing into it is ordinary work ---
+        ("pip install -r requirements.txt", False),
+        ("pip install --upgrade transformers", False),
+        ("uv pip install torch", False),
+        ("conda install -y numpy", False),
+        ("pip list", False),
+        ("pip show torch", False),
         # --- run: searching source for the word "sudo" is not escalation ---
         ("grep -R sudo .", False),
     ],
@@ -947,6 +1006,15 @@ def test_terminal_high_risk_classifier(command, high_risk):
         ("from pathlib import Path\n(Path('/etc') / 'passwd').read_text()", True),
         ("import pathlib\npathlib.Path('/etc').joinpath('shadow').read_text()", True),
         ("from pathlib import Path\np = Path('/etc')\n(p / 'shadow').open()", True),
+        # --- prompt: the module namespace dict resolves the attribute like getattr ---
+        ("import os\nvars(os)['remove']('victim')", True),
+        ("import os\nos.__dict__['remove']('victim')", True),
+        ("import shutil\nvars(shutil)['rmtree']('build')", True),
+        ("import os\nrm = vars(os)['unlink']\nrm('victim')", True),
+        # --- run: an ordinary dict lookup, and a non-destructive module member ---
+        ("d = {'remove': 1}\nprint(d['remove'])", False),
+        ("import os\nprint(vars(os)['sep'])", False),
+        ("import os\nprint(os.__dict__['curdir'])", False),
         # --- run: literal exec of safe code, and a literal import name ---
         ("exec('total = 1 + 2')", False),  # a literal source that runs safe code
         ("exec(\"open('out.txt', 'w').write('hi')\")", False),  # in-workdir write
