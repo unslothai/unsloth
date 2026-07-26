@@ -3037,6 +3037,51 @@ def test_chat_count_tokens_returns_input_tokens(monkeypatch):
     assert json.loads(response.body) == {"input_tokens": 42}
 
 
+def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.supports_tools = True
+    captured = {}
+
+    def _count(messages, system, tools, strict = False):
+        captured["tools"] = tools
+        captured["messages"] = messages
+        return 99
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _select_tools(payload, *, tools_on, mcp_allowed):
+        captured["tools_on"] = tools_on
+        captured["mcp_allowed"] = mcp_allowed
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "hello")],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+    )
+    response = asyncio.run(
+        inference_route.chat_count_tokens(payload, object(), "tester")
+    )
+    import json
+
+    assert json.loads(response.body) == {"input_tokens": 99}
+    assert captured["tools_on"] is True
+    assert captured["tools"][0]["function"]["name"] == "web_search"
+    assert any(
+        msg.get("role") == "system" and "web_search" in str(msg.get("content", ""))
+        for msg in captured["messages"]
+    )
+
+
 def test_audio_generate_is_reload_only(monkeypatch):
     # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
     # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal

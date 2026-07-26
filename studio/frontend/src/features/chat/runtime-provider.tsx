@@ -62,7 +62,11 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
-import { refreshContextUsage } from "./utils/refresh-context-usage";
+import {
+  getSavedContextUsageFromMessages,
+  refreshContextUsage,
+  registerRuntimeMessagesGetter,
+} from "./utils/refresh-context-usage";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -1094,6 +1098,14 @@ function useStudioRuntimeAdapters(
           store.params.checkpoint &&
           !isExternalModelId(store.params.checkpoint)
         ) {
+          const savedUsage = getSavedContextUsageFromMessages(
+            msgs,
+            store.params.checkpoint,
+            store.ggufContextLength,
+          );
+          if (savedUsage) {
+            store.setContextUsage(savedUsage);
+          }
           void refreshContextUsage({ threadId: remoteId });
         } else {
           // Restore context usage from last assistant message if model matches.
@@ -1352,6 +1364,17 @@ function ActiveThreadSync({
   return null;
 }
 
+function RuntimeMessagesRegistrar(): ReactElement | null {
+  const aui = useAui();
+
+  useEffect(() => {
+    registerRuntimeMessagesGetter(() => aui.thread().getState().messages);
+    return () => registerRuntimeMessagesGetter(null);
+  }, [aui]);
+
+  return null;
+}
+
 // Exposes the current thread's cancelRun() via the shared store so external
 // surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
 // deleting the thread, mirroring the Stop -> Trash sequence.
@@ -1536,6 +1559,7 @@ export function ChatRuntimeProvider({
         />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
+        <RuntimeMessagesRegistrar />
         {initialThreadId && (
           <ThreadAutoSwitch
             threadId={initialThreadId}

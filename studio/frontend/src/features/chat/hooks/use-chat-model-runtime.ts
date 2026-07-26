@@ -601,6 +601,7 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      const postLoadRefresh = { needed: false };
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1045,12 +1046,10 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
-            if (
+            postLoadRefresh.needed = Boolean(
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
-              !isExternalModelId(modelId)
-            ) {
-              void refreshContextUsage();
-            }
+                !isExternalModelId(modelId),
+            );
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&
@@ -1460,6 +1459,9 @@ export function useChatModelRuntime() {
         } finally {
           if (progressInterval) clearInterval(progressInterval);
           resetLoadingUi();
+          if (postLoadRefresh.needed && !abortCtrl.signal.aborted) {
+            void refreshContextUsage({ afterModelLoad: true });
+          }
         }
       } catch (error) {
         if (typeof selection !== "string" && selection.previousConfig) {

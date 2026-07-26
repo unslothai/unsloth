@@ -135,6 +135,10 @@ export async function loadModel(
 export async function countChatInputTokens(payload: {
   model: string;
   messages: OpenAIChatCompletionsRequest["messages"];
+  enable_tools?: boolean;
+  enabled_tools?: string[];
+  mcp_enabled?: boolean;
+  rag_scope?: Record<string, unknown>;
 }): Promise<{ input_tokens: number }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
     method: "POST",

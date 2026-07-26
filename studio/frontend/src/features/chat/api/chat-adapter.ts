@@ -1356,6 +1356,104 @@ export async function buildOutboundMessagesForTokenCount(
   return outboundMessages as OpenAIChatMessage[];
 }
 
+function outboundMessagesIncludeImage(
+  messages: OpenAIChatMessage[],
+): boolean {
+  for (const message of messages) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    if (
+      content.some(
+        (part) =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "image_url",
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export async function buildLocalTokenCountExtras(
+  threadId: string | undefined,
+  outboundMessages: OpenAIChatMessage[],
+): Promise<Record<string, unknown>> {
+  const runtime = useChatRuntimeStore.getState();
+  const {
+    supportsTools,
+    toolsEnabled,
+    codeToolsEnabled,
+    artifactsEnabled,
+    mcpEnabledForChat,
+    ragEnabled,
+    ragSource,
+    ragMode,
+    ragTopK,
+    ragAutoInject,
+    ragAutoInjectMinScore,
+    params,
+  } = runtime;
+
+  if (!supportsTools) {
+    return {};
+  }
+
+  const ragProjectId = await resolveProjectId(threadId);
+  const projectRagEnabled = ragProjectId
+    ? await projectHasSources(ragProjectId)
+    : false;
+  const hasOutboundImage = outboundMessagesIncludeImage(outboundMessages);
+  const renderHtmlToolEnabledForThisTurn = Boolean(
+    artifactsEnabled && !hasOutboundImage,
+  );
+
+  if (
+    !toolsEnabled &&
+    !codeToolsEnabled &&
+    !renderHtmlToolEnabledForThisTurn &&
+    !mcpEnabledForChat &&
+    !ragEnabled &&
+    !projectRagEnabled
+  ) {
+    return {};
+  }
+
+  return {
+    enable_tools: true,
+    enabled_tools: [
+      ...(ragEnabled || projectRagEnabled ? ["search_knowledge_base"] : []),
+      ...(toolsEnabled ? ["web_search"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(renderHtmlToolEnabledForThisTurn ? ["render_html"] : []),
+    ],
+    mcp_enabled: mcpEnabledForChat,
+    ...(ragEnabled || projectRagEnabled
+      ? {
+          rag_scope: {
+            ...(ragEnabled && ragSource.type === "kb"
+              ? { kb_id: ragSource.kbId }
+              : {
+                  ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
+                  ...(projectRagEnabled && ragProjectId
+                    ? { project_id: ragProjectId }
+                    : {}),
+                }),
+            default_top_k: ragTopK,
+            mode: ragMode,
+            autoinject: resolveAutoInject(ragAutoInject, params.checkpoint),
+            autoinject_min_score: ragAutoInjectMinScore,
+            ...(ragAutoInject === "off" ? { whole_doc: false } : {}),
+            context_length:
+              runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+          },
+        }
+      : {}),
+  };
+}
+
 async function resolveUseAdapter(
   threadId: string | undefined,
   options: OpenAIStreamAdapterOptions = {},

@@ -12788,6 +12788,21 @@ def _validate_anthropic_client_tools(tools) -> None:
             )
 
 
+def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]:
+    """Append text to the leading system/developer message, or prepend one."""
+    if not addition:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    for msg in copied:
+        if msg.get("role") not in ("system", "developer"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = content.rstrip() + "\n\n" + addition
+            return copied
+    return [{"role": "system", "content": addition}, *copied]
+
+
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
@@ -12817,6 +12832,32 @@ async def chat_count_tokens(
         )
     )
     openai_tools = payload.tools or None
+    model_name = _llama_public_model_id(llama_backend, payload.model)
+
+    from state.tool_policy import get_tool_policy as _get_tool_policy_ct
+
+    _cli_policy = _get_tool_policy_ct()
+    _tools_on = _effective_enable_tools(payload)
+    _mcp_allowed = bool(payload.mcp_enabled) and _cli_policy is not False
+    if (_tools_on or _mcp_allowed) and llama_backend.supports_tools:
+        tools_to_use = await _select_request_tools(
+            payload,
+            tools_on = _tools_on,
+            mcp_allowed = _mcp_allowed,
+        )
+        if tools_to_use:
+            openai_tools = tools_to_use
+            _nudge = _build_tool_action_nudge(
+                tools = tools_to_use,
+                model_name = model_name,
+            )
+            _nudge = _apply_rag_nudge(
+                _nudge,
+                tools_to_use,
+                rag_scope = payload.rag_scope,
+            )
+            if _nudge:
+                openai_messages = _append_to_system_message(openai_messages, _nudge)
 
     try:
         count = await asyncio.to_thread(

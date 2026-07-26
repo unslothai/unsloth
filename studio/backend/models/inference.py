@@ -1387,6 +1387,22 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
     )
+    enable_tools: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Enable tool calling for supported models",
+    )
+    enabled_tools: Optional[list[str]] = Field(
+        None,
+        description = "[x-unsloth] List of enabled built-in tool names",
+    )
+    mcp_enabled: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Append tools from every enabled MCP server",
+    )
+    rag_scope: Optional[dict] = Field(
+        None,
+        description = "[x-unsloth] Hidden RAG retrieval scope for search_knowledge_base",
+    )
 
 
 class ToolConfirmRequest(BaseModel):

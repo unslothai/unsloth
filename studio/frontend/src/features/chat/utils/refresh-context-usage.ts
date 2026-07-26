@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ThreadMessage } from "@assistant-ui/react";
-import { buildOutboundMessagesForTokenCount } from "../api/chat-adapter";
+import {
+  buildLocalTokenCountExtras,
+  buildOutboundMessagesForTokenCount,
+} from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -10,6 +13,48 @@ import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
 
 let refreshGeneration = 0;
+
+type RuntimeMessagesGetter = () => readonly ThreadMessage[];
+
+let runtimeMessagesGetter: RuntimeMessagesGetter | null = null;
+
+export function registerRuntimeMessagesGetter(
+  getter: RuntimeMessagesGetter | null,
+): void {
+  runtimeMessagesGetter = getter;
+}
+
+export type SavedContextUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  cacheWriteTokens?: number;
+  modelId?: string;
+};
+
+export function getSavedContextUsageFromMessages(
+  msgs: MessageRecord[],
+  checkpoint: string | null | undefined,
+  ggufContextLength: number | null | undefined,
+): SavedContextUsage | undefined {
+  if (!checkpoint) return undefined;
+  const lastAssistant = [...msgs]
+    .reverse()
+    .find((m) => m.role === "assistant");
+  const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
+    ?.contextUsage as SavedContextUsage | undefined;
+  if (!savedUsage) return undefined;
+
+  const withinLocalLimit =
+    !ggufContextLength ||
+    (savedUsage.totalTokens ?? 0) <= ggufContextLength;
+  const modelMatches = savedUsage.modelId
+    ? savedUsage.modelId === checkpoint
+    : typeof ggufContextLength === "number" && ggufContextLength > 0;
+  if (!withinLocalLimit || !modelMatches) return undefined;
+  return savedUsage;
+}
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   const content =
@@ -51,12 +96,49 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   };
 }
 
+function orderByParentChain<T extends MessageRecord>(
+  messages: T[],
+): T[] {
+  const byId = new Map<string, T>(messages.map((m) => [m.id, m]));
+  const childrenOf = new Map<string | null, T[]>();
+  for (const m of messages) {
+    const pid = m.parentId ?? null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid)!.push(m);
+  }
+
+  const result: T[] = [];
+  let cur: string | null = null;
+  while (childrenOf.has(cur)) {
+    const children: T[] = childrenOf.get(cur)!;
+    const next: T = children.reduce((a: T, b: T) =>
+      a.createdAt >= b.createdAt ? a : b,
+    );
+    result.push(next);
+    cur = next.id;
+    byId.delete(next.id);
+  }
+  return result;
+}
+
+function zeroContextUsage(): SavedContextUsage {
+  return {
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    cachedTokens: 0,
+    cacheWriteTokens: 0,
+  };
+}
+
 /**
  * Re-count prompt tokens for the active local GGUF chat and populate the
  * context-usage bar without waiting for the next completion.
  */
 export async function refreshContextUsage(options?: {
   threadId?: string;
+  /** When true, skip the modelLoading guard (post-load recount). */
+  afterModelLoad?: boolean;
 }): Promise<void> {
   const generation = ++refreshGeneration;
   const store = useChatRuntimeStore.getState();
@@ -64,28 +146,58 @@ export async function refreshContextUsage(options?: {
   const checkpoint = store.params.checkpoint;
 
   if (
-    !threadId ||
     !checkpoint ||
     isExternalModelId(checkpoint) ||
-    store.modelLoading ||
+    (!options?.afterModelLoad && store.modelLoading) ||
     store.ggufContextLength == null
   ) {
     return;
   }
 
+  const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
 
+  if (!threadId) {
+    if (
+      generation !== refreshGeneration ||
+      useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint
+    ) {
+      return;
+    }
+    if (
+      capturedThreadId != null &&
+      useChatRuntimeStore.getState().activeThreadId !== capturedThreadId
+    ) {
+      return;
+    }
+    useChatRuntimeStore.getState().setContextUsage(zeroContextUsage());
+    return;
+  }
+
   try {
+    let runMessages: readonly ThreadMessage[];
     const records = await listStoredChatMessages(threadId);
     if (generation !== refreshGeneration) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
 
-    const runMessages = records
-      .slice()
-      .sort((a: MessageRecord, b: MessageRecord) => a.createdAt - b.createdAt)
-      .map(storedMessageToRunMessage);
+    if (records.length > 0) {
+      const hasParentIds = records.some((m) => m.parentId != null);
+      const ordered = hasParentIds
+        ? orderByParentChain(records)
+        : records
+            .slice()
+            .sort((a, b) => a.createdAt - b.createdAt);
+      runMessages = ordered.map(storedMessageToRunMessage);
+    } else {
+      runMessages = runtimeMessagesGetter?.() ?? [];
+    }
+
+    if (generation !== refreshGeneration) return;
+    if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
+      return;
+    }
 
     const outbound = await buildOutboundMessagesForTokenCount(
       runMessages,
@@ -96,17 +208,26 @@ export async function refreshContextUsage(options?: {
       return;
     }
 
+    const toolExtras = await buildLocalTokenCountExtras(threadId, outbound);
+
     let inputTokens = 0;
     if (outbound.length > 0) {
       const result = await countChatInputTokens({
         model: capturedCheckpoint,
         messages: outbound,
+        ...toolExtras,
       });
       inputTokens = result.input_tokens;
     }
 
     if (generation !== refreshGeneration) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
+      return;
+    }
+    if (
+      capturedThreadId != null &&
+      useChatRuntimeStore.getState().activeThreadId !== capturedThreadId
+    ) {
       return;
     }
 
@@ -118,6 +239,6 @@ export async function refreshContextUsage(options?: {
       cacheWriteTokens: 0,
     });
   } catch {
-    // Background recount should not interrupt chat; the bar repopulates on send.
+    // Background recount should not interrupt chat; saved usage stays visible.
   }
 }
