@@ -49,6 +49,22 @@ NOT_PATH_RECEIVERS = {
     "webbrowser",
     "zipfile",
 }
+# Callables that drain a generator argument immediately.
+EAGER_CONSUMERS = {
+    "all",
+    "any",
+    "dict",
+    "frozenset",
+    "list",
+    "max",
+    "min",
+    "set",
+    "sorted",
+    "sum",
+    "tuple",
+}
+# Values that re-select the platform default when passed as the encoding.
+PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
 
@@ -68,6 +84,17 @@ def _is_main_guard(node: ast.AST) -> bool:
     has_name = any(isinstance(o, ast.Name) and o.id == "__name__" for o in operands)
     has_main = any(isinstance(o, ast.Constant) and o.value == "__main__" for o in operands)
     return has_name and has_main
+
+
+def _is_eager_consumer(func: ast.expr) -> bool:
+    """True for a callee that drains a generator argument on the spot.
+
+    iter/zip/map/filter/enumerate/reversed hand back another lazy object, so a
+    genexp passed to those still has not run.
+    """
+    if isinstance(func, ast.Attribute):
+        return func.attr in {"join", "extend", "update", "writelines"}
+    return isinstance(func, ast.Name) and func.id in EAGER_CONSUMERS
 
 
 def _import_time_calls(tree: ast.Module):
@@ -91,23 +118,28 @@ def _import_time_calls(tree: ast.Module):
     so that is walked), and non-name calls, which are left unresolved rather
     than guessed at.
     """
-    # Defs reachable from a scope that executes at import: module body and any
-    # class body, at any nesting. `class F: def _load(): ...; DATA = _load()`
-    # runs _load while the class is constructed.
-    helpers = {}
-    scopes = [tree.body]
-    while scopes:
-        for node in scopes.pop():
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                helpers.setdefault(node.name, node)
-            elif isinstance(node, ast.ClassDef):
-                scopes.append(node.body)
-    # A generator expression handed straight to a call is consumed there, so its
-    # element runs at import; one merely bound to a name does not.
+    # Defs reachable from a scope that executes at import: module body, any
+    # class body, and (added when the helper is entered) any def nested inside
+    # a helper we follow. `class F: def _load(): ...; DATA = _load()` runs
+    # _load while the class is constructed.
+    helpers: dict = {}
+
+    def _collect(body):
+        scopes = [body]
+        while scopes:
+            for node in scopes.pop():
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    helpers.setdefault(node.name, node)
+                elif isinstance(node, ast.ClassDef):
+                    scopes.append(node.body)
+
+    _collect(tree.body)
+    # A generator expression only runs its element where an EAGER consumer takes
+    # it. iter/zip/map/enumerate leave it lazy, so those must not count.
     consumed = {
         id(arg)
         for call in ast.walk(tree)
-        if isinstance(call, ast.Call)
+        if isinstance(call, ast.Call) and _is_eager_consumer(call.func)
         for arg in [*call.args, *(k.value for k in call.keywords)]
         if isinstance(arg, ast.GeneratorExp)
     }
@@ -140,7 +172,9 @@ def _import_time_calls(tree: ast.Module):
                 func = node.func
                 if isinstance(func, ast.Name) and func.id in helpers and func.id not in entered:
                     entered.add(func.id)
-                    frontier.append(list(helpers[func.id].body))
+                    body = list(helpers[func.id].body)
+                    _collect(body)  # a def nested in this helper is now callable
+                    frontier.append(body)
             stack.extend(ast.iter_child_nodes(node))
 
 
@@ -181,7 +215,7 @@ def _names_encoding(call: ast.Call) -> bool:
             return True
         if kw.arg != "encoding":
             continue
-        if isinstance(kw.value, ast.Constant) and kw.value.value in (None, "locale"):
+        if isinstance(kw.value, ast.Constant) and kw.value.value in PLATFORM_DEFAULT_ENCODINGS:
             return False
         return True
     return False
@@ -192,10 +226,14 @@ def _offender(call: ast.Call) -> str | None:
     func = call.func
     if isinstance(func, ast.Attribute):
         if func.attr in GUARDED_METHODS:
-            # importlib.metadata's Distribution.read_text takes a positional
-            # filename and has no encoding parameter, so a positional argument
-            # means the receiver is not a Path.
             if func.attr == "read_text" and call.args:
+                first = call.args[0]
+                # Path.read_text takes encoding first, so None or "locale" there
+                # is a platform-default read. Any other positional means the
+                # receiver is importlib.metadata's Distribution, whose argument
+                # is a filename and which has no encoding parameter at all.
+                if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
+                    return "read_text()"
                 return None
             return None if _names_encoding(call) else f"{func.attr}()"
         if func.attr == "open":
