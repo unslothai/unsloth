@@ -391,9 +391,7 @@ def _uses_flash_attention_for_generation(config):
         for config_field in ("_attn_implementation", "attn_implementation")
     ]
     language_implementations = [
-        implementation
-        for implementation in language_implementations
-        if implementation is not None
+        implementation for implementation in language_implementations if implementation is not None
     ]
     if language_implementations:
         return any(map(_mapping_uses_flash_attention, language_implementations))
