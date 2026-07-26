@@ -95,6 +95,9 @@ huggingfacenotorch = [
 ]
 # torchcodec backend for Gemma audio / datasets>=4 (#7225).
 # Pick the audio-torch* pin matching your torch minor (see TORCH_TORCHCODEC).
+audio-torch211 = [
+    "torchcodec>=0.11.0,<0.12.0 ; python_version >= '3.10'",
+]
 audio-torch210 = [
     "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10'",
 ]
