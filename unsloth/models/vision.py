@@ -431,8 +431,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         # (renamed away in v5), and logits_to_keep on the VLMs whose top-level
         # forward does not take it.
         for _logits_kwarg in ("logits_to_keep", "num_logits_to_keep"):
-            if _logits_kwarg in kwargs and \
-                    not _unsloth_generate_accepts_kwarg(self, _logits_kwarg):
+            if _logits_kwarg in kwargs and not _unsloth_generate_accepts_kwarg(self, _logits_kwarg):
                 kwargs.pop(_logits_kwarg, None)
 
     model_eos_token_id = getattr(self.config, "eos_token_id", None)

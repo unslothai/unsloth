@@ -138,6 +138,7 @@ def test_generate_kwarg_gate():
 # The only values that must be stripped are the ones the strict validator would
 # raise on, which is exactly what the gate above predicts.
 
+
 def _filter_logits_kwargs(model, kwargs):
     """The v5 branch of unsloth_base_fast_generate, as a testable function."""
     for key in ("logits_to_keep", "num_logits_to_keep"):
@@ -169,9 +170,10 @@ def test_v5_leaves_other_kwargs_alone():
 
 def test_source_has_no_unconditional_pop():
     src = open(VISION).read()
-    assert 'kwargs.pop("logits_to_keep", None)\n        kwargs.pop("num_logits_to_keep", None)' not in src, (
-        "the v5 branch must not drop caller-supplied logits_to_keep unconditionally"
-    )
+    assert (
+        'kwargs.pop("logits_to_keep", None)\n        kwargs.pop("num_logits_to_keep", None)'
+        not in src
+    ), "the v5 branch must not drop caller-supplied logits_to_keep unconditionally"
 
 
 if __name__ == "__main__":
