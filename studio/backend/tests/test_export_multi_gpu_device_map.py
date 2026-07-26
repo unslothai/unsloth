@@ -160,9 +160,7 @@ def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
 
 def test_cpu_offloaded_modules_counts_cpu_and_disk(monkeypatch):
     mod = _export_mod(monkeypatch)
-    model = types.SimpleNamespace(
-        hf_device_map = {"a": 0, "b": "cpu", "c": 1, "d": "disk"}
-    )
+    model = types.SimpleNamespace(hf_device_map = {"a": 0, "b": "cpu", "c": 1, "d": "disk"})
     assert mod._cpu_offloaded_modules(model) == 2
 
 

@@ -542,9 +542,7 @@ class ExportBackend:
             if (
                 _device_map_override is None
                 and (
-                    isinstance(e, _CpuSpillRetry)
-                    or _is_oom_error(e)
-                    or _is_cpu_spill_rejection(e)
+                    isinstance(e, _CpuSpillRetry) or _is_oom_error(e) or _is_cpu_spill_rejection(e)
                 )
                 and _multi_gpu_device_map_kwargs()
             ):
