@@ -639,8 +639,15 @@ class DiffusionLoraConfig:
                     ) from exc
         if not isinstance(flow_shift, str):
             flow_shift = float(flow_shift)
-            if flow_shift <= 0:
-                raise ValueError("flow_shift must be > 0 (1.0 disables the shift), or 'auto'")
+            # isfinite as well as positive: JSON accepts 1e309, which floats to inf, and
+            # inf <= 0 is False (NaN fails every comparison), so a positivity-only guard
+            # let it through to the sigma table, where s * u / (1 + (s - 1) * u) is NaN.
+            # That poisons every sampled sigma and the run saves a corrupted adapter while
+            # reporting normal progress.
+            if not math.isfinite(flow_shift) or flow_shift <= 0:
+                raise ValueError(
+                    "flow_shift must be a finite number > 0 (1.0 disables the shift), or 'auto'"
+                )
         try:
             cfg_dropout = float(self.cfg_dropout or 0.0)
         except (TypeError, ValueError) as exc:

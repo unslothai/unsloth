@@ -149,9 +149,15 @@ def install(
     # base identity must key the cache too: the same checkpoint reloaded against a different
     # base would otherwise hit entries encoded by the previous base's encoder. Defaults to
     # the checkpoint itself (a full pipeline is its own base).
+    # The identifiers alone are not versions: both are paired with a revision marker so a
+    # Hub repo advancing to a new commit, or a local directory updated in place, misses
+    # instead of returning embeddings from the previous text encoder.
+    base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),
-        "base": str(base_repo) if base_repo else str(repo_id),
+        "repo_rev": _source_revision(repo_id),
+        "base": str(base_ref),
+        "base_rev": _source_revision(base_ref),
         "dtype": str(dtype),
         "te_quant": str(te_quant) if te_quant is not None else "none",
         "diffusers": _diffusers_version(),
@@ -224,3 +230,58 @@ def _diffusers_version() -> Optional[str]:
         return str(getattr(diffusers, "__version__", None))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _source_revision(ref: Any) -> str:
+    """Revision/content marker for a checkpoint reference, resolved WITHOUT loading it.
+
+    A bare repo id or directory path is not a version: a Hub repo that advances to a
+    new revision, or a local directory edited in place, keeps the same string while its
+    text encoders change, so cached embeddings from the old encoder would be reused
+    silently. This must stay cheap and must NOT touch the encoders themselves -- the
+    whole point of the cache is that a warm run never loads them -- so it reads the
+    local commit sha (no network) for a Hub repo and file stats for a local directory.
+    """
+    try:
+        name = str(ref or "").strip()
+        if not name:
+            return "none"
+        if os.path.isdir(name):
+            # Local dir: stat the config + text-encoder files, which is what an in-place
+            # update touches. Bounded to the top level and text_encoder* subdirs.
+            parts: list[str] = []
+            roots = [name]
+            with os.scandir(name) as it:
+                roots += [
+                    e.path for e in it
+                    if e.is_dir() and e.name.startswith(("text_encoder", "tokenizer"))
+                ]
+            for root in roots:
+                with os.scandir(root) as it:
+                    for e in it:
+                        if not e.is_file():
+                            continue
+                        st = e.stat()
+                        parts.append(f"{os.path.relpath(e.path, name)}:{st.st_size}:{st.st_mtime_ns}")
+            digest = hashlib.sha256("|".join(sorted(parts)).encode()).hexdigest()
+            return f"dir-{digest[:16]}"
+        if "/" in name:
+            # Hub repo: the cache's refs/<branch> file holds the resolved commit sha.
+            from huggingface_hub import constants  # noqa: PLC0415
+
+            org, _, repo = name.partition("/")
+            base = os.path.join(constants.HF_HUB_CACHE, f"models--{org}--{repo}")
+            ref_file = os.path.join(base, "refs", "main")
+            if os.path.isfile(ref_file):
+                with open(ref_file, encoding = "utf-8") as fh:
+                    sha = fh.read().strip()
+                if sha:
+                    return f"rev-{sha[:16]}"
+            snaps = os.path.join(base, "snapshots")
+            if os.path.isdir(snaps):
+                names = sorted(os.listdir(snaps))
+                if len(names) == 1:
+                    return f"rev-{names[0][:16]}"
+        return "unresolved"
+    except Exception:  # noqa: BLE001 — best-effort, never block a load
+        return "unresolved"

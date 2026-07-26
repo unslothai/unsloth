@@ -140,6 +140,36 @@ def test_companion_base_keys_apart(cache_env):
     assert third.calls == 0
 
 
+def test_a_local_base_updated_in_place_keys_apart(cache_env, tmp_path):
+    # A directory path is not a version: editing the text encoder in place must MISS, or the
+    # run silently conditions on embeddings from the encoder that was there before.
+    base = tmp_path / "base"
+    (base / "text_encoder").mkdir(parents = True)
+    weights = base / "text_encoder" / "model.safetensors"
+    weights.write_bytes(b"v1")
+    first = _EncodePipe()
+    _install(first, repo_id = "org/model-GGUF", base_repo = str(base))
+    first.encode_prompt("a sloth")
+    # Unchanged base -> warm hit (the cache still has to work).
+    warm = _EncodePipe()
+    _install(warm, repo_id = "org/model-GGUF", base_repo = str(base))
+    warm.encode_prompt("a sloth")
+    assert (first.calls, warm.calls) == (1, 0)
+    # Same path, new contents -> re-encode.
+    weights.write_bytes(b"v2-different-length")
+    updated = _EncodePipe()
+    _install(updated, repo_id = "org/model-GGUF", base_repo = str(base))
+    updated.encode_prompt("a sloth")
+    assert updated.calls == 1
+
+
+def test_source_revision_never_raises():
+    # Best-effort by contract: a missing path, a bare name and junk all resolve to a marker
+    # instead of blocking the load.
+    for ref in (None, "", "no/such/repo-xyz", "/does/not/exist", 1234):
+        assert isinstance(cond_cache._source_revision(ref), str)
+
+
 def test_lora_attached_bypasses_the_cache(cache_env):
     pipe = _EncodePipe()
     _install(pipe)

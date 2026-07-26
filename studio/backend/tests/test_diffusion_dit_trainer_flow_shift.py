@@ -91,6 +91,14 @@ def test_flow_shift_explicit_values_and_validation():
         DiffusionLoraConfig(
             base_model = "b", data_dir = "d", output_dir = "o", flow_shift = "bogus"
         ).normalized()
+    # Non-finite must be rejected too: JSON accepts 1e309, which floats to inf, and
+    # inf <= 0 is False (NaN fails every comparison), so a positivity-only guard passed
+    # them through to the sigma table as NaN and the run saved a corrupted adapter.
+    for bad in (float("inf"), float("-inf"), float("nan"), 1e309):
+        with pytest.raises(ValueError, match = "flow_shift"):
+            DiffusionLoraConfig(
+                base_model = "b", data_dir = "d", output_dir = "o", flow_shift = bad
+            ).normalized()
 
 
 def test_cfg_dropout_and_weighting_scheme_validation():
