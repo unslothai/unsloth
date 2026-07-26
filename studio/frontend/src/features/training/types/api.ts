@@ -83,6 +83,10 @@ export interface TrainingStartRequest {
   enable_tensorboard: boolean;
   tensorboard_dir: string | null;
   resume_from_checkpoint?: string | null;
+  resume_checkpoint_path?: string | null;
+  output_dir?: string | null;
+  in_place_continuation?: boolean;
+  copy_checkpoint_to_local?: boolean;
   /** Opaque, short-lived proof returned by checkpoint inspection. */
   checkpoint_import_token?: string | null;
 }
