@@ -8,6 +8,7 @@ import type {
   TrainingStartRequest,
   TrainingStartResponse,
   TrainingStopResponse,
+  CheckpointInspection,
 } from "../types/api";
 import type {
   TrainingMetricsResponse,
@@ -40,6 +41,53 @@ export async function startTraining(
     body: JSON.stringify({ ...payload, hf_token: preparedToken.token }),
   });
   return parseJson<TrainingStartResponse>(response);
+}
+
+type CheckpointInspectionApi = {
+  inspection_token: string;
+  checkpoint_path: string;
+  checkpoint_name?: string;
+  checkpoint?: string;
+  global_step: number;
+  model_identity?: string | null;
+  model_name?: string | null;
+  adapter_identity?: string | null;
+  adapter_name?: string | null;
+  training_backend?: string | null;
+  optimizer_complete: boolean;
+  scheduler_complete: boolean;
+  trainer_state_complete: boolean;
+  bundled_configuration_found?: boolean;
+  has_training_config?: boolean;
+  incompatibilities?: string[];
+  missing_datasets?: string[];
+  external?: boolean;
+};
+
+export async function inspectCheckpoint(path: string): Promise<CheckpointInspection> {
+  const response = await authFetch("/api/train/checkpoints/inspect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  const value = await parseJson<CheckpointInspectionApi>(response);
+  return {
+    inspectionToken: value.inspection_token,
+    checkpointPath: value.checkpoint_path,
+    checkpointName: value.checkpoint_name ?? value.checkpoint ?? `checkpoint-${value.global_step}`,
+    globalStep: value.global_step,
+    modelIdentity: value.model_identity ?? value.model_name ?? null,
+    adapterIdentity: value.adapter_identity ?? value.adapter_name ?? null,
+    trainingBackend: value.training_backend ?? null,
+    optimizerComplete: value.optimizer_complete,
+    schedulerComplete: value.scheduler_complete,
+    trainerStateComplete: value.trainer_state_complete,
+    bundledConfigurationFound:
+      value.bundled_configuration_found ?? value.has_training_config ?? false,
+    incompatibilities: value.incompatibilities ?? [],
+    missingDatasets: value.missing_datasets ?? [],
+    external: value.external ?? true,
+  };
 }
 
 export async function stopTraining(save = true): Promise<TrainingStopResponse> {

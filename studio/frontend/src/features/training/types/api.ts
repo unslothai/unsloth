@@ -83,6 +83,25 @@ export interface TrainingStartRequest {
   enable_tensorboard: boolean;
   tensorboard_dir: string | null;
   resume_from_checkpoint?: string | null;
+  /** Opaque, short-lived proof returned by checkpoint inspection. */
+  checkpoint_import_token?: string | null;
+}
+
+export interface CheckpointInspection {
+  inspectionToken: string;
+  checkpointPath: string;
+  checkpointName: string;
+  globalStep: number;
+  modelIdentity: string | null;
+  adapterIdentity: string | null;
+  trainingBackend: string | null;
+  optimizerComplete: boolean;
+  schedulerComplete: boolean;
+  trainerStateComplete: boolean;
+  bundledConfigurationFound: boolean;
+  incompatibilities: string[];
+  missingDatasets: string[];
+  external: boolean;
 }
 
 export interface TrainingStartResponse {

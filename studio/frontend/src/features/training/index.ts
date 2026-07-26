@@ -22,6 +22,7 @@ export {
 } from "./hooks/use-training-unload-guard";
 export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
+export { CheckpointResumePicker } from "./components/checkpoint-resume-picker";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export { listLocalDatasets, uploadTrainingDataset } from "./api/datasets-api";
 export type { LocalDatasetInfo } from "./types/datasets";
