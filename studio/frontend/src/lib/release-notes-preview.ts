@@ -30,6 +30,15 @@ const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1(?!`)/g;
 // the spec says need not be the one that opened the block.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
 const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
+// Types 3 to 5 are literal too: processing instructions, declarations such as
+// <!DOCTYPE, and CDATA. Each ends on its own delimiter. Comments (type 2) are
+// handled separately because they can also open mid-line.
+const RAW_BLOCKS: [RegExp, RegExp][] = [
+  [RAW_HTML_OPEN, RAW_HTML_CLOSE],
+  [/^ {0,3}<\?/, /\?>/],
+  [/^ {0,3}<!\[CDATA\[/, /\]\]>/],
+  [/^ {0,3}<![A-Za-z]/, />/],
+];
 // Type 6 and 7 blocks run to the next blank line, so `<details>` holds Markdown
 // only once a blank line has closed the block. Type 7 (any other complete tag
 // alone on a line) cannot interrupt a paragraph.
@@ -209,23 +218,30 @@ function stripCommentSpans(
   return [visible, inComment];
 }
 
-function stripRawHtml(line: string, startInRaw: boolean): [string, boolean] {
-  if (startInRaw) {
-    const close = RAW_HTML_CLOSE.exec(line);
+/** Strips raw block content. State is the open block's index, or null. */
+function stripRawHtml(
+  line: string,
+  openBlock: number | null,
+): [string, number | null] {
+  if (openBlock !== null) {
+    const close = RAW_BLOCKS[openBlock]?.[1].exec(line);
     return close
-      ? [line.slice(close.index + close[0].length), false]
-      : ["", true];
+      ? [line.slice(close.index + close[0].length), null]
+      : ["", openBlock];
   }
   // A block only opens at the start of a line; mid-line tags are inline HTML.
-  const open = RAW_HTML_OPEN.exec(line);
-  if (!open) {
-    return [line, false];
+  for (const [index, [opener, closer]] of RAW_BLOCKS.entries()) {
+    const open = opener.exec(line);
+    if (!open) {
+      continue;
+    }
+    const rest = line.slice(open[0].length);
+    const close = closer.exec(rest);
+    return close
+      ? [rest.slice(close.index + close[0].length), null]
+      : ["", index];
   }
-  const rest = line.slice(open[0].length);
-  const close = RAW_HTML_CLOSE.exec(rest);
-  return close
-    ? [rest.slice(close.index + close[0].length), false]
-    : ["", true];
+  return [line, null];
 }
 
 /** True if `line` starts a CommonMark type 6 or type 7 HTML block. */
@@ -240,7 +256,7 @@ function opensHtmlBlock(line: string, afterParagraph: boolean): boolean {
 interface ScanState {
   openFence: string | null;
   inComment: boolean;
-  inRawHtml: boolean;
+  inRawHtml: number | null;
   inHtmlBlock: boolean;
   afterParagraph: boolean;
 }
@@ -252,8 +268,8 @@ interface ScanState {
 function visibleText(line: string, state: ScanState): string | null {
   // Raw HTML first: its contents are literal, so a fence inside it is not a
   // fence. Only the text after the closing tag is a note.
-  if (state.inRawHtml) {
-    const [after, stillInRaw] = stripRawHtml(line, true);
+  if (state.inRawHtml !== null) {
+    const [after, stillInRaw] = stripRawHtml(line, state.inRawHtml);
     state.inRawHtml = stillInRaw;
     return after;
   }
@@ -283,7 +299,7 @@ function visibleText(line: string, state: ScanState): string | null {
   const [visible, stillInRaw] = stripRawHtml(uncommented, state.inRawHtml);
   state.inRawHtml = stillInRaw;
   if (
-    !stillInRaw &&
+    stillInRaw === null &&
     visible.trim() &&
     opensHtmlBlock(visible, state.afterParagraph)
   ) {
@@ -312,7 +328,7 @@ function contentLines(markdown: string): ContentLine[] {
   const state: ScanState = {
     openFence: null,
     inComment: false,
-    inRawHtml: false,
+    inRawHtml: null,
     inHtmlBlock: false,
     afterParagraph: false,
   };

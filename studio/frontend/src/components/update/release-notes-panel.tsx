@@ -3,9 +3,16 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { useReleaseNotes } from "@/hooks/use-release-notes";
+import { resolveChangelogLinks } from "@/lib/changelog-links";
 import { releaseNotesPreview } from "@/lib/release-notes-preview";
 import { cn } from "@/lib/utils";
-import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
+import {
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 
 interface ReleaseNotesPanelProps {
   // Notes are looked up for this exact version only.
@@ -62,7 +69,13 @@ export function ReleaseNotesPanel({
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
   const scrollRef = useRef<HTMLElement | null>(null);
 
-  const markdown = notes?.matched ? notes.markdown : (fallbackMarkdown ?? null);
+  const source = notes?.matched ? notes.markdown : (fallbackMarkdown ?? null);
+  // Notes are written for the repository, so relative links have to point back
+  // at it instead of resolving against Studio's own origin.
+  const markdown = useMemo(
+    () => (source === null ? null : resolveChangelogLinks(source)),
+    [source],
+  );
 
   // Start at the top on expand, and again once async notes land.
   useEffect(() => {
@@ -100,7 +113,7 @@ export function ReleaseNotesPanel({
               aria-label={`Release notes for version ${version}`}
               // Long notes scroll here instead of pushing the buttons off
               // screen; hover-scrollbar hides the thumb at rest.
-              className="hover-scrollbar max-h-64 overflow-y-auto overscroll-contain py-3 pr-1"
+              className="hover-scrollbar max-h-[min(16rem,45dvh)] overflow-y-auto overscroll-contain py-3 pr-1"
               data-testid="update-release-notes-scroll"
             >
               <MarkdownPreview

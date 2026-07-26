@@ -26,6 +26,7 @@ CHANGELOG = REPO / "CHANGELOG.md"
 PANEL = FRONTEND / "components/update/release-notes-panel.tsx"
 NOTES_HOOK = FRONTEND / "hooks/use-release-notes.ts"
 PREVIEW = FRONTEND / "lib/release-notes-preview.ts"
+LINKS = FRONTEND / "lib/changelog-links.ts"
 WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
 
@@ -714,3 +715,60 @@ def test_a_section_staged_as_a_comment_reads_as_unpublished(
 )
 def test_visibility_check_only_hides_comments(changelog_module, body, visible):
     assert changelog_module._renders_visibly(body) is visible
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "<?php\n## 9.9.9\n?>",
+        "<![CDATA[\n## 9.9.9\n]]>",
+        "<!DOCTYPE\n## 9.9.9\n>",
+    ],
+)
+def test_processing_instructions_and_declarations_are_literal(changelog_module, block):
+    """Raw block types 3 to 5 render literally, like <pre>, so a heading inside
+    one is a sample and not a release."""
+    text = f"## 1.0\n\n{block}\n\n- real note\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    assert "real note" in changelog_module.find_release_notes(text, "1.0").body
+
+
+def test_headings_need_a_space_or_tab_after_the_hashes(changelog_module):
+    """A non-breaking space pasted from rich text renders as ordinary text, so
+    the line must not end the release above it."""
+    text = "## 1.0\n\n- real note\n\n## 9.9.9\n\n- not a release\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    assert changelog_module.find_release_notes(text, "9.9.9") is None
+    # A tab is valid and still opens a heading.
+    tabbed = "## 1.0\n\n- one\n\n##\t2.0\n\n- two\n"
+    assert [e.version for e in changelog_module.parse_changelog(tabbed)] == ["1.0", "2.0"]
+
+
+def test_preview_skips_every_raw_block_form():
+    """The extractor tracks the same block forms as the parser, so a sample
+    bullet inside one cannot become the collapsed headline."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "RAW_BLOCKS" in src
+    assert "CDATA" in src and "[A-Za-z]" in src
+
+
+@pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
+def test_expanded_popup_fits_a_short_viewport(banner):
+    """A window under roughly 430px high used to push the card's title and
+    dismiss control above the top of the screen."""
+    panel = PANEL.read_text(encoding = "utf-8")
+    assert "max-h-[min(16rem,45dvh)]" in panel, "notes height must follow the viewport"
+    src = banner.read_text(encoding = "utf-8")
+    assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
+
+
+def test_relative_changelog_links_point_at_the_repository():
+    """CHANGELOG.md links are repository-relative. Rendered as-is they resolve
+    against Studio's origin, so the renderer blocks them."""
+    src = LINKS.read_text(encoding = "utf-8")
+    assert "https://github.com/unslothai/unsloth/blob/main/" in src
+    assert "https://raw.githubusercontent.com/unslothai/unsloth/main/" in src
+    # Absolute targets, fragments, fenced code and code spans stay untouched.
+    assert "ABSOLUTE" in src and "CODE_SPAN" in src and "FENCE" in src
+    panel = PANEL.read_text(encoding = "utf-8")
+    assert "resolveChangelogLinks" in panel

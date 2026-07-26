@@ -37,12 +37,23 @@ CHANGELOG_SUCCESS_TTL_SECONDS = 30 * 60
 CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
-_HEADING_PATTERN = re.compile(r"^ {0,3}##\s+(?P<title>.*?)\s*$")
+# CommonMark requires a space or tab after the hashes: a non-breaking space
+# copied from rich text renders as ordinary text, not a heading.
+_HEADING_PATTERN = re.compile(r"^ {0,3}##[ \t]+(?P<title>.*?)[ \t]*$")
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
 # CommonMark type 1 HTML blocks: contents are literal until a closing tag,
 # which the spec says need not be the one that opened the block.
 _RAW_HTML_OPEN = re.compile(r"^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)", re.IGNORECASE)
 _RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE)
+# Types 3 to 5 are literal too: processing instructions, declarations such as
+# <!DOCTYPE, and CDATA. Each ends on its own delimiter. Comments (type 2) are
+# handled separately because they can also open mid-line.
+_RAW_BLOCKS = (
+    (_RAW_HTML_OPEN, _RAW_HTML_CLOSE),
+    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
+    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
+    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
+)
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
 # once a blank line has closed the block. Open and close tags both start one.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
@@ -129,7 +140,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     body: list[str] = []
     open_fence: str | None = None
     in_comment = False
-    in_raw_html = False
+    in_raw_html: int | None = None
     in_html_block = False
     after_paragraph = False
 
@@ -146,7 +157,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     for line in text.splitlines():
         # Raw HTML first: its contents are literal, so a fence inside it is not
         # a fence. Only the text after the closing tag can carry a heading.
-        if in_raw_html:
+        if in_raw_html is not None:
             visible, in_raw_html = _strip_raw_html(line, in_raw_html)
         elif in_html_block:
             # A blank line is the only thing that ends a type 6 block.
@@ -162,7 +173,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             visible, in_comment = _strip_comments(line, in_comment)
             # Nor is anything inside a raw HTML block such as <pre>.
             visible, in_raw_html = _strip_raw_html(visible, in_raw_html)
-            if visible and not in_raw_html and _opens_html_block(visible, after_paragraph):
+            if visible and in_raw_html is None and _opens_html_block(visible, after_paragraph):
                 in_html_block = True
                 visible = ""
         # A `##` inside a fenced block is sample markdown, not a real heading.
@@ -412,20 +423,23 @@ def _opens_html_block(line: str, after_paragraph: bool) -> bool:
     return not after_paragraph and _HTML_TAG_ONLY_LINE.match(line) is not None
 
 
-def _strip_raw_html(line: str, in_raw_html: bool) -> tuple[str, bool]:
-    """Drop the parts of a line inside a raw HTML block, and return the state."""
-    if in_raw_html:
-        close = _RAW_HTML_CLOSE.search(line)
-        return (line[close.end() :], False) if close else ("", True)
+def _strip_raw_html(line: str, open_block: int | None) -> tuple[str, int | None]:
+    """Drop the parts of a line inside a raw block, and return the open block.
+
+    The state is the index of the open block in `_RAW_BLOCKS`, or None."""
+    if open_block is not None:
+        close = _RAW_BLOCKS[open_block][1].search(line)
+        return (line[close.end() :], None) if close else ("", open_block)
 
     # A block only opens at the start of a line; mid-line tags are inline HTML.
-    opening = _RAW_HTML_OPEN.match(line)
-    if opening is None:
-        return line, False
-
-    rest = line[opening.end() :]
-    close = _RAW_HTML_CLOSE.search(rest)
-    return (rest[close.end() :], False) if close else ("", True)
+    for index, (opener, closer) in enumerate(_RAW_BLOCKS):
+        opening = opener.match(line)
+        if opening is None:
+            continue
+        rest = line[opening.end() :]
+        close = closer.search(rest)
+        return (rest[close.end() :], None) if close else ("", index)
+    return line, None
 
 
 def _version_from_heading(heading: str) -> str | None:
@@ -448,7 +462,8 @@ def _renders_visibly(markdown: str) -> bool:
     """Whether a section body renders anything at all."""
     in_comment = False
     for line in markdown.splitlines():
-        if not in_comment and (_FENCE_PATTERN.match(line) or _RAW_HTML_OPEN.match(line)):
+        opens_raw = any(opener.match(line) for opener, _ in _RAW_BLOCKS)
+        if not in_comment and (_FENCE_PATTERN.match(line) or opens_raw):
             # A code block or raw HTML block renders even when it is empty.
             return True
         visible, in_comment = _strip_comments(line, in_comment)
