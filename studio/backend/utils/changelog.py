@@ -46,16 +46,20 @@ _RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
 # once a blank line has closed the block. Open and close tags both start one.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
-_HTML_BLOCK_TAGS = frozenset("""
+_HTML_BLOCK_TAGS = frozenset(
+    """
 address article aside base basefont blockquote body caption center col colgroup
 dd details dialog dir div dl dt fieldset figcaption figure footer form frame
 frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu
 menuitem nav noframes ol optgroup option p param search section summary table
 tbody td tfoot th thead title tr track ul
-""".split())
+""".split()
+)
 # Type 7: any other complete tag alone on a line, which also runs to a blank
 # line. It cannot interrupt a paragraph, so it only counts after a break.
-_HTML_ATTRIBUTE = r"""(?:\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+_HTML_ATTRIBUTE = (
+    r"""(?:\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
+)
 _HTML_TAG_ONLY_LINE = re.compile(
     rf"^ {{0,3}}(?:<[a-zA-Z][a-zA-Z0-9-]*{_HTML_ATTRIBUTE}*\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\s*>)\s*$"
 )
