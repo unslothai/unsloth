@@ -3843,11 +3843,7 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
             "llama_extra_args": [],
         }
     )
-    assert entry == {
-        "max_seq_length": 8192,
-        "speculative_type": "mtp",
-        "gpu_ids": [1, 0, 2],
-    }
+    assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
 
 
 def test_normalize_model_override_rejects_oversized_chat_template():
@@ -3862,15 +3858,11 @@ def test_normalize_model_override_rejects_oversized_chat_template():
 
 
 def test_spec_draft_n_max_only_stored_for_mtp_modes():
-    mtp = settings.normalize_model_override(
-        {"speculative_type": "mtp", "spec_draft_n_max": 4}
-    )
+    mtp = settings.normalize_model_override({"speculative_type": "mtp", "spec_draft_n_max": 4})
     assert mtp["spec_draft_n_max"] == 4
     # A non-MTP mode ignores the draft count at load time, so storing it would
     # show the user an edit that never takes effect.
-    ngram = settings.normalize_model_override(
-        {"speculative_type": "ngram", "spec_draft_n_max": 4}
-    )
+    ngram = settings.normalize_model_override({"speculative_type": "ngram", "spec_draft_n_max": 4})
     assert "spec_draft_n_max" not in ngram
 
 
@@ -3886,10 +3878,7 @@ def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers
         == 4096
     )
     # Pinning the layer count takes --fit back out of the picture.
-    assert (
-        settings.resolve_fit_max_seq_length({**override, "gpu_layers": 20}, is_gguf = True)
-        == 8192
-    )
+    assert settings.resolve_fit_max_seq_length({**override, "gpu_layers": 20}, is_gguf = True) == 8192
     # Not a GGUF, so none of this applies.
     assert settings.resolve_fit_max_seq_length(override, is_gguf = False) == 8192
 

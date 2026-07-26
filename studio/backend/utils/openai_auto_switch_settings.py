@@ -306,9 +306,7 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
         # Only meaningful for the MTP modes; storing it otherwise would resurface
         # in the UI as an edit the loader silently ignores.
         if speculative_type in MTP_SPECULATIVE_TYPES:
-            spec_draft_n_max = _bounded_int(
-                payload.get("spec_draft_n_max"), minimum = 1, maximum = 16
-            )
+            spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
 

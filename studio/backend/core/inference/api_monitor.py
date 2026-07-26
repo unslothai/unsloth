@@ -280,9 +280,7 @@ class ApiMonitor:
             if subject is None:
                 self._entries.clear()
                 return
-            self._entries = deque(
-                entry for entry in self._entries if entry.subject != subject
-            )
+            self._entries = deque(entry for entry in self._entries if entry.subject != subject)
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:

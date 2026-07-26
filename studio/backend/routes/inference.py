@@ -3742,8 +3742,7 @@ async def _maybe_auto_switch_model(
                                 override,
                                 # variant is set for every GGUF the resolver returns; the
                                 # reload-stash path carries the quant it froze.
-                                is_gguf = bool(variant)
-                                or target_id.lower().endswith(".gguf"),
+                                is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
                             )
                         )
                         # Reuse the load impl so its dedup, tensor fallback, and threading

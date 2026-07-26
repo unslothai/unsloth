@@ -159,7 +159,6 @@ class ModelOverridePayload(BaseModel):
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     gpu_ids: Optional[list[int]] = None
 
-
     @field_validator("chat_template_override")
     @classmethod
     def _limit_chat_template_bytes(cls, value: Optional[str]) -> Optional[str]:
@@ -168,9 +167,7 @@ class ModelOverridePayload(BaseModel):
         if value is None:
             return None
         if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
-            raise ValueError(
-                f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit."
-            )
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
 
@@ -331,6 +328,7 @@ def update_openai_auto_switch_override(
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import validate_extra_args
     from utils.openai_auto_switch_settings import get_model_override
+
     try:
         # A payload carrying only model_id is the documented "remove", so it
         # wipes everything. Otherwise it is a real save, and omitted launch flags
@@ -341,14 +339,10 @@ def update_openai_auto_switch_override(
             exclude = {"model_id", "llama_extra_args"}, exclude_none = True
         )
         is_removal = not payload.tensor_parallel and not {
-            key: value
-            for key, value in saved_fields.items()
-            if key != "tensor_parallel"
+            key: value for key, value in saved_fields.items() if key != "tensor_parallel"
         }
         if requested_extra_args is None and not is_removal:
-            requested_extra_args = get_model_override(payload.model_id).get(
-                "llama_extra_args"
-            )
+            requested_extra_args = get_model_override(payload.model_id).get("llama_extra_args")
         extra_args = validate_extra_args(requested_extra_args)
         set_model_override(
             payload.model_id,
