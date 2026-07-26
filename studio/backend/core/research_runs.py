@@ -2120,7 +2120,9 @@ class ResearchSupervisor:
             notes, _synthesis_evidence_budget(scaffold_chars)
         )
         conversation_context = conversation_context[
-            : _trimmable_budget(total_budget, scaffold_chars + len(evidence_text), _MAX_CONTEXT_CHARS)
+            : _trimmable_budget(
+                total_budget, scaffold_chars + len(evidence_text), _MAX_CONTEXT_CHARS
+            )
         ]
         report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
             run,
