@@ -104,7 +104,7 @@ function AgentIcon({
     <span
       aria-hidden={true}
       style={{ backgroundColor: color }}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md font-heading text-[11px] font-semibold text-white"
+      className="flex size-7 shrink-0 items-center justify-center rounded-md font-heading text-ui-11 font-semibold text-white"
     >
       {mark}
     </span>
@@ -371,12 +371,12 @@ export function AgentsTab() {
                   {agent.name}
                 </span>
                 {detected.has(agent.id) ? (
-                  <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-[10px] leading-none font-semibold text-control-accent">
+                  <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                     {t("settings.agents.quickstart.installed")}
                   </span>
                 ) : null}
                 {agent.id === "codex" && !isGguf ? (
-                  <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-[10px] leading-none font-semibold text-muted-foreground">
+                  <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-ui-10 leading-none font-semibold text-muted-foreground">
                     {t("settings.agents.supportedAgents.requiresGguf")}
                   </span>
                 ) : null}
