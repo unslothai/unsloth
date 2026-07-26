@@ -159,6 +159,8 @@ def resolve_prebuilt_for_host(
             cmd,
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
         )
         out = (proc.stdout or "").strip()
@@ -303,6 +305,8 @@ def stream_installer(
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         env = env,
         **child_popen_kwargs(),
     )
