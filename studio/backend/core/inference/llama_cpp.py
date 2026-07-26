@@ -33,6 +33,7 @@ from typing import (
     List,
     Literal,
     Mapping,
+    MutableMapping,
     Optional,
     Union,
 )
@@ -306,6 +307,29 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
+# A transport error can arrive before the child is reapable; a request path cannot
+# afford the 5s the background MTP reload spends on the same race.
+_RESPAWN_REAP_GRACE_S = 1.0
+
+
+def _finalize_reasoning_only_cumulative(
+    cumulative: str, reasoning_text: str, finish_reason: Optional[str], promote_reasoning_only: bool
+) -> str:
+    """Close a live thinking block and promote it only after a clean stop.
+
+    Local inference streams cumulative snapshots. Replacing ``<think>...`` with
+    bare reasoning at EOF makes the final snapshot shorter, so suffix-based
+    route consumers drop the intended fallback. Keep the snapshot append-only.
+    A length-truncated thought is not a final answer, so close it without
+    promotion and let the client surface the ``length`` terminal state. Raw
+    consumers that do not split reasoning from visible content can disable the
+    fallback to avoid returning the same reasoning twice.
+    """
+    visible_fallback = (
+        reasoning_text if promote_reasoning_only and finish_reason != "length" else ""
+    )
+    return cumulative + "</think>" + visible_fallback
+
 
 # Only large streamed tool payloads get an early provisional card; render_html
 # is exempt because it needs immediate artifact feedback.
@@ -2078,6 +2102,9 @@ class LlamaCppBackend:
         # Serialises mid-session respawns so many generations hitting a killed
         # server trigger at most one reload (see _respawn_if_dead).
         self._respawn_lock = threading.Lock()
+        # Bumped by every unload. load_model clears _cancel_event, so a respawn that
+        # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
+        self._unload_epoch = 0
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -3162,7 +3189,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
-        """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
+        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
         GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
         hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
         selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
@@ -3192,7 +3219,9 @@ class LlamaCppBackend:
                 )
                 arch_by_id[pid] = _arch.split(":")[0].strip().lower()
             for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
-                if arch_by_id.get(_i) in {"gfx1150", "gfx1151"}:
+                # gfx1152 is Krackan Point (Radeon 860M/840M), the third RDNA 3.5
+                # APU: same shared GPU/system-RAM pool as Strix Point/Halo.
+                if arch_by_id.get(_i) in {"gfx1150", "gfx1151", "gfx1152"}:
                     return True
         except Exception:
             return False
@@ -3675,6 +3704,14 @@ class LlamaCppBackend:
     # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
+
+    # V cache types that llama.cpp can run WITHOUT flash attention. Only the V
+    # axis has the dependency: a quantized V cache (q8_0/q4_0/q4_1/q5_0/q5_1/
+    # iq4_nl) aborts init with "V cache quantization requires flash_attn", while
+    # a quantized K cache runs fine without FA. So the flash-attn-off crash-
+    # recovery fallback must reset a quantized V cache to f16 before it can
+    # launch (and leaves K alone). These three are the only non-quantized types.
+    _NON_QUANTIZED_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
     # Main-model placement settings that Manual mode owns. They must not leak
     # from Studio's parent environment into llama-server and silently override
@@ -6130,6 +6167,21 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _canonical_long_flag(name: str) -> str:
+        """Return ``name`` with llama.cpp's long-option underscore normalization.
+
+        llama.cpp runs ``std::replace(arg.begin(), arg.end(), '_', '-')`` on any
+        argv token that starts with ``--`` before looking it up, so a legal
+        pass-through spelling like ``--cache_type_v`` parses as
+        ``--cache-type-v``. Mirror that here so managed-flag matching sees the
+        same canonical name. Short flags (``-ctv``) never carry underscores and
+        keep their exact spelling; pass only the flag name (no attached value).
+        """
+        if name.startswith("--"):
+            return name.replace("_", "-")
+        return name
+
+    @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
@@ -6161,7 +6213,75 @@ class LlamaCppBackend:
                     out[i + 1] = "off"
                 elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
                     out[i] = f"{tok}=off"
+
+        # A quantized V cache requires flash attention in llama.cpp: the init
+        # aborts with "V cache quantization requires flash_attn". A quantized K
+        # cache has no such requirement and runs fine without FA, so it is left
+        # untouched -- resetting it would needlessly enlarge the K cache and can
+        # OOM a memory-constrained config. Studio launches with FA on, so a
+        # quantized --cache-type-v is legal at launch but would make THIS FA-off
+        # retry crash on init instead of recovering. Reset a quantized V cache --
+        # main and draft (the draft context shares the global --flash-attn flag,
+        # so its V cache aborts too) -- to f16 (the llama.cpp default);
+        # non-quantized types -- f16/bf16/f32 -- run fine without FA and are left
+        # untouched. The value is rewritten in place so the list length is
+        # preserved for downstream slices, matching the flash-attn flip above.
+        _v_cache_flags = (
+            "--cache-type-v",
+            "-ctv",
+            "--cache-type-v-draft",
+            "--spec-draft-type-v",
+            "-ctvd",
+        )
+        _cache_reset = False
+        for i, tok in enumerate(out):
+            # llama.cpp rewrites '_' to '-' for any argv token starting with
+            # '--' before matching, so a legal pass-through spelling such as
+            # --cache_type_v parses as --cache-type-v and still enables a
+            # quantized V cache. Canonicalize the flag name the same way so the
+            # reset recognizes the underscore aliases too; short flags (-ctv)
+            # and the type value are left untouched.
+            name = LlamaCppBackend._canonical_long_flag(tok.partition("=")[0])
+            if name not in _v_cache_flags:
+                continue
+            if "=" in tok:
+                flag, _, value = tok.partition("=")
+                if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i] = f"{flag}=f16"
+                    _cache_reset = True
+            elif i + 1 < len(out):
+                if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i + 1] = "f16"
+                    _cache_reset = True
+        if _cache_reset:
+            logger.info(
+                "V cache dtype reset to f16 because flash attention was disabled "
+                "by the crash-recovery fallback (quantized V cache requires flash "
+                "attention in llama.cpp; the K cache is left untouched)."
+            )
         return out
+
+    @staticmethod
+    def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
+        """Drop an inherited quantized V-cache env var (main or draft) in place
+        before a flash-attn-off retry, returning True if anything was removed.
+
+        The argv rewrite in ``_with_flash_attn_off`` only reaches flags on the
+        command line. Studio deliberately lets an env-only cache type reach the
+        child untouched (an asymmetric K/V env must survive), so a quantized V
+        cache set purely through ``LLAMA_ARG_CACHE_TYPE_V`` (or the draft
+        ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V``) would still abort the FA-off retry
+        with "V cache quantization requires flash_attn". Dropping it lets
+        llama.cpp fall back to the f16 default. Only V is dropped: a quantized K
+        cache runs fine without flash attention, so its env var is preserved.
+        """
+        dropped = False
+        for var in ("LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"):
+            value = (env.get(var) or "").strip().lower()
+            if value and value not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                env.pop(var, None)
+                dropped = True
+        return dropped
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -8319,6 +8439,13 @@ class LlamaCppBackend:
                             _fa_rc,
                         )
                         self._kill_process()
+                        # The argv rewrite can't reach an env-only quantized V
+                        # cache; drop it so the FA-off child doesn't abort on it.
+                        if self._drop_env_quantized_v_cache(env):
+                            logger.info(
+                                "Dropped inherited quantized V-cache env for the "
+                                "--flash-attn off retry (requires flash attention)."
+                            )
                         cmd = _fa_cmd
                         healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
 
@@ -8364,6 +8491,13 @@ class LlamaCppBackend:
                             _probe_rc,
                         )
                         self._kill_process()
+                        # The argv rewrite can't reach an env-only quantized V
+                        # cache; drop it so the FA-off child doesn't abort on it.
+                        if self._drop_env_quantized_v_cache(env):
+                            logger.info(
+                                "Dropped inherited quantized V-cache env for the "
+                                "--flash-attn off retry (requires flash attention)."
+                            )
                         cmd = _fa_cmd
                         healthy = (
                             _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
@@ -9180,6 +9314,7 @@ class LlamaCppBackend:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
         with self._lock:
+            self._unload_epoch += 1
             self._kill_process()
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
@@ -9979,15 +10114,18 @@ class LlamaCppBackend:
             return False
         if not self._mtp_runtime_fallback_active:
             return False
-        if not self._last_load_kwargs or self._process is None:
+        # Read before claiming: a raise after the claim strands the flag, and nothing
+        # else clears it, blocking every later respawn.
+        kwargs = self._last_load_kwargs
+        proc = self._process
+        if not kwargs or proc is None:
             return False
         # Single-flight: the first failure claims the reload.
         with self._mtp_runtime_fallback_lock:
             if self._mtp_runtime_fallback_in_progress:
                 return False
             self._mtp_runtime_fallback_in_progress = True
-        snapshot = dict(self._last_load_kwargs)
-        proc = self._process
+        snapshot = dict(kwargs)
 
         def _recover():
             try:
@@ -10035,7 +10173,14 @@ class LlamaCppBackend:
                 with self._mtp_runtime_fallback_lock:
                     self._mtp_runtime_fallback_in_progress = False
 
-        threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
+        try:
+            threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
+        except RuntimeError as exc:
+            # Release the claim: a reload that never started would block respawn forever.
+            with self._mtp_runtime_fallback_lock:
+                self._mtp_runtime_fallback_in_progress = False
+            logger.error(f"Could not start the MTP-crash reload: {exc}")
+            return False
         return True
 
     def _start_mtp_crash_watchdog(self) -> None:
@@ -10507,6 +10652,21 @@ class LlamaCppBackend:
         finally:
             _cancel_closed.set()
 
+    def _server_socket_is_open(self, timeout_s: float = 0.15) -> bool:
+        """True if anything still accepts on the server port.
+
+        The listening socket dies with the process, so this tells a live server
+        from a dead one without waiting for the child to become reapable.
+        """
+        port = self._port
+        if not port:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout = timeout_s):
+                return True
+        except OSError:
+            return False
+
     def _respawn_if_dead(self) -> bool:
         """Relaunch the llama-server if its process has exited.
 
@@ -10516,28 +10676,114 @@ class LlamaCppBackend:
         recover, returning True once healthy. Serialised on ``_respawn_lock`` so
         many generations hitting the dead server trigger at most one reload.
         """
+        # Read outside the lock so a queued caller can tell the replacement from the child
+        # its own error came from; otherwise each burns the grace wait below, and that
+        # sleep is held under the lock, so the waits serialise.
+        served_by = self._process
         with self._respawn_lock:
             proc = self._process
             if proc is None:
                 return False
-            if proc.poll() is None:
-                # Process is alive: either a concurrent caller already respawned
-                # it (healthy), or this connection error wasn't a dead server.
+            if self._cancel_event.is_set():
+                # unload_model sets this before it kills, so the child can still be
+                # accepting. Reporting it healthy would aim the retry at a server
+                # that is deliberately going away.
+                return False
+            if proc is not served_by:
+                # Replaced while we queued: this child never served our request.
                 return self._healthy
-            kwargs = self._last_load_kwargs
-            if not kwargs:
-                return False
-            logger.warning(
-                f"llama-server for '{self._model_identifier}' exited "
-                f"(code {proc.returncode}); respawning to recover the session"
-            )
-            with self._lock:
-                self._healthy = False
+            if proc.poll() is None:
+                # Still serving, so the error was transient. Charging it the grace below
+                # would cost a second per caller, serialised under this lock.
+                if self._server_socket_is_open():
+                    return self._healthy
+                # A closing server can beat its own exit status: calling it alive returns
+                # the stale _healthy and spends the retry on the corpse.
+                deadline = time.monotonic() + _RESPAWN_REAP_GRACE_S
+                while proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+            if proc.poll() is None:
+                # Alive: either a concurrent caller already respawned it (healthy), or
+                # this connection error wasn't a dead server.
+                return self._healthy
+            with self._mtp_runtime_fallback_lock:
+                if self._mtp_runtime_fallback_in_progress:
+                    # An MTP-free reload owns this corpse; replaying the old kwargs
+                    # restarts the crashing config and aborts that reload.
+                    logger.info("Respawn skipped: an MTP-free reload is already recovering.")
+                    return False
+            # The RLock lets the load_model below re-enter it.
+            with self._serial_load_lock:
+                if self._process is not proc:
+                    logger.info("Respawn skipped: a newer load is already active.")
+                    return self._healthy
+                # Snapshot under _lock, the one unload_model holds, so a teardown is
+                # either wholly before us (flag set) or wholly after (epoch bumped).
+                # _serial_load_lock alone would not exclude it: unload never takes it.
+                with self._lock:
+                    if self._cancel_event.is_set():
+                        logger.info("Respawn skipped: the model was unloaded.")
+                        return False
+                    kwargs = dict(self._last_load_kwargs or {})
+                    if not kwargs:
+                        return False
+                    epoch = self._unload_epoch
+                    self._healthy = False
+                logger.warning(
+                    f"llama-server for '{self._model_identifier}' exited "
+                    f"(code {proc.returncode}); respawning to recover the session"
+                )
+                try:
+                    started = bool(self.load_model(**kwargs))
+                except Exception as exc:
+                    logger.error(f"Failed to respawn llama-server: {exc}")
+                    return False
+                if started and self._unload_epoch != epoch:
+                    # An unload landed mid-reload. load_model cleared _cancel_event on
+                    # the way in, so the epoch is the only surviving evidence; undo the
+                    # replacement rather than leave a model the user stopped running.
+                    logger.info("Respawn undone: the model was unloaded during the reload.")
+                    self.unload_model()
+                    return False
+                return started
+
+    @contextlib.contextmanager
+    def _open_chat_stream_with_respawn_retry(self, payload: dict, cancel_event):
+        """Open a chat stream, respawning a dead llama-server once before streaming.
+
+        Retry only when opening the response fails: once it is open a consumer may
+        already have emitted content or tool events, so a replay could duplicate
+        output and side effects. ``base_url`` is resolved per attempt because a
+        respawn may pick a new port. The budget is one retry per model request, not
+        per chat turn, so a long tool loop never discards a completed tool.
+
+        A child dying after the accept but before the headers surfaces as
+        ReadError/WriteError/RemoteProtocolError rather than ConnectError, and which
+        one differs per OS. llama-server flushes its 200 at slot start, so that window
+        is an upload still in flight or a request behind busy slots; a death during
+        decode arrives with the response open and is not replayed. Timeouts are
+        excluded: the server is slow, not dead, and a replay would spend the
+        first-token budget twice.
+        """
+        for attempt in range(2):
+            response_opened = False
             try:
-                return bool(self.load_model(**kwargs))
-            except Exception as exc:
-                logger.error(f"Failed to respawn llama-server: {exc}")
-                return False
+                url = f"{self.base_url}/v1/chat/completions"
+                with self._open_stream(url, payload, cancel_event) as opened:
+                    response_opened = True
+                    yield opened
+                    return
+            except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                if response_opened:
+                    raise
+                if self._maybe_recover_from_mtp_crash(exc):
+                    raise RuntimeError("Lost connection to llama-server") from exc
+                if attempt == 0 and self._respawn_if_dead():
+                    logger.warning(
+                        "llama-server was unreachable; respawned it and retrying the generation"
+                    )
+                    continue
+                raise
 
     def generate_chat_completion(
         self,
@@ -10556,6 +10802,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
+        promote_reasoning_only: bool = True,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -10638,7 +10885,12 @@ class LlamaCppBackend:
                                     # model put its whole reply in reasoning
                                     # (e.g. Qwen3 always-think). Show it as
                                     # the main response, not a thinking block.
-                                    cumulative = reasoning_text
+                                    cumulative = _finalize_reasoning_only_cumulative(
+                                        cumulative,
+                                        reasoning_text,
+                                        _metadata_finish_reason,
+                                        promote_reasoning_only,
+                                    )
                                     yield cumulative
                             _stream_done = True
                             break  # exit inner while
@@ -10735,6 +10987,7 @@ class LlamaCppBackend:
                     reasoning_effort = reasoning_effort,
                     preserve_thinking = preserve_thinking,
                     seed = seed,
+                    promote_reasoning_only = promote_reasoning_only,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -10776,6 +11029,7 @@ class LlamaCppBackend:
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
+        promote_reasoning_only: bool = True,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -10827,7 +11081,6 @@ class LlamaCppBackend:
                 yield _ev
             conversation.extend(_auto["messages"])
 
-        url = f"{self.base_url}/v1/chat/completions"
         _accumulated_completion_tokens = 0
         _accumulated_predicted_ms = 0.0
         _accumulated_predicted_n = 0
@@ -11087,7 +11340,7 @@ class LlamaCppBackend:
                 _text_args_name = ""
                 _confirm_gated_iteration = bool(confirm_tool_calls) and not bypass_permissions
 
-                with self._open_stream(url, payload, cancel_event) as (
+                with self._open_chat_stream_with_respawn_retry(payload, cancel_event) as (
                     response,
                     first_token_deadline,
                 ):
@@ -11118,7 +11371,12 @@ class LlamaCppBackend:
                                                 ),
                                             }
                                     else:
-                                        cumulative_display = reasoning_accum
+                                        cumulative_display = _finalize_reasoning_only_cumulative(
+                                            cumulative_display,
+                                            reasoning_accum,
+                                            _iter_finish_reason,
+                                            promote_reasoning_only,
+                                        )
                                         if not _suppress_visible_output:
                                             yield {
                                                 "type": "content",
@@ -11582,7 +11840,12 @@ class LlamaCppBackend:
                             if _reasoning_started_at is not None and not _reasoning_summary_emitted:
                                 _reasoning_summary_emitted = True
                                 yield _reasoning_summary_event(_reasoning_started_at)
-                            cumulative_display = reasoning_accum
+                            cumulative_display = _finalize_reasoning_only_cumulative(
+                                cumulative_display,
+                                reasoning_accum,
+                                _iter_finish_reason,
+                                promote_reasoning_only,
+                            )
                             if not _suppress_visible_output:
                                 yield {
                                     "type": "content",
@@ -12114,7 +12377,7 @@ class LlamaCppBackend:
         _stream_done = False
 
         try:
-            with self._open_stream(url, stream_payload, cancel_event) as (
+            with self._open_chat_stream_with_respawn_retry(stream_payload, cancel_event) as (
                 response,
                 first_token_deadline,
             ):
@@ -12146,7 +12409,12 @@ class LlamaCppBackend:
                                         "text": _strip_tool_markup(cumulative, final = True),
                                     }
                                 else:
-                                    cumulative = reasoning_text
+                                    cumulative = _finalize_reasoning_only_cumulative(
+                                        cumulative,
+                                        reasoning_text,
+                                        _metadata_finish_reason,
+                                        promote_reasoning_only,
+                                    )
                                     yield {"type": "content", "text": cumulative}
                             _stream_done = True
                             break  # exit inner while
