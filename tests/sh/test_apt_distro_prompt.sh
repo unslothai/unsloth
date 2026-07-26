@@ -106,7 +106,7 @@ make_unopenable() {
 }
 
 # $1 tty:  "tty" | "notty" | "unopenable"
-# $2 sudo: "nopasswd" | "needspasswd" | "aptneedspasswd" | "absent"
+# $2 sudo: "nopasswd" | "needspasswd" | "aptneedspasswd" | "cached" | "absent"
 run_smart() {
     _tty_mode="$1"; _sudo_mode="$2"
     _d=$(mktemp -d -p "$_TMP_ROOT")
@@ -132,13 +132,25 @@ run_smart() {
             builtin command "$@"
         }
         # Models real sudo: -n refuses (exit 1, nothing runs) whenever the
-        # command would need a password; otherwise the command runs.
+        # command would need a password; otherwise the command runs. -k makes
+        # it ignore any cached authentication timestamp for this invocation,
+        # per sudo(8), so only a real NOPASSWD rule still counts as passwordless.
         sudo() {
             _noninteractive=false
-            if [ "$1" = -n ]; then _noninteractive=true; shift; fi
+            _ignore_cache=false
+            while :; do
+                case "$1" in
+                    -n) _noninteractive=true; shift ;;
+                    -k) _ignore_cache=true; shift ;;
+                    *)  break ;;
+                esac
+            done
             if [ "$_noninteractive" = true ]; then
                 case "$_sudo_mode" in
                     nopasswd) ;;
+                    # A valid timestamp from an earlier, unrelated sudo. Without
+                    # -k this looks passwordless; with -k it must not.
+                    cached) [ "$_ignore_cache" = true ] && return 1 ;;
                     # Authorized for everything, but only trivial commands are
                     # NOPASSWD. `sudo -l` says yes here while execution needs a
                     # password, so authorization is not the question to ask.
@@ -203,6 +215,23 @@ if make_unopenable "$_probe/tty" && [ -r "$_probe/tty" ] && ! ( : <"$_probe/tty"
 else
     echo "  SKIP: this platform cannot fake a readable-but-unopenable /dev/tty"
 fi
+
+# A cached authentication timestamp from an earlier, unrelated sudo must not
+# count as passwordless: nobody answered the prompt in this run, and the
+# sudoers rule for apt-get still carries PASSWD. -k is what makes the probe
+# ignore the timestamp, so this asserts the -k is actually there and effective.
+_out=$(run_smart notty cached)
+assert_contains "cached credentials: says it cannot run unattended" \
+    "$_out" "cannot be done unattended"
+case "$_out" in
+    *SUDO_RAN*) echo "  FAIL: a cached timestamp must not authorise unattended install"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: cached credentials run nothing as root"; PASS=$((PASS + 1)) ;;
+esac
+
+# The failure message must not claim a missing password when apt itself failed:
+# sudo returns the command's own exit status when the command does run.
+assert_contains "failure message does not blame a password exclusively" \
+    "$_out" "or apt-get itself"
 
 # Authorized for apt-get but not NOPASSWD on it: `sudo -n true` reads this as
 # unattended, and so does `sudo -n -l -- apt-get ...`, since list mode answers

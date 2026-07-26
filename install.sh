@@ -724,16 +724,30 @@ _smart_apt_install() {
             # only reliable test of whether they are passwordless -- `sudo -l`
             # reports whether a command is *authorized*, which is a different
             # question from whether running it needs authentication.
+            #
+            # -k on top of that ignores any cached authentication timestamp, so
+            # this succeeds only under a real NOPASSWD rule, not because someone
+            # ran sudo in another shell minutes ago -- that would escalate here
+            # with nobody having answered the prompt. Per sudo(8), -k alongside
+            # a command ignores the cached credentials for this invocation and
+            # "will not update the user's cached credentials", so an interactive
+            # session elsewhere does not have to re-authenticate afterwards.
             echo "    No terminal to confirm on; trying passwordless sudo."
-            if sudo -n apt-get update -y </dev/null &&
-                sudo -n apt-get install -y $_STILL_MISSING </dev/null; then
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
                 echo "    Installed with passwordless sudo."
             else
                 echo ""
                 echo "    Could not install these packages: $_STILL_MISSING"
                 echo "    Detected ${_ad_desc}."
-                echo "    sudo likely needs a password here and there is no terminal to"
-                echo "    enter one on, so this cannot be done unattended."
+                # A nonzero status here is sudo refusing (needs a password, or
+                # no NOPASSWD rule) OR apt's own failure -- a bad repo, a dpkg
+                # lock, a network outage. sudo returns the command's exit status
+                # when it does run, so the two are not distinguishable from the
+                # status alone; report both honestly rather than guessing.
+                echo "    Either sudo needs a password here, or apt-get itself"
+                echo "    failed; see the error above. With no terminal to"
+                echo "    authenticate on, this cannot be done unattended."
                 echo "    Please install them first, then re-run Unsloth Studio setup:"
                 echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 exit 1
