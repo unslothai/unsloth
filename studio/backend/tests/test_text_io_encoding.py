@@ -13,7 +13,10 @@ model config or path containing ``ä ö ü → 世`` mojibakes or raises
 from __future__ import annotations
 
 import ast
+import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +31,9 @@ _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__", "sandbox_site"
 # and av.open(..., metadata_errors=...) are other libraries' open(), so matching
 # the signature is what separates them.
 _FILE_MODE_CHARS = set("rwxabt+")
-_PATH_OPEN_KWARGS = {"mode", "buffering", "encoding", "errors", "newline"}
+_PATH_OPEN_ARGS = ("mode", "buffering", "encoding", "errors", "newline")
+_PATH_OPEN_KWARGS = set(_PATH_OPEN_ARGS)
+_PATH_OPEN_ENCODING_ARG = _PATH_OPEN_ARGS.index("encoding")
 
 _SUBPROCESS_CALLS = {"run", "Popen", "check_output", "check_call", "call"}
 
@@ -73,7 +78,7 @@ def _path_open_mode(node: ast.Call) -> str | None:
 
 def _is_path_open(node: ast.Call) -> bool:
     """True only for calls matching ``Path.open``'s signature."""
-    if len(node.args) > 1:
+    if len(node.args) > len(_PATH_OPEN_ARGS):
         return False
     if any(k.arg not in _PATH_OPEN_KWARGS for k in node.keywords):
         return False
@@ -81,6 +86,11 @@ def _is_path_open(node: ast.Call) -> bool:
     if mode is not None:
         return bool(mode) and set(mode) <= _FILE_MODE_CHARS
     return not node.args
+
+
+def _path_open_has_encoding(node: ast.Call) -> bool:
+    """Path.open() also takes encoding positionally: open("w", 1, "utf-8")."""
+    return _has_keyword(node, "encoding") or len(node.args) > _PATH_OPEN_ENCODING_ARG
 
 
 def _call_name(node: ast.Call) -> str | None:
@@ -92,12 +102,23 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
-def _is_subprocess_call(node: ast.Call) -> bool:
+def _subprocess_names(tree: ast.AST) -> set[str]:
+    """Names subprocess is reachable under here, e.g. `import subprocess as _sp`."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "subprocess":
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _is_subprocess_call(node: ast.Call, names: set[str]) -> bool:
     func = node.func
     if not isinstance(func, ast.Attribute) or func.attr not in _SUBPROCESS_CALLS:
         return False
     value = func.value
-    return isinstance(value, ast.Name) and value.id == "subprocess"
+    return isinstance(value, ast.Name) and value.id in names
 
 
 def _text_mode_subprocess(node: ast.Call) -> bool:
@@ -112,13 +133,14 @@ def _text_mode_subprocess(node: ast.Call) -> bool:
 def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
+    subprocess_names = _subprocess_names(tree)
     found: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node)
 
-        if _is_subprocess_call(node):
+        if _is_subprocess_call(node, subprocess_names):
             if _text_mode_subprocess(node) and not _has_keyword(node, "encoding"):
                 found.append(f"{path.name}:{node.lineno}: subprocess(text = True) without encoding")
             continue
@@ -130,7 +152,7 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name == "open" and isinstance(node.func, ast.Attribute):
-            if not _is_path_open(node) or _has_keyword(node, "encoding"):
+            if not _is_path_open(node) or _path_open_has_encoding(node):
                 continue
             if _path_open_mode(node) and "b" in _path_open_mode(node):
                 continue
@@ -155,3 +177,47 @@ def test_text_io_names_its_encoding(path: Path) -> None:
         'codepage and corrupts non-ASCII (ä ö ü → 世). Pass encoding = "utf-8":\n  '
         + "\n  ".join(offenders)
     )
+
+
+_STATE_STORE = (
+    BACKEND_ROOT
+    / "plugins/data-designer-github-repo-seed/src"
+    / "data_designer_github_repo_seed/scraper_impl/state_store.py"
+)
+
+
+def _load_state_store(codepage: str):
+    """Load state_store with the writing machine's codepage pinned."""
+    spec = importlib.util.spec_from_file_location(f"state_store_{codepage}", _STATE_STORE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.locale = SimpleNamespace(
+        getencoding = lambda: codepage,
+        getpreferredencoding = lambda _ = True: codepage,
+    )
+    return module
+
+
+@pytest.mark.parametrize(
+    ("codepage", "name"), [("cp1252", "Jürgen"), ("cp1251", "Юрий"), ("cp932", "田中")]
+)
+def test_resuming_a_legacy_jsonl_migrates_it(tmp_path: Path, codepage: str, name: str) -> None:
+    """A scrape written before UTF-8 was explicit must resume, not duplicate."""
+    path = tmp_path / "out.jsonl"
+    records = [{"id": 1, "author": name}, {"id": 2, "author": name}]
+    body = "".join(json.dumps(r, ensure_ascii = False) + "\n" for r in records)
+    path.write_bytes(body.encode(codepage))
+
+    writer = _load_state_store(codepage).JsonlWriter(path)
+    try:
+        # Seen keys survive the resume, so a repeat is refused, not appended.
+        assert writer.has("id:1") and writer.has("id:2")
+        assert writer.write(records[0]) is False
+        assert writer.write({"id": 3, "author": name}) is True
+    finally:
+        writer.close()
+
+    # One consistent encoding, and the legacy text came through intact.
+    lines = [json.loads(x) for x in path.read_text(encoding = "utf-8").splitlines() if x.strip()]
+    assert len(lines) == 3
+    assert [line["author"] for line in lines] == [name] * 3

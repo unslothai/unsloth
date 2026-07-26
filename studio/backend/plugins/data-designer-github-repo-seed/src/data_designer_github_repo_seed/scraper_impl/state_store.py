@@ -6,10 +6,31 @@
 from __future__ import annotations
 
 import json
+import locale
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
+
+
+def _decode_checkpoint(raw: bytes) -> Tuple[str, bool]:
+    """Decode a checkpoint file, returning (text, was_utf8).
+
+    Releases before UTF-8 was made explicit wrote these in the locale codepage,
+    so a resume on Windows-de finds cp1252 bytes here. latin-1 never raises, so
+    a resume degrades to replacement characters instead of losing the file.
+    """
+    encodings = ["utf-8"]
+    try:
+        encodings.append(locale.getencoding())
+    except AttributeError:  # Python < 3.11
+        encodings.append(locale.getpreferredencoding(False))
+    for index, encoding in enumerate(encodings):
+        try:
+            return raw.decode(encoding), index == 0
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("latin-1", errors = "replace"), False
 
 
 class StateStore:
@@ -20,8 +41,7 @@ class StateStore:
         self._data: Dict[str, Any] = {}
         if self.path.exists():
             try:
-                with self.path.open(encoding = "utf-8") as f:
-                    self._data = json.load(f)
+                self._data = json.loads(_decode_checkpoint(self.path.read_bytes())[0])
             except Exception:
                 self._data = {}
 
@@ -63,22 +83,38 @@ class JsonlWriter:
         self.path = Path(path)
         self.path.parent.mkdir(parents = True, exist_ok = True)
         self._lock = threading.Lock()
-        self._fh = self.path.open("a", buffering = 1, encoding = "utf-8")
         self._count_seen_keys: set[str] = set()
-        # Preload seen keys for dedup across resumes
+        # Preload seen keys for dedup across resumes. Must run before the append
+        # handle opens: a legacy file is rewritten as UTF-8 first, and Windows
+        # cannot replace a file it still holds open.
         if self.path.exists() and self.path.stat().st_size > 0:
+            self._preload_seen_keys()
+        self._fh = self.path.open("a", buffering = 1, encoding = "utf-8")
+
+    def _preload_seen_keys(self) -> None:
+        try:
+            raw = self.path.read_bytes()
+        except OSError:
+            return
+        text, was_utf8 = _decode_checkpoint(raw)
+        for line in text.splitlines():
             try:
-                with self.path.open(encoding = "utf-8") as f:
-                    for line in f:
-                        try:
-                            obj = json.loads(line)
-                            k = self._key(obj)
-                            if k is not None:
-                                self._count_seen_keys.add(k)
-                        except Exception:
-                            pass
+                k = self._key(json.loads(line))
             except Exception:
-                pass
+                continue
+            if k is not None:
+                self._count_seen_keys.add(k)
+        if not was_utf8:
+            self._rewrite_as_utf8(text)
+
+    def _rewrite_as_utf8(self, text: str) -> None:
+        """Convert a locale-encoded file so appended lines match what precedes them."""
+        tmp = self.path.with_suffix(self.path.suffix + ".utf8.tmp")
+        try:
+            tmp.write_text(text, encoding = "utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            tmp.unlink(missing_ok = True)
 
     def _key(self, obj: dict) -> str | None:
         for k in ("id", "node_id", "number", "sha", "url"):

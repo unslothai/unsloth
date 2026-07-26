@@ -385,6 +385,8 @@ def _install_package_wheel_first(
         "stdout": _sp.PIPE,
         "stderr": _sp.STDOUT,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
     }
     if is_hip:
         _run_kwargs["timeout"] = 1800
@@ -606,6 +608,8 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
@@ -849,6 +853,8 @@ def _run_pip(cmd: list[str], event_queue: Any, label: str) -> bool:
             stdout = _sp.PIPE,
             stderr = _sp.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _TILELANG_INSTALL_TIMEOUT_S,
         )
     except _sp.TimeoutExpired:
