@@ -305,18 +305,22 @@ export function ParamsSection(): ReactElement {
                 })
               }
             >
-              <SelectTrigger aria-label="Portable resume data">
-                <SelectValue />
+              <SelectTrigger className="h-auto min-h-11 w-full rounded-xl px-3.5 py-2.5" aria-label="Portable resume data">
+                <SelectValue>
+                  {store.portableResumeData === "metadata" && "Metadata only"}
+                  {store.portableResumeData === "pinned" && "Pin Hub revisions"}
+                  {store.portableResumeData === "snapshot" && "Save a processed data snapshot"}
+                </SelectValue>
               </SelectTrigger>
-              <SelectContent className="max-w-[340px]">
-                <SelectItem value="metadata">
-                  <span className="flex flex-col py-0.5"><span>Metadata only</span><span className="text-xs font-normal text-muted-foreground">Smallest · redownload data when resuming</span></span>
+              <SelectContent align="start" className="w-[var(--radix-select-trigger-width)] min-w-[280px] p-1.5">
+                <SelectItem className="items-start py-2.5" value="metadata">
+                  <span className="flex flex-col items-start gap-0.5"><span className="font-medium">Metadata only</span><span className="text-xs font-normal text-muted-foreground">Smallest · redownload data when resuming</span></span>
                 </SelectItem>
-                <SelectItem value="pinned">
-                  <span className="flex flex-col py-0.5"><span>Pin Hub revisions</span><span className="text-xs font-normal text-muted-foreground">Small · reproduce the same Hub dataset version</span></span>
+                <SelectItem className="items-start py-2.5" value="pinned">
+                  <span className="flex flex-col items-start gap-0.5"><span className="font-medium">Pin Hub revisions</span><span className="text-xs font-normal text-muted-foreground">Small · reproduce the same Hub dataset version</span></span>
                 </SelectItem>
-                <SelectItem value="snapshot">
-                  <span className="flex flex-col py-0.5"><span>Save a processed data snapshot</span><span className="text-xs font-normal text-muted-foreground">Largest · best for offline or ephemeral sessions</span></span>
+                <SelectItem className="items-start py-2.5" value="snapshot">
+                  <span className="flex flex-col items-start gap-0.5"><span className="font-medium">Save a processed data snapshot</span><span className="text-xs font-normal text-muted-foreground">Largest · best for offline or ephemeral sessions</span></span>
                 </SelectItem>
               </SelectContent>
             </Select>
