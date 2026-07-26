@@ -61,12 +61,13 @@ def _is_main_guard(node: ast.AST) -> bool:
     """
     if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
         return False
-    left = node.test.left
-    if not (isinstance(left, ast.Name) and left.id == "__name__"):
-        return False
     if not all(isinstance(op, ast.Eq) for op in node.test.ops):
         return False
-    return any(isinstance(c, ast.Constant) and c.value == "__main__" for c in node.test.comparators)
+    operands = [node.test.left, *node.test.comparators]
+    # Either spelling: `__name__ == "__main__"` or `"__main__" == __name__`.
+    has_name = any(isinstance(o, ast.Name) and o.id == "__name__" for o in operands)
+    has_main = any(isinstance(o, ast.Constant) and o.value == "__main__" for o in operands)
+    return has_name and has_main
 
 
 def _import_time_calls(tree: ast.Module):
@@ -90,10 +91,25 @@ def _import_time_calls(tree: ast.Module):
     so that is walked), and non-name calls, which are left unresolved rather
     than guessed at.
     """
-    helpers = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    # Defs reachable from a scope that executes at import: module body and any
+    # class body, at any nesting. `class F: def _load(): ...; DATA = _load()`
+    # runs _load while the class is constructed.
+    helpers = {}
+    scopes = [tree.body]
+    while scopes:
+        for node in scopes.pop():
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                helpers.setdefault(node.name, node)
+            elif isinstance(node, ast.ClassDef):
+                scopes.append(node.body)
+    # A generator expression handed straight to a call is consumed there, so its
+    # element runs at import; one merely bound to a name does not.
+    consumed = {
+        id(arg)
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        for arg in [*call.args, *(k.value for k in call.keywords)]
+        if isinstance(arg, ast.GeneratorExp)
     }
     entered = set()
     frontier = [list(tree.body)]
@@ -111,7 +127,7 @@ def _import_time_calls(tree: ast.Module):
                 stack.extend(d for d in node.args.defaults if d is not None)
                 stack.extend(d for d in node.args.kw_defaults if d is not None)
                 continue
-            if isinstance(node, ast.GeneratorExp):
+            if isinstance(node, ast.GeneratorExp) and id(node) not in consumed:
                 # Lazy: only the outermost iterable is evaluated where written.
                 if node.generators:
                     stack.append(node.generators[0].iter)
