@@ -68,7 +68,12 @@ class _FakeLogger:
         self.messages.append(message)
 
 
-def _resolve(map_eos_token, yes_map_eos_token, token_mapping = None, eos_token = "<eos>"):
+def _resolve(
+    map_eos_token,
+    yes_map_eos_token,
+    token_mapping = None,
+    eos_token = "<eos>",
+):
     """Run the shipped resolution statements over one (caller, template) combination."""
     module = ast.Module(body = _resolution_statements(), type_ignores = [])
     logger = _FakeLogger()
