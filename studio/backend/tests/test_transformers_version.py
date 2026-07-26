@@ -51,7 +51,7 @@ from utils.transformers_version import (
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
-    _remote_auto_map_needs_510_cache,
+    _remote_auto_map_tier_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
     _probe_tier_cache,
@@ -489,7 +489,7 @@ class TestCheckConfigNeeds510:
     def setup_method(self):
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_gemma4_unified_architecture(self, tmp_path: Path):
         """config.json with Gemma4UnifiedForConditionalGeneration should return True."""
@@ -557,7 +557,7 @@ class TestCheckConfigNeeds510:
 
     def test_remote_modeling_auto_map_needs_510(self, tmp_path: Path):
         """Unknown architectures with 5.10-only remote imports should return True."""
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
         cfg = {
             "model_type": "custom_remote",
             "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
@@ -574,10 +574,10 @@ class TestCheckConfigNeeds510:
         """Offline Hub scan negatives must not poison a later online read."""
         import utils.transformers_version as tv
 
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
         monkeypatch.setattr(tv, "_env_offline", lambda: True)
         assert _check_remote_auto_map_needs_510("org/custom-remote") is False
-        assert not _remote_auto_map_needs_510_cache  # nothing memoized at any key
+        assert not _remote_auto_map_tier_cache  # nothing memoized at any key
 
     def test_offline_local_checkpoint_external_auto_map_makes_no_request(
         self, monkeypatch, tmp_path: Path
@@ -590,7 +590,7 @@ class TestCheckConfigNeeds510:
         """
         import utils.transformers_version as tv
 
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
         cfg = {
             "model_type": "custom_remote",
             "auto_map": {"AutoModelForCausalLM": "extorg/extrepo--modeling_ext.Model"},
@@ -673,7 +673,7 @@ class TestCheckConfigNeeds510:
         """Inconclusive auto_map scans must not cache a false negative."""
         import utils.transformers_version as tv
 
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
         _config_needs_510_cache.clear()
         cfg = {
             "model_type": "custom_remote",
@@ -683,7 +683,7 @@ class TestCheckConfigNeeds510:
         monkeypatch.setattr(tv, "_config_json_is_definitive", lambda *a, **k: True)
         monkeypatch.setattr(tv, "_remote_auto_map_py_contents", lambda *a, **k: ([], False))
         assert _check_remote_auto_map_needs_510("org/custom-remote") is False
-        assert not _remote_auto_map_needs_510_cache  # nothing memoized at any key
+        assert not _remote_auto_map_tier_cache  # nothing memoized at any key
         monkeypatch.setattr(
             tv,
             "_remote_auto_map_py_contents",
@@ -995,7 +995,7 @@ class TestGetTransformersTier:
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_astral_local_checkpoint_returns_510(self, tmp_path: Path):
         """Astral custom-code checkpoints should use the 5.10 sidecar (#7353)."""
@@ -1156,7 +1156,7 @@ class TestGetTransformersTier:
         monkeypatch.setattr(tv, "_config_json_is_definitive", lambda *a, **k: True)
         monkeypatch.setattr(tv, "_list_hub_repo_py_files", _fake_list)
         monkeypatch.setattr(tv, "_read_repo_text_file", _fake_read)
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
         assert get_transformers_tier("org/qwen3.5-custom-remote") == "510"
 
@@ -3614,7 +3614,7 @@ class TestRemoteImportSpellings:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_parent_package_import_returns_510(self, tmp_path: Path):
         """``from transformers.utils import output_capturing`` loads the same module."""
@@ -3670,7 +3670,7 @@ class TestLocalScanCacheFreshness:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_rescanned_when_entry_file_appears(self, tmp_path: Path):
         """config.json lands before the remote code (in-progress checkpoint)."""
@@ -3729,7 +3729,7 @@ class TestTokenizerAutoMapTransientScan:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_transient_listing_failure_retried(self, monkeypatch):
         import utils.transformers_version as tv
@@ -3787,7 +3787,7 @@ class TestProbeFalseSkipsAutoMapScan:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_probe_false_does_no_hub_io(self, monkeypatch):
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -3845,7 +3845,7 @@ class TestHubTreePagination:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_py_file_on_second_page_is_found(self, monkeypatch):
         import utils.transformers_version as tv
@@ -3914,7 +3914,7 @@ class TestUnreadableAutoMapConfigIsInconclusive:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
         tv_mod = __import__("utils.transformers_version", fromlist = ["x"])
         tv_mod._config_json_absent.clear()
 
@@ -3945,7 +3945,7 @@ class TestUnreadableAutoMapConfigIsInconclusive:
         monkeypatch.setattr("urllib.request.urlopen", _urlopen)
         needs, definitive = tv._remote_auto_map_scan_result("org/custom-remote")
         assert (needs, definitive) == (False, False)
-        assert not _remote_auto_map_needs_510_cache  # the outage cached nothing
+        assert not _remote_auto_map_tier_cache  # the outage cached nothing
 
         state["up"] = True
         _config_json_cache.clear()
@@ -3963,7 +3963,7 @@ class TestUnreadableAutoMapConfigIsInconclusive:
 
         monkeypatch.setattr("urllib.request.urlopen", _urlopen)
         assert tv._remote_auto_map_scan_result("org/plain-model") == (False, True)
-        assert _remote_auto_map_needs_510_cache  # definitive, so memoized
+        assert _remote_auto_map_tier_cache  # definitive, so memoized
 
 
 class TestProcessorOnlyAutoMapIsScanned:
@@ -3971,7 +3971,7 @@ class TestProcessorOnlyAutoMapIsScanned:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_hub_preprocessor_config_auto_map_promotes_tier(self, monkeypatch, tmp_path):
         """Mirrors TencentARC/TimeLens-7B: stock config.json, processor auto_map only."""
@@ -4026,7 +4026,7 @@ class TestScanPrerequisiteConfigHonorsHfEndpoint:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_config_json_fetched_from_mirror(self, monkeypatch, tmp_path):
         import utils.transformers_version as tv
@@ -4079,7 +4079,7 @@ class TestRemoteSourceEncoding:
 
     def setup_method(self):
         _config_json_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_pep263_cookie_module_is_decoded(self, monkeypatch):
         import utils.transformers_version as tv
@@ -4188,7 +4188,7 @@ class TestPartialTokenizerScanKeepsPositiveMatch:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_local_proof_survives_external_repo_failure(self, monkeypatch, tmp_path: Path):
         import utils.transformers_version as tv
@@ -4223,7 +4223,7 @@ class TestScanSignatureCoversAutoMapConfigs:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_auto_map_added_after_the_code_is_rescanned(self, tmp_path: Path):
         """A staged checkpoint: .py first, processor auto_map afterwards."""
@@ -4256,7 +4256,7 @@ class TestTokenizerScanCacheFreshness:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def test_rescanned_when_tokenizer_source_replaced(self, tmp_path: Path):
         _tokenizer_checkpoint(tmp_path, ["tokenization_my.MyTok", None], "import torch\n")
@@ -4294,7 +4294,7 @@ class TestTokenizerConfigFetchHonorsEndpoint:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def _serve(self, monkeypatch, mirror: str | None):
         import utils.transformers_version as tv
@@ -4342,7 +4342,7 @@ class TestProbeFalseSkipsConfigFallbackScan:
     def setup_method(self):
         _config_json_cache.clear()
         _config_needs_510_cache.clear()
-        _remote_auto_map_needs_510_cache.clear()
+        _remote_auto_map_tier_cache.clear()
 
     def _hub(self, monkeypatch, tmp_path):
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -4380,3 +4380,254 @@ class TestProbeFalseSkipsConfigFallbackScan:
         assert ("org/custom-remote", None) not in _config_needs_510_cache
         assert get_transformers_tier("org/custom-remote", probe = True) == "510"
         assert [u for u in urls if u.endswith(".py")]  # the activation path did scan
+
+
+_V5_TOKENIZER_IMPORT = "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+
+
+def _clear_scan_caches():
+    _config_json_cache.clear()
+    _remote_auto_map_tier_cache.clear()
+    _tokenizer_class_cache.clear()
+    _config_needs_510_cache.clear()
+    _config_needs_530_cache.clear()
+    _config_needs_550_cache.clear()
+    _probe_tier_cache.clear()
+
+
+class TestPartialHubFetchKeepsProof:
+    """A .py that fails to fetch must not discard the sources already read.
+
+    The scan trusts a positive from an incomplete closure, so dropping the earlier files
+    throws away an already-observed 5.x-only import and routes the worker to a sidecar
+    that cannot import the remote code.
+    """
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    def _hub(
+        self,
+        monkeypatch,
+        tmp_path,
+        sources,
+        cfg = None,
+    ):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        cfg = cfg or {"auto_map": {"AutoModel": "a_modeling.Model"}}
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if url.endswith("/config.json"):
+                return _PagedResponse(json.dumps(cfg).encode())
+            if "/tree/" in url:
+                return _PagedResponse(
+                    json.dumps([{"type": "file", "path": p} for p in sorted(sources)]).encode()
+                )
+            for name, text in sources.items():
+                if url.endswith(name):
+                    if text is None:
+                        raise OSError("temporary Hub outage")
+                    return _PagedResponse(text.encode())
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    def test_marker_in_earlier_file_survives_a_later_fetch_failure(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        self._hub(monkeypatch, tmp_path, {"a_modeling.py": _V5_IMPORT, "z_helper.py": None})
+        assert tv._remote_auto_map_scan_result("org/multi-file") == (True, False)
+        assert not _remote_auto_map_tier_cache  # incomplete, so nothing memoized
+
+    def test_partial_fetch_without_the_marker_stays_inconclusive(self, monkeypatch, tmp_path):
+        """Negative control: a partial closure never turns into a cacheable negative."""
+        import utils.transformers_version as tv
+
+        self._hub(monkeypatch, tmp_path, {"a_modeling.py": "import torch\n", "z_helper.py": None})
+        assert tv._remote_auto_map_scan_result("org/multi-file") == (False, False)
+        assert not _remote_auto_map_tier_cache
+
+    def test_complete_fetch_without_the_marker_is_definitive(self, monkeypatch, tmp_path):
+        """Negative control: nothing failed, so the negative is a real answer."""
+        import utils.transformers_version as tv
+
+        self._hub(monkeypatch, tmp_path, {"a_modeling.py": "import torch\n"})
+        assert tv._remote_auto_map_scan_result("org/multi-file") == (False, True)
+        assert _remote_auto_map_tier_cache
+
+
+class TestLocalConfigRewriteIsRescanned:
+    """A staged checkpoint can write its code first and its ``auto_map`` afterwards.
+
+    The changed scan signature forces a rescan; that rescan must read the new
+    ``config.json`` from disk instead of the process-lifetime ``_config_json_cache``,
+    or it memoizes a fresh negative under the new signature.
+    """
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    @staticmethod
+    def _write(path: Path, cfg: dict):
+        path.write_text(json.dumps(cfg))
+        os.utime(path, (1, 1))  # force a distinct mtime from the previous write
+
+    def test_auto_map_added_after_the_first_scan_is_observed(self, tmp_path):
+        import utils.transformers_version as tv
+
+        ckpt = tmp_path / "staged"
+        ckpt.mkdir()
+        (ckpt / "modeling_custom.py").write_text(_V5_IMPORT)
+        self._write(ckpt / "config.json", {"model_type": "llama"})
+        assert tv._check_remote_auto_map_needs_510(str(ckpt)) is False
+
+        (ckpt / "config.json").write_text(
+            json.dumps({"model_type": "llama", "auto_map": {"AutoModel": "modeling_custom.Model"}})
+        )
+        assert tv._check_remote_auto_map_needs_510(str(ckpt)) is True
+
+    def test_rewrite_that_declares_no_auto_map_stays_negative(self, tmp_path):
+        """Negative control: re-reading the config must not invent remote code."""
+        import utils.transformers_version as tv
+
+        ckpt = tmp_path / "staged-plain"
+        ckpt.mkdir()
+        (ckpt / "modeling_custom.py").write_text(_V5_IMPORT)
+        self._write(ckpt / "config.json", {"model_type": "llama"})
+        assert tv._check_remote_auto_map_needs_510(str(ckpt)) is False
+
+        (ckpt / "config.json").write_text(json.dumps({"model_type": "llama", "vocab_size": 32000}))
+        assert tv._check_remote_auto_map_needs_510(str(ckpt)) is False
+
+
+class TestAutoMapImportsOf5xTokenizerBackend:
+    """Remote code reached through config.json, not tokenizer_config.json.
+
+    ``transformers.tokenization_utils_tokenizers`` does not exist on the default 4.57.x
+    tier, so a modeling/processor module importing it must not route there just because
+    ``tokenizer_config.json`` declares no ``auto_map`` of its own.
+    """
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    @staticmethod
+    def _ckpt(tmp_path, name, modeling_src, tokenizer_cfg):
+        ckpt = tmp_path / name
+        ckpt.mkdir()
+        (ckpt / "modeling_custom.py").write_text(modeling_src)
+        (ckpt / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "llama",
+                    "architectures": ["LlamaForCausalLM"],
+                    "transformers_version": "4.57.0",
+                    "auto_map": {"AutoModel": "modeling_custom.Model"},
+                }
+            )
+        )
+        (ckpt / "tokenizer_config.json").write_text(json.dumps(tokenizer_cfg))
+        return ckpt
+
+    def test_config_declared_module_importing_the_backend_routes_to_530(self, tmp_path):
+        ckpt = self._ckpt(
+            tmp_path, "backend-model", _V5_TOKENIZER_IMPORT, {"tokenizer_class": "LlamaTokenizer"}
+        )
+        assert get_transformers_tier(str(ckpt), probe = False) == "530"
+
+    def test_ordinary_custom_code_stays_on_default(self, tmp_path):
+        """Negative control: no 5.x-only import, no promotion."""
+        ckpt = self._ckpt(
+            tmp_path,
+            "plain-model",
+            "import torch\nfrom transformers import PreTrainedModel\n",
+            {"tokenizer_class": "LlamaTokenizer"},
+        )
+        assert get_transformers_tier(str(ckpt), probe = False) == "default"
+
+    def test_510_marker_still_outranks_the_tokenizer_backend_marker(self, tmp_path):
+        """Negative control: the 5.10 classification keeps priority."""
+        ckpt = self._ckpt(
+            tmp_path,
+            "both-markers",
+            _V5_IMPORT + _V5_TOKENIZER_IMPORT,
+            {"tokenizer_class": "LlamaTokenizer"},
+        )
+        assert get_transformers_tier(str(ckpt), probe = False) == "510"
+
+    def test_needs_510_helper_keeps_its_510_only_meaning(self, tmp_path):
+        """Negative control: the 5.x tokenizer marker is not a 5.10 answer."""
+        import utils.transformers_version as tv
+
+        ckpt = self._ckpt(
+            tmp_path, "backend-only", _V5_TOKENIZER_IMPORT, {"tokenizer_class": "LlamaTokenizer"}
+        )
+        assert tv._check_remote_auto_map_needs_510(str(ckpt)) is False
+        assert tv._remote_auto_map_tier(str(ckpt))[0] == "530"
+
+
+class TestTypeCheckingImportsAreNotRuntimeImports:
+    """``if TYPE_CHECKING:`` never executes, so it must not promote the tier."""
+
+    def setup_method(self):
+        _clear_scan_caches()
+
+    _GUARD = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from transformers.utils.output_capturing import capture_outputs\n"
+    )
+    _GUARD_QUALIFIED = (
+        "import typing\n"
+        "if typing.TYPE_CHECKING:\n"
+        "    from transformers.utils.output_capturing import capture_outputs\n"
+    )
+    _ELSE_BRANCH = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    pass\n"
+        "else:\n"
+        "    from transformers.utils.output_capturing import capture_outputs\n"
+    )
+    _NEGATED_GUARD = (
+        "from typing import TYPE_CHECKING\n"
+        "if not TYPE_CHECKING:\n"
+        "    from transformers.utils.output_capturing import capture_outputs\n"
+    )
+
+    @pytest.mark.parametrize("src", [_GUARD, _GUARD_QUALIFIED])
+    def test_type_only_import_does_not_promote(self, src):
+        import utils.transformers_version as tv
+        markers = tv._TRANSFORMERS_510_REMOTE_IMPORT_MARKERS
+        assert tv._remote_auto_map_py_matches(markers, [src]) is False
+
+    @pytest.mark.parametrize("src", [_V5_IMPORT, _ELSE_BRANCH, _NEGATED_GUARD])
+    def test_runtime_import_still_promotes(self, src):
+        """Negative control: only the guard's own body is dropped."""
+        import utils.transformers_version as tv
+
+        markers = tv._TRANSFORMERS_510_REMOTE_IMPORT_MARKERS
+        assert tv._remote_auto_map_py_matches(markers, [src]) is True
+
+    def test_unparseable_source_still_falls_back_to_the_line_scan(self):
+        """Negative control: source ``ast`` cannot read is never a silent negative."""
+        import utils.transformers_version as tv
+
+        markers = tv._TRANSFORMERS_510_REMOTE_IMPORT_MARKERS
+        assert tv._remote_auto_map_py_matches(markers, [self._GUARD + "def broken(:\n"]) is True
+
+    def test_unparseable_and_import_free_stay_distinct(self):
+        """Negative control: ``None`` (unparseable) is not ``set()`` (imports nothing)."""
+        import utils.transformers_version as tv
+
+        assert tv._parsed_dotted_imports("def broken(:\n") is None
+        assert tv._parsed_dotted_imports("x = 1\n") == set()
+
+    def test_guard_does_not_drop_sibling_runtime_imports(self):
+        """Negative control: pruning the guard body keeps the rest of the module."""
+        import utils.transformers_version as tv
+
+        names = tv._parsed_dotted_imports(self._GUARD + _V5_IMPORT)
+        assert "transformers.utils.output_capturing" in names

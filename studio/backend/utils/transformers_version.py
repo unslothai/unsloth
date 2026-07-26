@@ -223,7 +223,7 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_530_cache: dict[tuple[str, str | None], bool] = {}
-_remote_auto_map_needs_510_cache: dict[tuple[str, str | None], bool] = {}
+_remote_auto_map_tier_cache: dict[tuple[str, str | None, str | None], str] = {}
 
 # Models whose config.json got a definitive 401/403/404 (absent, or not readable with this
 # token). Tracked separately from _config_json_cache, which only holds configs we could
@@ -704,31 +704,45 @@ def _list_hub_repo_py_files(repo_id: str, hf_token: str | None = None) -> tuple[
 
 
 def _fetch_hub_py_sources(repo_id: str, hf_token: str | None = None) -> tuple[list[str], bool]:
-    """Fetch every present ``.py`` in a Hub repo. Returns (sources, definitive)."""
+    """Fetch every present ``.py`` in a Hub repo. Returns (sources, definitive).
+
+    A file that fails to fetch (transient error, or removed between the tree listing and
+    the raw request) only makes the closure incomplete; the sources already read are still
+    returned. The scan trusts a positive from a partial closure, so discarding them would
+    throw away an already-observed 5.x-only import and route the worker to a sidecar that
+    cannot import the remote code.
+    """
     py_files, listing_ok = _list_hub_repo_py_files(repo_id, hf_token)
     if not listing_ok:
         return [], False
     sources: list[str] = []
+    complete = True
     for fn in sorted(py_files):
         text = _read_repo_text_file(repo_id, fn, hf_token)
         if text is None:
-            return [], False
+            complete = False
+            continue
         sources.append(text)
-    return sources, True
+    return sources, complete
 
 
 def _collect_external_py_sources(refs: set, hf_token: str | None = None) -> tuple[list[str], bool]:
-    """Fetch all ``.py`` from external repos referenced by ``auto_map``."""
+    """Fetch all ``.py`` from external repos referenced by ``auto_map``.
+
+    Like :func:`_fetch_hub_py_sources`, an unreachable repo marks the closure incomplete
+    without dropping the sources read from the repos that did answer.
+    """
     external_repos = {repo for repo, _ in refs if repo is not None}
     if not external_repos:
         return [], True
     sources: list[str] = []
+    complete = True
     for repo in sorted(external_repos):
         repo_sources, ok = _fetch_hub_py_sources(repo, hf_token)
         if not ok:
-            return [], False
+            complete = False
         sources.extend(repo_sources)
-    return sources, True
+    return sources, complete
 
 
 def _auto_map_config_files(model_name: str) -> tuple[str, ...]:
@@ -836,10 +850,16 @@ def _load_repo_json_checked(
     ``definitive`` is False only when the answer is genuinely unknown: a transient remote
     failure, or an offline Hub id. A local read, a 401/403/404 and a parse error are all
     definitive answers, so only a read that never happened blocks caching.
+
+    A local checkpoint's ``config.json`` is read straight from disk like every other config
+    here, NOT through ``_load_config_json``: that cache lives for the process and would keep
+    serving the pre-rewrite contents to a rescan the changed scan signature just forced (a
+    staged checkpoint that writes its code first and its ``auto_map`` afterwards), which
+    would then memoize a fresh negative under the new signature.
     """
-    if filename == "config.json":
+    if filename == "config.json" and not _safe_is_dir(Path(model_name)):
         cfg = _load_config_json(model_name, hf_token)
-        if cfg is not None or _safe_is_dir(Path(model_name)) or not _looks_like_hf_id(model_name):
+        if cfg is not None or not _looks_like_hf_id(model_name):
             return cfg, True
         return None, _config_json_answer_is_definitive(model_name, hf_token)
     local_path = Path(model_name) / filename
@@ -908,21 +928,21 @@ def _remote_auto_map_py_contents(
                     logger.debug("Could not read %s: %s", py_path, exc)
                     return [], False
         ext_sources, ext_ok = _collect_external_py_sources(ext_refs, hf_token)
+        sources.extend(ext_sources)
         if any(repo is not None for repo, _ in ext_refs) and not ext_ok:
             return sources, False
-        sources.extend(ext_sources)
         return sources, cfg_definitive
 
     if _env_offline() or not _looks_like_hf_id(model_name):
         return [], False
 
+    # An incomplete own-repo listing/fetch does not end the scan: the external repos may
+    # still hold the marker, and whatever was read stays available to prove the tier.
     sources, repo_ok = _fetch_hub_py_sources(model_name, hf_token)
-    if not repo_ok:
-        return [], False
     ext_sources, ext_ok = _collect_external_py_sources(ext_refs, hf_token)
-    if any(repo is not None for repo, _ in ext_refs) and not ext_ok:
-        return sources, False
     sources.extend(ext_sources)
+    if not repo_ok or (any(repo is not None for repo, _ in ext_refs) and not ext_ok):
+        return sources, False
     return sources, cfg_definitive
 
 
@@ -935,20 +955,40 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     skipped (a repo's own same-named helper must not match). ``None`` (unparseable) and an
     empty set (parsed, imports nothing) are different answers, so the caller only falls
     back to the line scan for source ``ast`` could not read at all.
+
+    Bodies of ``if TYPE_CHECKING:`` are skipped: that guard is false at runtime, so a
+    type-only annotation import never executes and must not promote an otherwise
+    4.57.x-loadable custom model onto a 5.x sidecar. Only the guard's own body is dropped;
+    its ``else`` / ``elif`` branches do run and are still collected, and ``if not
+    TYPE_CHECKING:`` is not the guard, so its body is collected too.
     """
     import ast
+
+    def _is_type_checking(test) -> bool:
+        return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
+            isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+        )
 
     try:
         tree = ast.parse(src)
     except Exception:
         return None
     names: set[str] = set()
-    for node in ast.walk(tree):
+    stack: list = [tree]
+    while stack:
+        node = stack.pop()
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+            continue
+        if isinstance(node, ast.ImportFrom):
+            if not node.level and node.module:
+                names.add(node.module)
+                names.update(f"{node.module}.{alias.name}" for alias in node.names)
+            continue
+        if isinstance(node, ast.If) and _is_type_checking(node.test):
+            stack.extend(node.orelse)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
     return names
 
 
@@ -1016,25 +1056,45 @@ def _local_scan_signature(model_name: str) -> str | None:
         return None
 
 
-def _remote_auto_map_scan_result(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
-    """Return ``(needs_510, scan_was_definitive)`` for auto_map remote code."""
+def _remote_auto_map_tier(model_name: str, hf_token: str | None = None) -> tuple[str, bool]:
+    """Return ``(tier, scan_was_definitive)`` for auto_map remote code.
+
+    ``"510"`` when the closure imports a 5.10-only symbol, ``"530"`` when it imports the
+    5.x-only tokenizers backend module, else ``"default"``. The 5.x marker is classified
+    here and not only in the tokenizer check because remote code reached through
+    ``config.json`` or a processor config is never scanned by that check when
+    ``tokenizer_config.json`` does not itself declare the module: the worker would then
+    pick the default 4.57.x tier, which does not ship
+    ``transformers.tokenization_utils_tokenizers`` at all.
+    """
     signature = _local_scan_signature(model_name)
     cache_key = (*_token_cache_key(model_name, hf_token), signature)
-    if signature is not None and cache_key in _remote_auto_map_needs_510_cache:
-        return _remote_auto_map_needs_510_cache[cache_key], True
+    if signature is not None and cache_key in _remote_auto_map_tier_cache:
+        return _remote_auto_map_tier_cache[cache_key], True
 
     # Offline Hub ids cannot be scanned here; do not cache the assumed negative so a
     # later online read re-fetches (mirrors _check_tokenizer_config_needs_v5).
     if _env_offline() and not _safe_is_dir(Path(model_name)):
-        return False, False
+        return "default", False
 
     sources, definitive = _remote_auto_map_py_contents(model_name, hf_token)
-    result = _remote_auto_map_py_matches(_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, sources)
-    if result:
+    if _remote_auto_map_py_matches(_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, sources):
+        tier = "510"
         logger.info("Remote auto_map check: %s needs transformers 5.10.x", model_name)
+    elif _remote_auto_map_py_matches(_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS, sources):
+        tier = "530"
+        logger.info("Remote auto_map check: %s requires transformers 5.x", model_name)
+    else:
+        tier = "default"
     if definitive and signature is not None:
-        _remote_auto_map_needs_510_cache[cache_key] = result
-    return result, definitive
+        _remote_auto_map_tier_cache[cache_key] = tier
+    return tier, definitive
+
+
+def _remote_auto_map_scan_result(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
+    """Return ``(needs_510, scan_was_definitive)`` for auto_map remote code."""
+    tier, definitive = _remote_auto_map_tier(model_name, hf_token)
+    return tier == "510", definitive
 
 
 def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = None) -> bool:
@@ -2035,7 +2095,8 @@ def get_transformers_tier(
                     model_name,
                 )
                 return tier
-            if _check_remote_auto_map_needs_510(model_name, hf_token):
+            remote_tier, _ = _remote_auto_map_tier(model_name, hf_token)
+            if remote_tier == "510":
                 tier = _raise_tier_for_nested(cfg, "510")
                 logger.info(
                     "Transformers tier %s selected for %s (local auto_map needs 5.10.x)",
@@ -2116,6 +2177,14 @@ def get_transformers_tier(
                 if not probe:
                     return "530"
                 return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
+            # Remote code declared by config.json / a processor config that imports the
+            # 5.x-only tokenizers backend. The tokenizer check above only walks the closure
+            # tokenizer_config.json itself declares, so without this the module would route
+            # to the default tier that cannot import it. 510 already returned above.
+            if remote_tier != "default":
+                if not probe:
+                    return "530"
+                return _probe_tier(model_name, hf_token, "local auto_map needs 5.x")
             if _config_saved_by_transformers_5(cfg):
                 if not probe:
                     return "530"  # cheap 5.x hint; the real path resolves the exact tier
@@ -2204,6 +2273,16 @@ def get_transformers_tier(
         if not probe:
             return "530"
         return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
+
+    # Same gap as the local branch, for a Hub id: remote code declared outside
+    # tokenizer_config.json that imports the 5.x-only tokenizers backend. Only on the
+    # activation path -- probe=False must not pay for a repo listing plus a fetch per
+    # remote .py (see _check_config_needs_510's scan_auto_map note). 510 already returned
+    # from _check_config_needs_510 above, so this can only add the 5.3 floor. That call
+    # memoized the scan, so this is a cache hit; it re-scans only when the closure could
+    # not be read in full, which is exactly when a negative must not be trusted.
+    if probe and _remote_auto_map_tier(model_name, hf_token)[0] != "default":
+        return _probe_tier(model_name, hf_token, "auto_map needs 5.x")
 
     if _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
         if not probe:
