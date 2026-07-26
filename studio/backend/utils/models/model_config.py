@@ -1616,6 +1616,21 @@ class GgufVariantInfo:
     size_bytes: int  # file size
 
 
+_FLOAT_PRECISION_LABELS = frozenset({"BF16", "F16", "F32"})
+
+
+def _select_quant_label_match(text: str, quant_re: str) -> Optional[re.Match]:
+    """Prefer real quants over BF16/F16/F32 infixes (mirrors hub gguf parser)."""
+    fallback: Optional[re.Match] = None
+    for match in re.finditer(quant_re, text, re.IGNORECASE):
+        if match.group(2).upper() in _FLOAT_PRECISION_LABELS:
+            if fallback is None:
+                fallback = match
+            continue
+        return match
+    return fallback
+
+
 def _extract_quant_label(filename: str) -> str:
     """
     Extract quant label like Q4_K_M, IQ4_XS, BF16 from a GGUF filename.
@@ -1650,7 +1665,7 @@ def _extract_quant_label(filename: str) -> str:
         # separate main-weight graft variants in the same folder (#7460).
         r"(-[0-9]+(?:\.[0-9]+)?bpw|-(?:PT-)?MTP)?"
     )
-    match = re.search(quant_re, stem, re.IGNORECASE)
+    match = _select_quant_label_match(stem, quant_re)
     matched_text = stem
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
     # not the basename. Check parent dirs too so the label matches the
@@ -1658,7 +1673,7 @@ def _extract_quant_label(filename: str) -> str:
     if not match and "/" in filename:
         parents = filename.rsplit("/", 1)[0]
         for segment in reversed(parents.split("/")):
-            m = re.search(quant_re, segment, re.IGNORECASE)
+            m = _select_quant_label_match(segment, quant_re)
             if m:
                 match = m
                 matched_text = segment

@@ -90,6 +90,7 @@ from utils.models.model_config import (
     _extract_quant_label,
     _iter_hf_cache_snapshots,
     _list_gguf_variants_from_hf_cache,
+    _pick_best_gguf,
     detect_gguf_model_remote,
     list_gguf_variants,
 )
@@ -1007,6 +1008,16 @@ class TestExtractQuantLabelSubdir:
     def test_mtp_suffix_from_parent_directory_segment(self):
         assert _extract_quant_label("Q6_K-MTP/model.gguf") == "Q6_K-MTP"
         assert _extract_quant_label("Q6_K-PT-MTP/model.gguf") == "Q6_K-PT-MTP"
+
+    def test_precision_infix_does_not_mask_real_quant(self):
+        assert _extract_quant_label("Foo-BF16-Q4_K_M.gguf") == "Q4_K_M"
+        assert _extract_quant_label("Foo-F16-Q8_0.gguf") == "Q8_0"
+
+
+def test_pick_best_gguf_prefers_real_quant_over_precision_infix():
+    assert _pick_best_gguf(
+        ["Foo-BF16-Q4_K_M.gguf", "Foo-Q8_0.gguf"],
+    ) == "Foo-BF16-Q4_K_M.gguf"
 
 
 class TestDownloadMmprojOfflineCacheFallback:
