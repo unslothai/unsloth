@@ -70,6 +70,7 @@ const initialState: TrainingConfigState = {
   datasetSplit: null,
   datasetEvalSplit: null,
   datasetStreaming: false,
+  portableResumeData: "metadata",
   datasetManualMapping: emptyManualMapping(),
   datasetSystemPrompt: "",
   datasetUserTemplate: "",
@@ -1066,6 +1067,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
           delete s.hfToken;
         }
+        s.portableResumeData ??= "metadata";
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,

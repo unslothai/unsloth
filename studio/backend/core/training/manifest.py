@@ -116,6 +116,22 @@ def build_manifest(
         "local": safe.get("local_datasets") or [],
         "local_eval": safe.get("local_eval_datasets") or [],
         "revision": safe.get("dataset_revision"),
+        "portable_resume_data": safe.get("portable_resume_data", "metadata"),
+        "pinned_revisions": safe.get("pinned_dataset_revisions") or [],
+        "bundled_sources": safe.get("bundled_dataset_sources") or [],
+        "snapshot": safe.get("dataset_snapshot"),
+        "streaming": {
+            "enabled": bool(safe.get("dataset_streaming")),
+            "bounded": safe.get("dataset_slice_end") is not None,
+            "fully_offline_portable": bool(
+                safe.get("dataset_snapshot") and not safe.get("dataset_streaming")
+            ),
+            "warning": (
+                "Streaming datasets may be impossible to materialize completely; "
+                "a pinned revision alone is not a fully offline portable copy."
+                if safe.get("dataset_streaming") else None
+            ),
+        },
     }
     preprocessing = {
         key: safe.get(key)

@@ -45,6 +45,7 @@ export interface TrainingConfigState {
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
   datasetStreaming: boolean;
+  portableResumeData: "metadata" | "pinned" | "snapshot";
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
   datasetUserTemplate: string;

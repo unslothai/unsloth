@@ -170,6 +170,10 @@ class TrainingStartRequest(BaseModel):
         False,
         description = "Whether to load the Hugging Face dataset in streaming mode",
     )
+    portable_resume_data: Literal["metadata", "pinned", "snapshot"] = Field(
+        "metadata",
+        description = "Dataset storage for resume: metadata, immutable Hub pins, or processed snapshot.",
+    )
     eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
     dataset_slice_start: Optional[int] = Field(
         None,

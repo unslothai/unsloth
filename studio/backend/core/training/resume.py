@@ -282,6 +282,24 @@ def inspect_import_checkpoint(path_value: str, approved_roots: Sequence[Path]) -
             raise CheckpointImportError(
                 ["Training manifest backend does not match the checkpoint state format."]
             )
+        dataset_meta = manifest.get("datasets") or {}
+        bundle_root = checkpoint.parent if checkpoint.name.startswith("checkpoint-") else checkpoint
+        snapshot = dataset_meta.get("snapshot")
+        if snapshot:
+            from core.training.portable_data import PortableDatasetError, verify_snapshot
+
+            try:
+                verify_snapshot(bundle_root, snapshot)
+            except PortableDatasetError as exc:
+                raise CheckpointImportError([str(exc)]) from exc
+        for source in dataset_meta.get("bundled_sources") or []:
+            relative = source.get("relative_path")
+            if relative and not (bundle_root / relative).is_file() and not (
+                bundle_root / relative
+            ).is_dir():
+                errors.append(f"Bundled dataset is missing: {relative}")
+        if errors:
+            raise CheckpointImportError(errors)
         adapter = _configuration_metadata(checkpoint).get("adapter_config.json", {})
         adapter_model = (
             adapter.get("base_model_name_or_path") if isinstance(adapter, dict) else None

@@ -112,6 +112,7 @@ export function buildTrainingStartPayload(
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
     dataset_streaming: hfDataset ? config.datasetStreaming : false,
+    portable_resume_data: config.portableResumeData,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,

@@ -1504,6 +1504,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     import time
     import math
     from pathlib import Path
+    from core.training.portable_data import pin_hub_datasets
+
+    config["pinned_dataset_revisions"] = pin_hub_datasets(config)
 
     def _send(event_type, **kwargs):
         if event_type == "status" and "message" not in kwargs:
@@ -1769,7 +1772,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         return load_dataset(loader, data_files = all_files, split = "train")
 
     if hf_dataset:
-        load_kwargs = {"split": train_split, "token": hf_token}
+        load_kwargs = {
+            "split": train_split,
+            "token": hf_token,
+            "revision": config.get("dataset_revision"),
+        }
         if subset:
             load_kwargs["name"] = subset
         dataset = load_dataset(hf_dataset, **load_kwargs)
@@ -1803,7 +1810,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # Eval dataset (separate split or local file)
     eval_dataset = None
     if eval_split and hf_dataset:
-        eval_kwargs = {"split": eval_split, "token": hf_token}
+        eval_kwargs = {
+            "split": eval_split,
+            "token": hf_token,
+            "revision": config.get("dataset_revision"),
+        }
         if subset:
             eval_kwargs["name"] = subset
         try:
@@ -3030,6 +3041,26 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         hf_token = config.get("hf_token", "")
         hf_token = hf_token if hf_token and hf_token.strip() else None
 
+        from core.training.portable_data import (
+            package_local_sources,
+            pin_hub_datasets,
+            resolve_bundled_paths,
+        )
+
+        # Resolve once before any load; all loaders consume these immutable pins.
+        config["pinned_dataset_revisions"] = pin_hub_datasets(config)
+        resume_checkpoint = config.get("resume_from_checkpoint")
+        portable_output = config.get("output_dir") or _output_dir_from_resume_checkpoint(
+            resume_checkpoint
+        )
+        if not portable_output:
+            portable_output = build_default_output_dir_name(model_name, config.get("project_name"))
+        portable_output = str(resolve_output_dir(portable_output))
+        config["output_dir"] = portable_output
+        if config.get("local_datasets") or config.get("local_eval_datasets"):
+            config["bundled_dataset_sources"] = package_local_sources(config, portable_output)
+            resolve_bundled_paths(config, portable_output)
+
         # ── 4a. Lightweight detection + tokenizer (no VRAM) ──
         _send_status(event_queue, "Detecting model type...")
         trainer.pre_detect_and_load_tokenizer(
@@ -3066,6 +3097,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             is_cpt = _is_cpt_for_dataset,
             s3_config = config.get("s3_config"),
             training_seed = config.get("random_seed", 3407),
+            dataset_revision = config.get("dataset_revision"),
         )
 
         if isinstance(dataset_result, tuple):
@@ -3073,6 +3105,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         else:
             dataset = dataset_result
             eval_dataset = None
+
+        if config.get("portable_resume_data") == "snapshot" and dataset is not None:
+            from core.training.portable_data import snapshot_processed_datasets
+
+            train_value = dataset.get("dataset", dataset) if isinstance(dataset, dict) else dataset
+            config["dataset_snapshot"] = snapshot_processed_datasets(
+                portable_output,
+                train_value,
+                eval_dataset,
+                {
+                    "format_type": config.get("format_type"),
+                    "custom_format_mapping": config.get("custom_format_mapping"),
+                    "train_split": config.get("train_split"),
+                    "eval_split": config.get("eval_split"),
+                    "slice_start": config.get("dataset_slice_start"),
+                    "slice_end": config.get("dataset_slice_end"),
+                    "seed": config.get("random_seed", 3407),
+                },
+            )
 
         # Disable eval if eval_steps <= 0
         eval_steps = config.get("eval_steps", 0.00)
@@ -3499,6 +3550,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     import math
     import queue as _queue
     import threading
+    from core.training.portable_data import pin_hub_datasets
+
+    config["pinned_dataset_revisions"] = pin_hub_datasets(config)
 
     model_name = config["model_name"]
     training_start_time = time.time()
@@ -3759,6 +3813,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 subset,
                 split = train_split,
                 token = hf_token,
+                revision = config.get("dataset_revision"),
             )
         elif local_datasets:
             dataset = _load_local_embedding_dataset(local_datasets)

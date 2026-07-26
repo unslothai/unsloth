@@ -289,6 +289,32 @@ export function ParamsSection(): ReactElement {
             </p>
           </div>
 
+          <div className="flex flex-col gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              Portable resume data
+            </span>
+            <Select
+              value={store.portableResumeData}
+              onValueChange={(value) =>
+                useTrainingConfigStore.setState({
+                  portableResumeData: value as "metadata" | "pinned" | "snapshot",
+                })
+              }
+            >
+              <SelectTrigger aria-label="Portable resume data">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="metadata">Metadata only (smallest)</SelectItem>
+                <SelectItem value="pinned">Pin Hub revisions (small)</SelectItem>
+                <SelectItem value="snapshot">Snapshot processed training data (largest)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-ui-10 text-muted-foreground">
+              Streaming sources are not fully offline portable unless a bounded snapshot is created.
+            </p>
+          </div>
+
           {/* Max Steps / Epochs */}
           <div className="flex flex-col gap-2">
             <div
