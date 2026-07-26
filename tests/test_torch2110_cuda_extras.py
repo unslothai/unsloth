@@ -121,7 +121,9 @@ def test_cuda12_torch212_pins_matching_local_build(cuda: str, series: str):
     windows = [r for r in xformers if r.url and r.url.endswith("win_amd64.whl")]
     assert len(linux) == 1 and len(windows) == 1, f"unexpected xformers wheels: {xformers}"
     for r in linux + windows:
-        assert f"/whl/{cuda}/xformers-0.0.35-" in r.url, f"xformers not on the {cuda} index: {r.url}"
+        assert (
+            f"/whl/{cuda}/xformers-0.0.35-" in r.url
+        ), f"xformers not on the {cuda} index: {r.url}"
         assert r.marker is not None
         assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
         assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
