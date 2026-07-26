@@ -1004,6 +1004,10 @@ class TestExtractQuantLabelSubdir:
             _extract_quant_label("Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-PT-MTP.gguf") == "Q6_K-PT-MTP"
         )
 
+    def test_mtp_suffix_from_parent_directory_segment(self):
+        assert _extract_quant_label("Q6_K-MTP/model.gguf") == "Q6_K-MTP"
+        assert _extract_quant_label("Q6_K-PT-MTP/model.gguf") == "Q6_K-PT-MTP"
+
 
 class TestDownloadMmprojOfflineCacheFallback:
     """``_download_mmproj`` must resolve cached mmproj GGUFs offline, like

@@ -183,13 +183,18 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     ]
     if not gguf_files:
         return None
-    by_quant: dict[str, str] = {}
+    by_label: dict[str, str] = {}
     for name in gguf_files:
-        by_quant.setdefault(extract_quant_label(name).upper(), name)
+        label = extract_quant_label(name)
+        by_label.setdefault(label.upper(), name)
     for quant in GGUF_QUANT_PREFERENCE:
-        filename = by_quant.get(quant.upper())
-        if filename is not None:
-            return filename
+        pref = quant.upper()
+        exact = by_label.get(pref)
+        if exact is not None:
+            return exact
+        for label_upper, filename in by_label.items():
+            if _base_quant_for_preference(label_upper) == pref:
+                return filename
     return gguf_files[0]
 
 
@@ -222,8 +227,13 @@ def _quant_with_disambiguating_suffix(stem: str, match: re.Match) -> str:
     return quant
 
 
+def _base_quant_for_preference(label: str) -> str:
+    return _POST_QUANT_VARIANT_SUFFIX_RE.sub("", label).upper()
+
+
 def extract_quant_token(filename: str) -> Optional[str]:
     stem = _gguf_stem(filename)
+    matched_text = stem
     match = _select_quant_match(stem)
     if not match and "/" in filename:
         parents = filename.rsplit("/", 1)[0]
@@ -231,9 +241,10 @@ def extract_quant_token(filename: str) -> Optional[str]:
             parent_match = _select_quant_match(segment)
             if parent_match:
                 match = parent_match
+                matched_text = segment
                 break
     if match:
-        return _quant_with_disambiguating_suffix(stem, match)
+        return _quant_with_disambiguating_suffix(matched_text, match)
     return None
 
 

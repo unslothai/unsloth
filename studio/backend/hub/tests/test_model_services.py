@@ -111,6 +111,10 @@ class TestExtractQuantToken:
         }
         assert labels == {"Q6_K-MTP", "Q6_K-PT-MTP"}
 
+    def test_post_quant_suffix_from_parent_directory_segment(self):
+        assert gguf.extract_quant_token("Q6_K-MTP/model.gguf") == "Q6_K-MTP"
+        assert gguf.extract_quant_token("Q6_K-PT-MTP/model.gguf") == "Q6_K-PT-MTP"
+
 
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
@@ -364,9 +368,33 @@ def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     ]
 
 
+def test_pick_best_gguf_prefers_base_quant_over_lower_ranked_exact():
+    assert gguf.pick_best_gguf(
+        ["model-Q6_K-MTP.gguf", "model-Q8_0.gguf"],
+    ) == "model-Q6_K-MTP.gguf"
+    assert gguf.pick_best_gguf(
+        ["model-IQ4_XS-3.53bpw.gguf", "model-F16.gguf"],
+    ) == "model-IQ4_XS-3.53bpw.gguf"
+
+
 def test_list_local_gguf_variants_keeps_mtp_flavor_siblings_separate(tmp_path):
     (tmp_path / "Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-MTP.gguf").write_bytes(b"x" * 100)
     (tmp_path / "Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-PT-MTP.gguf").write_bytes(b"y" * 200)
+
+    variants, has_vision = gguf.list_local_gguf_variants(str(tmp_path))
+
+    assert has_vision is False
+    assert {(v.quant, v.size_bytes) for v in variants} == {
+        ("Q6_K-MTP", 100),
+        ("Q6_K-PT-MTP", 200),
+    }
+
+
+def test_list_local_gguf_variants_keeps_mtp_suffix_in_quant_directory(tmp_path):
+    (tmp_path / "Q6_K-MTP").mkdir()
+    (tmp_path / "Q6_K-PT-MTP").mkdir()
+    (tmp_path / "Q6_K-MTP" / "model.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "Q6_K-PT-MTP" / "model.gguf").write_bytes(b"y" * 200)
 
     variants, has_vision = gguf.list_local_gguf_variants(str(tmp_path))
 

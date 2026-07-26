@@ -1584,10 +1584,25 @@ def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
     if not gguf_files:
         return None
 
+    by_label: dict[str, str] = {}
+    for name in gguf_files:
+        label = _extract_quant_label(name)
+        by_label.setdefault(label.upper(), name)
+
     for quant in _GGUF_QUANT_PREFERENCE:
-        for f in gguf_files:
-            if quant in f:
-                return f
+        pref = quant.upper()
+        exact = by_label.get(pref)
+        if exact is not None:
+            return exact
+        for label_upper, filename in by_label.items():
+            base = re.sub(
+                r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
+                "",
+                label_upper,
+                flags = re.IGNORECASE,
+            )
+            if base == pref:
+                return filename
 
     return gguf_files[0]
 
@@ -1636,6 +1651,7 @@ def _extract_quant_label(filename: str) -> str:
         r"(-[0-9]+(?:\.[0-9]+)?bpw|-(?:PT-)?MTP)?"
     )
     match = re.search(quant_re, stem, re.IGNORECASE)
+    matched_text = stem
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
     # not the basename. Check parent dirs too so the label matches the
     # snapshot-relative path produced elsewhere.
@@ -1645,11 +1661,21 @@ def _extract_quant_label(filename: str) -> str:
             m = re.search(quant_re, segment, re.IGNORECASE)
             if m:
                 match = m
+                matched_text = segment
                 break
     if match:
         prefix = match.group(1) or ""
-        bpw = match.group(3) or ""
-        return f"{prefix}{match.group(2)}{bpw}"
+        suffix = match.group(3) or ""
+        if not suffix:
+            tail = matched_text[match.end() :]
+            suffix_match = re.search(
+                r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
+                tail,
+                re.IGNORECASE,
+            )
+            if suffix_match:
+                suffix = suffix_match.group(0)
+        return f"{prefix}{match.group(2)}{suffix}"
     # Fallback: last hyphen-separated segment
     return stem.split("-")[-1]
 
