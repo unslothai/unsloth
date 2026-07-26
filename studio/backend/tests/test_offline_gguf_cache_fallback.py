@@ -1119,11 +1119,8 @@ class TestPreUpgradeVariantKeyResolvesFromCache:
     @staticmethod
     def _cached(monkeypatch, tmp_path, repo_id, names):
         import hub.utils.gguf as hub_gguf
-
         snap = _build_cache(tmp_path, repo_id, dict.fromkeys(names, 1024))
-        monkeypatch.setattr(
-            hub_gguf, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap]
-        )
+        monkeypatch.setattr(hub_gguf, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap])
 
     @pytest.mark.parametrize(
         "names,variant,expected",
@@ -1151,11 +1148,8 @@ class TestPreUpgradeVariantKeyResolvesFromCache:
             (["model-Q4_K_M-MTP.gguf"], "Q6_K"),
         ],
     )
-    def test_ambiguous_or_unrelated_still_returns_none(
-        self, monkeypatch, tmp_path, names, variant
-    ):
+    def test_ambiguous_or_unrelated_still_returns_none(self, monkeypatch, tmp_path, names, variant):
         from hub.utils.gguf import resolve_local_gguf_path
-
         self._cached(monkeypatch, tmp_path, "org/ambiguous", names)
         assert resolve_local_gguf_path("org/ambiguous", variant) is None
 
