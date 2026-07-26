@@ -323,20 +323,22 @@ class TestParser:
         assert result == []
 
     def test_rehearsal_after_closed_think_still_parsed(self):
-        text = "<think>planning</think>" 'python[ARGS]{"code":"print(1)"}'
+        text = "<think>planning</think>" 'web_search[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
 
     def test_rehearsal_inside_prefilled_think_is_ignored(self):
         """Reasoning models (Qwen3.5 enable_thinking) open <think> in the PROMPT,
         so generated content starts inside the thought and carries only a closing
         </think>. A call rehearsed in that leading thought must be skipped, while a
         real call after the close still fires."""
-        text = 'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}'
+        text = (
+            'planning web_search[ARGS]{"query":"draft"}</think>get_weather[ARGS]{"code":"print(1)"}'
+        )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "get_weather"
 
     def test_literal_close_think_in_leading_argument_not_prefill(self):
         """A </think> literal inside a real leading call's arguments must not be
@@ -401,17 +403,17 @@ class TestParser:
     # Rehearsal syntax name[ARGS]{json}.
 
     def test_rehearsal_basic(self):
-        text = 'python[ARGS]{"code":"print(1)"}'
+        text = 'web_search[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
         assert "print(1)" in result[0]["function"]["arguments"]
 
     def test_rehearsal_with_prose(self):
-        text = "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
+        text = "I should call the web_search tool. Like this: " 'web_search[ARGS]{"code":"x = 1"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
 
     def test_rehearsal_bad_json_dropped(self):
         text = "python[ARGS]{not valid json}"
@@ -434,7 +436,7 @@ class TestParser:
     def test_streaming_strip_removes_partial_bracket_marker(self):
         # A bracket tag streamed before its opening brace must strip on the final pass, not leak.
         assert strip_tool_markup("answer [TOOL_CALLS]web_search", final = True) == "answer"
-        assert strip_tool_markup("text python[ARGS]", final = True) == "text"
+        assert strip_tool_markup("text get_weather[ARGS]", final = True) == "text"
         # Non-final must keep the in-progress tag buffered (not yet stripped).
         partial = "answer [TOOL_CALLS]web_search"
         assert strip_tool_markup(partial, final = False) == partial
@@ -560,7 +562,7 @@ class TestParser:
         assert "after" in strip_tool_markup(text)
 
     def test_strip_rehearsal_closed(self):
-        text = 'prose python[ARGS]{"code":"x"} more prose'
+        text = 'prose web_search[ARGS]{"code":"x"} more prose'
         cleaned = strip_tool_markup(text)
         assert "[ARGS]" not in cleaned
         assert "prose" in cleaned
@@ -1077,12 +1079,12 @@ class TestParserMultiFormat:
         import json
 
         text = (
-            "call:python{code:def f(n):\n    a, b = 0, 1\n"
+            "call:web_search{code:def f(n):\n    a, b = 0, 1\n"
             "    for _ in range(2, n+1):\n        a, b = b, a + b\n"
             "    return b\n\nprint(f(30))}"
         )
         result = parse_tool_calls_from_text(text)
-        assert result[0]["function"]["name"] == "python"
+        assert result[0]["function"]["name"] == "web_search"
         code = json.loads(result[0]["function"]["arguments"])["code"]
         assert "a, b = 0, 1" in code and "print(f(30))" in code
 
@@ -1233,6 +1235,48 @@ def _make_loop(
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
+
+
+class TestMarkerlessExecToolGuardLoop:
+    """End-to-end guard for the two prompt-injection -> RCE findings: a bare (unwrapped)
+    ``python``/``terminal`` call quoted in assistant prose must never reach ``execute_tool``,
+    even with those tools enabled, while the trusted wrapped/marker forms still execute."""
+
+    def test_bare_execution_call_in_prose_is_not_executed(self):
+        # ``_make_loop`` enables web_search + python + terminal.
+        prose = (
+            'You could run call:terminal{command:"id"} or terminal[ARGS]{"command":"id"}, '
+            'and even call:python{code:"import os; os.system(1)"}, but I will not.'
+        )
+        loop, exec_fn = _make_loop(turns = [[prose]])
+        events = _collect_events(loop)
+        # execute_tool was never invoked and no tool lifecycle event was emitted.
+        assert exec_fn.calls == []
+        assert not any(e.get("type") in ("tool_start", "tool_end") for e in events)
+        # The bare call text stays visible to the user (parse/strip symmetry).
+        contents = [e.get("text", "") for e in events if e.get("type") == "content"]
+        final = contents[-1] if contents else ""
+        assert "call:terminal{command:" in final
+        assert 'terminal[ARGS]{"command":"id"}' in final
+        assert "call:python{code:" in final
+
+    def test_wrapped_gemma_execution_call_in_loop_still_executes(self):
+        # A properly wrapped Gemma call is trusted -- the fix only blocks the markerless form.
+        turns = [
+            ['<|tool_call>call:terminal{command:<|"|>id<|"|>}<tool_call|>'],
+            ["All done."],
+        ]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0(root)"], max_tool_iterations = 3)
+        events = _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["terminal"]
+        assert any(e.get("type") == "tool_start" for e in events)
+
+    def test_marker_rehearsal_execution_call_in_loop_still_executes(self):
+        # The [TOOL_CALLS] marker makes the rehearsal trusted, so terminal still runs.
+        turns = [['[TOOL_CALLS]terminal[ARGS]{"command":"id"}'], ["done"]]
+        loop, exec_fn = _make_loop(turns = turns, exec_results = ["uid=0"], max_tool_iterations = 3)
+        _collect_events(loop)
+        assert [name for name, _args in exec_fn.calls] == ["terminal"]
 
 
 class TestParserDeepSeek:
@@ -1936,14 +1980,14 @@ def test_rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed():
 def test_initial_buffer_flush_holds_split_rehearsal_name():
     # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
     loop, exec_fn = _make_loop(
-        turns = [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
+        turns = [["I will use web_search", '[ARGS]{"code":"print(1)"}'], ["done"]],
         exec_results = ["RESULT"],
         max_tool_iterations = 3,
     )
     events = _collect_events(loop)
-    assert exec_fn.calls == [("python", {"code": "print(1)"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"code": "print(1)"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("python" in t for t in contents), contents
+    assert not any("web_search" in t for t in contents), contents
 
 
 def test_think_rehearsal_streams_monotonically_and_keeps_reasoning():
@@ -2707,7 +2751,7 @@ class TestLoopBasic:
             [
                 [
                     '<think>draft render_html[ARGS]{"code":"x"}</think>',
-                    'python[ARGS]{"code":"print(1)"}',
+                    'web_search[ARGS]{"code":"print(1)"}',
                 ],
                 ["Done."],
             ]
@@ -2725,15 +2769,15 @@ class TestLoopBasic:
             messages = [{"role": "user", "content": "run code"}],
             tools = [
                 {"type": "function", "function": {"name": "render_html"}},
-                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "web_search"}},
             ],
             execute_tool = exec_fn,
         )
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
-        assert [e["tool_name"] for e in tool_starts] == ["python"], tool_starts
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
+        assert [e["tool_name"] for e in tool_starts] == ["web_search"], tool_starts
+        assert exec_fn.calls == [("web_search", {"code": "print(1)"})]
 
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -4783,13 +4827,13 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
-    full = '{"name":"python","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
     loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
-    assert exec_fn.calls and exec_fn.calls[0][0] == "python"
+    assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
     assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
 
 
@@ -5036,7 +5080,7 @@ class TestFalseAlarmMarkerProse:
         # history) must not contain the second call's raw JSON.
         chained = (
             '{"name":"web_search","parameters":{"q":"first"}};'
-            '{"name":"python","parameters":{"code":"x"}}'
+            '{"name":"get_weather","parameters":{"code":"x"}}'
         )
         convs = []
         turn_iter = iter([[chained], ["Final answer."]])
@@ -5058,11 +5102,11 @@ class TestFalseAlarmMarkerProse:
             messages = [{"role": "user", "content": "hi"}],
             tools = [
                 {"type": "function", "function": {"name": "web_search"}},
-                {"type": "function", "function": {"name": "python"}},
+                {"type": "function", "function": {"name": "get_weather"}},
             ],
             execute_tool = exec_fn,
         )
         _collect_events(loop)
-        assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
+        assert [c[0] for c in exec_fn.calls] == ["web_search", "get_weather"]
         assistant = next(m for m in convs[1] if m["role"] == "assistant")
-        assert '"python"' not in (assistant.get("content") or "")
+        assert '"get_weather"' not in (assistant.get("content") or "")

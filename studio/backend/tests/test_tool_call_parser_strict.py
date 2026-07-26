@@ -587,7 +587,8 @@ def test_strip_leading_bare_json_call_drops_complete_call():
     # A complete Llama-3.2 bare-JSON call is removed; trailing prose is kept.
     assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"query":"cats"}}') == ""
     assert (
-        strip_leading_bare_json_call('{"name":"python","parameters":{"code":"x"}} done') == "done"
+        strip_leading_bare_json_call('{"name":"get_weather","parameters":{"code":"x"}} done')
+        == "done"
     )
 
 
@@ -920,8 +921,8 @@ class TestGemmaWrapperlessLiteralMarkers:
         assert _parse_gemma_tool_calls(text, id_offset = 0) == []
 
     def test_single_quoted_brace_does_not_truncate_code(self):
-        text = "call:python{code:print('}')}"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
+        text = "call:web_search{code:print('}')}"
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "print('}')"
@@ -929,9 +930,9 @@ class TestGemmaWrapperlessLiteralMarkers:
     def test_single_quoted_brace_strip_span_covers_whole_call(self):
         from core.inference.tool_call_parser import strip_tool_markup
 
-        text = "call:python{code:print('}')} Done."
-        stripped = strip_tool_markup(text, final = True, enabled_tool_names = {"python"})
-        assert "call:python" not in stripped
+        text = "call:web_search{code:print('}')} Done."
+        stripped = strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"})
+        assert "call:web_search" not in stripped
         assert "')}" not in stripped
         assert stripped.strip() == "Done."
 
@@ -1069,18 +1070,18 @@ class TestBareJsonOuterOverXmlLiteral:
 
     def test_bare_json_code_arg_quoting_function_xml(self):
         text = (
-            '{"name": "python", "arguments": '
+            '{"name": "web_search", "arguments": '
             '{"code": "run() # <function=terminal>ls</function>"}}'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
-        assert [c["function"]["name"] for c in calls] == ["python"]
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "run() # <function=terminal>ls</function>"
 
     def test_bare_json_outer_unrestricted_mode(self):
-        text = '{"name": "python", "parameters": {"code": "<function=terminal>ls</function>"}}'
+        text = '{"name": "web_search", "parameters": {"code": "<function=terminal>ls</function>"}}'
         calls = parse_tool_calls_from_text(text)
-        assert [c["function"]["name"] for c in calls] == ["python"]
+        assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_xml_before_json_keeps_xml_order(self):
         text = (
@@ -1229,9 +1230,9 @@ class TestMistralLiteralInsideLeadingJson:
     """A [TOOL_CALLS] literal quoted inside a leading JSON object must not be promoted over it."""
 
     def test_outer_json_call_wins_over_mistral_literal(self):
-        text = '{"name": "python", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"})
-        assert [c["function"]["name"] for c in calls] == ["python"]
+        text = '{"name": "get_weather", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"get_weather", "web_search"})
+        assert [c["function"]["name"] for c in calls] == ["get_weather"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "[TOOL_CALLS]web_search{}"
 
