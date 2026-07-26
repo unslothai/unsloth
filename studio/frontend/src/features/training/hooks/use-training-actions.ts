@@ -44,7 +44,7 @@ export function useTrainingActions() {
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
   const startTrainingRun = useCallback(async (options?: {
-    checkpointImportToken?: string | null;
+    resumeCheckpointPath?: string | null;
   }): Promise<boolean> => {
     let config = useTrainingConfigStore.getState();
     const runtimeStore = useTrainingRuntimeStore.getState();
@@ -163,7 +163,7 @@ export function useTrainingActions() {
 
       // Re-read config after potential store updates from dataset check
       const payload = buildTrainingStartPayload(useTrainingConfigStore.getState());
-      payload.checkpoint_import_token = options?.checkpointImportToken ?? null;
+      payload.imported_resume_checkpoint = options?.resumeCheckpointPath ?? null;
       runtimeStore.setStartResources(
         payload.model_name,
         payload.hf_dataset,

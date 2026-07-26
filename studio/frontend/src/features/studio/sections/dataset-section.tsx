@@ -152,7 +152,7 @@ function normalizeSliceInput(value: string): string | null {
   return trimmed;
 }
 
-export function DatasetSection() {
+export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const reducedMotion = useReducedMotion();
@@ -740,7 +740,16 @@ export function DatasetSection() {
         accent="indigo"
         className="dark:shadow-border min-h-studio-config-column"
       >
-        <div className="flex min-w-0 flex-col gap-4">
+        {disabled && (
+          <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+            Dataset settings are restored from the selected checkpoint. Switch to <span className="font-medium text-foreground">New training</span> to edit them.
+          </div>
+        )}
+        <div
+          className={cn("flex min-w-0 flex-col gap-4 transition-opacity", disabled && "pointer-events-none opacity-45")}
+          aria-disabled={disabled}
+          inert={disabled ? true : undefined}
+        >
           {(() => {
             // Hub-style sliding-pill segmented control, matching the Hub tabs
             // via the shared .hub-tab-toggle / .hub-tab-toggle-pill classes.
