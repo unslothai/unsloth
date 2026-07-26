@@ -70,7 +70,7 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
     # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write
-    # never leaves a truncated {id}.png that the listing would surface as a corrupt record.
+    # never leaves a truncated {id}.png the listing would surface as a corrupt record.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
         tmp_path.write_bytes(_png_bytes(image, meta))
@@ -176,10 +176,9 @@ def list_images(
         return []
     paths.sort(key = _mtime, reverse = True)
     # Page over READABLE records, not raw files: filtering a foreign PNG out of an already-sliced
-    # window would drop valid images and make has_more wrong. Read only as far as needed.
-    # Known limit: this re-reads headers from newest down to `offset+limit` per page, so a deep
-    # scroll is O(offset) header-opens. PIL opens are lazy (header only) and off the event loop, so
-    # no freeze; a later phase can switch to cursor-based paging if it bites.
+    # window would drop valid images and make has_more wrong. Read only as far as needed. Known
+    # limit: this re-reads headers from newest down to `offset+limit` per page, so a deep scroll is
+    # O(offset) header-opens; PIL opens are lazy and off the event loop, so nothing freezes.
     want = None if limit is None else offset + limit
     records = []
     for path in paths:
@@ -199,8 +198,8 @@ def delete(image_id: str) -> bool:
     path = image_path(image_id)
     if path is None:
         return False
-    # Only delete files we own (a readable recipe chunk); a hand-dropped foreign PNG is invisible
-    # to list_images, so a guessed id must not destroy it.
+    # Only delete files we own (a readable recipe chunk); a hand-dropped foreign PNG is invisible to
+    # list_images, so a guessed id must not destroy it.
     if _read_meta(path) is None:
         return False
     try:

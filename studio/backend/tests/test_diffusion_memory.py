@@ -70,11 +70,10 @@ def test_normalize_memory_mode_accepts_and_rejects():
 
 
 def test_estimate_gguf_resident_mib_matches_packed_size():
-    # GGUF weights stay packed (uint8) on-device; diffusers dequantises per-matmul
-    # transiently, so the resident footprint ~= the on-disk size regardless of quant
-    # level (measured on Z-Image-Turbo: Q2_K 3.64->3.68 GiB, Q8_0 7.22->7.25 GiB). A
-    # small margin covers allocator overhead. The prior per-quant expansion over-
-    # estimated (Q2 ~7.6x) and forced needless offload on a roomy card.
+    # GGUF weights stay packed (uint8) on-device and diffusers dequantises per-matmul transiently, so
+    # the resident footprint is about the on-disk size regardless of quant level (measured on
+    # Z-Image-Turbo). A small margin covers allocator overhead; the prior per-quant expansion
+    # over-estimated and forced needless offload on a roomy card.
     assert estimate_gguf_resident_mib(1000) == 1050
     assert estimate_gguf_resident_mib(7220) == 7581
     assert estimate_gguf_resident_mib(None) is None
@@ -132,7 +131,7 @@ def test_unified_cuda_skips_offload_even_if_offload_capable():
 
 
 def test_auto_resident_when_roomy():
-    # 80 GB card, ~16 GB model: fits with headroom -> stay resident (bit-identical).
+    # 80 GB card, ~16 GB model: fits with headroom, so stay resident (bit-identical).
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(80000),
@@ -144,9 +143,8 @@ def test_auto_resident_when_roomy():
 
 
 def test_auto_model_offload_on_tight_fit():
-    # 24 GB free -> reserve max(2048, 2400)=2400 -> budget 21600, 0.85*budget=18360.
-    # required = 16000+4000+1000 = 21000: over 0.85*budget but still under budget
-    # -> whole-module offload.
+    # 24 GB free -> reserve 2400 -> budget 21600, 0.85*budget = 18360. required = 21000: over
+    # 0.85*budget but under budget, so whole-module offload.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(24000, 24000),
@@ -159,8 +157,8 @@ def test_auto_model_offload_on_tight_fit():
 
 
 def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
-    # Big transformer pushes the resident total over budget, but the companions
-    # (text encoder + VAE) still fit -> stream the transformer (fast, moderate cut).
+    # A big transformer pushes the resident total over budget, but the companions still fit, so stream
+    # the transformer (fast, moderate cut).
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(8000, 8000),
@@ -170,8 +168,8 @@ def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
         base_overhead_mib = 1000,
     )
     assert plan.offload_policy == OFFLOAD_GROUP
-    # Group keeps the VAE resident, so it uses exact slicing but NOT lossy tiling
-    # -> balanced stays bit-identical while still capping the offload footprint.
+    # Group keeps the VAE resident, so it uses exact slicing but NOT lossy tiling: balanced stays
+    # bit-identical while still capping the offload footprint.
     assert plan.vae_slicing is True and plan.vae_tiling is False
 
 
@@ -188,7 +186,7 @@ def test_auto_model_offload_when_companions_exceed_budget():
 
 
 def test_auto_model_offload_when_companion_size_unknown():
-    # Without a companion estimate the planner can't prove group fits -> safest cut.
+    # Without a companion estimate the planner can't prove group fits, so it takes the safest cut.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(8000, 8000),
@@ -258,7 +256,7 @@ def test_fast_falls_back_to_model_offload_when_it_does_not_fit():
 
 
 def test_explicit_cpu_offload_overrides_resident_auto_choice():
-    # Roomy GPU -> auto would stay resident, but cpu_offload=True forces offload.
+    # A roomy GPU would stay resident under auto, but cpu_offload=True forces offload.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(80000),
@@ -271,8 +269,8 @@ def test_explicit_cpu_offload_overrides_resident_auto_choice():
 
 
 def test_explicit_memory_mode_wins_over_legacy_cpu_offload():
-    # The API documents memory_mode as overriding cpu_offload when set: fast +
-    # the legacy flag must stay resident, not silently downgrade to offload.
+    # The API documents memory_mode as overriding cpu_offload when set: fast + the legacy flag must
+    # stay resident, not silently downgrade to offload.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(80000),
@@ -407,9 +405,8 @@ def test_apply_model_offload_engages_offload_and_tiling():
 
 
 def test_apply_model_offload_passes_target_device():
-    # enable_model_cpu_offload defaults to CUDA in diffusers; on a non-CUDA accelerator
-    # (e.g. Intel XPU, which this backend supports) the target device must be forwarded
-    # or diffusers offloads to the wrong backend and the load fails.
+    # enable_model_cpu_offload defaults to CUDA in diffusers, so on a non-CUDA accelerator (e.g. Intel
+    # XPU) the target device must be forwarded or diffusers offloads to the wrong backend.
     pipe = _RecordingPipe()
     apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = False), device = "xpu")
     assert pipe.offload_device == "xpu"
@@ -441,8 +438,8 @@ def test_apply_vae_tiling_falls_back_to_vae_submodule():
 
 
 def test_apply_group_falls_back_to_model_without_transformer():
-    # The recording pipe has no .transformer, so group offload can't engage and the
-    # applier falls back to whole-module offload, reporting the real policy.
+    # The recording pipe has no .transformer, so group offload can't engage and the applier falls back
+    # to whole-module offload, reporting the real policy.
     pipe = _RecordingPipe()
     effective, _ = apply_memory_plan(pipe, _plan(OFFLOAD_GROUP, tiling = True), device = "cuda")
     assert effective == OFFLOAD_MODEL and "model_offload" in pipe.calls
@@ -468,10 +465,9 @@ def _install_fake_torch_and_hooks(monkeypatch, apply_group_offloading):
 
 
 def test_apply_group_partial_hooks_propagates_not_crash_fallback(monkeypatch):
-    # A dual-DiT pipe whose second transformer fails group offload AFTER the first installed
-    # hooks is left in a partial group-offload state that enable_model_cpu_offload rejects. The
-    # applier must PROPAGATE the failure (load fails with the real cause) instead of returning
-    # False and letting the caller's whole-module fallback crash on the partially-hooked pipe.
+    # A dual-DiT pipe whose second transformer fails group offload AFTER the first installed hooks is
+    # left in a partial state that enable_model_cpu_offload rejects. The applier must PROPAGATE the
+    # failure instead of returning False and letting the caller's fallback crash.
     import core.inference.diffusion_memory as mem
 
     calls = {"n": 0}
@@ -494,8 +490,8 @@ def test_apply_group_partial_hooks_propagates_not_crash_fallback(monkeypatch):
 
 
 def test_apply_group_single_transformer_failure_falls_back(monkeypatch):
-    # A single-DiT pipe whose group offload fails with NO hooks installed must still return
-    # False so the caller falls back cleanly to whole-module offload.
+    # A single-DiT pipe whose group offload fails with NO hooks installed must still return False so
+    # the caller falls back cleanly to whole-module offload.
     import core.inference.diffusion_memory as mem
 
     def _apply(module, **kw):
@@ -511,9 +507,8 @@ def test_apply_group_single_transformer_failure_falls_back(monkeypatch):
 
 
 def test_apply_group_fallback_enables_vae_tiling():
-    # A balanced/group plan keeps the VAE resident (tiling off); when group offload can't
-    # engage and we drop to whole-module offload, the applier must turn VAE tiling ON to
-    # cap the decode-time spike on what is now a low-VRAM path.
+    # A balanced/group plan keeps the VAE resident (tiling off); when group offload can't engage and
+    # we drop to whole-module offload, the applier must turn VAE tiling ON to cap the decode spike.
     plan = _plan(OFFLOAD_GROUP, tiling = True)
     assert plan.vae_tiling is False  # group plan leaves tiling off by design
     pipe = _RecordingPipe()  # no .transformer -> group offload falls back to model
@@ -533,8 +528,8 @@ def test_apply_sequential_offload():
 
 
 def test_apply_sequential_falls_back_to_model_offload_when_unsupported():
-    # Sequential offload is unreliable for GGUF on some diffusers versions; the
-    # applier must fall back to whole-module offload and report what actually ran.
+    # Sequential offload is unreliable for GGUF on some diffusers versions; the applier must fall back
+    # to whole-module offload and report what actually ran.
     class _NoSeqPipe(_RecordingPipe):
         def enable_sequential_cpu_offload(self, device = None):
             raise RuntimeError("sequential offload not supported for this transformer")
@@ -565,9 +560,8 @@ def test_apply_tolerates_pipe_without_vae_savers():
 
 
 def test_settled_snapshot_takes_max_free_over_reads(monkeypatch):
-    # A transient foreign allocation can only SHRINK free, so the settled snapshot must
-    # reject a transient undercount (60 GB free on an idle 183 GB card) by keeping the max
-    # free across the retry reads. Measured incident: FLUX.2-dev int8 cold load.
+    # A transient foreign allocation can only SHRINK free, so the settled snapshot must reject a
+    # transient undercount (60 GB free on an idle 183 GB card) by keeping the max free across reads.
     from core.inference import diffusion_memory as dm
 
     reads = [
@@ -613,8 +607,8 @@ def test_settled_snapshot_passthrough_off_cuda(monkeypatch):
 
 
 def test_plan_fits_total_capacity():
-    # True exactly when required fits (total - reserve) * 0.85: the decline can then only
-    # stem from the instantaneous free reading, so a settled retry is worthwhile.
+    # True exactly when required fits (total - reserve) * 0.85: the decline can then only stem from
+    # the instantaneous free reading, so a settled retry is worthwhile.
     from core.inference.diffusion_memory import plan_fits_total_capacity
 
     def plan(
@@ -627,9 +621,9 @@ def test_plan_fits_total_capacity():
             device_memory = DeviceMemory("cuda", "cuda", kind, free_mib = 1, total_mib = total),
         )
 
-    # FLUX.2-dev int8 incident numbers: 90,228 required on a 183,359 MiB card -> fits.
+    # FLUX.2-dev int8 incident numbers: 90,228 required on a 183,359 MiB card, so it fits.
     assert plan_fits_total_capacity(plan(90_228, 183_359)) is True
-    # Larger than the capacity margin (0.85 * (183,359 - 18,335) = 140,270) -> no retry.
+    # Larger than the capacity margin (0.85 * (183,359 - 18,335) = 140,270), so no retry.
     assert plan_fits_total_capacity(plan(150_000, 183_359)) is False
     # Unknown sizes keep today's behaviour (no retry).
     assert plan_fits_total_capacity(plan(None, 183_359)) is False

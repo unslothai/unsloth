@@ -83,24 +83,15 @@ def main(argv = None) -> int:
         args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
-    # Mirror the runtime path EXACTLY (offline == runtime, LPIPS-0 invariant): for int8 also skip
-    # the M=1 AdaLN-modulation / conditioning-embedder projections, else the checkpoint bakes them
-    # as int8 and crashes (torch._int_mm needs M>16) at the first denoise step on Flux / Qwen. fp8
-    # / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns (). Pass the
-    # family: int8 also carries PER-FAMILY exclusions (Qwen-Image's unpadded text stream runs at
-    # M = prompt tokens, so a short prompt breaks _int_mm), and the loader validates the baked
-    # list against exclude_tokens_for_scheme(scheme, metadata["family"]) -- so building with
-    # family=None both bakes the crashing text-stream linears and yields an artifact the runtime
-    # then rejects (silently falling back to the dense quantise this script exists to avoid).
+    # Mirror the runtime exclusions exactly: int8 also skips the M=1 modulation projections
+    # (torch._int_mm needs M>16) plus per-family ones; scaled_mm schemes skip none. family=None
+    # bakes the crashing linears and yields an artifact the runtime then rejects.
     exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
-    # fp8 and mxfp8 assert a bf16 weight, so their filter must skip any non-bf16 Linear the
-    # transformer keeps: a mixed-precision DiT (Wan / Hunyuan) keeps its _keep_in_fp32_modules in
-    # fp32 even under torch_dtype=bf16, so quantising one raises inside quantize_ and aborts the
-    # pass. nvfp4 quantises fp32 fine, so it isn't gated. Runtime quantize_transformer gates on
-    # scheme membership; mirror it here so the offline checkpoint quantises the same layer set.
+    # fp8 / mxfp8 assert bf16 weights, so skip any non-bf16 Linear (mixed-precision DiTs keep some
+    # in fp32); nvfp4 handles fp32. Mirrors the runtime quantize_transformer gate.
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
-    # fp8 bakes the accumulate mode into the saved kernels; record the resolved choice so the
-    # loader can refuse a checkpoint whose baked value contradicts an explicit runtime request.
+    # fp8 bakes the accumulate mode into the saved kernels; record it so the loader can reject a
+    # checkpoint contradicting an explicit runtime request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
     quantize_(
         transformer,
@@ -112,7 +103,7 @@ def main(argv = None) -> int:
         ),
     )
 
-    # Move the state dict to CPU for a portable, GPU-free artifact.
+    # CPU state dict for a portable, GPU-free artifact.
     state_dict = {
         k: (v.detach().to("cpu") if hasattr(v, "detach") else v)
         for k, v in transformer.state_dict().items()
@@ -122,10 +113,8 @@ def main(argv = None) -> int:
         "family": fam.name,
         "scheme": scheme,
         "min_features": args.min_features,
-        # The layers skipped for this scheme (int8's M=1 modulation projections; () for the
-        # scaled_mm schemes), whether non-bf16 Linears were skipped (the scaled_mm bf16 gate), and,
-        # for fp8, the baked accumulate mode. All let the loader reject a checkpoint that wouldn't
-        # match the runtime path.
+        # Skipped layers, whether non-bf16 Linears were skipped, and the fp8 accumulate mode: all let
+        # the loader reject a checkpoint that would not match the runtime path.
         "exclude_name_tokens": list(exclude_name_tokens),
         "require_bf16": require_bf16,
         "fast_accum": fast_accum,
@@ -136,8 +125,7 @@ def main(argv = None) -> int:
         "torchao_version": getattr(torchao, "__version__", "?"),
         "diffusers_version": diffusers.__version__,
     }
-    # Record the fp8 granularity so the loader can reject a stale per-tensor checkpoint
-    # (the runtime now requires per-row; see FP8_GRANULARITY).
+    # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
     ckpt = {

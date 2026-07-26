@@ -151,16 +151,15 @@ def diffusion_device_target_from_torch_device(
 
 def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
     if is_rocm:
-        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is
-        # trustworthy; bf16 only when it proves it.
+        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy.
         try:
             bf16_ok = bool(torch.cuda.is_bf16_supported())
         except Exception:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported()
-        # (pre-Ampere cards emulate bf16 slowly but report it supported; the #6658 fix).
+        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere
+        # cards emulate bf16 slowly but report it supported; the #6658 fix).
         try:
             major = torch.cuda.get_device_capability()[0]
         except Exception:
@@ -219,12 +218,12 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
     if mps_available:
         # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe
-        # below), so relax it before that or the allocator caps at ~1.7x recommendedMaxWorkingSet
-        # and can OOM a model that would fit in unified RAM. setdefault respects an override.
+        # below), so relax it first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM
+        # a model that would fit. setdefault respects an override.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
         # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far
-        # outside fp16's range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16
-        # (macOS 14+) shares fp32's exponent range; on older macOS float32 keeps output correct.
+        # outside fp16's range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS
+        # 14+) shares fp32's exponent range; on older macOS float32 keeps output correct.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",
@@ -239,8 +238,7 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
-    # torch is None on the no-torch CPU fallback; leave dtype=None then rather than crash on
-    # torch.float32.
+    # torch is None on the no-torch CPU fallback; leave dtype=None rather than crash.
     if dtype is None and torch is not None:
         dtype = torch.float32
     return DiffusionDeviceTarget(

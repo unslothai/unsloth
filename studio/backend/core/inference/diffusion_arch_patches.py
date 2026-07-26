@@ -185,8 +185,8 @@ def _spec_zimage_forward():
 
 # =====================================================================================
 # flux.1: FluxTransformerBlock / FluxSingleTransformerBlock
-# (block modulation goes through AdaLayerNormZero, handled by the shared patch; here we fuse the
-#  inline norm2 modulation + the gated residual adds.)
+# (block modulation goes via AdaLayerNormZero; here we fuse the inline norm2 modulation
+#  and the gated residual adds.)
 # =====================================================================================
 def _flux_double_forward(
     self,
@@ -315,8 +315,7 @@ def _spec_flux_single():
 
 # =====================================================================================
 # flux.2-klein: Flux2TransformerBlock / Flux2SingleTransformerBlock
-# (modulation is INLINE, so we fuse both modulation and gated residuals; scale/shift/gate are
-#  [B,1,dim] so no [:, None].)
+# (modulation is INLINE, so fuse both; scale/shift/gate are [B,1,dim] so no [:, None].)
 # =====================================================================================
 def _flux2_double_forward(
     self,

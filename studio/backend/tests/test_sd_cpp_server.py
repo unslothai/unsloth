@@ -168,10 +168,10 @@ def test_start_becomes_ready_when_capabilities_200(patched):
 
 
 def test_start_fails_fast_when_process_exits(patched):
-    # Model load failed -> process exits before listening; start must raise with the tail.
+    # Model load failed, so the process exits before listening; start must raise with the tail.
     popen = _FakePopen(lines = ["error: bad model"], exit_code = 1)
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
-    # Capabilities never answers (connection refused) -> readiness relies on exit detection.
+    # Capabilities never answers (connection refused), so readiness relies on exit detection.
     s = _server_with(
         popen, _FakeClient(get = lambda url: (_ for _ in ()).throw(srv.httpx.ConnectError("refused")))
     )
@@ -339,8 +339,8 @@ def test_img_gen_rejected_after_stop(patched):
 
 
 def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
-    # The server was stopped for a cancel/unload before submit; with the cancel event set
-    # this must surface as a cancellation (route -> 409), not a generic "not running" 500.
+    # The server was stopped for a cancel/unload before submit; with the cancel event set this must
+    # surface as a cancellation (route 409), not a generic "not running" 500.
     popen = _FakePopen()
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
     s = _server_with(popen, _FakeClient(get = lambda url: _Resp(200, {})))
@@ -353,8 +353,8 @@ def test_img_gen_cancelled_before_submit_reports_cancellation(patched):
 
 
 def test_img_gen_abandons_when_cancel_not_honored(patched):
-    # A best-effort cancel the server ignores must not pin this call (and the generate
-    # lock) until natural completion: after the grace window it raises cancellation.
+    # A best-effort cancel the server ignores must not pin this call (and the generate lock) until
+    # natural completion: after the grace window it raises cancellation.
     patched.setattr(srv, "_CANCEL_GRACE_S", 0.0)
     popen = _FakePopen()
     cancel = threading.Event()
@@ -389,16 +389,16 @@ def test_img_gen_non_dict_status_json_raises(patched):
 
 
 def test_decode_images_tolerates_unexpected_shapes():
-    # A misbehaving/older server can return non-dict result/images/items; _decode_images
-    # must raise a clean "no images" rather than an AttributeError on .get().
+    # A misbehaving/older server can return non-dict result/images/items, so _decode_images must raise
+    # a clean "no images" rather than an AttributeError on .get().
     for job in ({"result": ["x"]}, {"result": {"images": "nope"}}, {"result": {"images": [1, 2]}}):
         with pytest.raises(RuntimeError, match = "no images"):
             SdCppServer._decode_images(job)
 
 
 def test_start_aborted_by_concurrent_stop(patched):
-    # A stop() during the readiness wait must abort start() promptly (without waiting out
-    # the startup timeout) and surface as a cancellation.
+    # A stop() during the readiness wait must abort start() promptly (without waiting out the startup
+    # timeout) and surface as a cancellation.
     popen = _FakePopen(lines = ["loading model"])
     patched.setattr(srv.subprocess, "Popen", lambda *a, **k: popen)
 

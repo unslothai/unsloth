@@ -629,8 +629,8 @@ class TestLoadHubDownloadExclusion:
             assert not hf_gguf_load_in_flight("")
 
     def test_chat_load_marker_is_repo_agnostic_and_nests(self):
-        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for
-        # local paths and safetensors too, so this marker carries no repo key.
+        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local paths
+        # and safetensors too, so this marker carries no repo key.
         from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
 
         assert not chat_load_active()
@@ -831,13 +831,12 @@ class TestLoadHubDownloadExclusion:
         impl = source[source.index("async def _load_model_impl") :]
 
         # One chain, in this order:
-        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried
-        #   --no-mmproj) shapes the guard's require_mmproj.
-        # - the gguf_load_in_flight marker before the hub-download guard: that pair is the
-        #   handshake that keeps a load and the download manager off the same files.
-        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it after
-        #   the handoff destroyed a resident Images/Video pipeline for a load that could never
-        #   start. The handoff registers its own marker under the arbiter lock.
+        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes
+        #   the guard's require_mmproj.
+        # - the gguf_load_in_flight marker before the hub-download guard: that pair is the handshake that
+        #   keeps a load and the download manager off the same files.
+        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it after the handoff
+        #   destroyed a resident Images/Video pipeline for a load that could never start.
         # - the resident unload last.
         # Anchored on call forms so each assertion pins a call site, not a definition.
         assert (

@@ -38,13 +38,13 @@ def test_normalize_defaults_and_aliases():
 def test_normalize_rejects_unknown():
     with pytest.raises(ValueError):
         normalize_attention_backend("bogus")
-    # dashes are no longer silently rewritten to underscores -> a dashed alias is rejected.
+    # dashes are no longer silently rewritten to underscores, so a dashed alias is rejected.
     with pytest.raises(ValueError):
         normalize_attention_backend("flash-3")
 
 
 def test_sdpa_alias_maps_to_native():
-    # sdpa is an alias for native -> nothing to set on the dispatcher.
+    # sdpa is an alias for native, so nothing to set on the dispatcher.
     assert select_attention_backend(_target(), "sdpa", speed_active = True) is None
 
 
@@ -56,15 +56,15 @@ def test_auto_upgrades_to_cudnn_on_nvidia_when_speed_active(monkeypatch):
 
 
 def test_auto_does_not_pin_cudnn_below_sm80(monkeypatch):
-    # cuDNN fused SDPA fails at run time on pre-SM80 (T4 SM75 / V100 SM70); auto must stay
-    # on the native default there rather than pin a backend that crashes on first generation.
+    # cuDNN fused SDPA fails at run time on pre-SM80 (T4 / V100), so auto must stay native there
+    # rather than pin a backend that crashes on first generation.
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
     monkeypatch.setattr(att, "_cuda_capability", lambda: (7, 5))  # Turing T4
     assert select_attention_backend(_target(), "auto", speed_active = True) is None
 
 
 def test_auto_stays_native_when_speed_off(monkeypatch):
-    # off must stay bit-identical -> no backend change even on NVIDIA.
+    # off must stay bit-identical, so no backend change even on NVIDIA.
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
     assert select_attention_backend(_target(), "auto", speed_active = False) is None
 
@@ -84,8 +84,8 @@ def test_explicit_backend_honored_regardless_of_speed(monkeypatch):
 
 
 def test_explicit_backend_dropped_off_nvidia_cuda(monkeypatch):
-    # Explicit cuDNN/flash/sage on ROCm / MPS / CPU passes diffusers' set-time check
-    # and crashes at the first generation, so selection drops to the native default.
+    # Explicit cuDNN/flash/sage on ROCm / MPS / CPU passes diffusers' set-time check and crashes at
+    # the first generation, so selection drops to the native default.
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
     monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
     for alias in ("sage", "flash", "flash4", "cudnn"):
@@ -93,8 +93,8 @@ def test_explicit_backend_dropped_off_nvidia_cuda(monkeypatch):
 
 
 def test_aiter_honored_on_rocm(monkeypatch):
-    # AITER is the AMD ROCm kernel; on a ROCm CUDA target it must be honored, not dropped by
-    # the NVIDIA-only guard -- it is the one explicit backend that only ever works on ROCm.
+    # AITER is the AMD ROCm kernel, so on a ROCm CUDA target it must be honored, not dropped by the
+    # NVIDIA-only guard.
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)  # hip build
     assert select_attention_backend(_target(), "aiter", speed_active = False) == "aiter"
 
@@ -108,7 +108,7 @@ def test_aiter_dropped_off_rocm(monkeypatch):
 
 
 def test_explicit_native_returns_none():
-    # native is the default -> nothing to set.
+    # native is the default, so nothing to set.
     assert select_attention_backend(_target(), "native", speed_active = True) is None
 
 
@@ -126,14 +126,14 @@ def test_flash4_dropped_below_blackwell(monkeypatch):
 
 
 def test_arch_gate_does_not_block_when_capability_unknown(monkeypatch):
-    # Unknown capability (e.g. no CUDA) must not block -> diffusers' set-time check still guards.
+    # Unknown capability must not block; diffusers' set-time check still guards.
     monkeypatch.setattr(att, "_cuda_capability", lambda: None)
     assert select_attention_backend(_target(), "flash4", speed_active = False) == "flash_4_hub"
 
 
 def test_flash3_dropped_on_blackwell(monkeypatch):
-    # FlashAttention 3 is a Hopper-SM90 rewrite with no Blackwell kernel: an explicit
-    # flash3 on a B200 (SM100) must drop to native rather than set fine then crash.
+    # FlashAttention 3 is a Hopper-SM90 rewrite with no Blackwell kernel, so an explicit flash3 on a
+    # B200 must drop to native rather than set fine then crash.
     monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
     assert select_attention_backend(_target(), "flash3", speed_active = False) is None
     # FA4 is still honored on Blackwell.
@@ -144,8 +144,8 @@ def test_flash3_dropped_on_blackwell(monkeypatch):
 
 
 def test_explicit_cudnn_dropped_below_sm80(monkeypatch):
-    # An explicit cuDNN request on pre-Ampere (T4 SM75 / V100 SM70) must drop to native,
-    # not set fine and crash at first generation -- the same gate the auto path applies.
+    # An explicit cuDNN request on pre-Ampere must drop to native, not set fine and crash at first
+    # generation -- the same gate the auto path applies.
     monkeypatch.setattr(att, "_cuda_capability", lambda: (7, 5))
     assert select_attention_backend(_target(), "cudnn", speed_active = False) is None
     # Ampere+ still honors it.
@@ -170,7 +170,7 @@ def _pipe(transformer):
 
 
 def test_apply_none_leaves_native_when_global_already_native(monkeypatch):
-    # Global already native -> no redundant set call, returns None.
+    # Global already native, so no redundant set call.
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     t = _FakeTransformer()
     assert apply_attention_backend(_pipe(t), None) is None
@@ -178,8 +178,8 @@ def test_apply_none_leaves_native_when_global_already_native(monkeypatch):
 
 
 def test_apply_none_restores_native_when_global_polluted(monkeypatch):
-    # A previous load pinned cuDNN process-wide; a native load must reset it so it can't
-    # silently inherit cuDNN (the bit-identical/off guarantee).
+    # A previous load pinned cuDNN process-wide; a native load must reset it so it can't silently
+    # inherit cuDNN (the bit-identical/off guarantee).
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "_native_cudnn")
     t = _FakeTransformer()
     assert apply_attention_backend(_pipe(t), None) is None
@@ -193,9 +193,8 @@ def test_apply_sets_backend():
 
 
 def test_apply_sets_backend_on_both_dits():
-    # A dual-DiT family (Ideogram) runs transformer + unconditional_transformer each step, so the
-    # backend must be set on BOTH; otherwise the second DiT keeps the native default while status
-    # reports the requested kernel as engaged.
+    # A dual-DiT family (Ideogram) runs both DiTs each step, so the backend must be set on BOTH, else
+    # the second keeps native while status reports the requested kernel as engaged.
     t1, t2 = _FakeTransformer(), _FakeTransformer()
     pipe = types.SimpleNamespace(transformer = t1, unconditional_transformer = t2)
     engaged = apply_attention_backend(pipe, "_native_cudnn")
@@ -204,7 +203,7 @@ def test_apply_sets_backend_on_both_dits():
 
 
 def test_apply_falls_back_on_unavailable_kernel(monkeypatch):
-    # an unavailable kernel must not fail the load -> returns None (diffusers default).
+    # An unavailable kernel must not fail the load: returns None (diffusers default).
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     t = _FakeTransformer(fail = True)
     assert apply_attention_backend(_pipe(t), "sage") is None
@@ -234,9 +233,8 @@ def test_apply_handles_missing_method():
 
 
 def test_apply_resets_global_registry_after_success(monkeypatch):
-    # After a successful per-transformer set, the process-wide registry must be reset to
-    # native so a later component (unconfigured processors) can't inherit this kernel --
-    # while the transformer's own backend stays the engaged one.
+    # After a successful per-transformer set, the process-wide registry must be reset to native so a
+    # later component can't inherit this kernel, while the transformer keeps the engaged one.
     called = {"reset": False}
     monkeypatch.setattr(
         att, "_reset_global_backend_to_native", lambda logger: called.__setitem__("reset", True)
@@ -248,8 +246,8 @@ def test_apply_resets_global_registry_after_success(monkeypatch):
 
 
 def test_active_attention_backend_reads_tuple_return():
-    # get_active_backend() returns a (AttentionBackendName, fn) tuple; the helper must read
-    # the name's .value, not stringify the tuple (which never compares equal to a name).
+    # get_active_backend() returns a (AttentionBackendName, fn) tuple; the helper must read the
+    # name's .value, not stringify the tuple (which never compares equal to a name).
     pytest.importorskip("diffusers")
     from diffusers.models.attention_dispatch import (
         AttentionBackendName,
@@ -263,13 +261,10 @@ def test_active_attention_backend_reads_tuple_return():
 # ── on-demand wheel-only install of optional kernels ─────────────────────────────
 @pytest.fixture(autouse = True)
 def _no_real_installs(monkeypatch):
-    # Unit tests must never shell out to pip: the apply path probes installable
-    # backends (sage/flash*), so hard-disable the gate; install tests re-enable it
-    # with a stubbed subprocess.
+    # Unit tests must never shell out to pip: the apply path probes installable backends, so
+    # hard-disable the gate; install tests re-enable it with a stubbed subprocess.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
-    # The install once-per-process memo is module state; clear it so each test starts
-    # with a fresh "not yet attempted" set (otherwise an earlier test's attempt would
-    # make a later install a no-op).
+    # The install once-per-process memo is module state; clear it so each test starts fresh.
     att._INSTALL_ATTEMPTED.clear()
 
 
@@ -321,10 +316,8 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
 
 
 def test_install_uses_no_deps_to_protect_core_deps(monkeypatch):
-    # A kernel add-on (xformers/flash-attn) pins an exact torch, so a normal install would
-    # upgrade/replace the running torch/triton. --no-deps installs only the kernel wheel;
-    # an ABI-incompatible one fails to import and falls back to native rather than clobbering
-    # the environment's core deps.
+    # A kernel add-on pins an exact torch, so a normal install would replace the running torch/triton.
+    # --no-deps installs only the kernel wheel; an ABI-incompatible one just fails to import.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
@@ -337,10 +330,9 @@ def test_install_uses_no_deps_to_protect_core_deps(monkeypatch):
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
-    # The loader pre-installs the kernel OUTSIDE its locks and then re-resolves the same
-    # backend under _generate_lock; if the pre-install failed (no wheel / offline) the
-    # in-lock apply path must NOT re-run pip (a second up-to-600s install holding the load
-    # lock blocks unload/cancel). The once-per-process memo makes the retry a no-op.
+    # The loader pre-installs the kernel OUTSIDE its locks and re-resolves under _generate_lock; if
+    # the pre-install failed the in-lock apply must NOT re-run pip (a second 600s install would block
+    # unload/cancel). The once-per-process memo makes the retry a no-op.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
     import subprocess as sp
@@ -360,9 +352,8 @@ def test_failed_install_not_retried_in_same_process(monkeypatch):
 
 
 def test_install_invalidates_import_caches_on_success(monkeypatch):
-    # A wheel written to site-packages after the finder cached that directory can be
-    # missed by the very next import, so a successful install must invalidate the caches
-    # (otherwise set_attention_backend imports the missing package and falls back).
+    # A wheel written to site-packages after the finder cached that directory can be missed by the
+    # very next import, so a successful install must invalidate the caches.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib
     import importlib.util
@@ -404,8 +395,8 @@ def test_install_never_attempted_for_builtin_backends(monkeypatch):
 
 
 def test_install_failure_logs_pip_stderr(monkeypatch):
-    # A CalledProcessError's str() hides the pip reason; the warning must surface the
-    # captured stderr (decoding bytes) so a fallback to native is diagnosable.
+    # A CalledProcessError's str() hides the pip reason; the warning must surface the captured stderr
+    # so a fallback to native is diagnosable.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
     import subprocess as sp
@@ -433,9 +424,8 @@ def test_install_failure_logs_pip_stderr(monkeypatch):
 
 
 def test_install_failure_falls_back_to_native(monkeypatch):
-    # pip failing (no wheel for this platform) must not break the load: the apply
-    # path proceeds, set_attention_backend raises on the missing package, and the
-    # dispatcher is restored to native -- same contract as before the hook.
+    # pip failing (no wheel for this platform) must not break the load: apply proceeds,
+    # set_attention_backend raises on the missing package, and the dispatcher is restored to native.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
     import subprocess as sp

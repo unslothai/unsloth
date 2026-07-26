@@ -82,8 +82,8 @@ def transcode(video_id: str, fmt: str) -> Optional[bytes]:
     """Re-encode a stored MP4 for the Download menu: "webm" (VP9) or "gif". Returns the bytes, or
     None when the id doesn't resolve. Raises RuntimeError on missing codec/deps (route 501s). MP4
     downloads stream the original via /file, not here."""
-    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a
-    # guessed stem for a foreign/orphan MP4 the gallery hides can't be re-encoded out either.
+    # Ownership-gate like /file: only transcode a Studio-owned clip (readable sidecar), so a guessed
+    # stem for a foreign/orphan MP4 the gallery hides can't be re-encoded out either.
     path = owned_video_path(video_id)
     if path is None:
         return None
@@ -113,8 +113,8 @@ def _transcode_webm(path: Path) -> bytes:
             out_v.width = in_v.codec_context.width
             out_v.height = in_v.codec_context.height
             out_v.pix_fmt = "yuv420p"
-            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much
-            # faster at a small quality cost, right for a download button.
+            # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at
+            # a small quality cost, right for a download button.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
             for frame in src.decode(in_v):
                 for packet in out_v.encode(frame.reformat(format = "yuv420p")):
@@ -174,10 +174,9 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# Sidecar keys every genuine Studio record carries (save() always writes them). delete()/clear()
-# own a pair only when its sidecar has all of these, so a hand-dropped MP4 with an empty ("{}") or
-# partial sidecar -- which list_videos already hides -- is neither counted as ours nor destroyed.
-# Key-presence only (the route owns full schema validation); mirrors image_gallery._REQUIRED_META.
+# Sidecar keys every genuine Studio record carries. delete()/clear() own a pair only when its
+# sidecar has all of these, so a hand-dropped MP4 with an empty or partial sidecar is neither
+# counted as ours nor destroyed. Key-presence only (the route owns schema validation).
 _REQUIRED_META = (
     "prompt",
     "width",
@@ -273,9 +272,9 @@ def delete(video_id: str) -> bool:
     # list_videos, so a guessed id must not destroy it.
     if _read_meta(_sidecar_path(video_id)) is None:
         return False
-    # Delete the MP4 FIRST: if the sidecar were dropped first and the mp4 unlink then failed (lock /
-    # permission), the still-present mp4 would vanish from the gallery with no retry. mp4-first means
-    # the worst case is an orphaned sidecar, which list_videos ignores.
+    # Delete the MP4 FIRST: dropping the sidecar first and failing to unlink the mp4 would leave a
+    # clip that vanished from the gallery with no retry. mp4-first leaves at worst an orphan sidecar,
+    # which list_videos ignores.
     try:
         path.unlink()
     except OSError as exc:

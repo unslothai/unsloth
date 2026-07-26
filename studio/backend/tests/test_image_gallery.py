@@ -129,9 +129,8 @@ def test_image_path_rejects_unsafe_ids():
 
 
 def test_owned_image_path_serves_only_owned_pngs():
-    # A hand-dropped foreign PNG resolves via image_path (safe stem, on disk) but must NOT be
-    # served: owned_image_path applies the same recipe check as delete/clear, so the serve route
-    # can't stream a file the listing hides.
+    # A hand-dropped foreign PNG resolves via image_path (safe stem, on disk) but must NOT be served:
+    # owned_image_path applies the same recipe check as delete/clear.
     foreign = gallery.gallery_dir() / "family-photo.png"
     _img().save(foreign, format = "PNG")
     assert gallery.image_path("family-photo") is not None  # resolvable...
@@ -154,21 +153,21 @@ def test_list_skips_foreign_pngs(tmp_path):
 
 
 def test_foreign_png_in_window_does_not_drop_valid_images():
-    # A foreign PNG sorting INTO the requested page must not consume a window slot and
-    # drop a valid image that sorts after it: paging is over readable records, not files.
+    # A foreign PNG sorting INTO the requested page must not consume a window slot and drop a valid
+    # image that sorts after it: paging is over readable records, not files.
     _save_with_mtime("p2", 100.0)
     foreign = gallery.gallery_dir() / "zzz_foreign.png"
     _img().save(foreign, format = "PNG")  # newest by mtime (set below), sorts first
     os.utime(foreign, (300.0, 300.0))
     _save_with_mtime("p1", 200.0)
-    # First page of 2 must still return both real images, not [p1] (foreign eating a slot).
+    # First page of 2 must still return both real images, not [p1].
     page1 = gallery.list_images(limit = 2, offset = 0)
     assert [r["prompt"] for r in page1] == ["p1", "p2"]
 
 
 def test_list_skips_recipe_missing_required_fields(tmp_path):
-    # A PNG carrying our chunk but an incomplete/older-schema recipe (no seed etc.)
-    # must be skipped, not crash the whole listing when the route builds GalleryImage.
+    # A PNG carrying our chunk but an incomplete/older-schema recipe must be skipped, not crash the
+    # whole listing when the route builds GalleryImage.
     import json
 
     from PIL.PngImagePlugin import PngInfo

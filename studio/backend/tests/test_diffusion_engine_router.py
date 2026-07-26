@@ -25,15 +25,15 @@ _ENVS = (
 def _clean_env_and_state(monkeypatch):
     for e in _ENVS:
         monkeypatch.delenv(e, raising = False)
-    # A light status-capable stub so neither selection nor active_status() imports the
-    # heavy diffusers/sd.cpp backends; the active engine NAME comes from module state.
+    # A light status-capable stub so neither selection nor active_status() imports the heavy
+    # diffusers/sd.cpp backends; the active engine NAME comes from module state.
     monkeypatch.setattr(
         r,
         "get_active_diffusion_engine",
         lambda: SimpleNamespace(status = lambda: {"loaded": False, "repo_id": None}),
     )
-    # Default: no resident sd-server (so existing tests exercise the sd-cli path only) and
-    # a stubbed runnability probe, so neither reaches the real install/exec path.
+    # Default: no resident sd-server (so existing tests exercise the sd-cli path) and a stubbed
+    # runnability probe, so neither reaches the real install/exec path.
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
     yield
@@ -75,8 +75,8 @@ def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
 
 
 def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
-    # An sd-server-only install (no runnable sd-cli) must still route to native: the
-    # backend prefers the resident server, so a runnable sd-server is native availability.
+    # An sd-server-only install (no runnable sd-cli) must still route to native: the backend prefers
+    # the resident server, so a runnable sd-server is native availability.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)  # no sd-cli
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
@@ -85,8 +85,8 @@ def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
 
 
 def test_present_but_not_runnable_binary_falls_back(monkeypatch):
-    # A binary that exists but cannot run (version() -> None) must fall back to
-    # diffusers at selection, not commit native and fail inside the load.
+    # A binary that exists but cannot run must fall back to diffusers at selection, not commit native
+    # and fail inside the load.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
@@ -168,8 +168,8 @@ def test_install_accelerator_maps_backend(backend, expected):
 
 
 def test_force_native_install_uses_gpu_accelerator(monkeypatch):
-    # Forcing sd_cpp on a ROCm host with no binary must install the ROCm build, not the
-    # default CPU one -- otherwise the forced-native generation silently runs on CPU.
+    # Forcing sd_cpp on a ROCm host with no binary must install the ROCm build, not the default CPU
+    # one, else the forced-native generation silently runs on CPU.
     _set_device(monkeypatch, "rocm")
     _set_runnable(monkeypatch)
     seen = {}
@@ -200,12 +200,10 @@ def test_active_status_injects_engine_and_reason(monkeypatch):
 
 
 def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
-    # The arbiter's diffusion evictor unloads get_active_diffusion_engine(); if the router
-    # published the new (empty) engine BEFORE the old one finished unloading, a concurrent
-    # chat/video acquire_for could evict the empty engine and take the GPU while the old
-    # model was still resident (two large models briefly co-resident -> OOM). Assert the
-    # OLD engine stays the published active target until its unload() completes, then the
-    # new engine is published.
+    # The arbiter's diffusion evictor unloads get_active_diffusion_engine(); if the router published
+    # the new (empty) engine BEFORE the old one finished unloading, a concurrent acquire could evict
+    # the empty engine and take the GPU while the old model was still resident. Assert the OLD engine
+    # stays the published target until its unload() completes.
     seen = {}
 
     def _fake_engine():
@@ -222,8 +220,8 @@ def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
 
 
 def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
-    # When the engine does not change, _activate must not spuriously unload anything and must
-    # still refresh the recorded fallback reason (the diffusers-only steady state).
+    # When the engine does not change, _activate must not spuriously unload anything and must still
+    # refresh the recorded fallback reason.
     calls = {"unload": 0}
 
     def _fake_engine():
@@ -286,10 +284,10 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
 
 
 def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
-    # A load selects its engine, then yields (device probe, arbiter acquire) before registering.
-    # A second load choosing the OTHER engine transitions in that gap and unloads the still-idle
-    # engine this one captured, so registering there would leave a model that generate / status /
-    # unload and the arbiter's evictor can no longer reach (they all resolve the ACTIVE engine).
+    # A load selects its engine, then yields (device probe, arbiter acquire) before registering. A
+    # second load choosing the OTHER engine transitions in that gap and unloads the still-idle engine
+    # this one captured, so registering there would leave a model that generate / status / unload and
+    # the evictor can no longer reach (they all resolve the ACTIVE engine).
     diffusers = SimpleNamespace(name = "diffusers")
     sd_cpp = SimpleNamespace(name = "sd_cpp")
     active = {"engine": diffusers}
@@ -307,8 +305,8 @@ def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
 
 
 def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
-    # The check and the registration must be one operation: taken under the same lock a switch
-    # takes, so no _activate can slip between them.
+    # The check and the registration must be one operation, taken under the same lock a switch takes,
+    # so no _activate can slip between them.
     import threading
 
     engine = SimpleNamespace(name = "diffusers")

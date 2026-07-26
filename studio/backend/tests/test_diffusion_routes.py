@@ -24,8 +24,8 @@ from routes.inference import studio_router
 class _FakeBackend:
     def __init__(self) -> None:
         self.loaded = False
-        # Repo ids of in-flight (not yet committed) loads; empty tuple = none. The unload
-        # route reads this to keep DIFFUSION ownership while a concurrent load is still loading.
+        # Repo ids of in-flight (not yet committed) loads; empty tuple = none. The unload route reads this
+        # to keep DIFFUSION ownership while a concurrent load is still loading.
         self.loading: tuple = ()
 
     @property
@@ -44,8 +44,8 @@ class _FakeBackend:
         model_kind = None,
         base_repo = None,
     ):
-        # Mirror the real backend's cheap validation so the route's
-        # validate-before-evict ordering is exercised.
+        # Mirror the real backend's cheap validation so the route's validate-before-evict ordering is
+        # exercised.
         from core.inference.diffusion import resolve_model_kind
         from core.inference.diffusion_families import detect_family
 
@@ -57,8 +57,8 @@ class _FakeBackend:
             raise ValueError(
                 f"Non-GGUF diffusion loads are restricted to unsloth/* repos; got '{model_path}'."
             )
-        # A client-supplied base_repo clears the same trust bar (mirrors the real backend's
-        # gate), so the route's validate-before-evict rejects an untrusted companion base.
+        # A client-supplied base_repo clears the same trust bar as the real backend, so the route's
+        # validate-before-evict rejects an untrusted companion base.
         if base_repo and base_repo.strip() and not base_repo.lower().startswith("unsloth/"):
             raise ValueError(
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
@@ -106,8 +106,8 @@ class _FakeBackend:
         if not self.loaded:
             raise RuntimeError("No diffusion model is loaded.")
         if prompts is not None or seeds is not None:
-            # List-driven batch: the LIST sets the image count and each image's own seed
-            # (batch_size is only a per-forward cap), exactly as the real engine reports it.
+            # List-driven batch: the LIST sets the image count and each image's own seed (batch_size is only a
+            # per-forward cap), exactly as the real engine reports it.
             base = seeds[0] if seeds else (seed if seed is not None else 4242)
             count = len(prompts) if prompts is not None else len(seeds)
             per_image = seeds if seeds is not None else [base + i for i in range(count)]
@@ -117,8 +117,8 @@ class _FakeBackend:
                 "seeds": list(per_image),
                 "repo_id": "x/z-image",
             }
-        # The real backend returns the PIL images; the route persists them. The
-        # fake returns sentinels since image_gallery is stubbed in the fixture.
+        # The real backend returns the PIL images and the route persists them; the fake returns sentinels
+        # since image_gallery is stubbed in the fixture.
         return {
             "images": [object() for _ in range(batch_size)],
             "seed": seed if seed is not None else 4242,
@@ -153,14 +153,13 @@ def _unloaded_status():
 def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
-    # Neutralise the engine router so the routes deterministically drive this fake
-    # (diffusers) backend regardless of the host's real device, and never attempt a
-    # native sd.cpp install/download. The router's selection logic is covered in
-    # test_diffusion_engine_router.py; one route-level sd_cpp test lives below.
+    # Neutralise the engine router so the routes deterministically drive this fake (diffusers) backend
+    # regardless of the host's real device, and never attempt a native sd.cpp install. The selection
+    # logic is covered in test_diffusion_engine_router.py.
     import core.inference.diffusion_engine_router as engine_router
 
-    # Delegate to whatever get_diffusion_backend currently returns, so per-test
-    # re-patches of the backend still flow through the routes.
+    # Delegate to whatever get_diffusion_backend currently returns, so per-test re-patches of the
+    # backend still flow through the routes.
     monkeypatch.setattr(
         engine_router,
         "select_and_activate_engine",
@@ -173,14 +172,14 @@ def client(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
-    # Isolate from the real GPU arbiter: reset ownership and stub the evictors so
-    # the load route's acquire_for() never touches live backend singletons.
+    # Isolate from the real GPU arbiter: reset ownership and stub the evictors so the load route's
+    # acquire_for() never touches live backend singletons.
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
 
-    # In-memory gallery backed by tmp files, so routes exercise persistence wiring
-    # without PIL/real disk under studio_root.
+    # In-memory gallery backed by tmp files, so routes exercise persistence wiring without PIL/real
+    # disk under studio_root.
     store: dict[str, dict] = {}
 
     def _save(image, meta):
@@ -215,8 +214,8 @@ def client(monkeypatch, tmp_path):
         "image_path",
         lambda i: (tmp_path / f"{i}.png") if i in store else None,
     )
-    # The serve route resolves through owned_image_path (ownership-gated); the fake store only ever
-    # holds owned records, so a stem not in it is treated as foreign and refused, like the real guard.
+    # The serve route resolves through owned_image_path; the fake store only holds owned records, so a
+    # stem not in it is treated as foreign and refused, like the real guard.
     monkeypatch.setattr(
         gallery_module,
         "owned_image_path",
@@ -268,15 +267,14 @@ def test_load_generate_status_unload_roundtrip(client):
 
 def test_gallery_serve_refuses_unowned_id(client):
     # The serve route resolves through the ownership guard, so a guessed stem for a PNG the gallery
-    # does not own (no record) is a 404, not a stream of foreign bytes.
+    # does not own is a 404, not a stream of foreign bytes.
     assert client.get("/api/inference/images/gallery/family-photo/file").status_code == 404
 
 
 def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     # generate-progress must stay active while a finished generation is still writing its gallery
     # record, so a concurrent reload's mount probe keeps polling instead of refreshing the gallery
-    # before the image lands. Probe the persist counter from inside the save call, and confirm it
-    # is cleared afterwards.
+    # early. Probe the persist counter from inside the save call, and confirm it clears afterwards.
     import core.inference.image_gallery as gallery_module
     import routes.inference as inf
 
@@ -310,9 +308,9 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
 
 
 def test_load_rejects_untrusted_base_repo(client):
-    # A trusted GGUF model_path paired with an untrusted remote base_repo is rejected at the
-    # route (validate runs before the GPU handoff), so an authenticated client cannot make the
-    # server fetch and deserialize an arbitrary companion repo, and no model is loaded/evicted.
+    # A trusted GGUF model_path paired with an untrusted remote base_repo is rejected at the route
+    # (validate runs before the GPU handoff), so an authenticated client cannot make the server fetch
+    # and deserialize an arbitrary companion repo.
     r = client.post(
         "/api/inference/images/load",
         json = {
@@ -327,9 +325,9 @@ def test_load_rejects_untrusted_base_repo(client):
 
 
 def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypatch):
-    # The unload route must drop DIFFUSION ownership only when nothing is resident. If a
-    # concurrent load re-established residency while the (slow) unload ran, releasing would
-    # clear the newer load's claim and a later chat load would skip eviction and OOM.
+    # The unload route must drop DIFFUSION ownership only when nothing is resident. If a concurrent
+    # load re-established residency while the slow unload ran, releasing would clear the newer claim
+    # and a later chat load would skip eviction and OOM.
     backend = diffusion_module.get_diffusion_backend()
     gpu_arbiter._owner = gpu_arbiter.DIFFUSION
 
@@ -349,11 +347,9 @@ def test_unload_keeps_ownership_when_a_model_is_still_resident(client, monkeypat
 
 
 def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
-    # A concurrent /images/load re-acquires DIFFUSION and starts a background load, so the
-    # engine is NOT is_loaded yet (the pipeline commits later) but a load IS in flight. The
-    # unload route must keep ownership on the in-flight state alone, or a later chat load would
-    # see no owner, skip eviction, and OOM against the newly resident pipeline. is_loaded stays
-    # False the whole download/finalize window, so the loaded-only check is insufficient here.
+    # A concurrent /images/load re-acquires DIFFUSION and starts a background load, so the engine is
+    # NOT is_loaded yet but a load IS in flight. The unload route must keep ownership on the in-flight
+    # state alone, since is_loaded stays False for the whole download/finalize window.
     backend = diffusion_module.get_diffusion_backend()
     gpu_arbiter._owner = gpu_arbiter.DIFFUSION
 
@@ -384,9 +380,9 @@ def test_generate_batch_size_persists_each_image(client):
 
 
 def test_generate_seed_list_records_replay_from_each_own_seed(client):
-    # A seeds LIST sets each image's own seed, so the recipe must NOT claim the base seed +
-    # the request's batch_size: restore prefers batch_seed (frontend restoreSettings does
-    # `batch_seed ?? seed`), which would regenerate seed 5 for the seed-99 image.
+    # A seeds LIST sets each image's own seed, so the recipe must NOT claim the base seed + the
+    # request's batch_size: restore prefers batch_seed (`batch_seed ?? seed`), which would regenerate
+    # seed 5 for the seed-99 image.
     client.post(
         "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
     )
@@ -418,8 +414,8 @@ def test_generate_prompt_list_records_each_prompt_and_seed(client):
 
 
 def test_generate_legacy_batch_still_records_the_base_seed_and_size(client):
-    # The batch_size path is unchanged: those images DO share one base seed, so restore
-    # must replay the whole batch (base seed + batch_size), not the derived per-image seed.
+    # The batch_size path is unchanged: those images DO share one base seed, so restore must replay
+    # the whole batch, not the derived per-image seed.
     client.post(
         "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
     )
@@ -434,10 +430,9 @@ def test_generate_legacy_batch_still_records_the_base_seed_and_size(client):
 
 
 def test_generate_request_rejects_zero_denoise_strength():
-    # strength 0 does NOT keep the source: every diffusers img2img/inpaint pipeline derives
-    # t_start = steps - int(steps * strength), so 0 leaves zero denoising steps (FLUX/Qwen/
-    # Z-Image raise "the number of pipeline steps is 0 which is < 1"; SDXL img2img has no
-    # such guard and crashes on empty latents). Reject it as a 422 up front.
+    # strength 0 does NOT keep the source: every diffusers img2img/inpaint pipeline derives t_start =
+    # steps - int(steps * strength), so 0 leaves zero denoising steps (FLUX/Qwen/Z-Image raise, SDXL
+    # img2img crashes on empty latents). Reject it as a 422 up front.
     import pydantic
 
     from models.inference import DiffusionGenerateRequest
@@ -464,8 +459,8 @@ def test_generate_rejects_non_multiple_of_16(client):
     client.post(
         "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
     )
-    # Odd, and a multiple of 8 that isn't a multiple of 16: both rejected, since
-    # Z-Image requires dimensions divisible by 16.
+    # Odd, and a multiple of 8 that isn't a multiple of 16: both rejected, since Z-Image requires
+    # dimensions divisible by 16.
     for bad in (1001, 1000):
         resp = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": bad})
         assert resp.status_code == 422, bad
@@ -478,8 +473,8 @@ def test_generate_rejects_batch_seed_past_json_safe_range(client):
     client.post(
         "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
     )
-    # A seed at the cap with a batch derives per-image seeds (seed+1 ...) past the JSON-safe range,
-    # so the request is rejected.
+    # A seed at the cap with a batch derives per-image seeds past the JSON-safe range, so the request
+    # is rejected.
     over = client.post(
         "/api/inference/images/generate",
         json = {"prompt": "p", "seed": 2**53 - 1, "batch_size": 2},
@@ -494,16 +489,16 @@ def test_generate_rejects_batch_seed_past_json_safe_range(client):
 
 
 def test_non_gguf_load_restricted_to_unsloth(client):
-    # gguf_filename is optional now; with none, the load is a full-pipeline kind, which
-    # is gated to unsloth/* repos. A non-unsloth repo (no filename) is rejected -> 400.
+    # gguf_filename is optional now; with none the load is a full-pipeline kind, gated to unsloth/*
+    # repos, so a non-unsloth repo is rejected with a 400.
     resp = client.post("/api/inference/images/load", json = {"model_path": "x/z-image"})
     assert resp.status_code == 400
     assert "unsloth" in resp.json()["detail"].lower()
 
 
 def test_pipeline_load_allowed_for_unsloth_repo(client):
-    # An unsloth/* repo with no filename loads as a full diffusers pipeline (kind auto
-    # = pipeline); the route forwards model_kind="pipeline" to begin_load.
+    # An unsloth/* repo with no filename loads as a full diffusers pipeline, so the route forwards
+    # model_kind="pipeline" to begin_load.
     resp = client.post(
         "/api/inference/images/load", json = {"model_path": "unsloth/Z-Image-Turbo-unsloth-bnb-4bit"}
     )
@@ -519,8 +514,8 @@ def test_generate_without_load_returns_409(client):
 
 
 def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
-    # A loaded model that fails mid-pipeline (CUDA OOM, a RuntimeError) is a server
-    # failure: 500 with a generic message, not a 409 echoing the raw exception.
+    # A loaded model that fails mid-pipeline (CUDA OOM, a RuntimeError) is a server failure: 500 with
+    # a generic message, not a 409 echoing the raw exception.
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
 
@@ -535,9 +530,8 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
 
 
 def test_generate_execution_error_with_cancelled_substring_is_sanitized_500(client, monkeypatch):
-    # A native sd-cli execution failure whose raw tail merely CONTAINS "cancelled"
-    # must stay a sanitized 500, not misroute to 409 and echo that output (path/arg
-    # leak). Regression: the handler matched "cancelled" as a substring.
+    # A native sd-cli execution failure whose raw tail merely CONTAINS "cancelled" must stay a
+    # sanitized 500, not misroute to 409 and echo that output (path/arg leak).
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
 
@@ -570,8 +564,8 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
         raise ValueError("'x/y' isn't a supported image-generation model. Supported: Z-Image.")
 
     backend = _FakeBackend()
-    # Validation runs in the pre-flight (before the GPU is taken), so that is
-    # where an unsupported model is rejected now.
+    # Validation runs in the pre-flight (before the GPU is taken), so that is where an unsupported
+    # model is rejected now.
     backend.validate_load_request = _raise
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     resp = client.post(
@@ -582,8 +576,8 @@ def test_load_unknown_family_returns_400(client, monkeypatch):
 
 
 def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
-    # A rejected image-model pick must not tear down the user's loaded chat model:
-    # validation runs before acquire_for, so chat keeps the GPU on a 400.
+    # A rejected image-model pick must not tear down the user's loaded chat model: validation runs
+    # before acquire_for, so chat keeps the GPU on a 400.
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
     evicted = []
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
@@ -604,8 +598,8 @@ def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
 
 
 def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):
-    # An image load while training is active is refused (409) before the GPU is
-    # taken, so the training run and the loaded chat model are both untouched.
+    # An image load while training is active is refused (409) before the GPU is taken, so the training
+    # run and the loaded chat model are both untouched.
     import core.training as core_training
 
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
@@ -649,8 +643,8 @@ def test_routes_require_auth():
 
 
 def test_invalid_family_returns_400_without_evicting_chat(client):
-    # An undetectable family fails validation BEFORE the GPU handoff, so the
-    # arbiter is never acquired and a loaded chat model would not be evicted.
+    # An undetectable family fails validation BEFORE the GPU handoff, so the arbiter is never acquired
+    # and a loaded chat model would not be evicted.
     resp = client.post(
         "/api/inference/images/load", json = {"model_path": "x/y", "gguf_filename": "q.gguf"}
     )
@@ -752,9 +746,8 @@ def test_invalid_attention_backend_returns_422(client):
 
 
 def test_prequant_path_doc_describes_allowlist_not_toggle():
-    # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a
-    # directory allowlist, not a =1 toggle (diffusion_prequant._allowed_prequant_roots
-    # drops bare on/off tokens), so operators following the doc don't get every
+    # The field help must match the code: UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH is a directory allowlist,
+    # not a =1 toggle (bare on/off tokens are dropped), so operators following the doc don't get every
     # request silently refused.
     from models.inference import DiffusionLoadRequest
 
@@ -830,8 +823,7 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
         lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
     )
     monkeypatch.setattr(engine_router, "ensure_sd_cpp_binary", lambda **_: "/x/sd-cli")
-    # The router now probes runnability before committing to native; treat the stub
-    # binary as executable.
+    # The router probes runnability before committing to native; treat the stub binary as executable.
     monkeypatch.setattr(
         engine_router, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "sd-cli v0")
     )
@@ -862,8 +854,8 @@ def test_load_routes_to_sd_cpp_on_cpu(monkeypatch, tmp_path):
 
 
 def test_invalid_transformer_quant_returns_422_without_eviction(client):
-    # An unsupported transformer_quant is rejected by the request schema (Literal), so
-    # the GPU is never acquired and no chat model is evicted.
+    # An unsupported transformer_quant is rejected by the request schema (Literal), so the GPU is
+    # never acquired and no chat model is evicted.
     resp = client.post(
         "/api/inference/images/load",
         json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "transformer_quant": "int2"},
@@ -873,8 +865,8 @@ def test_invalid_transformer_quant_returns_422_without_eviction(client):
 
 
 def test_invalid_memory_mode_returns_422_without_eviction(client):
-    # An unsupported memory_mode is rejected by the request schema (Literal), so the
-    # GPU is never acquired and no chat model is evicted.
+    # An unsupported memory_mode is rejected by the request schema (Literal), so the GPU is never
+    # acquired and no chat model is evicted.
     resp = client.post(
         "/api/inference/images/load",
         json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "memory_mode": "ultra"},
@@ -890,8 +882,8 @@ def test_in_progress_returns_409_after_validation_passes(client, monkeypatch):
     backend = _FakeBackend()
     backend.begin_load = _busy
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
-    # Pin the resolved device to cuda: the route only takes the arbiter for non-CPU
-    # loads, so on a CPU-only host the ownership assert below would never hold.
+    # Pin the resolved device to cuda: the route only takes the arbiter for non-CPU loads, so on a
+    # CPU-only host the ownership assert below would never hold.
     import types as _types
 
     import core.inference.diffusion_device as devmod
@@ -934,8 +926,8 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
 
 
 def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
-    # A native sd.cpp load on a pure-CPU host never touches the GPU, so the route must NOT
-    # evict the resident chat model -- the arbiter handoff is skipped.
+    # A native sd.cpp load on a pure-CPU host never touches the GPU, so the route must NOT evict the
+    # resident chat model: the arbiter handoff is skipped.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
     backend = diffusion_module.get_diffusion_backend()
@@ -948,8 +940,8 @@ def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
 
 
 def test_gpu_native_load_takes_arbiter(client, monkeypatch):
-    # A force-native sd.cpp load on a GPU box DOES use the GPU, so the arbiter is acquired
-    # (same as the always-GPU diffusers path).
+    # A force-native sd.cpp load on a GPU box DOES use the GPU, so the arbiter is acquired, like the
+    # always-GPU diffusers path.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
     backend = diffusion_module.get_diffusion_backend()
@@ -962,8 +954,8 @@ def test_gpu_native_load_takes_arbiter(client, monkeypatch):
 
 
 def test_images_info_lists_every_family(client):
-    # The pure info endpoint is hardware-independent (no load required): it returns one
-    # entry per auto-policy family, each with the quant estimates the UI shows.
+    # The pure info endpoint is hardware-independent (no load required): one entry per auto-policy
+    # family, each with the quant estimates the UI shows.
     from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB
 
     resp = client.get("/api/inference/images/info")
@@ -972,14 +964,14 @@ def test_images_info_lists_every_family(client):
     assert {f["family"] for f in families} == set(_FAMILY_BF16_GB)
     sample = families[0]
     est = sample["estimated_resident_gb"]
-    # Quantised estimates undercut bf16, and nvfp4 undercuts int8 (matches the pure helper).
+    # Quantised estimates undercut bf16, and nvfp4 undercuts int8 (matching the pure helper).
     assert est["int8"] < est["bf16"]
     assert est["nvfp4"] < est["int8"]
 
 
 def test_status_passes_through_resolved(client, monkeypatch):
-    # The additive `resolved` provenance record round-trips through the status route so the
-    # frontend can render the "Auto: X" badges.
+    # The additive `resolved` provenance record round-trips through the status route so the frontend
+    # can render the "Auto: X" badges.
     backend = diffusion_module.get_diffusion_backend()
     resolved = {
         "speed_mode": {"value": "eager", "source": "auto", "reason": "per-kind default"},
@@ -998,18 +990,17 @@ def test_status_passes_through_resolved(client, monkeypatch):
 
 
 def test_status_resolved_defaults_to_null(client):
-    # A backend status without a `resolved` key leaves the additive field null (older
-    # backends and the unloaded state).
+    # A backend status without a `resolved` key leaves the additive field null (older backends and the
+    # unloaded state).
     body = client.get("/api/inference/images/status").json()
     assert body["resolved"] is None
 
 
 def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
-    # The plan drives the staged download, so it has to be computed from the SAME
-    # configuration the load will run with. The dense-quant prefetch decision reads the
-    # memory policy, the prequant path and the adapter selection as well as speed/quant:
-    # dropping them stages the base transformer/ shards for a low-VRAM load that never
-    # opens them, or omits them for a baked-LoRA load that does.
+    # The plan drives the staged download, so it must be computed from the SAME configuration the load
+    # will run with. The dense-quant prefetch decision reads the memory policy, the prequant path and
+    # the adapter selection as well as speed/quant: dropping them stages the base transformer/ shards
+    # for a low-VRAM load that never opens them, or omits them for a baked-LoRA load that does.
     backend = diffusion_module.get_diffusion_backend()
     seen: dict = {}
 

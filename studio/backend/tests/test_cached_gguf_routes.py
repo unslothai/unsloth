@@ -527,8 +527,7 @@ def test_list_cached_models_skips_non_suffix_repo_when_gguf_files_exist(monkeypa
 
 def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tmp_path):
     # The same repo cached in two roots: a LARGER but PARTIAL copy must not shadow a SMALLER but
-    # COMPLETE one. The picker drops partial rows, so picking the partial winner by size alone would
-    # make a usable model vanish from On Device. Completeness wins over size.
+    # COMPLETE one, or the picker (which drops partial rows) hides a usable model.
     complete = _repo(
         "Org/Dup",
         [_file("model.safetensors", 10_000)],
@@ -559,7 +558,7 @@ def test_list_cached_models_prefers_complete_over_larger_partial(monkeypatch, tm
     assert len(result["cached"]) == 1
     row = result["cached"][0]
     assert row["repo_id"] == "Org/Dup"
-    # The COMPLETE (smaller) copy won: it is not flagged partial and carries its 10_000 size.
+    # The COMPLETE (smaller) copy won.
     assert row.get("partial") is not True
     assert row["size_bytes"] == 10_000
 
@@ -713,7 +712,6 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         [
             _file("model_index.json", 1_000),
             _file("text_encoder/model.safetensors", 9_000),
-            # A complete pipeline carries its denoiser weights; without them it would be partial.
             _file("transformer/diffusion_pytorch_model.safetensors", 9_000),
         ],
         tmp_path / "models--Tongyi-MAI--Z-Image-Turbo",
@@ -1137,34 +1135,26 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
 
 
 def test_arch_to_task_hides_unsupported_diffusion_from_chat():
-    # Loadable diffusion archs -> the Images-picker task.
     assert models_route._arch_to_task("flux") == "text-to-image"
     assert models_route._arch_to_task("z_image") == "text-to-image"
     assert models_route._arch_to_task("qwen_image") == "text-to-image"
-    # A real LLM arch stays a chat model; None passes through.
     assert models_route._arch_to_task("llama") == "text-generation"
     assert models_route._arch_to_task(None) is None
-    # Known-but-unsupported diffusion archs get a task that is NEITHER chat
-    # ("text-generation") NOR a loadable image task ("text-to-image"), so the chat
-    # picker hides them (they'd die in llama.cpp) and the Images picker leaves them
-    # out (they'd 400 in validate_load).
+    # Known-but-unsupported diffusion archs get a task that is NEITHER chat nor a loadable image
+    # task, so the chat picker hides them and the Images picker leaves them out.
     for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid"):
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
         assert task not in ("text-generation", "text-to-image")
-    # A video arch with a REGISTERED VideoFamily surfaces with the Video-picker task (unsloth
-    # LTX-2.x GGUFs ship general.architecture "ltxv" and ltx-2 is registered).
+    # A video arch with a REGISTERED VideoFamily surfaces with the Video-picker task.
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
     assert models_route._arch_to_task("ltxv") not in ("text-generation", "text-to-image")
-    # A video arch that does not resolve from the bare arch alone ("wan" is ambiguous -- it
-    # covers both the loadable single-DiT TI2V-5B and the A14B MoE whose single file the loader
-    # refuses) stays unsupported when no repo/file name is available to disambiguate, rather than
-    # surfacing a GGUF that might 400 on load.
+    # A video arch that does not resolve from the bare arch alone ("wan" covers both the loadable
+    # TI2V-5B and the A14B MoE) stays unsupported when no name is available to disambiguate.
     assert models_route._arch_to_task("wan") == models_route._UNSUPPORTED_DIFFUSION_TASK
     assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
-    # With a repo/file name hint, the loadable TI2V-5B Wan GGUF resolves to the Video task (so it
-    # surfaces in the Video On-Device picker), while the A14B MoE (single file refused by the
-    # loader) stays in the unsupported bucket -- matching the loader's own name-aware detection.
+    # With a repo/file name hint, the loadable TI2V-5B Wan GGUF resolves to the Video task while the
+    # A14B MoE stays unsupported, matching the loader's own name-aware detection.
     assert (
         models_route._arch_to_task("wan", ("QuantStack/Wan2.2-TI2V-5B-GGUF",))
         == models_route._VIDEO_GEN_TASK
@@ -1177,8 +1167,8 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
         models_route._arch_to_task("wan", ("QuantStack/Wan2.2-T2V-A14B-GGUF",))
         == models_route._UNSUPPORTED_DIFFUSION_TASK
     )
-    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must be
-    # classified here as some non-chat task (image, video, or unsupported).
+    # Drift guard: every diffusion arch llama.cpp rejects as a chat model must classify here as some
+    # non-chat task (image, video, or unsupported).
     from core.inference.llama_cpp import LlamaCppBackend
 
     classified = (
@@ -1228,8 +1218,8 @@ def _idle_diffusion_engine():
 
 
 def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
-    # The cached-delete guard refuses deleting a repo the diffusion (Images) backend has loaded,
-    # mirroring the chat guard, so its GGUF can't be removed from under a live pipeline.
+    # The cached-delete guard refuses deleting a repo the diffusion (Images) backend has loaded, so
+    # its GGUF can't be removed from under a live pipeline.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1256,9 +1246,7 @@ def test_delete_cached_refuses_diffusion_loaded_repo(monkeypatch):
 
 
 def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
-    # The cached-delete guard must refuse deleting a repo the Video backend has loaded (it
-    # shares the On-Device GGUF delete UI with chat/Images), so its GGUF can't be removed from
-    # under a live video pipeline -- the same invariant the sibling guards enforce.
+    # Same for the Video backend, which shares the On-Device GGUF delete UI with chat/Images.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1284,10 +1272,9 @@ def test_delete_cached_refuses_video_loaded_repo(monkeypatch):
 
 
 def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
-    # The native sd.cpp one-shot engine re-reads its companion VAE / text-encoder files from the
-    # HF cache on every generation, so deleting a companion repo (comfyanonymous/flux_text_encoders)
-    # while a FLUX GGUF is loaded must be refused. The loaded main repo_id does not match the
-    # companion, so the guard relies on loaded_repo_ids() to cover the committed companions.
+    # The native sd.cpp one-shot engine re-reads its companion VAE / text-encoder files every
+    # generation, so deleting a companion repo while a FLUX GGUF is loaded must be refused. The
+    # loaded repo_id does not match the companion, so the guard relies on loaded_repo_ids().
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1318,9 +1305,8 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
 
 
 def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch):
-    # status().loaded is still False while a background Images load DOWNLOADS the repo (or its
-    # companion base), but deleting then would remove blobs from under the in-flight
-    # download/assembly, so loading_repo_ids() must refuse with the wait-for-it detail.
+    # status().loaded is still False while a background Images load DOWNLOADS the repo, but deleting
+    # then would remove blobs from under it, so loading_repo_ids() must refuse.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1347,11 +1333,8 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
 
 
 def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
-    # A loaded Images repo must not block deleting a DIFFERENT cached repo that merely shares a
-    # name prefix. Qwen/Qwen-Image and Qwen/Qwen-Image-2512 are both real catalog artifacts, so
-    # with Qwen-Image-2512 loaded, deleting the sibling Qwen-Image is a supported operation. The
-    # guard is `/`-boundary aware, so it refuses only the loaded repo (or a file within it), not
-    # a prefix sibling.
+    # A loaded Images repo must not block deleting a DIFFERENT cached repo that merely shares a name
+    # prefix (Qwen/Qwen-Image vs Qwen/Qwen-Image-2512). The guard is `/`-boundary aware.
     from fastapi import HTTPException
     from hub.services.models import deletion
     import core.inference.diffusion_engine_router as der
@@ -1378,8 +1361,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
         },
     )
 
-    # The sibling repo clears every guard and reaches the delete -- it is NOT refused with the
-    # 400 "Unload" that an un-delimited prefix match would have produced.
+    # The sibling repo clears every guard and reaches the delete.
     result = asyncio.run(deletion.delete_cached_model_response("Qwen/Qwen-Image"))
     assert result == {"status": "deleted", "repo_id": "Qwen/Qwen-Image"}
 
@@ -1393,10 +1375,9 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
 
 
 def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
-    # The partial probe must be scoped to the snapshot row being listed. Unscoped, the scan
-    # spans every HF cache root, so a stale .incomplete copy in one root would flag a complete
-    # copy living in another root as partial and hide the usable model from the picker. Verify
-    # _cached_repo_partial forwards the snapshot dir (matching the sibling inventory paths).
+    # The partial probe must be scoped to the snapshot row being listed: unscoped, a stale
+    # .incomplete copy in one cache root would flag a complete copy in another as partial and hide
+    # the usable model.
     import hub.utils.inventory_scan as scan
 
     calls = []
@@ -1414,7 +1395,6 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
     assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is False
     assert calls == [("model", "Org/Repo", snapshot_dir)]
 
-    # When that specific snapshot is partial, the row is flagged.
     monkeypatch.setattr(scan, "is_snapshot_partial", lambda *a, **k: True)
     assert models_route._cached_repo_partial("Org/Repo", snapshot_dir) is True
 
@@ -1427,10 +1407,9 @@ def test_cached_repo_partial_scopes_probe_to_snapshot_dir(monkeypatch):
 
 
 def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
-    # Only a ROOT model_index.json makes a repo pipeline-loadable: from_pretrained
-    # reads the repo root, so a nested subdir/model_index.json must NOT clear the
-    # single_file flag. CachedFileInfo.file_name is the basename, so the helper has
-    # to scope by file_path/snapshot_path -- a name-only match would claim both.
+    # Only a ROOT model_index.json makes a repo pipeline-loadable, so a nested subdir one must NOT
+    # clear the single_file flag. CachedFileInfo.file_name is the basename, so the helper scopes by
+    # snapshot path -- a name-only match would claim both.
     snap = tmp_path / "snapshots" / "abc"
     nested = SimpleNamespace(
         file_name = "model_index.json",
@@ -1454,10 +1433,8 @@ def test_repo_has_pipeline_index_requires_root_model_index(tmp_path):
 
 
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
-    # A diffusion-tagged repo with NO top-level model_index.json is a single-file
-    # checkpoint: the task pickers must not offer it as a pipeline load (from_pretrained
-    # fails on it), so the row carries single_file=True. A full pipeline repo (has
-    # model_index.json) and a chat repo (task None) carry no flag.
+    # A diffusion-tagged repo with NO top-level model_index.json is a single-file checkpoint, so it
+    # carries single_file=True; a full pipeline repo and a chat repo carry no flag.
     single = _repo(
         "unsloth/Qwen-Image-fp8-single",
         [_file("qwen-image-fp8.safetensors", 10_000)],

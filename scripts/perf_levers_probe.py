@@ -36,9 +36,8 @@ def _lpips(ref, arr):
         import lpips
         import torch
 
-        # Keep the metric model on CPU: caching it on CUDA leaves it resident across variants, and
-        # each run resets peak-memory stats, so its VRAM would be charged to (and reduce headroom
-        # for) every later variant's measurement.
+        # Keep the metric model on CPU: cached on CUDA it stays resident across variants and its VRAM
+        # is charged to every later measurement (each run resets peak-memory stats).
         if _LP["fn"] is None:
             _LP["fn"] = lpips.LPIPS(net = "alex", verbose = False).eval()
 
@@ -72,8 +71,8 @@ def _reset_inductor_flags():
     ic.coordinate_descent_tuning = False
     ic.coordinate_descent_check_all_directions = False
     ic.epilogue_fusion = True
-    # Reset the int-mm fusion flag too, or it leaks from the inductor_flags variant into
-    # every later compiled row and the attention/fbcache measurements stop being isolated.
+    # Reset the int-mm fusion flag too, else it leaks from the inductor_flags variant into every
+    # later compiled row.
     try:
         ic.force_fuse_int_mm_with_mul = False
     except Exception:  # noqa: BLE001
@@ -149,10 +148,8 @@ def run(
             torch.cuda.empty_cache()
             return None
     else:
-        # set_attention_backend pins diffusers' PROCESS-WIDE active backend, and a fresh
-        # transformer's processors (backend None) inherit it. Force native for the no-attn variants
-        # so they aren't measured under a prior variant's kernel (e.g. fbcache with a leftover sage
-        # backend).
+        # set_attention_backend pins diffusers' process-wide backend and fresh processors inherit it,
+        # so force native for the no-attn variants (else they run under a prior variant's kernel).
         try:
             pipe.transformer.set_attention_backend("native")
         except Exception as exc:  # noqa: BLE001 — best-effort isolation

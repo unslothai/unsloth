@@ -60,8 +60,8 @@ def _patch_create_causal_mask() -> None:
         # The pipeline calls this by keyword. Rename inputs_embeds -> input_embeds for the 5.x spelling.
         if "inputs_embeds" in kwargs and "inputs_embeds" not in params and "input_embeds" in params:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
-        # Supply cache_position when required and omitted: past_key_values is None, so positions
-        # run 0..seq_len-1.
+        # Supply cache_position when required and omitted: past_key_values is None, so positions run
+        # 0..seq_len-1.
         if "cache_position" in params and "cache_position" not in kwargs:
             embeds = kwargs.get("input_embeds", kwargs.get("inputs_embeds"))
             if embeds is not None:
@@ -73,8 +73,7 @@ def _patch_create_causal_mask() -> None:
 
 
 # The fp8 attention is a fused ``qkv`` matrix (Q/K/V stacked, each ``hidden_size`` rows).
-# hidden_size = attention_head_dim * num_attention_heads, read from config so a future change
-# can't mis-split it.
+# hidden_size is read from config so a future change can't mis-split it.
 _QKV_SPLIT = ("to_q", "to_k", "to_v")
 
 
@@ -265,8 +264,8 @@ def load_ideogram4_text_encoder(
 
     # Construct normally (so __init__ computes the non-persistent rotary inv_freq the checkpoint
     # omits) then copy the dequantized weights in. Build at the target dtype: this ~8B Qwen3-VL
-    # scaffold is ~2x at the fp32 default (~33 vs ~16 GB) and loads FIRST, so fp32 can OOM a 64 GB
-    # host. inv_freq is computed in explicit fp32, so a bf16 default leaves it correct.
+    # scaffold is ~2x at the fp32 default and loads FIRST, so fp32 can OOM a 64 GB host. inv_freq
+    # is computed in explicit fp32, so a bf16 default leaves it correct.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -333,8 +332,7 @@ def load_ideogram4_transformer(
                 is_fp8 = True
                 break
     if not is_fp8:
-        # Already the diffusers split layout (-nf4): let from_pretrained re-apply its
-        # quantization_config.
+        # Already the diffusers split layout (-nf4): let from_pretrained re-apply its quantization_config.
         model_kwargs: dict[str, Any] = {"subfolder": subfolder, "torch_dtype": dtype}
         if token:
             model_kwargs["token"] = token
@@ -348,10 +346,10 @@ def load_ideogram4_transformer(
 
     config.pop("quantization_config", None)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
-    # from_config materializes the full ~9B module before the weights copy in. At fp32 that's ~2x
-    # the bf16 model (~37 vs ~18 GB), and the second DiT builds while the first + encoder are
-    # resident, so fp32 can OOM smaller hosts. Build at the target dtype; only rotary_emb.inv_freq
-    # is absent from the checkpoint (computed in explicit fp32), so a bf16 default leaves it correct.
+    # from_config materializes the full ~9B module before the weights copy in. At fp32 that is ~2x
+    # the bf16 model, and the second DiT builds while the first + encoder are resident, so fp32 can
+    # OOM smaller hosts. Build at the target dtype; only rotary_emb.inv_freq is absent from the
+    # checkpoint (computed in explicit fp32), so a bf16 default leaves it correct.
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:
@@ -391,8 +389,8 @@ def load_ideogram4_pipeline(
     text_encoder = load_ideogram4_text_encoder(repo_id, dtype, hf_token = token)
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token)
     transformer = load_ideogram4_transformer(repo_id, "transformer", dtype, hf_token = token)
-    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class/size,
-    # always required).
+    # The second DiT drives the unconditional branch of Ideogram's dual-branch CFG (same class and
+    # size, always required).
     unconditional_transformer = load_ideogram4_transformer(
         repo_id, "unconditional_transformer", dtype, hf_token = token
     )

@@ -121,7 +121,7 @@ def _install(
     """Install the fake torch and either a fake or failing `utils.hardware`."""
     monkeypatch.setitem(sys.modules, "torch", torch)
     if hardware_fails:
-        # Force `from utils.hardware import ...` to raise -> torch-probe fallback.
+        # Force `from utils.hardware import ...` to raise, exercising the torch-probe fallback.
         monkeypatch.setitem(sys.modules, "utils.hardware", None)
         return
 
@@ -157,7 +157,7 @@ def test_cuda_pre_ampere_fp16(monkeypatch):
     torch = _make_torch(cuda_available = True, capability = (7, 5), bf16_supported = True)
     _install(monkeypatch, torch, studio_device = "cuda")
     t = dd.resolve_diffusion_device_target()
-    # is_bf16_supported() is True (emulated) but capability < 8 -> fp16.
+    # is_bf16_supported() is True (emulated) but capability < 8, so fp16.
     assert t.dtype == FP16 and t.backend == "cuda"
 
 

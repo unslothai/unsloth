@@ -110,8 +110,7 @@ def _rmsnorm_forward(self, hidden_states):
     # Fall back to the exact original where F.rms_norm is NOT equivalent to diffusers:
     #   * NPU / bias / fp32-weight -> special handling / an fp32 quirk;
     #   * tuple `dim` -> diffusers reduces only the LAST dim, F.rms_norm reduces every dim;
-    #   * dtype mismatch -> diffusers computes variance in fp32 from the ORIGINAL tensor, so
-    #     casting first would change the variance.
+    #   * dtype mismatch -> diffusers computes variance in fp32 from the ORIGINAL tensor.
     if _NPU or self.bias is not None or _orig_rmsnorm_forward is None or len(tuple(self.dim)) != 1:
         return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
     weight = self.weight
@@ -124,8 +123,8 @@ def _rmsnorm_forward(self, hidden_states):
     return _orig_rmsnorm_forward(self, hidden_states)  # type: ignore[misc]
 
 
-# Install / uninstall via the shared patch backend: the live original is fingerprinted
-# (can_safely_patch, relaxed) so a changed forward is left UNPATCHED, and stashed for exact restore.
+# Install / uninstall via the shared patch backend: the live original is fingerprinted so a
+# changed forward is left UNPATCHED, and stashed for exact restore.
 def _specs():
     # (class, patched_fn)
     return [
@@ -154,8 +153,7 @@ def install_compile_safe_patches() -> int:
     for cls, new_fn in _specs():
         if cls is None:
             continue
-        # torch < 2.4 has no F.rms_norm: leave the original in place, don't install a patch whose
-        # fast path would AttributeError.
+        # torch < 2.4 has no F.rms_norm: leave the original rather than install an AttributeError.
         if cls is _RMSNorm and not hasattr(F, "rms_norm"):
             logger.info("eager-patch: skipping RMSNorm (this torch has no F.rms_norm)")
             continue

@@ -40,7 +40,7 @@ def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
 
 
 # sd-cli's image-gen mode (``img_gen``; older ``txt2img``). img2img is the same mode with
-# --init-img, so this one token covers both text- and image-conditioned generation.
+# --init-img, so this one token covers both.
 DEFAULT_MODE = "img_gen"
 
 
@@ -99,10 +99,10 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles (engine-side analogue of diffusion_speed). off: nothing. default:
-# --diffusion-fa (flash attention) + --diffusion-conv-direct (numerically exact). On the CPU tier
-# this serves, direct conv measured z-image Q8_0 sampling 56.1 -> 51.3s (~9%) with decode/RSS
-# unchanged, so it's in the default profile. max keeps it (profiles are a superset chain).
+# Native (sd.cpp) speed profiles (engine-side analogue of diffusion_speed). off: nothing.
+# default: --diffusion-fa + --diffusion-conv-direct (numerically exact). On the CPU tier this
+# serves, direct conv measured z-image Q8_0 sampling 56.1 to 51.3s (~9%) with decode/RSS
+# unchanged. max keeps it (profiles are a superset chain).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -211,8 +211,8 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    # Emit explicit dims when given. An image-conditioned run that leaves them unset omits the
-    # flags so sd.cpp derives the size from the input; a plain txt2img keeps the 1024 default.
+    # Emit explicit dims when given. An image-conditioned run that leaves them unset omits the flags
+    # so sd.cpp derives the size from the input; a plain txt2img keeps the 1024 default.
     if params.width is not None or params.height is not None:
         w = int(params.width) if params.width is not None else 1024
         h = int(params.height) if params.height is not None else 1024
@@ -262,7 +262,7 @@ def build_sd_cpp_upscale_command(
         raise ValueError("input_image is required for upscale")
     if not params.upscale_model:
         raise ValueError("upscale_model is required for upscale")
-    # Reject repeats < 1 explicitly: a truthiness guard would swallow repeats=0 into sd-cli's
+    # Reject repeats below 1 explicitly: a truthiness guard would swallow repeats=0 into sd-cli's
     # one-pass default, quietly changing the caller's intent.
     if params.repeats < 1:
         raise ValueError("repeats must be >= 1 for upscale")
@@ -405,7 +405,7 @@ def build_img_gen_request(
     if sample_params:
         req["sample_params"] = sample_params
     # Structured LoRA list: the API resolves each ``path`` against the server's ``--lora-model-dir``
-    # (prompt-embedded ``<lora:>`` tags are unsupported server-side), so LoRAs are staged and named here.
+    # (prompt-embedded ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
         req["lora"] = lora
     return req

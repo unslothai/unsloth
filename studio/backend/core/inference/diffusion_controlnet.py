@@ -27,8 +27,8 @@ from utils.paths.storage_roots import studio_root
 # edge map here (no heavy detector dependency).
 CONTROL_TYPES = ("passthrough", "canny")
 
-# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor-subclass weights);
-# gated off like LoRA, along with GGUF-via-diffusers.
+# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated
+# off like LoRA, along with GGUF-via-diffusers.
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 
@@ -166,11 +166,10 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
         # A curated entry named by its full repo id must still hit the family gate below, not slip
-        # through the bare-repo fallback and load through the wrong family's class.
+        # through the bare-repo fallback into the wrong family's class.
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is not None:
-        # A direct API call could bypass the UI filter and send an entry for another family; reject
-        # it before any download so it never reaches the wrong pipeline.
+        # A direct API call could send an entry for another family; reject it before any download.
         fam = (family or "").strip().lower()
         if entry.families and fam and fam not in {f.lower() for f in entry.families}:
             raise ValueError(
@@ -186,8 +185,8 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
             raise ValueError(f"ControlNet '{spec_id}' has no repo")
         return ResolvedControlNet(spec_id, entry.repo_id, is_local = False)
 
-    # A bare HF repo id (owner/name). STRICT shape (one slash, alphanumeric-leading segments) so a
-    # filesystem-looking id can never reach from_pretrained and bypass the no-raw-path contract.
+    # A bare HF repo id (owner/name). STRICT shape so a filesystem-looking id can never reach
+    # from_pretrained and bypass the no-raw-path contract.
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", spec_id):
         return ResolvedControlNet(spec_id, spec_id, is_local = False)
 
@@ -196,8 +195,7 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     )
 
 
-# Union ControlNet mode indices: a union model selects the active mode via an integer
-# ``control_mode``. Standard indices for the FLUX.1 / Qwen-Image union ControlNets.
+# Union ControlNet mode indices: a union model selects its head via an integer ``control_mode``.
 _UNION_CONTROL_MODES: dict[str, int] = {
     "canny": 0,
     "tile": 1,
@@ -217,8 +215,8 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     returns a 400 instead of running the wrong head. A non-union entry returns None."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
-        # A union model may be named by its bare repo id; the catalog is keyed by short id, so
-        # match on repo_id too, else the mode is dropped and the union runs the wrong head.
+        # A union model may be named by its bare repo id, so match on repo_id too (the catalog is keyed
+        # by short id), else the mode is dropped and the union runs the wrong head.
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is None or not entry.is_union:
         return None
@@ -250,8 +248,8 @@ def preprocess_control(image: Any, control_type: str) -> Any:
     mag = np.hypot(gx, gy)
     peak = float(mag.max())
     if peak <= 1e-6:
-        # Flat image -> no edges, which is an all-black map. Returning the source would
-        # instead condition the ControlNet on its raw luminance.
+        # A flat image has no edges, so the map is all black. Returning the source would instead
+        # condition the ControlNet on its raw luminance.
         return Image.new("RGB", image.size, (0, 0, 0))
     mag = mag / peak * 255.0
     edges = (mag > 40.0).astype(np.uint8) * 255  # white edges on black (ControlNet convention)

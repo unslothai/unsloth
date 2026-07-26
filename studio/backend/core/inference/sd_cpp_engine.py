@@ -65,8 +65,8 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
-    # Reap the killed child so it doesn't linger as a zombie: callers raise right after
-    # _terminate, so without this a burst of cancellations leaks process-table entries.
+    # Reap the killed child so it doesn't linger as a zombie: callers raise right after _terminate,
+    # so without this a burst of cancellations leaks process-table entries.
     try:
         proc.wait(timeout = 5)
     except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
@@ -155,8 +155,8 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer (base =
-    #    the Studio home's parent), so side-by-side Studios stay isolated; else ~/.unsloth/....
+    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
+    #    side-by-side Studios stay isolated; else ~/.unsloth/....
     studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     default_root = (
         Path(studio_home).parent / "stable-diffusion.cpp"
@@ -364,13 +364,13 @@ class SdCppEngine:
             env = run_env,
             # Own session/process group so cancellation/timeout kills the whole tree (POSIX).
             start_new_session = (os.name == "posix"),
-            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash can't
-            # orphan sd-cli holding VRAM/RAM. Composes with start_new_session.
+            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash can't orphan
+            # sd-cli holding VRAM/RAM. Composes with start_new_session.
             **child_popen_kwargs(),
         )
-        # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT
-        # printing (a plain `for line in proc.stdout` blocks until EOF). The reader pushes lines
-        # (then a None sentinel) to a queue the main loop polls against a wall-clock deadline.
+        # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing
+        # (a plain `for line in proc.stdout` blocks until EOF). The reader pushes lines (then a None
+        # sentinel) to a queue the main loop polls against a wall-clock deadline.
         tail: list[str] = []
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
@@ -433,7 +433,8 @@ class SdCppEngine:
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
 
-# Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
+# Backends diffusers serves well with GPU acceleration; everything else is native-engine
+# territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})
 
 

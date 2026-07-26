@@ -36,8 +36,8 @@ class _FakeBackend:
         before_spawn = None,
         **kwargs,
     ):
-        # The real backend runs before_spawn synchronously inside this call, so the
-        # thread this method runs on is the thread the blocking VRAM hook runs on.
+        # The real backend runs before_spawn synchronously inside this call, so the thread this method runs
+        # on is the thread the blocking VRAM hook runs on.
         self.start_thread = threading.current_thread()
         self.hook = before_spawn
         self.current_job_id = job_id
@@ -75,9 +75,9 @@ def test_start_route_offloads_blocking_start(monkeypatch):
 
 
 def test_backend_start_guard_blocks_overlapping_starts():
-    # With the route offloaded to worker threads, two overlapping /train/start requests
-    # can reach TrainingBackend.start_training concurrently; the compare-and-set
-    # _start_in_progress flag must let exactly one of them spawn.
+    # With the route offloaded to worker threads, two overlapping /train/start requests can reach
+    # TrainingBackend.start_training concurrently, so the compare-and-set _start_in_progress flag must
+    # let exactly one of them spawn.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()
@@ -103,8 +103,8 @@ def test_backend_start_guard_blocks_overlapping_starts():
     t = threading.Thread(target = _first, daemon = True)
     t.start()
     assert first_entered.wait(timeout = 5.0)
-    # Second start while the first is still inside the impl: refused by the guard,
-    # without ever entering the impl.
+    # A second start while the first is still inside the impl: refused by the guard, without ever
+    # entering the impl.
     results["second"] = backend.start_training("job-b")
     release_first.set()
     t.join(timeout = 5.0)

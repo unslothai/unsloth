@@ -40,8 +40,8 @@ from typing import Any, Optional
 
 _ENV_DIR = "UNSLOTH_DIFFUSION_COND_CACHE_DIR"
 
-# Bound arguments that never change the returned embeddings: the target device
-# is a placement detail (the hit is moved there) and no encode path draws RNG.
+# Bound arguments that never change the returned embeddings: the target device is a placement
+# detail (the hit is moved there) and no encode path draws RNG.
 _KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
 
 
@@ -60,9 +60,8 @@ def _json_safe(value: Any) -> bool:
     return False
 
 
-# Per-slot layout codes for _flatten/_unflatten (stored as the leading int64 tensor):
-# -1 = None slot, -2 = a bare tensor, n >= 0 = a LIST of n tensors (Z-Image returns
-# its per-prompt embeddings as a list, so one nesting level must round-trip).
+# Per-slot layout codes for _flatten/_unflatten (the leading int64 tensor): -1 = None slot,
+# -2 = a bare tensor, n >= 0 = a LIST of n tensors (Z-Image returns per-prompt lists).
 _SLOT_NONE = -1
 _SLOT_TENSOR = -2
 
@@ -134,8 +133,7 @@ def install(
     if not callable(encode):
         return False
     try:
-        # Lazy: core.training imports parts of core.inference, so the module-level
-        # import would be circular; the extras module itself is stdlib-only.
+        # Lazy: core.training imports parts of core.inference, so a module-level import would be circular.
         from core.training.diffusion_train_extras import PersistentConditioningCache
         signature = inspect.signature(encode)
         cache = PersistentConditioningCache(root, family, 0)
@@ -144,14 +142,11 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # Everything beyond the call arguments that changes the embedding numerics. A GGUF /
-    # single-file checkpoint takes its TEXT ENCODERS from the companion base repo, so the
-    # base identity must key the cache too: the same checkpoint reloaded against a different
-    # base would otherwise hit entries encoded by the previous base's encoder. Defaults to
-    # the checkpoint itself (a full pipeline is its own base).
-    # The identifiers alone are not versions: both are paired with a revision marker so a
-    # Hub repo advancing to a new commit, or a local directory updated in place, misses
-    # instead of returning embeddings from the previous text encoder.
+    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file
+    # checkpoint takes its TEXT ENCODERS from the companion base repo, so the base identity keys the
+    # cache too, else the same checkpoint against a different base would hit the previous base's
+    # entries. Both identifiers are paired with a revision marker, so a Hub repo advancing a commit
+    # or a local directory updated in place misses instead of reusing the old encoder.
     base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),

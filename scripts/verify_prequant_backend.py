@@ -37,10 +37,8 @@ OUT = Path(os.environ.get("PREQUANT_OUT_DIR", str(_RESEARCH / "prequant_verify_i
 logging.basicConfig(level = logging.INFO, format = "%(message)s")
 LOGGER = logging.getLogger("verify_prequant")
 
-# Prequant and runtime produce the SAME quantized weights, so their images must be
-# near-identical; anything above this LPIPS means the prequant path diverged and the run fails.
-# The prequant load peak must also sit clearly below the dense runtime peak (the point of the
-# path); require at least this fractional headroom.
+# Prequant and runtime produce the same quantized weights, so above this LPIPS the prequant
+# path diverged. The prequant load peak must also sit this fraction below the dense peak.
 LPIPS_MAX = 0.02
 PREQUANT_PEAK_MAX_FRACTION = 0.75
 _RUNTIME_PEAK_FILE = OUT / "runtime_peak.txt"
@@ -102,9 +100,8 @@ def run(mode, steps, seed, res):
     torch.cuda.empty_cache()
 
     if mode == "prequant":
-        # A local checkpoint is refused unless its directory is allowlisted (unpickling an
-        # arbitrary file is unsafe). This verifier's CKPT is operator-supplied and trusted, so
-        # allowlist its directory here or the load returns None and measures nothing.
+        # A local checkpoint is refused unless its directory is allowlisted (unpickling is unsafe).
+        # CKPT is operator-supplied and trusted, so allowlist it or the load returns None.
         ckpt_dir = os.path.dirname(os.path.realpath(CKPT))
         existing = os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV, "")
         os.environ[ALLOW_LOCAL_PREQUANT_PATH_ENV] = (
@@ -153,8 +150,8 @@ def run(mode, steps, seed, res):
     if mode != "prequant":
         return 0
 
-    # Enforce the two invariants this verifier exists to check, so a broken prequant
-    # checkpoint fails loudly instead of passing just because generation completed.
+    # Enforce both invariants, so a broken prequant checkpoint fails loudly rather than passing
+    # just because generation completed.
     ref_path = OUT / "runtime.png"
     if not ref_path.exists():
         print("FAIL: runtime reference image missing; run --mode runtime first", flush = True)

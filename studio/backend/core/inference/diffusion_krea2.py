@@ -88,9 +88,8 @@ def _load_model_index(repo_id: str, hf_token: Optional[str] = None) -> dict[str,
     except OSError:
         pass
     if is_local_dir:
-        # A local checkpoint dir without the file must fail clearly here: falling through
-        # to hf_hub_download with a filesystem path as the repo id would die with an
-        # opaque HFValidationError instead.
+        # A local checkpoint dir without the file must fail clearly here, else hf_hub_download dies
+        # with an opaque HFValidationError on the filesystem path.
         raise FileNotFoundError(f"model_index.json not found in local model dir {repo_id}")
     from huggingface_hub import hf_hub_download
 
@@ -117,8 +116,8 @@ def load_krea2_pipeline(
     """
     import diffusers
 
-    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below
-    # would die with a bare AttributeError mid-load, so fail first with the actionable fix.
+    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below would die
+    # with a bare AttributeError mid-load, so fail first with the actionable fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
         raise RuntimeError(
             f"Krea 2 needs diffusers >= 0.39.0 (Krea2Pipeline); this environment has "

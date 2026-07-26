@@ -1111,9 +1111,9 @@ class TestRouteErrors(unittest.TestCase):
         self.assertNotIn("not supported", exc_info.exception.detail.lower())
 
     def test_inference_route_defers_gpu_handoff_until_after_validation(self):
-        # A doomed chat load (GGUF + gpu_ids -> 400) must NOT reclaim the CHAT arbiter owner
-        # first: the handoff is deferred past validation, so a resident Images/Video pipeline is
-        # never evicted for a load that then errors.
+        # A doomed chat load (GGUF + gpu_ids -> 400) must NOT reclaim the CHAT arbiter owner first: the
+        # handoff is deferred past validation, so a resident Images/Video pipeline is never evicted for a
+        # load that then errors.
         import core.inference.gpu_arbiter as arb
 
         inference_route = _load_route_module(
@@ -1137,9 +1137,8 @@ class TestRouteErrors(unittest.TestCase):
             has_audio_input = False,
         )
         acquired = []
-        # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere, GPUs or not):
-        # the point of the test is the ORDER -- validation before the handoff -- not this
-        # machine's device count.
+        # Make [0, 1] invalid on any host (a duplicate id is rejected everywhere): the point is the ORDER,
+        # validation before the handoff, not this machine's device count.
         request.gpu_ids = [0, 0]
         with (
             patch.object(
@@ -1169,9 +1168,9 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
 
     def test_inference_route_checks_hub_download_conflict_before_the_handoff(self):
-        # A GGUF the download manager is fetching 409s and loads nothing, so that check has to
-        # run BEFORE the CHAT handoff: afterwards, it destroyed the resident Images/Video
-        # pipeline for a load that could never start.
+        # A GGUF the download manager is fetching 409s and loads nothing, so that check has to run BEFORE
+        # the CHAT handoff: afterwards, it destroyed the resident Images/Video pipeline for a load that
+        # could never start.
         import core.inference.gpu_arbiter as arb
         import core.inference.llama_cpp as llama_cpp
 
@@ -1225,9 +1224,9 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(acquired, [])  # nothing evicted for a load that cannot start
 
     def test_inference_route_marks_the_chat_load_under_the_arbiter_lock(self):
-        # A chat load holds no llama-server process until its GGUF downloaded, so the arbiter is
-        # told about it through acquire_for's `register` hook (which runs under the arbiter lock).
-        # Passing no register left a competing Images/Video acquire with nothing to cancel.
+        # A chat load holds no llama-server process until its GGUF downloaded, so the arbiter is told about
+        # it through acquire_for's `register` hook (which runs under the arbiter lock). Passing no register
+        # left a competing Images/Video acquire with nothing to cancel.
         import core.inference.gpu_arbiter as arb
         import core.inference.llama_cpp as llama_cpp
 

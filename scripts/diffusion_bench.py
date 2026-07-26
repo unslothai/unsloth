@@ -41,10 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# The backend package lives at unsloth/studio/backend; this file is at
-# unsloth/scripts/diffusion_bench.py. Put the backend root on sys.path so
-# ``core.inference.diffusion`` imports as the server does. (The backend import is deferred
-# into main() so --help never triggers torch.)
+# Put the backend root on sys.path so ``core.inference.diffusion`` imports as the server does.
+# (The backend import is deferred into main() so --help never triggers torch.)
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent / "studio" / "backend"
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
@@ -370,10 +368,8 @@ def _compare(args: argparse.Namespace) -> int:
             print("   refusing noisy comparison (pass --force-compare to override).", flush = True)
             return 2
 
-    # PSNR vs the stored reference image. The baseline stores an absolute reference_png, which
-    # breaks if the baseline dir was copied/moved, so fall back to reference.png next to the
-    # baseline JSON. A still-missing reference is a failure below, not a silent pass -- else the
-    # benchmark reports PASS having done no image comparison.
+    # PSNR vs the stored reference. reference_png is absolute, so fall back to reference.png beside
+    # the baseline JSON; a still-missing reference fails below rather than passing silently.
     ref_png = Path(baseline.get("accuracy", {}).get("reference_png", ""))
     if not ref_png.is_file():
         ref_png = baseline_path.parent / "reference.png"

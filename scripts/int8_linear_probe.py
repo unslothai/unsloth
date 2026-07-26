@@ -45,8 +45,8 @@ def main() -> int:
         lins = [(n, m) for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
         selected = [(n, m) for n, m in lins if m.in_features >= MIN and m.out_features >= MIN]
         print(f"\n### {label}: {len(lins)} Linear, {len(selected)} pass min_features={MIN}")
-        # Heuristic: a modulation/embedder Linear is one OUTSIDE the repeated transformer blocks,
-        # i.e. its fqn does not contain a numeric block index, OR out==k*in (k>=3) AdaLN shape.
+        # A modulation/embedder Linear sits outside the repeated blocks (no numeric index in its fqn),
+        # or has an AdaLN out==k*in (k>=3) shape.
         sus = []
         for n, m in selected:
             depth_idx = any(p.isdigit() for p in n.split("."))

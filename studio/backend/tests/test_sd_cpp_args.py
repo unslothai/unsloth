@@ -54,8 +54,8 @@ def test_native_speed_flags():
     assert native_speed_flags(None) == []
     assert native_speed_flags("off") == []
     assert native_speed_flags("") == []
-    # default now includes conv-direct: measured ~9% faster sampling on CPU
-    # (z-image Q8_0, 192 threads) with identical RSS and unchanged decode.
+    # default now includes conv-direct: measured ~9% faster sampling on CPU (z-image Q8_0, 192
+    # threads) with identical RSS and unchanged decode.
     assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
     assert native_speed_flags("max") == ["--diffusion-fa", "--diffusion-conv-direct"]
     with pytest.raises(ValueError):
@@ -169,8 +169,8 @@ def test_build_negative_prompt_and_batch():
     params = SdCppGenParams(prompt = "x", negative_prompt = "blurry")
     cmd = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = "/o.png")
     assert _pair(cmd, "--negative-prompt") == "blurry"
-    # A CLI batch would silently drop every image after the first (the runner only
-    # collects the literal --output path), so the builder rejects it outright.
+    # A CLI batch would silently drop every image after the first (the runner only collects the literal
+    # --output path), so the builder rejects it outright.
     with pytest.raises(ValueError, match = "single-image"):
         build_sd_cpp_command(
             "/bin/sd-cli",
@@ -235,8 +235,8 @@ def test_build_inpaint_adds_mask():
 
 
 def test_build_inpaint_mask_without_init_img_rejected():
-    # sd-cli inpaint needs a source image; a --mask with no --init-img is invalid argv,
-    # so the builder must reject it up front instead of emitting a doomed command.
+    # sd-cli inpaint needs a source image; a --mask with no --init-img is invalid argv, so the builder
+    # must reject it up front instead of emitting a doomed command.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     params = SdCppGenParams(prompt = "x", mask = "/in/mask.png")
     with pytest.raises(ValueError, match = "init_img is required"):
@@ -244,8 +244,7 @@ def test_build_inpaint_mask_without_init_img_rejected():
 
 
 def test_build_rejects_none_prompt():
-    # A None prompt must be rejected, not coerced to the literal string "None" and
-    # forwarded into argv.
+    # A None prompt must be rejected, not coerced to the literal string "None" and forwarded into argv.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     with pytest.raises(ValueError, match = "prompt is required"):
         build_sd_cpp_command(
@@ -264,8 +263,8 @@ def test_build_edit_repeats_ref_image():
 
 
 def test_img2img_unset_dims_lets_sdcpp_derive_from_source():
-    # img2img/inpaint/edit with dims left unset must NOT force --width/--height,
-    # so sd.cpp derives the size from the input image instead of resizing it to 1024.
+    # img2img/inpaint/edit with dims left unset must NOT force --width/--height, so sd.cpp derives the
+    # size from the input image instead of resizing it to 1024.
     files = SdCppModelFiles(diffusion_model = "/m/z.gguf")
     cmd = build_sd_cpp_command(
         "/bin/sd-cli",

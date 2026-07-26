@@ -83,10 +83,10 @@ def _loaded_backend(fam_name = "z-image", engine = None):
 
 
 def test_loaded_repo_ids_includes_native_companions():
-    # The one-shot native engine re-reads its companion VAE / text-encoder files from the HF
-    # cache on every generation, so the delete-cached guard queries loaded_repo_ids() to refuse
-    # deleting an in-use companion repo. It must surface the committed family's VAE + text-encoder
-    # repos (plus the main + base repos), not just the loaded GGUF, and be empty once unloaded.
+    # The one-shot native engine re-reads its companion VAE / text-encoder files from the HF cache on
+    # every generation, so the delete-cached guard queries loaded_repo_ids() to refuse deleting an
+    # in-use companion repo. It must surface the committed family's VAE + text-encoder repos (plus the
+    # main + base repos), not just the loaded GGUF, and be empty once unloaded.
     b = _loaded_backend("flux.1")
     ids = set(b.loaded_repo_ids())
     fam = detect_family("flux.1")
@@ -207,8 +207,8 @@ def test_asset_specs_cover_required_files(fam_name, expect_kinds):
 
 
 def test_asset_specs_flux2_klein_selects_encoder_by_variant():
-    # FLUX.2-klein 4B pairs with Qwen3-4B, 9B with Qwen3-8B; the encoder must be chosen from the
-    # load identity, not the family's single default (a mismatched encoder fails deep in sd-cli).
+    # FLUX.2-klein 4B pairs with Qwen3-4B, 9B with Qwen3-8B, so the encoder must be chosen from the
+    # load identity, not the family default (a mismatched encoder fails deep in sd-cli).
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     fam = detect_family("flux.2-klein")
 
@@ -323,9 +323,8 @@ def test_generate_progress_tracks_parsed_steps():
 
 
 def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
-    # LoRA resolution runs during pre-generate setup while _generate_lock is held, so a progress
-    # probe in that window must read ACTIVE; _gen is published before it, mirroring the diffusers
-    # path.
+    # LoRA resolution runs during pre-generate setup while _generate_lock is held, so a progress probe
+    # in that window must read ACTIVE; _gen is published before it, mirroring the diffusers path.
     from core.inference import diffusion_lora
 
     eng = _FakeEngine()
@@ -371,9 +370,8 @@ def test_begin_load_requires_gguf_filename():
 
 
 def test_begin_load_resolves_family_from_filename_only(monkeypatch):
-    # A local .gguf pick whose family keyword lives only in the basename (parent dir
-    # carries none) must resolve via the same filename fallback the route validated
-    # with -- not dead-end with "Could not infer" on a native (no-GPU) host.
+    # A local .gguf pick whose family keyword lives only in the basename must resolve via the same
+    # filename fallback the route validated with, not dead-end with "Could not infer" on a native host.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)  # skip the download thread
     b.begin_load("/models/gguf-store", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf")
@@ -402,8 +400,8 @@ def test_unload_clears_state_and_signals_cancel():
 
 
 def test_status_reports_offload_when_flags_active():
-    # status must reflect the offload flags actually passed to sd-cli, not always "none",
-    # so a balanced/low_vram (or cpu_offload) load is verifiable.
+    # status must reflect the offload flags actually passed to sd-cli, not always "none", so a
+    # balanced/low_vram (or cpu_offload) load is verifiable.
     b = _loaded_backend()
     # No flags (CPU default) -> none.
     assert b.status()["offload_policy"] == "none" and b.status()["cpu_offload"] is False
@@ -422,10 +420,9 @@ def test_status_reports_offload_when_flags_active():
 
 
 def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
-    # A generation that started during the asset download is still running against the OLD
-    # model. _run_load must cancel it AND wait on _generate_lock before committing the new
-    # state, or a stale sd-cli run finishes afterward and persists an image from the previous
-    # model once the new load reports ready.
+    # A generation that started during the asset download is still running against the OLD model.
+    # _run_load must cancel it AND wait on _generate_lock before committing the new state, or a stale
+    # sd-cli run persists an image from the previous model once the new load reports ready.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     fam = detect_family("z-image")
     monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
@@ -435,8 +432,8 @@ def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
         "_fetch_assets",
         lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
     )
-    # Avoid importing torch from the worker thread (its first import deadlocks off the main
-    # thread -- a test artifact, not a production path); the device only needs to be CPU here.
+    # Avoid importing torch from the worker thread (its first import deadlocks off the main thread, a
+    # test artifact); the device only needs to be CPU here.
     monkeypatch.setattr(
         bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
     )
@@ -461,8 +458,8 @@ def test_run_load_cancels_and_waits_for_inflight_generation(monkeypatch):
     b._generate_lock.acquire()  # simulate the live denoise holding _generate_lock
     try:
         threading.Thread(target = _load, daemon = True).start()
-        # The commit must block behind the live generation and not publish the new state,
-        # but must already have signalled the in-flight cancel.
+        # The commit must block behind the live generation and not publish the new state, but must already
+        # have signalled the in-flight cancel.
         assert not committed.wait(0.5)
         assert b._state is None
         assert cancel.is_set()
@@ -498,8 +495,8 @@ def test_resolve_backend_falls_back_to_oneshot_without_server(monkeypatch):
 
 
 def test_resolve_backend_cached_fallback_engine_does_not_pin_oneshot(monkeypatch):
-    # A lazily cached fallback engine (NOT an explicit injection) must not force one-shot:
-    # once a server is available again, the next load can use it.
+    # A lazily cached fallback engine (NOT an explicit injection) must not force one-shot: once a
+    # server is available again, the next load can use it.
     b = SdCppDiffusionBackend()  # no injected engine
     b._engine = _FakeEngine()  # simulate a prior lazy one-shot fallback caching the engine
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -571,8 +568,8 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
 
 
 def test_server_generate_splits_batches_above_server_limit(monkeypatch):
-    # A batch above the server's per-job limit is chunked (the one-shot path did these
-    # image-by-image); each chunk gets a timeout proportional to its image count.
+    # A batch above the server's per-job limit is chunked (the one-shot path did these image-by-image);
+    # each chunk gets a timeout proportional to its image count.
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
@@ -591,8 +588,8 @@ def test_server_generate_splits_batches_above_server_limit(monkeypatch):
 
 
 def test_server_generate_masks_large_seed(monkeypatch):
-    # sd.cpp's image seed is signed int64; a larger explicit seed must be masked before it
-    # reaches the server (the request model / diffusers accept up to 2**64 - 1).
+    # sd.cpp's image seed is signed int64, so a larger explicit seed must be masked before it reaches
+    # the server (the request model / diffusers accept up to 2**64 - 1).
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
@@ -684,7 +681,7 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
     # A present-but-broken sd-server must not fail the load when sd-cli works.
     b = SdCppDiffusionBackend()
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
-    # Probe passes; the failure we exercise here is in start(), not the up-front probe.
+    # The probe passes; the failure exercised here is in start(), not the up-front probe.
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
 
     class _BadServer:
@@ -727,8 +724,8 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
 
 
 def test_run_load_redacts_paths_in_progress_error(monkeypatch):
-    # A load failure surfaced via load_progress() must run through redact_native_paths, the
-    # same scrub the diffusers load path applies, so a registered native path can't leak.
+    # A load failure surfaced via load_progress() must run through redact_native_paths, the same scrub
+    # the diffusers load path applies, so a registered native path can't leak.
     from utils import native_path_leases as npl
 
     secret_root = "/managed/native/root"
@@ -811,9 +808,9 @@ def test_generate_oneshot_applies_loras_via_prompt_tags(monkeypatch):
 
 
 def test_generate_server_stages_loras_and_sends_structured_field(monkeypatch, tmp_path):
-    # Server-mode LoRA rides the structured `lora` request field (the sdcpp API ignores
-    # <lora:> prompt tags): adapters staged into the server's --lora-model-dir, referenced
-    # by their path relative to it + the validated multiplier.
+    # Server-mode LoRA rides the structured `lora` request field (the sdcpp API ignores <lora:> prompt
+    # tags): adapters staged into the server's --lora-model-dir, referenced by their path relative to
+    # it + the validated multiplier.
     from pathlib import Path as _P
 
     from core.inference import diffusion_lora as dl
@@ -843,8 +840,8 @@ def test_generate_rejects_loras_on_unsupported_family(monkeypatch):
 
 
 def test_generate_zero_weight_loras_are_noop(monkeypatch):
-    # weight-0 rows are dropped BEFORE the support gate, so a request carrying only disabled
-    # adapters stays a no-op even on a family where native LoRA is unsupported.
+    # weight-0 rows are dropped BEFORE the support gate, so a request carrying only disabled adapters
+    # stays a no-op even on a family where native LoRA is unsupported.
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
     _patch_lora(monkeypatch, [], supported = False)  # would raise if the gate were reached
@@ -854,9 +851,8 @@ def test_generate_zero_weight_loras_are_noop(monkeypatch):
 
 
 def test_generate_rejects_controlnet_on_native_engine():
-    # ControlNet is diffusers-only. The route passes `controlnet` to whichever engine is
-    # active, so the native backend must reject it with a clean ValueError (-> 400) rather
-    # than TypeError on an unexpected kwarg (-> opaque 500).
+    # ControlNet is diffusers-only. The route passes `controlnet` to whichever engine is active, so the
+    # native backend must reject it with a clean ValueError (400) rather than TypeError (500).
     b = _loaded_backend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "ControlNet is not yet supported on the native"):
         b.generate(prompt = "x", steps = 4, seed = 1, controlnet = ("id", "img", "canny", 1.0, 0.0, 1.0))
@@ -864,9 +860,9 @@ def test_generate_rejects_controlnet_on_native_engine():
 
 @pytest.mark.parametrize("cn_strength", [0, 0.0, None])
 def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
-    # strength 0 (or None) disables ControlNet -- the diffusers path treats it as plain
-    # txt2img and the request model documents it -- so a strength-0 spec must succeed on the
-    # native engine too, not 400. Only a genuinely active (strength > 0) ControlNet is rejected.
+    # strength 0 (or None) disables ControlNet -- the diffusers path treats it as plain txt2img -- so a
+    # strength-0 spec must succeed on the native engine too. Only a genuinely active ControlNet is
+    # rejected.
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
     out = b.generate(
@@ -879,8 +875,8 @@ def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
 
 
 def test_generate_rejects_image_conditioned_on_native_engine():
-    # img2img / inpaint / reference / upscale are likewise diffusers-only; a direct API call
-    # with an init image on the native engine gets a clean ValueError, not a silent txt2img.
+    # img2img / inpaint / reference / upscale are likewise diffusers-only; a direct API call with an
+    # init image on the native engine gets a clean ValueError, not a silent txt2img.
     b = _loaded_backend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "not yet supported on the native"):
         b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")

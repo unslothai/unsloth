@@ -45,8 +45,8 @@ def test_default_generation_params(repo_id, expected):
 
 
 def test_default_generation_params_specificity_ordering():
-    # The "-turbo" / "-schnell" entries must win over their broader siblings; a
-    # reorder that broke this would silently mis-default.
+    # The "-turbo" / "-schnell" entries must win over their broader siblings; a reorder that broke this
+    # would silently mis-default.
     assert default_generation_params("x/Z-Image-Turbo") != default_generation_params("x/Z-Image")
     assert default_generation_params("x/FLUX.1-schnell") != default_generation_params(
         "x/FLUX.1-dev"
@@ -54,8 +54,8 @@ def test_default_generation_params_specificity_ordering():
 
 
 def test_default_generation_params_falls_back_to_base_repo():
-    # A local-path load: repo_id is a filesystem path that names no model, so the
-    # resolved base repo is what identifies it (and distinguishes dev from schnell).
+    # A local-path load: repo_id is a filesystem path that names no model, so the resolved base repo is
+    # what identifies it (and distinguishes dev from schnell).
     assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-dev") == (28, 3.5)
     assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-schnell") == (
         4,
@@ -110,8 +110,8 @@ class _FakeBackend:
         self._base_repo = base_repo
         # Model the native sd.cpp engine, which returns a distinct seed per image.
         self._native_seeds = native_seeds
-        # When set, generate() raises this; unload_on_generate flips is_loaded off
-        # first, to model the eviction/unload race vs an in-pipeline failure (OOM).
+        # When set, generate() raises this; unload_on_generate flips is_loaded off first, to model the
+        # eviction/unload race vs an in-pipeline failure (OOM).
         self._generate_error = generate_error
         self._unload_on_generate = unload_on_generate
         self.calls = []
@@ -223,8 +223,8 @@ def test_b64_response_shape(client):
 
 
 def test_local_load_uses_base_repo_for_defaults(monkeypatch):
-    # repo_id is a local path that names no model; base_repo identifies FLUX.1-dev,
-    # so the route must pick 28 steps / 3.5 guidance, not the 9/0 fallback.
+    # repo_id is a local path that names no model; base_repo identifies FLUX.1-dev, so the route must
+    # pick 28 steps / 3.5 guidance, not the 9/0 fallback.
     backend = _FakeBackend(repo_id = "/models/my-flux", base_repo = "black-forest-labs/FLUX.1-dev")
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -235,9 +235,8 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
 
 
 def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
-    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g.
-    # CUDA OOM, a RuntimeError subclass) must be a sanitized 500, not a 503 that
-    # echoes the raw exception text.
+    # A RuntimeError raised inside the pipeline while the model stays loaded (e.g. CUDA OOM) must be a
+    # sanitized 500, not a 503 that echoes the raw exception text.
     oom = RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB (GPU 0; 47.5 GiB total)")
     backend = _FakeBackend(generate_error = oom)
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
@@ -250,8 +249,8 @@ def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
 
 
 def test_unload_race_returns_503(monkeypatch):
-    # The model is evicted/unloaded between the readiness check and the call: the
-    # RuntimeError with is_loaded now False is the one case that maps to 503.
+    # The model is evicted/unloaded between the readiness check and the call: a RuntimeError with
+    # is_loaded now False is the one case that maps to 503.
     backend = _FakeBackend(
         generate_error = RuntimeError("No diffusion model is loaded."),
         unload_on_generate = True,
@@ -268,8 +267,8 @@ def test_unload_race_returns_503(monkeypatch):
 
 
 def test_non_runtime_pipeline_error_is_500(monkeypatch):
-    # A non-RuntimeError from the pipeline (the model stays loaded) must not route
-    # to the 503 branch (which is gated on isinstance RuntimeError) -> sanitized 500.
+    # A non-RuntimeError from the pipeline (the model stays loaded) must not route to the 503 branch,
+    # which is gated on isinstance RuntimeError, so it is a sanitized 500.
     backend = _FakeBackend(generate_error = ValueError("bad tensor shape"))
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -287,8 +286,8 @@ def test_n_maps_to_batch(client):
 
 
 def test_batch_persists_batch_size(monkeypatch):
-    # n>1 must persist batch_size in each gallery record so the Studio restore path
-    # can replay a batch_index>0 sibling (which shares the batch's single seed).
+    # n>1 must persist batch_size in each gallery record so the Studio restore path can replay a
+    # batch_index>0 sibling (which shares the batch's single seed).
     backend = _FakeBackend()
     monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -301,9 +300,8 @@ def test_batch_persists_batch_size(monkeypatch):
 
 
 def test_uses_active_engine_not_diffusers_singleton(monkeypatch):
-    # On a no-GPU host the loaded model lives behind the native sd_cpp engine, not the
-    # diffusers singleton. The route must query get_active_diffusion_engine (like
-    # /images/generate) or it 503s a model that is loaded and usable.
+    # On a no-GPU host the loaded model lives behind the native sd_cpp engine, not the diffusers
+    # singleton, so the route must query get_active_diffusion_engine or it 503s a usable model.
     active = _FakeBackend(loaded = True)  # the active (e.g. sd_cpp) engine, loaded
     idle_diffusers = _FakeBackend(loaded = False)  # diffusers singleton, empty
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: active)
@@ -316,9 +314,8 @@ def test_uses_active_engine_not_diffusers_singleton(monkeypatch):
 
 
 def test_native_batch_persists_per_image_seed(monkeypatch):
-    # The native sd.cpp engine returns a distinct seed per image (base+index) in
-    # "seeds"; each gallery record must store its own seed (like /images/generate),
-    # not the shared base, or a restored batch_index>0 image shows the wrong seed.
+    # The native sd.cpp engine returns a distinct seed per image (base+index) in "seeds", so each
+    # gallery record must store its own seed or a restored batch_index>0 image shows the wrong one.
     backend = _FakeBackend(native_seeds = True)
     monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
     cli, store, _save = _make_client(backend)
@@ -330,7 +327,7 @@ def test_native_batch_persists_per_image_seed(monkeypatch):
 
 
 def test_null_fields_coalesce_to_defaults(client):
-    # OpenAI marks n/size/response_format nullable-with-default: null -> default.
+    # OpenAI marks n/size/response_format nullable-with-default: null means the default.
     resp = _post(client, {"prompt": "p", "n": None, "size": None, "response_format": None})
     assert resp.status_code == 200
     assert len(resp.json()["data"]) == 1

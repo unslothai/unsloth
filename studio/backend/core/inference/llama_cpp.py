@@ -1383,8 +1383,8 @@ def gguf_load_in_flight(hf_repo: Optional[str]):
 
 
 # Chat loads in flight, repo-agnostic (local paths and safetensors included). The repo-keyed
-# counter above answers the download manager; this one answers the GPU arbiter, which has to know
-# a chat load exists before llama-server is spawned.
+# counter above answers the download manager; this one answers the GPU arbiter, which must know a
+# chat load exists before llama-server is spawned.
 _CHAT_LOADS_IN_FLIGHT = 0
 
 
@@ -1430,8 +1430,8 @@ def zero_vram_chat_load(
     """
     if gpu_memory_mode != "manual" or gpu_layers != 0:
         return False
-    # Any speculative mode may launch a GPU drafter; only the request's own knobs are known
-    # here, so treat every non-empty selection as GPU-bearing rather than guess.
+    # Any speculative mode may launch a GPU drafter, and only the request's own knobs are known here,
+    # so treat every non-empty selection as GPU-bearing.
     if needs_mmproj or speculative_type:
         return False
     if LlamaCppBackend._is_vulkan_backend():

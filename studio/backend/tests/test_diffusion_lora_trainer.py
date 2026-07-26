@@ -46,8 +46,8 @@ def test_discover_prefers_sidecar_then_metadata_then_instance(tmp_path):
 
 
 def test_discover_sidecar_overrides_metadata_row(tmp_path):
-    # A per-image sidecar is the user's explicit edit and must win over a metadata row
-    # for the same image (the labeling grid writes sidecars).
+    # A per-image sidecar is the user's explicit edit and must win over a metadata row for the same
+    # image (the labeling grid writes sidecars).
     _touch(tmp_path / "a.png")
     (tmp_path / "metadata.jsonl").write_text(
         json.dumps({"file_name": "a.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
@@ -58,8 +58,8 @@ def test_discover_sidecar_overrides_metadata_row(tmp_path):
 
 
 def test_discover_empty_sidecar_suppresses_metadata_but_uses_instance_prompt(tmp_path):
-    # An empty sidecar tombstone must suppress the metadata caption yet leave the image uncaptioned
-    # so the dreambooth instance_prompt still applies (not drop the image).
+    # An empty sidecar tombstone must suppress the metadata caption yet leave the image uncaptioned so
+    # the dreambooth instance_prompt still applies (not drop the image).
     _touch(tmp_path / "cat.png")
     (tmp_path / "metadata.jsonl").write_text(
         json.dumps({"file_name": "cat.png", "text": "old metadata caption"}) + "\n",
@@ -97,8 +97,7 @@ def test_discover_reads_invalid_utf8_sidecar_as_tombstone(tmp_path):
 
 
 def test_discover_null_metadata_caption_is_not_the_string_none(tmp_path):
-    # str(None) stored "None" as a real caption; a null row must fall through to the
-    # instance prompt instead.
+    # str(None) stored "None" as a real caption; a null row must fall through to the instance prompt.
     _touch(tmp_path / "cat.png")
     (tmp_path / "metadata.jsonl").write_text(
         json.dumps({"file_name": "cat.png", "text": None}) + "\n", encoding = "utf-8"
@@ -124,8 +123,8 @@ def test_discover_captions_jsonl_and_image_key(tmp_path):
 
 
 def test_discover_tolerates_non_object_and_invalid_utf8_jsonl(tmp_path):
-    # A metadata.jsonl line that is valid JSON but not an object ([]/null/string/number) or malformed
-    # must be skipped per-line rather than crash the trainer in .get(); a valid row still resolves.
+    # A metadata.jsonl line that is valid JSON but not an object, or malformed, must be skipped
+    # per-line rather than crash the trainer in .get(); a valid row still resolves.
     _touch(tmp_path / "x.png")
     (tmp_path / "metadata.jsonl").write_text(
         '[]\nnull\n"str"\n123\n{not json\n'
@@ -134,8 +133,8 @@ def test_discover_tolerates_non_object_and_invalid_utf8_jsonl(tmp_path):
         encoding = "utf-8",
     )
     assert discover_image_caption_pairs(tmp_path) == [(str(tmp_path / "x.png"), "hi")]
-    # Invalid UTF-8 in the metadata file must not raise; the file is skipped (image falls back to
-    # the instance prompt).
+    # Invalid UTF-8 in the metadata file must not raise; the file is skipped (image falls back to the
+    # instance prompt).
     _touch(tmp_path / "y.png")
     (tmp_path / "captions.jsonl").write_bytes(b"\xff\xfe not utf-8\n")
     pairs = dict(discover_image_caption_pairs(tmp_path, instance_prompt = "fallback"))
@@ -151,10 +150,9 @@ def test_discover_custom_caption_column(tmp_path):
 
 
 def test_discover_verify_images_rejects_undecodable(tmp_path):
-    # verify_images (opt-in, enabled by the start route) rejects a corrupt / zero-byte image with
-    # a clear ValueError -> 400 BEFORE the route frees the resident GPU models, instead of letting
-    # the spawned trainer crash in PIL after the teardown. The trainers leave it off (default),
-    # since they decode every image anyway.
+    # verify_images (opt-in, enabled by the start route) rejects a corrupt / zero-byte image with a
+    # clear ValueError -> 400 BEFORE the route frees the resident GPU models, instead of letting the
+    # spawned trainer crash in PIL after teardown. The trainers leave it off (they decode anyway).
     from PIL import Image
 
     good = tmp_path / "good.png"
@@ -165,7 +163,7 @@ def test_discover_verify_images_rejects_undecodable(tmp_path):
     bad.write_bytes(b"")
     (tmp_path / "bad.txt").write_text("broken", encoding = "utf-8")
 
-    # Default (verify off): the bad file is accepted (filename-only), matching trainer behavior.
+    # Default (verify off): the bad file is accepted, matching trainer behavior.
     pairs = dict(discover_image_caption_pairs(tmp_path))
     assert str(bad) in pairs and str(good) in pairs
 
@@ -256,9 +254,9 @@ def test_config_normalized_lists_mxfp8_in_invalid_mode_error():
 
 
 def test_config_normalized_krea2_requires_bf16_compute():
-    # krea-2 (like qwen-image / z-image) has fp32 RoPE/embedder internals that overflow fp16,
-    # so its DiT trains in bf16 only; fp16 must be refused up front by the route preflight,
-    # before it reserves training and evicts resident GPU models and the child trainer raises.
+    # krea-2 (like qwen-image / z-image) has fp32 RoPE/embedder internals that overflow fp16, so its
+    # DiT trains in bf16 only; fp16 must be refused by the route preflight, before it reserves
+    # training and evicts resident GPU models.
     with pytest.raises(ValueError, match = "bf16"):
         DiffusionLoraConfig(
             base_model = "b",
@@ -270,10 +268,9 @@ def test_config_normalized_krea2_requires_bf16_compute():
 
 
 def test_force_bf16_families_matches_trainer_specs():
-    # The route-level bf16-only preflight set must list exactly the DiT families whose trainer
-    # spec sets force_bf16. If a force_bf16 family is missing from the set (as krea-2 was), an
-    # fp16 start passes the route preflight, reserves training + evicts resident models, and
-    # only the child trainer raises -- the evict-then-fail the preflight exists to prevent.
+    # The route-level bf16-only preflight set must list exactly the DiT families whose trainer spec
+    # sets force_bf16. A missing family (as krea-2 was) lets an fp16 start pass the preflight, reserve
+    # training and evict resident models, with only the child trainer raising.
     from core.training.diffusion_dit_trainer import _SPECS
     from core.training.diffusion_train_common import _FORCE_BF16_FAMILIES
     assert _FORCE_BF16_FAMILIES == {fam for fam, spec in _SPECS.items() if spec.force_bf16}
@@ -291,12 +288,12 @@ def test_resolve_train_steps_uses_train_steps_when_epochs_disabled():
 
 
 def test_resolve_train_steps_epochs_ceil_over_batch_and_grad_accum():
-    # One epoch = ceil(N / (batch x grad_accum)) optimizer steps; num_epochs multiplies it.
-    # 10 images, batch 4, grad_accum 1 -> ceil(10/4)=3 steps/epoch.
+    # One epoch = ceil(N / (batch x grad_accum)) optimizer steps; num_epochs multiplies it. 10 images,
+    # batch 4, grad_accum 1 gives 3 steps/epoch.
     assert resolve_train_steps(_cfg(num_epochs = 1, train_batch_size = 4), 10) == 3
     assert resolve_train_steps(_cfg(num_epochs = 5, train_batch_size = 4), 10) == 15
-    # grad_accum widens the effective batch: 100 images, batch 2, grad_accum 3 -> per_step=6,
-    # ceil(100/6)=17 steps/epoch, 2 epochs -> 34.
+    # grad_accum widens the effective batch: 100 images, batch 2, grad_accum 3 gives per_step=6,
+    # 17 steps/epoch, 2 epochs = 34.
     cfg = _cfg(num_epochs = 2, train_batch_size = 2, gradient_accumulation_steps = 3)
     assert resolve_train_steps(cfg, 100) == 34
     # An exact multiple does not round up: 8 images / batch 4 -> 2 steps/epoch.
@@ -309,8 +306,8 @@ def test_resolve_train_steps_single_image_dataset():
 
 
 def test_resolve_train_steps_caps_at_100000():
-    # The run length is capped at 100000 even for absurd epoch counts (matches the request
-    # model's train_steps ceiling), so a huge epochs x dataset never overflows the loop.
+    # The run length is capped at 100000 even for absurd epoch counts (matching the request model's
+    # ceiling), so a huge epochs x dataset never overflows the loop.
     cfg = _cfg(num_epochs = 1000, train_batch_size = 1)
     assert resolve_train_steps(cfg, 10_000) == 100000
 
@@ -334,9 +331,9 @@ def test_config_from_dict_threads_num_epochs():
 
 
 def test_normalized_rejects_piecewise_constant():
-    # piecewise_constant needs a step_rules string the trainers never supply, so get_scheduler()
-    # would crash in the trainer subprocess AFTER the resident GPU workloads are freed. It must be
-    # rejected up front (a clean ValueError -> 400), not accepted like the other schedulers.
+    # piecewise_constant needs a step_rules string the trainers never supply, so get_scheduler() would
+    # crash in the trainer subprocess AFTER the resident GPU workloads are freed. It must be rejected
+    # up front.
     with pytest.raises(ValueError, match = "lr_scheduler"):
         DiffusionLoraConfig(
             base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "piecewise_constant"
@@ -344,7 +341,7 @@ def test_normalized_rejects_piecewise_constant():
 
 
 def test_normalized_accepts_supported_schedulers():
-    # Every scheduler in the allow-list runs with only warmup/training steps (no extra required arg).
+    # Every scheduler in the allow-list runs with only warmup/training steps.
     for sched in (
         "linear",
         "cosine",
@@ -360,10 +357,8 @@ def test_normalized_accepts_supported_schedulers():
 
 
 def test_api_scheduler_enum_never_advertises_a_rejected_scheduler():
-    # The request-model enum must not offer a scheduler that normalized() rejects: a client that
-    # picks it straight from the schema would get a 400. Every option the API advertises must be in
-    # the validation allow-list (this guards against the enum and allow-list drifting apart again,
-    # e.g. piecewise_constant left in one but removed from the other).
+    # The request-model enum must not offer a scheduler that normalized() rejects: every option the
+    # API advertises must be in the validation allow-list, so the two cannot drift apart again.
     import typing
 
     from core.training.diffusion_train_common import _LR_SCHEDULERS
@@ -401,7 +396,7 @@ def test_config_rejects_zero_lora_alpha():
 
 
 def test_config_rejects_nonpositive_snr_gamma():
-    # gamma <= 0 zeroes/inverts the min-SNR weight; None is the documented disable.
+    # A gamma at or below 0 zeroes/inverts the min-SNR weight; None is the documented disable.
     with pytest.raises(ValueError, match = "snr_gamma"):
         DiffusionLoraConfig(base_model = "b", data_dir = "d", output_dir = "o", snr_gamma = 0).normalized()
     cfg = DiffusionLoraConfig(
@@ -480,8 +475,8 @@ def test_config_rejects_nonpositive_learning_rate():
 
 
 def test_config_rejects_untrainable_base_models():
-    # GGUF checkpoints and families without a trainer (Kontext editing, SD3) must fail at
-    # normalise time (an instant 400 via the API), not minutes later inside from_pretrained.
+    # GGUF checkpoints and families without a trainer must fail at normalise time (an instant 400),
+    # not minutes later inside from_pretrained.
     for bad in (
         "unsloth/FLUX.1-dev-GGUF",
         "z-image-turbo-Q4_K_M.gguf",
@@ -505,8 +500,8 @@ def test_config_resolves_dit_families():
 
 
 def test_config_accepts_sdxl_and_unknown_base_models():
-    # SDXL names and unclassifiable custom names/paths must pass the guard (a wrong
-    # custom pick still fails cleanly in from_pretrained).
+    # SDXL names and unclassifiable custom names/paths must pass the guard (a wrong custom pick still
+    # fails cleanly in from_pretrained).
     for ok in (
         "stabilityai/stable-diffusion-xl-base-1.0",
         "stabilityai/sdxl-turbo",
@@ -610,8 +605,8 @@ def test_publish_writes_metadata_sidecar(tmp_path, monkeypatch):
 
 
 def test_publish_does_not_clobber_same_name_adapter(tmp_path, monkeypatch):
-    # A retrain with the same adapter name must not overwrite a prior mirror: the second
-    # publish lands under a numeric suffix (my-style -> my-style-2), sidecar alongside it.
+    # A retrain with the same adapter name must not overwrite a prior mirror: the second publish lands
+    # under a numeric suffix, sidecar alongside it.
     from pathlib import Path
 
     from core.inference import diffusion_lora
@@ -644,7 +639,7 @@ def test_publish_does_not_clobber_same_name_adapter(tmp_path, monkeypatch):
 
 
 def test_config_rejects_bad_lr_scheduler():
-    # A typo'd scheduler ('constnat') must fail at normalize time, not later in the subprocess.
+    # A typo'd scheduler must fail at normalize time, not later in the subprocess.
     with pytest.raises(ValueError, match = "lr_scheduler"):
         DiffusionLoraConfig(
             base_model = "b", data_dir = "d", output_dir = "o", lr_scheduler = "constnat"
@@ -657,8 +652,8 @@ def test_config_rejects_bad_lr_scheduler():
 
 
 def test_config_rejects_fp16_on_bf16_only_family():
-    # qwen-image / z-image are bf16-only: an fp16 request must be rejected before spawn,
-    # in normalized(), not only by the subprocess-side guard.
+    # qwen-image / z-image are bf16-only: an fp16 request must be rejected before spawn, in
+    # normalized(), not only by the subprocess-side guard.
     for base in ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Qwen-Image-2512-unsloth-bnb-4bit"):
         with pytest.raises(ValueError, match = "bf16"):
             DiffusionLoraConfig(
@@ -675,8 +670,8 @@ def test_config_rejects_fp16_on_bf16_only_family():
 
 
 def test_gguf_substring_does_not_reject_local_diffusers_dir(tmp_path):
-    # A local diffusers directory whose path merely contains 'gguf' is a valid training base
-    # (it carries model_index.json, not GGUF weights); the broad substring must not reject it.
+    # A local diffusers directory whose path merely contains 'gguf' is a valid training base (it
+    # carries model_index.json, not GGUF weights); the broad substring must not reject it.
     from core.training.diffusion_train_common import resolve_trainable_family
 
     local = tmp_path / "my-gguf-experiments" / "sdxl-finetune"

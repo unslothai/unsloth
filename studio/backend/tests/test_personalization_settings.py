@@ -441,8 +441,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "chat", "visible": False},
                     {"id": "connections", "visible": False},
                 ],
-                # Reordered and partly unpinned, so the round-trip proves order
-                # survives a save.
+                # Reordered and partly unpinned, so the round-trip proves order survives a save.
                 "sidebarNav": [
                     {"id": "images", "pinned": True},
                     {"id": "video", "pinned": True},

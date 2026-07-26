@@ -57,8 +57,7 @@ def main(argv = None) -> int:
     from core.inference.diffusion_precision import _cast_fp8
     from core.inference.diffusion_te_prequant import TE_PREQUANT_FORMAT
 
-    # The family is metadata for forensics; detection lives in different modules per
-    # branch (diffusion_families vs video_families), so resolve best-effort by name.
+    # Family is forensic metadata; detection differs per branch, so resolve best-effort by name.
     family = args.family.strip().lower()
 
     subfolder = args.component if args.config_subfolder is None else args.config_subfolder
@@ -70,9 +69,8 @@ def main(argv = None) -> int:
     print(f"  loading dense encoder from {args.base} (subfolder={subfolder!r}) ...", flush = True)
     t0 = time.time()
     config = transformers.AutoConfig.from_pretrained(args.base, **from_pretrained_kwargs)
-    # Prefer the checkpoint's own architecture (what the diffusers pipeline instantiates,
-    # e.g. Gemma3ForConditionalGeneration); AutoModel.from_config would give the bare base
-    # class and record a te_class whose state dict the pipeline cannot use.
+    # Prefer the checkpoint's own architecture; AutoModel.from_config gives the bare base class,
+    # whose state dict the pipeline cannot use.
     arch = (getattr(config, "architectures", None) or [None])[0]
     if arch and hasattr(transformers, arch):
         encoder_cls_name = arch
@@ -104,8 +102,7 @@ def main(argv = None) -> int:
         "te_class": encoder_cls_name,
         "torch_dtype": args.dtype,
         "cast_backend": "diffusers_layerwise",
-        # str(): torch.__version__ is a TorchVersion object; pickling it into the
-        # checkpoint makes torch.load(weights_only=True) reject the whole artifact.
+        # str(): a pickled TorchVersion makes torch.load(weights_only=True) reject the artifact.
         "torch_version": str(torch.__version__),
         "transformers_version": str(transformers.__version__),
     }

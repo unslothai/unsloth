@@ -118,9 +118,9 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 
 
 def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
-    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root)
-    # is loadable, so the scan must surface it or it never reaches the On Device picker. Not a GGUF,
-    # so model_format stays None (task tagging classifies it later).
+    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root) is
+    # loadable, so the scan must surface it or it never reaches the On Device picker. Not a GGUF, so
+    # model_format stays None.
     root = tmp_path / "models"
     pipe = root / "my-pipeline"
     _touch(pipe / "model_index.json")
@@ -136,8 +136,8 @@ def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
 
 def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
     # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects;
-    # without admitting it the scan surfaces the component subdirs as bogus models and hides the
-    # real pipeline. Treat the root as one model.
+    # without admitting it the scan surfaces the component subdirs as bogus models and hides the real
+    # pipeline.
     root = tmp_path / "my-local-pipeline"
     _touch(root / "model_index.json")
     _touch(root / "transformer" / "config.json")
@@ -152,10 +152,8 @@ def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
 
 def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
     # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose
-    # .safetensors, no config.json / model_index.json). The child loop admits exactly that shape
-    # and the images route reinterprets it via resolve_local_single_file, so the root must be
-    # surfaced too -- otherwise registering the model folder itself yields no On Device row while
-    # registering its parent works.
+    # .safetensors, no config.json / model_index.json). The child loop admits exactly that shape and
+    # the images route reinterprets it via resolve_local_single_file, so the root must be surfaced too.
     root = tmp_path / "qwen-image-2509"
     _touch(root / "qwen-image-2509.safetensors")
 
@@ -166,8 +164,8 @@ def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
 
 
 def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
-    # A stray loose .safetensors at a models ROOT must not collapse the scan to a single row and
-    # hide the real model subdirs: the root fallback applies only when nothing else matched.
+    # A stray loose .safetensors at a models ROOT must not collapse the scan to a single row and hide
+    # the real model subdirs: the root fallback applies only when nothing else matched.
     root = tmp_path / "models"
     _touch(root / "stray.safetensors")
     _touch(root / "llama" / "config.json")
@@ -199,8 +197,8 @@ def _local(
 
 
 def test_local_task_tags_family_named_pipeline_dir(tmp_path):
-    # A local diffusers pipeline (top-level model_index.json) whose id resolves to a supported
-    # image family loads fine, so tag it so the Images picker keeps it.
+    # A local diffusers pipeline whose id resolves to a supported image family loads fine, so tag it
+    # and the Images picker keeps it.
     d = tmp_path / "flux-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
@@ -213,7 +211,7 @@ def test_local_task_tags_family_named_pipeline_dir(tmp_path):
 def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
     # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the
     # Images load path resolves no family and 400s after evicting the GPU owner, so it must stay
-    # untagged and never be advertised.
+    # untagged.
     d = tmp_path / "my-local-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
@@ -222,8 +220,8 @@ def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
 
 
 def test_local_task_tags_diffusers_by_family_id(tmp_path):
-    # A single-file / safetensors image checkpoint ships no model_index.json; fall back
-    # to the model id resolving to a known diffusion family.
+    # A single-file / safetensors image checkpoint ships no model_index.json, so fall back to the model
+    # id resolving to a known diffusion family.
     d = tmp_path / "flux-checkpoint"
     _touch(d / "flux1-dev.safetensors")
     assert (
@@ -241,9 +239,8 @@ def test_local_task_none_for_plain_llm(tmp_path):
 
 
 def test_local_task_tags_video_pipeline_dir(tmp_path):
-    # A local diffusers pipeline whose id resolves to a VIDEO family (LTX / Wan / Hunyuan)
-    # must be tagged text-to-video so it surfaces in the Video On-Device picker, mirroring the
-    # cached-repo path -- not text-to-image, where the image loader would reject it.
+    # A local diffusers pipeline whose id resolves to a VIDEO family must be tagged text-to-video so it
+    # surfaces in the Video On-Device picker, mirroring the cached-repo path.
     d = tmp_path / "wan-local"
     _touch(d / "model_index.json")
     _touch(d / "transformer" / "diffusion_pytorch_model.safetensors")
@@ -254,9 +251,8 @@ def test_local_task_tags_video_pipeline_dir(tmp_path):
 
 
 def test_local_task_tags_video_single_file_checkpoint(tmp_path):
-    # A video-family dir holding a bare single-file .safetensors (no model_index.json) is loadable
-    # (the route loads it as a single_file), so it must be tagged text-to-video and surfaced, not
-    # left task=null and hidden.
+    # A video-family dir holding a bare single-file .safetensors is loadable (the route loads it as a
+    # single_file), so it must be tagged text-to-video, not left task=null and hidden.
     d = tmp_path / "ltx-loose"
     _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
     assert (
@@ -284,11 +280,10 @@ def test_local_task_tags_video_single_file_by_checkpoint_filename(tmp_path):
 
 
 def test_local_task_ignores_family_token_in_parent_path(tmp_path):
-    # model.id is the full on-disk path for a scanned On-Device model, and the family-token
-    # matcher treats any path segment as a hint. A family token in a PARENT dir (e.g.
-    # /models/qwen-image/misc) must NOT tag an unrelated single-file as text-to-image: that
-    # would surface it in the Images picker and evict the GPU owner before from_single_file
-    # fails on the unrelated weights. Detection is scoped to the leaf name, not the raw path.
+    # model.id is the full on-disk path for a scanned On-Device model, and the family-token matcher
+    # treats any path segment as a hint. A family token in a PARENT dir must NOT tag an unrelated
+    # single-file as text-to-image: that would surface it in the Images picker and evict the GPU owner
+    # before from_single_file fails. Detection is scoped to the leaf name, not the raw path.
     d = tmp_path / "misc"
     _touch(d / "unrelated.safetensors")  # one non-family single file, no model_index.json
     m = _local(d, id = "/models/qwen-image/misc", display_name = "misc")

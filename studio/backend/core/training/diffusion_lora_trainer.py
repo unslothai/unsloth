@@ -42,8 +42,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
-# Shared, family-agnostic building blocks. Re-exported so callers/tests that import them
-# from this module (its historical home) keep working unchanged.
+# Shared, family-agnostic building blocks. Re-exported so callers/tests that import them from
+# this module (its historical home) keep working unchanged.
 from core.training.diffusion_train_common import (  # noqa: F401
     DEFAULT_LORA_FILENAME,
     DEFAULT_LORA_TARGETS,
@@ -223,8 +223,8 @@ def _build_sdxl_latent_cache(
             a = _hold(dist.mean * vae_scale)
             b = _hold(dist.std * vae_scale)
             if not forced and not gated:
-                # Size-gate the auto cache off the first real variant, before building the rest
-                # (it can exhaust host/pinned RAM). Over budget: bail with the VAE still resident.
+                # Size-gate the auto cache off the first real variant, before building the rest (it can exhaust
+                # host/pinned RAM). Over budget: bail with the VAE still resident.
                 per_variant = a.numel() * a.element_size() + b.numel() * b.element_size()
                 if _latent_cache_over_budget(per_variant, total_variants):
                     _emit(
@@ -320,8 +320,8 @@ def run_diffusion_lora_training(
         precision = "fp16"
     weight_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}[precision]
 
-    # TF32 / cudnn.benchmark for the run, restored on the way out (keeps in-process callers
-    # clean). Wraps the whole body so every return restores the backend flags.
+    # TF32 / cudnn.benchmark for the run, restored on the way out. Wraps the whole body so every
+    # return restores the backend flags.
     snap = _apply_perf_flags(cfg, device)
     try:
         # Preflight the base model against the same trust gate as inference, before any fetch.
@@ -330,8 +330,8 @@ def run_diffusion_lora_training(
         pairs = discover_image_caption_pairs(
             cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
         )
-        # Resolve num_epochs -> a concrete train_steps now the dataset size is known, and rebind
-        # cfg so every downstream read sees the same value.
+        # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so
+        # every downstream read sees the same value.
         cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
         _emit(on_event, "model_load_started", num_images = len(pairs))
 
@@ -378,8 +378,8 @@ def run_diffusion_lora_training(
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
 
-        # Regionally torch.compile the U-Net's repeated blocks via the DiT trainer's never-fatal
-        # wrapper (failure falls back to eager with a warning). Dense bf16 base compiles under "auto".
+        # Regionally torch.compile the U-Net's repeated blocks via the DiT trainer's never-fatal wrapper
+        # (failure falls back to eager with a warning). Dense bf16 base compiles under "auto".
         from core.training.diffusion_dit_trainer import _maybe_compile_transformer
 
         compiled = _maybe_compile_transformer(
@@ -388,8 +388,8 @@ def run_diffusion_lora_training(
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
         optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
-        # The scheduler advances once per optimizer update (per opt_step, for cfg.train_steps
-        # total). Count warmup/decay in optimizer steps; the accumulation factor would stretch warmup.
+        # The scheduler advances once per optimizer update (cfg.train_steps total), so count warmup/decay
+        # in optimizer steps; the accumulation factor would stretch warmup.
         lr_sched = get_scheduler(
             cfg.lr_scheduler,
             optimizer = optimizer,
@@ -401,8 +401,8 @@ def run_diffusion_lora_training(
         prediction_type = noise_scheduler.config.prediction_type
 
         # Precompute text embeddings once per unique caption, then free the ~1.5 GB CLIP encoders.
-        # Deterministic and RNG-free, so the training math is bit-identical to in-loop encoding.
-        # The env toggle lets the accuracy guard A/B the two paths.
+        # Deterministic and RNG-free, so the training math is bit-identical to in-loop encoding. The env
+        # toggle lets the accuracy guard A/B the two paths.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
         if precompute:
@@ -416,8 +416,8 @@ def run_diffusion_lora_training(
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-        # Precompute the VAE latent cache, then free the VAE: it holds the posterior affine pair
-        # so per-step sampling noise is preserved. The env toggle A/Bs cached vs in-loop encode.
+        # Precompute the VAE latent cache, then free the VAE: it holds the posterior affine pair so
+        # per-step sampling noise is preserved. The env toggle A/Bs cached vs in-loop encode.
         use_cache = cfg.cache_latents and os.environ.get(
             "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
         ) not in ("1", "true")
@@ -463,13 +463,13 @@ def run_diffusion_lora_training(
 
         _emit(on_event, "model_load_completed", compiled = compiled)
 
-        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat,
-        # so a short run doesn't leave a small dataset partly unseen.
+        # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
+        # short run doesn't leave a small dataset partly unseen.
         index_sampler = PermutationBatchSampler(len(pairs), rng)
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
-            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles
-            # so a dataset smaller than train_batch_size still yields exactly that many indices.
+            # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a
+            # dataset smaller than train_batch_size still yields exactly that many indices.
             idx = index_sampler.next_batch(cfg.train_batch_size)
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
@@ -552,8 +552,8 @@ def run_diffusion_lora_training(
                 step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
                 micro += 1
 
-            # max_grad_norm <= 0 disables clipping (Studio sends 0.0); passing 0.0 to
-            # clip_grad_norm_ would zero every gradient (no learning).
+            # max_grad_norm at or below 0 disables clipping (Studio sends 0.0); passing 0.0 to
+            # clip_grad_norm_ would zero every gradient.
             grad_norm = None
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # Returned value is the total PRE-clip norm, reported to the UI chart.
@@ -565,8 +565,7 @@ def run_diffusion_lora_training(
             done = opt_step + 1
             now = time.time()
             if done == 1:
-                # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the rate
-                # starts after it and reflects steady state.
+                # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the rate starts after it.
                 t_steady = now
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Studio training pump reads.
@@ -671,8 +670,8 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         return got if saw else False
 
     try:
-        # normalized() resolves + validates the family; dispatch through the registry so a DiT
-        # family runs its own trainer while SDXL keeps this loop.
+        # normalized() resolves + validates the family; dispatch through the registry so a DiT family
+        # runs its own trainer while SDXL keeps this loop.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
         trainer(cfg, on_event = on_event, should_stop = should_stop)

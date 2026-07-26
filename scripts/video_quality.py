@@ -69,8 +69,7 @@ DEFAULT_PROMPT = (
     "splashing water, cinematic, camera tracking sideways"
 )
 
-# Finite PSNR (dB) an identical clip is capped to when averaged, matching
-# scripts/diffusion_quality.py.
+# Finite PSNR (dB) cap for an identical clip, matching scripts/diffusion_quality.py.
 _PERFECT_MATCH_PSNR = 100.0
 
 
@@ -159,11 +158,9 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # The gate holds the requested shape (num_frames) fixed for reference and candidate, so both
-    # clips must decode to the same frame count. A shorter candidate is a truncated/corrupt render;
-    # comparing only the shared prefix would let good early frames mask the missing tail, so the
-    # mismatch is recorded and gated as FAIL (see verdict()) rather than dropped. No off-by-one is
-    # tolerated.
+    # num_frames is fixed for reference and candidate, so both clips must decode to the same frame
+    # count. A shorter candidate is truncated: comparing the shared prefix would let good early
+    # frames mask the missing tail, so the mismatch is gated as FAIL (see verdict()).
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)
@@ -212,8 +209,7 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
         return float(np.sqrt((arr**2).mean())) if arr.size else 0.0
 
     ref_rms, cand_rms = _rms(ref_audio), _rms(cand_audio)
-    # NaN candidate audio compares False against any threshold, so call it out
-    # explicitly: a NaN track is a collapse, not a pass.
+    # NaN compares False against any threshold, so call it out: a NaN track is a collapse.
     silent_collapse = (
         ref_rms is not None
         and ref_rms >= 1e-3
@@ -459,8 +455,7 @@ def selftest() -> int:
     shifted = clip_metrics(ref, make_clip(offset = 0.5))
     check(shifted["ssim_mean"] < same["ssim_mean"], "content shift lowers ssim")
 
-    # A truncated render whose surviving prefix is pixel-identical must still FAIL
-    # on the frame-count mismatch alone, not PASS on the good early frames.
+    # A truncated render with a pixel-identical prefix must still FAIL on the frame-count mismatch.
     truncated = clip_metrics(ref, make_clip()[: n // 2])
     check(
         truncated["frame_count_mismatch"] is True

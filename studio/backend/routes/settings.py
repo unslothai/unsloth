@@ -734,8 +734,7 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
     "connections": False,
 }
 
-# Navigable sidebar rows the user can pin/reorder; the boolean is each id's
-# default pin state, matching the shipped layout.
+# Navigable sidebar rows the user can pin/reorder; the boolean is each id's default pin state.
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "projects": True,
     "hub": True,

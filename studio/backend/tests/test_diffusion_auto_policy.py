@@ -47,8 +47,8 @@ def test_family_table_unknown_family_returns_none():
 
 
 def test_base_repo_override_wins_over_the_family_default():
-    # flux.2-klein's family default is the 4B base; loading the 9B GGUF passes the 9B
-    # base repo, whose transformer is more than twice the size.
+    # flux.2-klein's family default is the 4B base; loading the 9B GGUF passes the 9B base repo,
+    # whose transformer is more than twice the size.
     default = family_bf16_components_gb(_fam("flux.2-klein"))
     nine_b = family_bf16_components_gb(
         _fam("flux.2-klein"), base_repo = "black-forest-labs/FLUX.2-klein-9B"
@@ -69,8 +69,8 @@ def test_estimate_int8_steady_is_roughly_half_bf16():
 
 
 def test_estimate_prequant_transient_equals_steady():
-    # A pre-quantized checkpoint loads via the meta device: dense bf16 never lands on
-    # the GPU, so the build peak IS the quantised size.
+    # A pre-quantized checkpoint loads via the meta device: dense bf16 never lands on the GPU, so the
+    # build peak IS the quantised size.
     est = estimate_dense_quant(_fam("z-image"), "int8", prequant_available = True)
     assert est is not None
     assert est.transient_transformer_mib == est.steady_transformer_mib
@@ -110,9 +110,8 @@ def _patch_selector(
         "resolve_prequant_source",
         lambda fam, s, path_override = None, base_repo = None: prequant,
     )
-    # Neutralize the cache-disk gate by default so resolution tests are independent of the
-    # runner's free space (a small CI disk otherwise drops the candidate). The two disk-gate
-    # tests re-patch this after calling the helper to exercise the gate explicitly.
+    # Neutralize the cache-disk gate by default so resolution tests don't depend on the runner's free
+    # space. The two disk-gate tests re-patch this to exercise it explicitly.
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: None)
 
 
@@ -141,8 +140,8 @@ def test_candidate_none_when_no_scheme_resolves(monkeypatch):
 
 
 def test_candidate_disk_gate_skips_when_cache_disk_low(monkeypatch):
-    # The dense artifact may be a multi-GB download; a nearly-full model-cache disk
-    # drops the candidate (the loader then keeps the GGUF build).
+    # The dense artifact may be a multi-GB download; a nearly-full model-cache disk drops the
+    # candidate (the loader then keeps the GGUF build).
     import core.inference.diffusion_auto_policy as ap
 
     _patch_selector(monkeypatch, scheme = "int8")
@@ -164,7 +163,7 @@ def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
 
 
 def test_candidate_none_for_an_unlisted_family(monkeypatch):
-    # No size entry -> no basis to re-plan; the loader keeps today's resident-only gate.
+    # No size entry means no basis to re-plan; the loader keeps today's resident-only gate.
     _patch_selector(monkeypatch)
     assert (
         resolve_dense_quant_candidate(fam = _fam("not-a-family"), target = object(), requested = "auto")
@@ -173,7 +172,7 @@ def test_candidate_none_for_an_unlisted_family(monkeypatch):
 
 
 def test_candidate_uses_prequant_transient_when_available(monkeypatch):
-    # A hosted-repo prequant source (kind="repo") is available without a local-path check.
+    # A hosted-repo prequant source is available without a local-path check.
     _patch_selector(monkeypatch, prequant = SimpleNamespace(kind = "repo", location = "org/int8"))
     est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "int8")
     assert est is not None and est.prequant is True
@@ -186,11 +185,9 @@ def _cuda_target():
 
 
 def test_quant_candidate_fits_resident_where_gguf_plan_offloads():
-    # The ordering-fix mechanism, on a 32 GiB consumer card (RTX 5090 class): the user
-    # picked a LARGE GGUF (the BF16 file), so the file-size plan forces offload -- but
-    # the dense-quant candidate is far smaller (int8 prequant of z-image: the transient
-    # IS the quantised size), and re-planning against the candidate keeps everything
-    # resident. Before the fix the loader never attempted the fast path here.
+    # The ordering fix on a 32 GiB consumer card: the user picked a LARGE (BF16) GGUF, so the
+    # file-size plan forces offload -- but the dense-quant candidate is far smaller, and re-planning
+    # against it keeps everything resident. Before the fix the loader never attempted the fast path.
     memory = DeviceMemory("cuda", "cuda", "discrete_vram", 30000, 32768)
     z_bf16_gguf_mib = int(12.3 * ap._MIB_PER_GB * 1.05)  # BF16 GGUF resident estimate
     companions_mib = 2600  # fp8-quantised text encoders + VAE

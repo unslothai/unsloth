@@ -33,10 +33,9 @@ TQ_AUTO = "auto"
 TQ_SCHEMES = (TQ_INT8, TQ_FP8, TQ_NVFP4, TQ_MXFP8)
 TQ_MODES = (TQ_AUTO,) + TQ_SCHEMES
 
-# Schemes whose torchao path asserts a bf16 weight, so their filter must skip non-bf16
-# Linears (make_filter_fn's require_bf16) rather than aborting the whole pass on a stray fp32
-# Linear (e.g. T5's `wo`). Verified on torchao 0.17 / B200: fp8 per-row and mxfp8 assert bf16;
-# nvfp4 and int8 quantise fp32/fp16 fine, so they are not gated (keeps those projections quant).
+# Schemes whose torchao path asserts a bf16 weight, so their filter must skip non-bf16 Linears
+# rather than aborting the whole pass on a stray fp32 Linear (e.g. T5's `wo`). Verified on
+# torchao 0.17 / B200: fp8 per-row and mxfp8 assert bf16; nvfp4 and int8 quantise fp32/fp16 fine.
 _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 
 # fp8 granularity the runtime uses: per-ROW is REQUIRED for correctness on outlier-heavy DiTs.
@@ -47,14 +46,13 @@ FP8_GRANULARITY = "per_row"
 # Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.
 DEFAULT_MIN_LINEAR_FEATURES = 512
 
-# int8-ONLY name exclusions. int8 uses torch._int_mm, which needs activation rows M > 16. A
-# DiT's AdaLN modulation projections and timestep / guidance / pooled-text conditioning
-# embedders run once from the [batch, dim] vector (M = batch = 1), not per token, so they crash
-# _int_mm despite large feature dims (Flux norm1.linear 3072->18432, Qwen img_mod.1, Flux.2
-# *_modulation.linear); min_features misses them (they are big), so int8 also skips any Linear
-# whose fqn matches a token here. Negligible FLOPs (M=1, once per block), so int8 keeps the full
-# speedup on attention/FFN (M = seq). fp8/nvfp4/mxfp8 use scaled_mm (no M limit) and quantise
-# these fine, so the exclusion is int8-only. Sequence embedders (M = seq) are NOT excluded.
+# int8-ONLY name exclusions. int8 uses torch._int_mm, which needs activation rows M above 16. A
+# DiT's AdaLN modulation projections and timestep / guidance / pooled-text conditioning embedders
+# run once from the [batch, dim] vector (M = batch = 1), not per token, so they crash _int_mm
+# despite large feature dims; min_features misses them (they are big), so int8 also skips any
+# Linear whose fqn matches a token here. Negligible FLOPs, so int8 keeps the full speedup on
+# attention/FFN (M = seq). fp8/nvfp4/mxfp8 use scaled_mm (no M limit), so this is int8-only.
+# Sequence embedders (M = seq) are NOT excluded.
 _INT8_EXCLUDE_NAME_TOKENS = (
     "norm",  # AdaLN modulation .linear
     "_mod",  # Qwen img_mod / txt_mod
@@ -63,19 +61,17 @@ _INT8_EXCLUDE_NAME_TOKENS = (
     "guidance_embed",
     "time_text_embed",  # Flux/Qwen (pooled-text + timestep); NOT context_embedder
     "pooled",
-    # Krea 2's time_embed.linear_2 (6144->6144, M = batch); its time_mod_proj is caught by
-    # "_mod", and img_in / final_layer.linear / text_fusion.projector fall under min_features.
+    # Krea 2's time_embed.linear_2 (M = batch); its time_mod_proj is caught by "_mod", and img_in /
+    # final_layer.linear / text_fusion.projector fall under min_features.
     "time_embed",
 )
 
 
-# int8 PER-FAMILY name exclusions, on top of _INT8_EXCLUDE_NAME_TOKENS. Qwen-Image's MMDiT
-# runs every TEXT-stream Linear at M = actual prompt tokens (the Qwen2.5-VL embeds are not
-# padded to a fixed length like FLUX's 512-token T5), so a short prompt ("Cute sloth writing
-# on a paper" = 13 tokens, or the near-empty negative prompt) drives torch._int_mm below its
-# M > 16 floor and the denoise crashes (measured on B200: "self.size(0) needs to be greater
-# than 16, but got 13"). Keep the text stream bf16: it runs at M = tens vs the image stream's
-# M ~ 4k+, so the exclusion costs ~nothing and the image stream keeps full int8 coverage.
+# int8 PER-FAMILY name exclusions, on top of _INT8_EXCLUDE_NAME_TOKENS. Qwen-Image's MMDiT runs
+# every TEXT-stream Linear at M = actual prompt tokens (the Qwen2.5-VL embeds are not padded to a
+# fixed length like FLUX's 512-token T5), so a short prompt or the near-empty negative prompt
+# drives torch._int_mm below its M floor of 16 and the denoise crashes. Keep the text stream
+# bf16: it runs at M = tens vs the image stream's M ~ 4k+, so the exclusion costs ~nothing.
 # txt_mod is already covered by "_mod" in the base list; txt_in is the context embedder.
 _QWENIMAGE_INT8_EXCLUDES = (
     "txt_in",
@@ -108,11 +104,10 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
 
 # Per-arch preference for ``auto`` -- best first, lower-precision schemes as fallbacks. On
 # Blackwell fp8 leads: measured on B200, plain fp8 dynamic is faster AND more accurate than the
-# alternatives at the DiT's shapes. mxfp8's block scaling adds overhead with no speed win.
-# nvfp4 is also below fp8: the FP4 GEMM is real with torch>=2.11 + torchao's CUTLASS kernel
-# (16384^3 GEMM ~3826 TFLOPS, 1.37x fp8) but only beats fp8 on very large GEMMs; at the DiT's
-# shapes (hidden ~3072, MLP ~12288, M~4096) it is slower (0.81x on Z-Image 1024px) and less
-# accurate (LPIPS 0.166 vs fp8 0.044), so it stays an explicit opt-in, never the auto pick.
+# alternatives at the DiT's shapes. mxfp8's block scaling adds overhead with no speed win. nvfp4
+# is also below fp8: its FP4 GEMM is real with torch>=2.11 + torchao's CUTLASS kernel but only
+# wins on very large GEMMs; at DiT shapes it is slower (0.81x on Z-Image 1024px) and less
+# accurate (LPIPS 0.166 vs fp8 0.044), so it stays an explicit opt-in.
 #
 # DATA-CENTER order. On a consumer / workstation GPU int8 moves first (_prefer_consumer_scheme):
 # consumer cards halve fp8/fp16 FP32-accumulate, while int8 (int32 accumulate) runs full-rate.
@@ -124,12 +119,12 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 
 # Families whose activation ranges break specific schemes at the MODEL level (the smoke probe
 # only proves the GEMM runs). Measured with the 28-pair prequant accuracy gate on B200:
-#   qwen-image + fp8   -> every frame black (luma 0.0000, SSIM 0.016): Qwen's outliers exceed
+#   qwen-image + fp8   -- every frame black (luma 0.0000, SSIM 0.016): Qwen's outliers exceed
 #                         even per-row fp8's range (the same fp8 matches bf16 on Z-Image/FLUX).
-#   qwen-image + mxfp8 -> semantic damage at 1024px (CLIP delta mean 0.0146, worst 0.064/0.102).
-#   qwen-image + nvfp4 -> LPIPS mean 0.51 vs bf16: unusable.
-# int8 dynamic is excellent on Qwen (LPIPS 0.069 / SSIM 0.958), so auto falls through to it. The
-# deny also applies to an EXPLICIT request (returning None gives the same GGUF fallback).
+#   qwen-image + mxfp8 -- semantic damage at 1024px (CLIP delta mean 0.0146, worst 0.064/0.102).
+#   qwen-image + nvfp4 -- LPIPS mean 0.51 vs bf16: unusable.
+# int8 dynamic is excellent on Qwen, so auto falls through to it. The deny also applies to an
+# EXPLICIT request (returning None gives the same GGUF fallback).
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT
@@ -144,8 +139,8 @@ def _family_denied(family, scheme: str) -> bool:
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
 # Data-center GPU tokens (un-nerfed FP32 accumulate). Matched as whole tokens of
-# get_device_name() so workstation "A4000" isn't mistaken for data-center "A40". Anything else
-# is treated as consumer-class (FP32-accumulate halved). See developer.nvidia.com/cuda/gpus.
+# get_device_name() so workstation "A4000" isn't mistaken for data-center "A40". Anything else is
+# treated as consumer-class (FP32-accumulate halved).
 _DATACENTER_GPU_TOKENS = frozenset(
     {
         "B200",
@@ -342,25 +337,21 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         return Int8DynamicActivationInt8WeightConfig()
     if scheme == TQ_FP8:
         # Per-ROW granularity (per-token activation + per-channel weight scale) is REQUIRED for
-        # correctness. torchao defaults to per-TENSOR (one scale): a DiT with extreme outliers
-        # breaks -- Z-Image MLP activations peak near 6.6e4, so one outlier forces a tensor-wide
-        # scale that pushes normal values (~1-30) below fp8 resolution to ~0 and the denoise
-        # collapses to noise (B200: per-tensor = noise, per-row = matches bf16). Per-row confines
-        # each outlier to its token/channel (also why int8, per-token by default, was always
-        # fine). _smoke_probe checks per-row scaled_mm, so a build without it falls to int8.
+        # correctness. torchao defaults to per-TENSOR (one scale), which breaks a DiT with extreme
+        # outliers: Z-Image MLP activations peak near 6.6e4, so one outlier forces a tensor-wide scale
+        # that pushes normal values below fp8 resolution and the denoise collapses to noise. Per-row
+        # confines each outlier to its token/channel. _smoke_probe checks per-row scaled_mm, so a build
+        # without it falls to int8.
         #
-        # fast accumulate (fp8 only) is chosen by GPU class unless forced: consumer cards run fp8
-        # ~2x faster with FP16 accumulate than FP32 (~838 vs ~419 TFLOPS on RTX 50xx); data-center
-        # keeps precise accumulate.
+        # fast accumulate (fp8 only) is chosen by GPU class unless forced: consumer cards run fp8 ~2x
+        # faster with FP16 accumulate than FP32; data-center keeps precise accumulate.
         #
         # activation_value_lb floors the dynamic per-row activation scale: an ALL-ZERO token row
-        # otherwise yields scale 0 -> NaN qdata -> black frames on torchao's plain-torch kernel
-        # path (fused fbgemm/mslk quantize kernels clamp internally, which masks the bug on boxes
-        # that have them). Zero rows are real: Wan 2.2 zero-pads its text conditioning and
-        # Hunyuan-1.5 / Qwen-Image regenerate zero rows inside their blocks. Weight scales are
-        # untouched (weights are never all-zero rows in practice and the floor is 1e-12), so
-        # pre-quantized fp8 checkpoints stay valid. The knob exists since the Float8Tensor rework
-        # (torchao >= 0.13); older versions keep today's behaviour via the signature check.
+        # otherwise yields scale 0, NaN qdata and black frames on torchao's plain-torch kernel path
+        # (fused kernels clamp internally, masking the bug where they exist). Zero rows are real: Wan 2.2
+        # zero-pads its text conditioning and Hunyuan-1.5 / Qwen-Image regenerate zero rows inside their
+        # blocks. Weight scales are untouched, so pre-quantized fp8 checkpoints stay valid. The knob
+        # exists since the Float8Tensor rework (torchao >= 0.13); older versions keep today's behaviour.
         import inspect
         from torchao.quantization import PerRow
 
@@ -368,12 +359,11 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         config_params = inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
             fp8_kwargs["activation_value_lb"] = 1e-12
-        # Pin the plain-torch quantize kernel. The default AUTO silently switches to the MSLK
-        # kernel whenever an mslk package is importable (sm90+), which changes fp8 scale
-        # rounding BITWISE (measured: 8/8 FLUX matrices differ, scales ~55% of bytes) -- so a
-        # box that merely gains mslk would break the hosted-prequant bit-identity invariant.
-        # Measured on B200 the mslk path is also SLOWER compiled (opaque extern call blocks
-        # inductor's quantize fusion: FLUX.1 fp8 e2e 1.149 -> 1.624 s), so the pin costs nothing.
+        # Pin the plain-torch quantize kernel. The default AUTO silently switches to the MSLK kernel
+        # whenever an mslk package is importable (sm90+), which changes fp8 scale rounding BITWISE, so a
+        # box that merely gains mslk would break the hosted-prequant bit-identity invariant. Measured on
+        # B200 the mslk path is also slower compiled (an opaque extern call blocks inductor's quantize
+        # fusion: FLUX.1 fp8 e2e 1.149 to 1.624 s), so the pin costs nothing.
         if "kernel_preference" in config_params:
             try:
                 from torchao.quantization.quantize_.common.kernel_preference import (
@@ -393,9 +383,9 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
-        # Select the CUTLASS FP4 path, not the default Triton kernel (use_triton_kernel=True
-        # needs MSLK): on a Blackwell box with CUTLASS FP4 but no MSLK, the default fails the
-        # smoke probe and falls back to GGUF instead of using the FP4 tensor cores.
+        # Select the CUTLASS FP4 path, not the default Triton kernel (use_triton_kernel=True needs MSLK):
+        # on a Blackwell box with CUTLASS FP4 but no MSLK, the default fails the smoke probe and falls
+        # back to GGUF instead of using the FP4 tensor cores.
         try:
             return NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
         except TypeError:  # older torchao without the knob
@@ -491,19 +481,16 @@ def quantize_transformer(
     try:
         from torchao.quantization import quantize_
 
-        # int8 skips the M=1 projections; scaled_mm schemes have no M limit but fp8/mxfp8 assert
-        # a bf16 weight, so on a mixed-precision DiT (Wan/Hunyuan) they must skip non-bf16 ones or
-        # the pass raises. nvfp4 quantises fp32 fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
-        # "lora_" keeps a baked adapter's side path (lora_A/lora_B/lora_embedding) high
-        # precision when adapters were attached before this pass; the tiny ranks usually fall
-        # under min_features anyway, but an explicit token does not depend on the rank. Runtime
-        # only: NOT part of exclude_tokens_for_scheme, whose list is baked into prequant
-        # checkpoint metadata (adding it there would reject every existing checkpoint).
+        # int8 skips the M=1 projections; scaled_mm schemes have no M limit but fp8/mxfp8 assert a bf16
+        # weight, so on a mixed-precision DiT (Wan/Hunyuan) they must skip non-bf16 ones or the pass
+        # raises. nvfp4 quantises fp32 fine, so it is not gated. "lora_" keeps a baked adapter's side
+        # path high precision when adapters were attached before this pass. Runtime only: NOT part of
+        # exclude_tokens_for_scheme, whose list is baked into prequant metadata (adding it there would
+        # reject every existing checkpoint).
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
-        # GEMM tiling floors per scheme (see make_filter_fn): scaled_mm needs 16-aligned dims
-        # (fp8/nvfp4), MX block scaling needs 32. int8's _int_mm has no such floor and keeps
-        # the historical filter -- and DiT dims are 16/32-divisible in practice, so existing
-        # prequant checkpoints quantise the same layer set as before.
+        # GEMM tiling floors per scheme (see make_filter_fn): scaled_mm needs 16-aligned dims, MX block
+        # scaling needs 32. int8's _int_mm has no such floor and keeps the historical filter -- and DiT
+        # dims are 16/32-divisible in practice, so existing prequant checkpoints are unaffected.
         divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
         quantize_(
             transformer,

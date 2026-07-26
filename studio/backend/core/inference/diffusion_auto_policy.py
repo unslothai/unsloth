@@ -28,8 +28,8 @@ from typing import Any, Optional
 _MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
 # Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per
-# param plus per-row scales (~0.52x, plus slack for bf16 norms/embeddings/proj_out); nvfp4 packs
-# two params per byte plus block scales. Measured on live int8/fp8 loads.
+# param plus per-row scales (~0.52x with slack for bf16 norms/embeddings); nvfp4 packs two per
+# byte plus block scales. Measured on live int8/fp8 loads.
 _QUANT_STEADY_FACTOR: dict[str, float] = {
     "int8": 0.55,
     "fp8": 0.55,
@@ -37,10 +37,9 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
-# bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What the
-# components occupy on device after the dtype cast, NOT the download size (Z-Image ships fp32:
-# 24.6 GB of shards -> 12.3 GB bf16). From each base repo's HF sibling metadata, cross-checked
-# against the training-side dense_bf16_gb table and measured loads.
+# bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What they
+# occupy on device after the dtype cast, NOT the download size (Z-Image ships fp32: 24.6 GB of
+# shards -> 12.3 GB bf16). From HF sibling metadata, cross-checked against measured loads.
 _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
@@ -54,18 +53,16 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
     "hunyuanimage-2.1": (32.5, 16.3, 0.8),
-    # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5
-    # from the repo, plus the Llama-3.1-8B text_encoder_4 (~16 GB bf16) assembled from the
-    # open mirror at load time (diffusion_hidream.py).
+    # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5 from
+    # the repo, plus Llama-3.1-8B text_encoder_4 (~16 GB bf16) from the open mirror at load time.
     "hidream-i1": (34.2, 28.8, 0.2),
-    # Two ~9.3B DiTs (conditional + unconditional_transformer for Ideogram's dual-branch CFG),
-    # both resident, plus a Qwen3-VL encoder. The vendor stores them as raw float8; these are the
-    # bf16-resident sizes after the dtype cast, so each doubles (37.2 = 2 x 18.6, encoder 16.3).
+    # Two ~9.3B DiTs (Ideogram's dual-branch CFG), both resident, plus a Qwen3-VL encoder. The
+    # vendor stores them as raw float8; these are the bf16-resident sizes, so each doubles.
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
-# Base-repo overrides for families offering multiple sizes under one entry (the table carries the
-# family default).
+# Base-repo overrides for families offering multiple sizes under one entry (the table carries
+# the family default).
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
 }
@@ -181,16 +178,14 @@ def resolve_dense_quant_candidate(
     if scheme is None:
         return None
     prequant_available = False
-    # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake attaches
-    # adapters on the dense transformer), so the candidate must be sized for the dense build.
+    # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the
+    # candidate for the dense build.
     if not force_dense:
         try:
             from .diffusion_prequant import usable_prequant_source
 
-            # usable_ (not resolve_): a local path override counts only when the loader will
-            # accept it (allowlisted AND present), else load_prequantized_transformer refuses it
-            # and rebuilds dense after the resident pipe is unloaded (the evict-then-OOM this
-            # prefetch avoids).
+            # usable_ (not resolve_): a local path override counts only when the loader will accept it
+            # (allowlisted AND present), else it rebuilds dense after eviction -- the OOM this avoids.
             src = usable_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base_repo
             )
@@ -211,9 +206,9 @@ def resolve_dense_quant_candidate(
             prequant_available,
         )
     if estimate is not None:
-        # The dense path may DOWNLOAD the artifact into the HF cache; this must never wedge a
-        # nearly-full disk. An already-cached re-download is a no-op, so the gate only
-        # false-positives on an already-critically-full disk, where the GGUF fallback is right anyway.
+        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly
+        # full disk. A cached re-download is a no-op, so this only trips on an already-critical disk,
+        # where the GGUF fallback is right anyway.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant

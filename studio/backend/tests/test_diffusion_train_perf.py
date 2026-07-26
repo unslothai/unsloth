@@ -46,8 +46,8 @@ from core.training.diffusion_training_service import DiffusionTrainingService
 from models.training import DiffusionTrainingStartRequest, DiffusionTrainingStopRequest
 from routes.training import router as training_router
 
-# A trainable SDXL base so DiffusionLoraConfig.normalized() resolves a family without a
-# network call (resolve_trainable_family is pure name matching for this repo).
+# A trainable SDXL base so DiffusionLoraConfig.normalized() resolves a family without a network
+# call (resolve_trainable_family is pure name matching for this repo).
 _SDXL = "stabilityai/stable-diffusion-xl-base-1.0"
 
 
@@ -57,7 +57,7 @@ def _cfg(**kw) -> DiffusionLoraConfig:
 
 # ── _plan_cache_variants (pure, seed-deterministic) ───────────────────────────
 def test_plan_cache_variants_deterministic_and_deduped():
-    # Same seed -> byte-identical plan (its own rng stream, so it is fully reproducible).
+    # Same seed gives a byte-identical plan (its own rng stream, so it is fully reproducible).
     p1 = _plan_cache_variants(3, 4, center_crop = False, random_flip = True, seed = 123)
     p2 = _plan_cache_variants(3, 4, center_crop = False, random_flip = True, seed = 123)
     assert p1 == p2
@@ -67,8 +67,8 @@ def test_plan_cache_variants_deterministic_and_deduped():
     p_one = _plan_cache_variants(3, 1, center_crop = False, random_flip = True, seed = 7)
     assert [len(v) for v in p_one] == [1, 1, 1]
 
-    # A center crop with no flip collapses to a single distinct variant no matter how many
-    # draws are requested, and that variant is the fixed (0.5, 0.5, False) center.
+    # A center crop with no flip collapses to a single distinct variant no matter how many draws are
+    # requested, and that variant is the fixed (0.5, 0.5, False) center.
     p_cc = _plan_cache_variants(2, 8, center_crop = True, random_flip = False, seed = 7)
     assert [len(v) for v in p_cc] == [1, 1]
     assert p_cc[0][0] == (0.5, 0.5, False)
@@ -100,8 +100,8 @@ def test_flux_collate_shapes():
 
 def test_qwen_collate_pads_and_masks():
     dim = 8
-    # A short (mask=None) and a long (mask=ones) entry -> pad to the batch max and build the
-    # validity mask, with the padded tail of the short sample masked out.
+    # A short (mask=None) and a long (mask=ones) entry pad to the batch max and build the validity
+    # mask, with the padded tail of the short sample masked out.
     short = (torch.randn(1, 5, dim), None)
     long = (torch.randn(1, 9, dim), torch.ones(1, 9, dtype = torch.int64))
     pe, mask = _qwen_collate([short, long], "cpu", torch.float32)
@@ -123,8 +123,8 @@ def test_qwen_collate_pads_and_masks():
 
 
 def test_zimage_collate_list():
-    # Z-Image uses list I/O: the batch is one tuple carrying a list of per-sample tensors, each
-    # cast to the requested dtype.
+    # Z-Image uses list I/O: the batch is one tuple carrying a list of per-sample tensors, each cast
+    # to the requested dtype.
     entries = [(torch.randn(7, 2560),), (torch.randn(9, 2560),)]
     out = _zimage_collate(entries, "cpu", torch.float32)
     assert isinstance(out, tuple) and len(out) == 1
@@ -135,8 +135,8 @@ def test_zimage_collate_list():
 
 # ── index-based sigma gather ──────────────────────────────────────────────────
 def test_gather_sigmas_matches_search_based_gather():
-    # CI installs the backend test deps without diffusers; the scheduler math is what we
-    # are checking, so skip rather than fail there.
+    # CI installs the backend test deps without diffusers, and the scheduler math is what we check,
+    # so skip rather than fail there.
     pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
@@ -192,8 +192,8 @@ def test_config_validates_new_fields():
     assert cfg.enable_tf32 is False
     assert cfg.cache_latents is False
 
-    # String flags from the generic Studio dict path are coerced: "false" is otherwise a
-    # non-empty (truthy) string, so an opt-out would silently no-op.
+    # String flags from the generic Studio dict path are coerced: "false" is otherwise a non-empty
+    # (truthy) string, so an opt-out would silently no-op.
     cfg = _config_from_dict(
         {
             "base_model": _SDXL,
@@ -349,18 +349,17 @@ def test_request_models_new_fields():
 
 # ── perf flags round-trip on cpu ──────────────────────────────────────────────
 def test_perf_flags_cpu_roundtrip():
-    # On a cpu device (or a torch build without cuda), applying the perf flags is a no-op
-    # snapshot path and restoring it must not raise.
+    # On a cpu device (or a torch build without cuda), applying the perf flags is a no-op snapshot
+    # path and restoring it must not raise.
     snap = _apply_perf_flags(_cfg(), "cpu")
     assert isinstance(snap, dict)
     _restore_perf_flags(snap)  # no exception
 
 
 def test_perf_flags_tf32_off_clears_flags():
-    # enable_tf32=False is the strict-fp32 A/B mode: it must actively clear the TF32 flags
-    # (cudnn TF32 defaults ON in torch) rather than inherit ambient state, and restore must
-    # put the ambient values back. The flag attributes are plain Python state, present and
-    # settable on CPU-only torch builds, so this runs without a GPU.
+    # enable_tf32=False is the strict-fp32 A/B mode: it must actively clear the TF32 flags (cudnn TF32
+    # defaults ON in torch) rather than inherit ambient state, and restore must put the ambient values
+    # back. The flag attributes are plain Python state, so this runs without a GPU.
     import torch
 
     before = (
@@ -396,8 +395,8 @@ class _FakeEncoded:
 
 
 class _FakeVae:
-    # Minimal VAE stand-in: encode() returns a posterior of the requested latent shape so the
-    # builder measures a real per-variant byte size without a model load or image files.
+    # Minimal VAE stand-in: encode() returns a posterior of the requested latent shape so the builder
+    # measures a real per-variant byte size without a model load or image files.
     def __init__(self, shape):
         self._shape = shape
 
@@ -453,8 +452,8 @@ def test_sdxl_cache_built_under_budget(monkeypatch):
 
 
 def test_sdxl_cache_gated_over_budget(monkeypatch):
-    # A budget below one variant forces the gate on the first encode: the sentinel is returned
-    # so the caller keeps the VAE resident and encodes per step.
+    # A budget below one variant forces the gate on the first encode: the sentinel is returned so the
+    # caller keeps the VAE resident and encodes per step.
     monkeypatch.delenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", raising = False)
     monkeypatch.setattr(train_common, "_LATENT_CACHE_BUDGET_BYTES", 8)
     cache = _build_fake_sdxl_cache(monkeypatch, num_images = 3, latent_shape = (1, 4, 8, 8))

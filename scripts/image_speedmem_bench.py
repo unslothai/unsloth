@@ -50,8 +50,7 @@ for _p in (str(_BACKEND_ROOT), str(_REPO_ROOT / "scripts")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# Fixed prompt set (the diffusion_quality.py defaults + one photographic subject) so the
-# LPIPS mean is not hostage to a single composition.
+# Fixed prompt set so the LPIPS mean is not hostage to a single composition.
 PROMPTS = [
     "A cozy reading nook by a rain-streaked window, warm lamplight, a cat asleep on a stack of books",
     "A lone lighthouse on a rocky cliff at sunset, dramatic clouds, crashing waves, highly detailed",
@@ -313,8 +312,7 @@ def _generate(
         if "callback_on_step_end" in call_params:
             kwargs["callback_on_step_end"] = _cb
         last.clear()
-        # Production resets the step cache before every generation; without this the
-        # first step compares against the PREVIOUS prompt's final residual.
+        # Reset the step cache like production, else step 1 compares against the previous prompt.
         _reset_step_cache(pipe)
         _sync()
         t0 = time.perf_counter()

@@ -115,8 +115,8 @@ def test_find_server_path_fallback(tmp_path, monkeypatch):
 
 
 def test_find_server_not_confused_with_sd_cli(tmp_path, monkeypatch):
-    # A tree that has only sd-cli must NOT be reported as an sd-server (and vice versa),
-    # so the backend correctly falls back to one-shot when only the CLI is present.
+    # A tree that has only sd-cli must NOT be reported as an sd-server (and vice versa), so the backend
+    # correctly falls back to one-shot when only the CLI is present.
     _clear_server_env(monkeypatch)
     root = tmp_path / "sdcpp"
     (root / "build" / "bin").mkdir(parents = True)
@@ -132,8 +132,8 @@ def test_find_server_not_confused_with_sd_cli(tmp_path, monkeypatch):
 
 
 def test_engine_unavailable_when_no_binary(monkeypatch):
-    # Force the "no binary anywhere" condition so the test is hermetic even on a host
-    # that happens to have sd-cli installed.
+    # Force the "no binary anywhere" condition so the test is hermetic even on a host that happens to
+    # have sd-cli installed.
     monkeypatch.setattr(eng, "find_sd_cpp_binary", lambda: None)
     e = SdCppEngine(binary = None)
     assert e.is_available() is False
@@ -170,8 +170,8 @@ def test_runtime_env_prepends_binary_dir_to_lib_path():
 
 
 def test_runtime_env_scrubs_native_path_lease_secret(monkeypatch):
-    # The sd-cli child is an external process and must never receive the native-path
-    # lease secret; every launch (version + generate/upscale) funnels through runtime_env.
+    # The sd-cli child is an external process and must never receive the native-path lease secret;
+    # every launch funnels through runtime_env.
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET", "top-secret")
     from_os = runtime_env("/opt/sdcpp/bin/sd-cli")
     assert "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET" not in from_os
@@ -189,10 +189,9 @@ def test_runtime_env_handles_missing_lib_path():
 
 
 def test_terminate_reaps_killed_child():
-    # Cancellation/timeout paths call _terminate then immediately raise, so it must
-    # reap the killed child itself -- otherwise a burst of image cancellations leaves
-    # zombies until a later Popen cleanup. After _terminate the returncode is set
-    # (the child has been waited on), so nothing lingers.
+    # Cancellation/timeout paths call _terminate then immediately raise, so it must reap the killed
+    # child itself, otherwise a burst of image cancellations leaves zombies. After _terminate the
+    # returncode is set, so nothing lingers.
     import subprocess
     proc = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
@@ -324,8 +323,8 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
 
 
 def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch):
-    # A leftover file at the target path must not satisfy the post-run output check
-    # when the run itself produced nothing: the target is cleared before the run.
+    # A leftover file at the target path must not satisfy the post-run output check when the run itself
+    # produced nothing: the target is cleared before the run.
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
     out.write_bytes(b"stale")

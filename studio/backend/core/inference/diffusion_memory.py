@@ -34,11 +34,11 @@ MEMORY_MODES = (
 )
 
 # ── offload policies (what the loader does) ──────────────────────────
-# none   -> all weights resident (fastest; fits only with room).
-# model  -> enable_model_cpu_offload(): one top-level module on the GPU at a time.
-# group  -> apply_group_offloading() on the transformer: stream a few blocks at a time with a
+# none   -- all weights resident (fastest; fits only with room).
+# model  -- enable_model_cpu_offload(): one top-level module on the GPU at a time.
+# group  -- apply_group_offloading() on the transformer: stream a few blocks at a time with a
 #           prefetch stream (lowest practical VRAM for the dominant module).
-# sequential -> enable_sequential_cpu_offload(): submodule-level (broken for GGUF on diffusers
+# sequential -- enable_sequential_cpu_offload(): submodule-level (broken for GGUF on diffusers
 #           0.38, kept as an explicit escape hatch).
 OFFLOAD_NONE = "none"
 OFFLOAD_MODEL = "model"
@@ -46,7 +46,7 @@ OFFLOAD_GROUP = "group"
 OFFLOAD_SEQUENTIAL = "sequential"
 
 # Transformer blocks resident per group under group offloading: fewer = lower VRAM, more
-# host<->device traffic. One is the lowest-VRAM setting.
+# host-to-device traffic.
 DEFAULT_GROUP_BLOCKS = 1
 
 DEFAULT_IMAGE_WIDTH = 1024
@@ -195,8 +195,8 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
         free, total = torch.cuda.mem_get_info()
         kind = "discrete_vram"
         try:
-            # Query the CURRENT device (mem_get_info reports it); hardcoding 0 would inspect the
-            # wrong GPU and misclassify discrete vs unified when the active device isn't 0.
+            # Query the CURRENT device (mem_get_info reports it); hardcoding 0 would inspect the wrong GPU
+            # and misclassify discrete vs unified.
             props = torch.cuda.get_device_properties(torch.cuda.current_device())
             if bool(getattr(props, "integrated", False) or getattr(props, "is_integrated", False)):
                 kind = "unified_memory"  # e.g. Jetson / integrated SoC
@@ -408,8 +408,8 @@ def plan_diffusion_memory(
         return group_floor is not None and budget is not None and group_floor <= budget
 
     if not can_offload or device_memory.is_unified:
-        # MPS / CPU can't stream to a separate device; on unified memory offload just shuffles
-        # bytes within the same pool.
+        # MPS / CPU can't stream to a separate device; on unified memory offload just shuffles bytes
+        # within the same pool.
         policy = OFFLOAD_NONE
         if device_memory.is_unified:
             reasons.append("unified/system memory: CPU offload frees no device memory")
@@ -442,8 +442,8 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
 
-    # The legacy cpu_offload flag applies only when no memory_mode was supplied (memory_mode
-    # overrides it), so an explicit `fast` request stays resident even with the old flag on.
+    # The legacy cpu_offload flag applies only when no memory_mode was supplied, so an explicit
+    # `fast` request stays resident even with the old flag on.
     if (
         explicit_offload
         and normalize_memory_mode(requested_mode) is None
@@ -454,11 +454,10 @@ def plan_diffusion_memory(
         policy = OFFLOAD_MODEL
         reasons.append("explicit cpu_offload overrides resident placement")
 
-    # VAE savers cap the high-res decode spike. Slicing (one image at a time) is EXACT, so enable
-    # it on any offload tier / non-discrete backend. Tiling (spatial chunks) is only bit-identical
-    # for a single tile (<=1MP), so restrict it to the lowest tiers (model / sequential) or no
-    # spare device pool (MPS / CPU). Group offload keeps the VAE resident -> exact full-image
-    # decode. On a roomy discrete GPU both stay off.
+    # VAE savers cap the high-res decode spike. Slicing (one image at a time) is EXACT, so enable it
+    # on any offload tier / non-discrete backend. Tiling (spatial chunks) is only bit-identical for
+    # a single tile (<=1MP), so restrict it to the lowest tiers or no spare device pool. Group
+    # offload keeps the VAE resident for an exact full-image decode; on a roomy GPU both stay off.
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
     tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
     return MemoryPlan(
@@ -495,8 +494,8 @@ def apply_memory_plan(
         _enable_vae_saver(pipe, "enable_vae_slicing", "enable_slicing", logger)
 
     def _fallback_to_model_offload() -> None:
-        # The GROUP plan set vae_tiling=False (VAE stays resident). Dropping to whole-module
-        # offload is the low-VRAM case where the decode spike can OOM, so turn tiling on now.
+        # The GROUP plan set vae_tiling=False (VAE stays resident). Dropping to whole-module offload is
+        # the low-VRAM case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
         pipe.enable_model_cpu_offload(device = device)
         if not tiling_engaged:
@@ -555,8 +554,8 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
         import torch
         from diffusers.hooks import apply_group_offloading
 
-        # A dual-DiT pipeline (e.g. Ideogram 4) carries a second denoiser as large as the first;
-        # leaving it resident defeats this tier. Stream every DiT, keep only smaller companions.
+        # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first; leaving it
+        # resident defeats this tier. Stream every DiT, keep only smaller companions.
         streamed: dict[str, Any] = {"transformer": transformer}
         for extra in ("transformer_2", "unconditional_transformer"):
             module = getattr(pipe, extra, None)
@@ -572,19 +571,18 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
             "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
             "use_stream": use_stream,
         }
-        # On the CUDA stream path, overlap each block's H2D copy with compute: non_blocking
-        # issues it async, record_stream defers the free until the copy's stream is done. Lossless
-        # (only transfer scheduling changes). Gated on the signature so older diffusers still works.
+        # On the CUDA stream path, overlap each block's H2D copy with compute: non_blocking issues it
+        # async, record_stream defers the free until the copy's stream is done. Lossless, and gated on
+        # the signature so older diffusers still works.
         if use_stream:
             _params = inspect.signature(apply_group_offloading).parameters
             if "non_blocking" in _params:
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
-        # Place the smaller components resident BEFORE attaching the transformer's group-offload
-        # hooks: if a companion .to() OOMs we return False with NO hooks installed, so the caller's
-        # whole-module fallback works (diffusers REJECTS enable_model_cpu_offload on a pipe that
-        # already has group-offload hooks). The streamed transformer places itself via the hooks next.
+        # Place the smaller components resident BEFORE attaching the transformer's group-offload hooks:
+        # if a companion .to() OOMs we return False with NO hooks installed, so the caller's whole-module
+        # fallback works (diffusers REJECTS enable_model_cpu_offload once group hooks exist).
         for name, comp in getattr(pipe, "components", {}).items():
             if name in streamed:
                 continue
@@ -596,10 +594,9 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if installed:
-            # An earlier streamed module already has hooks but a later one failed: the pipe is in a
-            # PARTIAL group-offload state that enable_model_cpu_offload rejects, so the caller's
-            # fallback would crash. Propagate the real failure (e.g. the OOM) instead of a
-            # misleading hook error; the "no hooks installed" cases below fall back cleanly.
+            # An earlier streamed module already has hooks but a later one failed: the pipe is in a PARTIAL
+            # group-offload state that enable_model_cpu_offload rejects, so propagate the real failure (e.g.
+            # the OOM) instead of a misleading hook error. The "no hooks installed" cases fall back cleanly.
             if logger is not None:
                 logger.warning(
                     "diffusion.memory: group offload failed after installing hooks on %d "

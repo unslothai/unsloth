@@ -67,9 +67,8 @@ def _to_rgb(path_or_img: Any) -> Any:
     return np.asarray(img.convert("RGB"), dtype = np.float64)
 
 
-# Finite PSNR (dB) a perfect (inf) sample is capped to when averaged with imperfect ones, so a
-# lossless render counts as excellent without hiding diverged samples. Well above the ~37 dB
-# compile and ~21 dB quant noise floors this harness reports.
+# Finite PSNR (dB) cap for perfect (inf) samples, so a lossless render averages as excellent
+# without hiding diverged ones. Well above the ~37 dB compile and ~21 dB quant noise floors.
 _PERFECT_MATCH_PSNR = 100.0
 
 
@@ -192,8 +191,7 @@ def _wait_for_load(backend: Any, timeout_s: int = 3600) -> None:
 
 
 def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
-    # A local model dir / file: stat it directly. The Hub lookup below returns None for
-    # a local path, which would drop every candidate from _recommend (file_size_mib None).
+    # Local paths: stat directly, since the Hub lookup returns None and _recommend would drop them.
     try:
         local = Path(repo).expanduser()
         if local.is_dir():
@@ -286,10 +284,8 @@ def _compare(
             clip_sim.append(clip.image_similarity(img, ref))
 
     def _mean(xs: list[float]) -> Optional[float]:
-        # +inf marks an identical render (reference vs itself, or a lossless quant/offload)
-        # scoring PSNR=inf -- the case this harness verifies. Report inf ONLY when every sample is
-        # inf; a mix means some renders diverged, so a bare inf would mask them. Cap the perfect
-        # ones to a high finite PSNR and average so the drift still shows. (Only PSNR is ever inf.)
+        # +inf marks an identical render. Report inf only when every sample is inf; otherwise cap the
+        # perfect ones to a high finite PSNR so partial drift still shows. (Only PSNR is ever inf.)
         if not xs:
             return None
         if all(x == math.inf for x in xs):

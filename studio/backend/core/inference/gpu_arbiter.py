@@ -35,34 +35,32 @@ def _evict_chat() -> None:
     from core.inference.llama_cpp import chat_load_active
 
     llama = get_llama_cpp_backend()
-    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting
-    # up holds VRAM but isn't healthy, so is_loaded would skip it and let the load race diffusion.
-    # chat_load_active too: an HF load has no process until its GGUF downloaded, so is_active
-    # alone found nothing to cancel and let that load spawn onto the GPU we just granted away.
-    # unload_model sets the cancel event the download loop polls, so the pending load aborts.
+    # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up
+    # holds VRAM but isn't healthy, so is_loaded would skip it and let the load race diffusion.
+    # chat_load_active too: an HF load has no process until its GGUF downloaded, so is_active alone
+    # found nothing to cancel. unload_model sets the cancel event the download loop polls, so the
+    # pending load aborts.
     if llama.is_active or chat_load_active():
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)
-    # An in-flight safetensors load has no active_model_name yet (it is published only once the
-    # worker reports success), so the unload above misses it and the load would finish onto the
-    # GPU we just granted away. cancel_load discards the loading marker BEFORE tearing the worker
-    # down, so a load parked between retries (or in _wait_response) observes the removal and
-    # aborts instead of publishing. It runs off the lifecycle gate, which the load itself holds
-    # for its whole duration, so this cannot deadlock.
+    # An in-flight safetensors load has no active_model_name yet (published only once the worker
+    # reports success), so the unload above misses it and it would finish onto the GPU we just
+    # granted away. cancel_load discards the loading marker BEFORE tearing the worker down, so a load
+    # parked between retries observes the removal and aborts. It runs off the lifecycle gate, which
+    # the load itself holds throughout, so this cannot deadlock.
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
     orchestrator._shutdown_subprocess(timeout = 5.0)
     # The driver reclaims the killed VRAM asynchronously; wait for it to settle before diffusion
-    # allocates, else a warm chat->diffusion handoff can transiently OOM.
+    # allocates, else a warm chat-to-diffusion handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
 
 
 def _evict_diffusion() -> None:
-    # Unload whichever engine the router has active (diffusers or native sd.cpp), so a
-    # chat acquire frees the right one.
+    # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     get_active_diffusion_engine().unload()
 

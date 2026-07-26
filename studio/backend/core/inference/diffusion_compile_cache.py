@@ -43,10 +43,9 @@ from typing import Any, Optional
 
 # --------------------------------------------------------------------------------- env knobs
 # UNSLOTH_DIFFUSION_COMPILE_CACHE: auto (default) | 0 | 1
-#   auto -> load a matching bundle AND save one after the first compiled generation.
-#           Measured on Qwen-Image (B200, deferred 3rd-gen engage, FBCache armed): compile
-#           hitch drops 29.1 -> 22.2 s, bit-identical output, 7.9 MB bundle, ~0.5 s save.
-#           Residual warmup is dynamo tracing + guards, which Mega-cache does not capture.
+#   auto -> load a matching bundle AND save one after the first compiled generation. Measured on
+#           Qwen-Image (B200): compile hitch 29.1 -> 22.2 s, bit-identical, 7.9 MB bundle. The
+#           residual warmup is dynamo tracing + guards, which Mega-cache does not capture.
 #   1    -> same as auto, also re-saves on a hit (distributor refresh).
 #   0    -> disabled (plain local compile, no cache dir override).
 # UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR: root dir for bundles (default under the workspace).
@@ -77,8 +76,8 @@ def _save_enabled(mode: str) -> bool:
         return False
     if mode == "on":
         return True
-    # auto: save by default (without a saved bundle no user gets a warm restart). SAVE
-    # env overrides: "0" -> load-only, "1" -> keep on.
+    # auto: save by default (without a saved bundle no user gets a warm restart). SAVE env
+    # overrides: "0" -> load-only, "1" -> keep on.
     return (os.environ.get(_ENV_SAVE) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
@@ -256,9 +255,8 @@ def begin(
     if ctx.bundle.exists() and ctx.manifest_path.exists():
         ctx.hit = _try_load(ctx, logger)
         if ctx.hit and mode != "on":
-            # Loaded artifacts == on-disk artifacts, so nothing to save (~0.5 s for no
-            # change). A new static-compile shape re-dirties via register_shape; mode
-            # "on" (distributor refresh) keeps saving.
+            # Loaded artifacts == on-disk artifacts, so nothing to save. A new static-compile shape
+            # re-dirties via register_shape; mode "on" (distributor refresh) keeps saving.
             ctx.saved = True
     else:
         _info(logger, f"compile-cache: no bundle for key {key} (will compile locally)")
