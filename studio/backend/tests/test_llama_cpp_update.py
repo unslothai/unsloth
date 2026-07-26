@@ -133,6 +133,9 @@ def _clean_state(monkeypatch, tmp_path):
     _inference_mod.get_llama_cpp_backend = _no_backend_in_tests
     monkeypatch.setitem(sys.modules, "routes", _routes_pkg)
     monkeypatch.setitem(sys.modules, "routes.inference", _inference_mod)
+    # Keep the whisper piggyback out of the llama-only tests: no host probe, no
+    # whisper phase (test_combined_update.py covers the chained flow).
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kwargs: None)
     yield
     freshness.reset_caches()
     upd._reset_job_for_tests()

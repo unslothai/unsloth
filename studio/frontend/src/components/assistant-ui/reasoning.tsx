@@ -163,7 +163,7 @@ function ReasoningContent({
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-[13.5px] outline-none",
+        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -346,6 +346,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
 
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
+  const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -361,11 +362,24 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset dismissed flag on new stream.
+  // Reset per-round open state. manualOpen is sticky and regenerate reuses this
+  // instance, so a hand-opened block would stay pinned open and never collapse.
   useEffect(() => {
     if (isReasoningStreaming) {
       setDismissedWhileStreaming(false);
+      setManualOpen(false);
     }
+  }, [isReasoningStreaming]);
+
+  // Keep the streaming height cap until the automatic close finishes. Removing
+  // it on the completion frame expands long reasoning to its full height before
+  // the collapsible can close, which makes the entire chat jump.
+  useEffect(() => {
+    const timeout = window.setTimeout(
+      () => setRetainStreamingHeight(isReasoningStreaming),
+      isReasoningStreaming ? 0 : ANIMATION_DURATION,
+    );
+    return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);
 
   // Open while streaming (unless dismissed), or once manually opened.
@@ -378,6 +392,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       if (isReasoningStreaming) {
         setDismissedWhileStreaming(!open);
       } else {
+        if (open) {
+          setRetainStreamingHeight(false);
+        }
         setManualOpen(open);
       }
     },
@@ -407,7 +424,9 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
       >
-        <ReasoningText streaming={isReasoningStreaming}>
+        <ReasoningText
+          streaming={isReasoningStreaming || retainStreamingHeight}
+        >
           {children}
         </ReasoningText>
       </ReasoningContent>

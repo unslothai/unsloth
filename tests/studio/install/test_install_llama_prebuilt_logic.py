@@ -22,7 +22,6 @@ sys.modules[SPEC.name] = INSTALL_LLAMA_PREBUILT
 SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
-extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
 scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
@@ -105,105 +104,10 @@ def approved_checksums_for(
     )
 
 
-def test_extract_archive_allows_safe_tar_symlink_chain(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-    payload = b"shared-object"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        versioned = tarfile.TarInfo("libllama.so.0.0.1")
-        versioned.size = len(payload)
-        archive.addfile(versioned, io_bytes(payload))
-
-        soname = tarfile.TarInfo("libllama.so.0")
-        soname.type = tarfile.SYMTYPE
-        soname.linkname = "libllama.so.0.0.1"
-        archive.addfile(soname)
-
-        linker_name = tarfile.TarInfo("libllama.so")
-        linker_name.type = tarfile.SYMTYPE
-        linker_name.linkname = "libllama.so.0"
-        archive.addfile(linker_name)
-
-    destination = tmp_path / "extract"
-    extract_archive(archive_path, destination)
-
-    assert (destination / "libllama.so.0.0.1").read_bytes() == payload
-    assert (destination / "libllama.so.0").is_symlink()
-    assert (destination / "libllama.so").is_symlink()
-    assert (destination / "libllama.so").resolve().read_bytes() == payload
-
-
-def test_extract_archive_allows_safe_tar_hardlink(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-    payload = b"quantize"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        target = tarfile.TarInfo("llama-quantize")
-        target.size = len(payload)
-        archive.addfile(target, io_bytes(payload))
-
-        hardlink = tarfile.TarInfo("llama-quantize-copy")
-        hardlink.type = tarfile.LNKTYPE
-        hardlink.linkname = "llama-quantize"
-        archive.addfile(hardlink)
-
-    destination = tmp_path / "extract"
-    extract_archive(archive_path, destination)
-
-    assert (destination / "llama-quantize-copy").read_bytes() == payload
-    assert not (destination / "llama-quantize-copy").is_symlink()
-
-
-def test_extract_archive_rejects_absolute_tar_symlink_target(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        entry = tarfile.TarInfo("libllama.so")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "/tmp/libllama.so.0"
-        archive.addfile(entry)
-
-    with pytest.raises(PrebuiltFallback, match = "archive link used an absolute target"):
-        extract_archive(archive_path, tmp_path / "extract")
-
-
-def test_extract_archive_rejects_escaping_tar_symlink_target(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        entry = tarfile.TarInfo("libllama.so")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "../outside/libllama.so.0"
-        archive.addfile(entry)
-
-    with pytest.raises(PrebuiltFallback, match = "archive link escaped destination"):
-        extract_archive(archive_path, tmp_path / "extract")
-
-
-def test_extract_archive_rejects_unresolved_tar_symlink_target(tmp_path: Path):
-    archive_path = tmp_path / "bundle.tar.gz"
-
-    with tarfile.open(archive_path, "w:gz") as archive:
-        entry = tarfile.TarInfo("libllama.so")
-        entry.type = tarfile.SYMTYPE
-        entry.linkname = "libllama.so.0"
-        archive.addfile(entry)
-
-    with pytest.raises(PrebuiltFallback, match = "unresolved link entries"):
-        extract_archive(archive_path, tmp_path / "extract")
-
-
-def test_extract_archive_rejects_zip_symlink_entry(tmp_path: Path):
-    archive_path = tmp_path / "bundle.zip"
-
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        info = zipfile.ZipInfo("libllama.so")
-        info.create_system = 3
-        info.external_attr = 0o120777 << 16
-        archive.writestr(info, "libllama.so.0")
-
-    with pytest.raises(PrebuiltFallback, match = "zip archive contained a symlink entry"):
-        extract_archive(archive_path, tmp_path / "extract")
+# The extract_archive guard tests (safe symlink chain / hardlink, absolute or
+# escaping or unresolved symlink targets, zip symlink entries) moved verbatim
+# to tests/studio/install/test_prebuilt_core.py: extract_archive is the shared
+# prebuilt_core implementation, re-exported by this installer.
 
 
 def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
@@ -3418,6 +3322,66 @@ def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
     calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
     assert calls == {"quantize": 1, "server": 1}
+
+
+def test_staged_validation_enabled_default_off(monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+    assert INSTALL_LLAMA_PREBUILT.staged_validation_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_staged_validation_enabled_env_opt_in(monkeypatch, value):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", value)
+    assert INSTALL_LLAMA_PREBUILT.staged_validation_enabled() is True
+
+
+def test_validate_prebuilt_choice_approved_validation_runs_when_env_enabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+    monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", "1")
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_existing_install_runs_server_smoke(tmp_path, monkeypatch):
+    # setup.sh --validate-install path: exercise smoke helpers without a real GPU.
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
+    (bin_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
+    calls: dict[str, int] = {"quantize": 0, "server": 0, "download": 0}
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "download_validation_model",
+        lambda path, cache = None: calls.__setitem__("download", calls["download"] + 1),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_quantize",
+        lambda *a, **k: calls.__setitem__("quantize", calls["quantize"] + 1),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_server",
+        lambda *a, **k: calls.__setitem__("server", calls["server"] + 1),
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "detect_host",
+        lambda: linux_host(),
+    )
+
+    INSTALL_LLAMA_PREBUILT.validate_existing_install(install_dir, install_kind = "linux-cuda")
+    assert calls == {"quantize": 1, "server": 1, "download": 1}
+
+
+def test_validate_existing_install_missing_server_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: linux_host())
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "llama-server not found"):
+        INSTALL_LLAMA_PREBUILT.validate_existing_install(tmp_path / "missing")
 
 
 def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tmp_path: Path):

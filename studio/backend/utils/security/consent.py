@@ -147,11 +147,17 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
 
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import EntryNotFoundError
+        from utils.hf_cache_settings import active_hf_hub_cache
 
         configs = []
         for name in _REMOTE_CODE_CONFIG_FILES:
             try:
-                p = hf_hub_download(repo_id = model_name, filename = name, token = hf_token)
+                p = hf_hub_download(
+                    repo_id = model_name,
+                    filename = name,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue  # genuine 404 -> truly absent
             except Exception:

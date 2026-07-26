@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { downloadFile } from "@/lib/native-files";
+
 import { filterArchivedChatExport } from "./archived-chat-export";
 import { buildStoredChatExport } from "./chat-history-storage";
-import { triggerJsonDownload } from "./download-json";
 
 export const buildChatExport = buildStoredChatExport;
 
@@ -14,7 +15,11 @@ function dateStamp(): string {
 
 export async function downloadChatExport(): Promise<void> {
   const data = await buildChatExport();
-  triggerJsonDownload(data, `unsloth-chats-${dateStamp()}.json`);
+  await downloadFile(
+    JSON.stringify(data, null, 2),
+    `unsloth-chats-${dateStamp()}.json`,
+    "application/json",
+  );
 }
 
 // Full backup restricted to archived chats. Returns the archived thread count.
@@ -29,6 +34,10 @@ export async function downloadArchivedChatExport(): Promise<number> {
   if (archivedCount === 0) {
     return 0;
   }
-  triggerJsonDownload(data, `unsloth-archived-chats-${dateStamp()}.json`);
+  await downloadFile(
+    JSON.stringify(data, null, 2),
+    `unsloth-archived-chats-${dateStamp()}.json`,
+    "application/json",
+  );
   return archivedCount;
 }

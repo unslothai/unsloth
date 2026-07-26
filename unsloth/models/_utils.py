@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.4"
+__version__ = "2026.7.5"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1850,6 +1850,14 @@ patch_dgx_spark_memory_config()
 patch_dgx_spark_caching_allocator_warmup()
 patch_dgx_spark_runtime_defaults()
 patch_dgx_spark_dataloader_defaults()
+
+# Faster safetensors loads on UMA (integrated) GPUs; lazy gate keeps this import
+# fork-safe (no CUDA init). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+# Installed after the Spark patches so patch_dgx_spark_memory_config() still lands
+# its PYTORCH_CUDA_ALLOC_CONF before anything can touch the allocator.
+from ._uma_safetensors import patch_unified_memory_safetensors_load
+
+patch_unified_memory_safetensors_load()
 
 
 def _all_missing_keys_are_position_ids(record_str):
