@@ -185,7 +185,10 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
-import { consumeProjectSourcesPending } from "@/features/rag/components/project-source-dropzone";
+import {
+  consumeProjectSourcesPending,
+  hasProjectSourcesPending,
+} from "@/features/rag/components/project-source-dropzone";
 
 
 const ProjectSourcesPanel = lazy(() =>
@@ -1001,8 +1004,12 @@ function ProjectLanding({
   const initialActiveThreadRef = useRef<string | null>(null);
   // Land on Sources when the project was just created with dropped files.
   const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
-    consumeProjectSourcesPending(projectId) ? "sources" : "chats",
+    hasProjectSourcesPending(projectId) ? "sources" : "chats",
   );
+  // Drop the marker once committed: React may replay the initializer above.
+  useEffect(() => {
+    consumeProjectSourcesPending(projectId);
+  }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );

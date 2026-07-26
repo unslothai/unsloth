@@ -90,9 +90,15 @@ function markProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.add(projectId);
 }
 
-/** True once, for the project that was just created with staged sources. */
-export function consumeProjectSourcesPending(projectId: string): boolean {
-  return projectsWithPendingSources.delete(projectId);
+/** Whether this project was just created with staged sources. Read-only, so it
+ * is safe in a render pass that React may replay. */
+export function hasProjectSourcesPending(projectId: string): boolean {
+  return projectsWithPendingSources.has(projectId);
+}
+
+/** Drop the marker once the landing has committed. */
+export function consumeProjectSourcesPending(projectId: string): void {
+  projectsWithPendingSources.delete(projectId);
 }
 
 /** Upload staged files to a new project. Indexing runs in the background; a
@@ -105,14 +111,28 @@ export async function uploadStagedSources(
   invalidateProjectSources(projectId);
   markProjectSourcesPending(projectId);
   const { ocr, caption } = resolveVisionOverrides();
+  const documentIds = new Set<string>();
+  const merged: string[] = [];
   for (const { file } of staged) {
     try {
-      await uploadProjectDocument(projectId, file, ocr, caption);
+      const result = await uploadProjectDocument(projectId, file, ocr, caption);
+      // Same bytes under another name: the backend hashes content, so this is
+      // the document already uploaded. Say so rather than imply a new source.
+      if (documentIds.has(result.documentId)) merged.push(file.name);
+      else documentIds.add(result.documentId);
     } catch (error) {
       toast.error(`Couldn't upload ${file.name}`, {
         description: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+  if (merged.length > 0) {
+    toast.info(
+      merged.length === 1
+        ? `${merged[0]} matched a file already added`
+        : `${merged.length} files matched files already added`,
+      { description: "Identical contents are stored once." },
+    );
   }
   invalidateProjectSources(projectId);
 }

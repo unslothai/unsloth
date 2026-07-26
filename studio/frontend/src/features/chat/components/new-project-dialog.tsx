@@ -48,12 +48,14 @@ export function NewProjectDialog({
   // Uploads outlive this component, so a slow one must not yank the user to the
   // new project after they have navigated away.
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on setup, not just cleared on cleanup: StrictMode replays
+    // setup/cleanup/setup, which would otherwise leave this false forever.
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   function reset() {
     setName("");
