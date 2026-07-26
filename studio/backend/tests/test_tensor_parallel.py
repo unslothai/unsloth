@@ -818,6 +818,61 @@ def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
     assert len(loads) == 1
 
 
+def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
+    # unload_model() sets _cancel_event before it kills, so the child is still
+    # accepting when the probe runs. Reporting it healthy aims the retry at a server
+    # that is deliberately going away.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    try:
+        b = _recovery_backend()
+        b._healthy = True
+        b._process = _NeverReapable()
+        b._port = listener.getsockname()[1]
+        b._cancel_event.set()
+        loads: list[dict] = []
+        monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+        assert b._respawn_if_dead() is False
+        assert loads == []
+    finally:
+        listener.close()
+
+
+def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
+    # The cancel check cannot live under _serial_load_lock alone: unload_model never
+    # takes that lock, so it can land entirely between the check and load_model and
+    # the captured kwargs then restart a model the user stopped. load_model clears
+    # _cancel_event on the way in, so _unload_epoch is the surviving evidence.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _FakeProcess()
+    b._process.returncode = -9
+    loads: list[dict] = []
+    monkeypatch.setattr(b, "load_model", lambda **kwargs: loads.append(kwargs) or True)
+
+    unloads: list[int] = []
+    real_unload = b.unload_model
+    monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or real_unload())
+
+    # The warning marks the window: after the snapshot, before the reload.
+    real_warning = llama_cpp_module.logger.warning
+    fired: list[int] = []
+
+    def racing_warning(*args, **kwargs):
+        if not fired:
+            fired.append(1)
+            real_unload()
+        return real_warning(*args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", racing_warning)
+
+    assert b._respawn_if_dead() is False
+    assert unloads, "the racing unload was not honoured"
+
+
 def test_socket_probe_is_false_without_a_port():
     # Unloaded backends have no port; the probe must not raise, and the caller
     # then falls back to the poll-based grace.

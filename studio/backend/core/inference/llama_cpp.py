@@ -2101,6 +2101,9 @@ class LlamaCppBackend:
         # Serialises mid-session respawns so many generations hitting a killed
         # server trigger at most one reload (see _respawn_if_dead).
         self._respawn_lock = threading.Lock()
+        # Bumped by every unload. load_model clears _cancel_event, so a respawn that
+        # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
+        self._unload_epoch = 0
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -9203,6 +9206,7 @@ class LlamaCppBackend:
         """Terminate the subprocess and cancel any in-flight download."""
         self._cancel_event.set()
         with self._lock:
+            self._unload_epoch += 1
             self._kill_process()
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
@@ -10572,6 +10576,11 @@ class LlamaCppBackend:
             proc = self._process
             if proc is None:
                 return False
+            if self._cancel_event.is_set():
+                # unload_model sets this before it kills, so the child can still be
+                # accepting. Reporting it healthy would aim the retry at a server
+                # that is deliberately going away.
+                return False
             if proc is not served_by:
                 # Replaced while we queued: this child never served our request.
                 return self._healthy
@@ -10595,30 +10604,40 @@ class LlamaCppBackend:
                     # restarts the crashing config and aborts that reload.
                     logger.info("Respawn skipped: an MTP-free reload is already recovering.")
                     return False
-            # Re-check under the load lock: an exit we waited out may be deliberate.
-            # unload_model sets _cancel_event before killing and a switch installs its own
-            # process, so both are visible here. The RLock lets load_model below re-enter.
+            # The RLock lets the load_model below re-enter it.
             with self._serial_load_lock:
-                if self._cancel_event.is_set():
-                    logger.info("Respawn skipped: the model was unloaded or the load cancelled.")
-                    return False
                 if self._process is not proc:
                     logger.info("Respawn skipped: a newer load is already active.")
                     return self._healthy
-                kwargs = self._last_load_kwargs
-                if not kwargs:
-                    return False
+                # Snapshot under _lock, the one unload_model holds, so a teardown is
+                # either wholly before us (flag set) or wholly after (epoch bumped).
+                # _serial_load_lock alone would not exclude it: unload never takes it.
+                with self._lock:
+                    if self._cancel_event.is_set():
+                        logger.info("Respawn skipped: the model was unloaded.")
+                        return False
+                    kwargs = dict(self._last_load_kwargs or {})
+                    if not kwargs:
+                        return False
+                    epoch = self._unload_epoch
+                    self._healthy = False
                 logger.warning(
                     f"llama-server for '{self._model_identifier}' exited "
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
-                with self._lock:
-                    self._healthy = False
                 try:
-                    return bool(self.load_model(**kwargs))
+                    started = bool(self.load_model(**kwargs))
                 except Exception as exc:
                     logger.error(f"Failed to respawn llama-server: {exc}")
                     return False
+                if started and self._unload_epoch != epoch:
+                    # An unload landed mid-reload. load_model cleared _cancel_event on
+                    # the way in, so the epoch is the only surviving evidence; undo the
+                    # replacement rather than leave a model the user stopped running.
+                    logger.info("Respawn undone: the model was unloaded during the reload.")
+                    self.unload_model()
+                    return False
+                return started
 
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(self, payload: dict, cancel_event):

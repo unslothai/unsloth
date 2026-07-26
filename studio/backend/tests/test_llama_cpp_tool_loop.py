@@ -2473,6 +2473,7 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     backend._mtp_runtime_fallback_lock = threading.Lock()
     backend._serial_load_lock = threading.RLock()
     backend._cancel_event = threading.Event()
+    backend._unload_epoch = 0
     backend._mtp_runtime_fallback_in_progress = False
     backend._mtp_runtime_fallback_active = False
     backend._last_load_kwargs = {"gguf_path": "/m.gguf"}
