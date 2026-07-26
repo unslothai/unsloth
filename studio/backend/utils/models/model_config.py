@@ -37,6 +37,7 @@ import yaml
 
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import active_hf_hub_cache, get_hf_cache_paths
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
@@ -631,7 +632,7 @@ def _raw_config_has_vision_config(
                     cache_dir = active_hf_hub_cache(),
                 )
             )
-        config = json.loads(config_path.read_text())
+        config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
         explicit_vision = (
@@ -774,8 +775,12 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
             ],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
-            env = get_hf_cache_paths().child_env(child_env_without_native_path_secret()),
+            env = utf8_child_env(
+                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+            ),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -1083,7 +1088,7 @@ def _detect_audio_from_tokenizer(
                     ]:
                         tok_file = snapshot / tok_path
                         if tok_file.exists():
-                            tok_config = json.loads(tok_file.read_text())
+                            tok_config = json.loads(tok_file.read_text(encoding = "utf-8-sig"))
                             read_any = True
                             result = _check_token_patterns(tok_config)
                             if result:
@@ -2283,7 +2288,7 @@ def scan_exported_models(
                 export_meta = run_dir / "export_metadata.json"
                 try:
                     if export_meta.exists():
-                        meta = json.loads(export_meta.read_text())
+                        meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                         base_model = meta.get("base_model")
                 except Exception:
                     pass
@@ -2312,7 +2317,7 @@ def scan_exported_models(
                 if adapter_config.exists():
                     export_type = "lora"
                     try:
-                        cfg = json.loads(adapter_config.read_text())
+                        cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                         base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
@@ -2321,7 +2326,7 @@ def scan_exported_models(
                     export_meta = checkpoint_dir / "export_metadata.json"
                     try:
                         if export_meta.exists():
-                            meta = json.loads(export_meta.read_text())
+                            meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                             base_model = meta.get("base_model")
                     except Exception:
                         pass
@@ -2334,7 +2339,7 @@ def scan_exported_models(
                         export_meta = meta_dir / "export_metadata.json"
                         try:
                             if export_meta.exists():
-                                meta = json.loads(export_meta.read_text())
+                                meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                                 base_model = meta.get("base_model")
                                 if base_model:
                                     break
@@ -2354,7 +2359,7 @@ def scan_exported_models(
                     outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
                         if outputs_adapter_cfg.exists():
-                            cfg = json.loads(outputs_adapter_cfg.read_text())
+                            cfg = json.loads(outputs_adapter_cfg.read_text(encoding = "utf-8-sig"))
                             base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
@@ -2380,7 +2385,7 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
 
         adapter_config_path = checkpoint_path_obj / "adapter_config.json"
         if adapter_config_path.exists():
-            with open(adapter_config_path, "r") as f:
+            with open(adapter_config_path, "r", encoding = "utf-8-sig") as f:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
@@ -2389,7 +2394,7 @@ def get_base_model_from_checkpoint(checkpoint_path: str) -> Optional[str]:
 
         config_path = checkpoint_path_obj / "config.json"
         if config_path.exists():
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding = "utf-8-sig") as f:
                 config = json.load(f)
                 for key in ("model_name", "_name_or_path"):
                     base_model = config.get(key)
@@ -2445,7 +2450,7 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         # adapter_config.json first
         adapter_config_path = lora_path_obj / "adapter_config.json"
         if adapter_config_path.exists():
-            with open(adapter_config_path, "r") as f:
+            with open(adapter_config_path, "r", encoding = "utf-8-sig") as f:
                 config = json.load(f)
                 base_model = config.get("base_model_name_or_path")
                 if base_model:
@@ -2535,7 +2540,7 @@ def get_base_model_from_lora_identifier(
             last_exc = exc
             continue
         try:
-            with open(cfg_path, "r") as f:
+            with open(cfg_path, "r", encoding = "utf-8-sig") as f:
                 base_model = json.load(f).get("base_model_name_or_path")
         except Exception as exc:
             logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
@@ -2781,7 +2786,7 @@ class ModelConfig:
                 meta_path = gguf_dir / "export_metadata.json"
                 if meta_path.exists():
                     try:
-                        meta = json.loads(meta_path.read_text())
+                        meta = json.loads(meta_path.read_text(encoding = "utf-8-sig"))
                         base = meta.get("base_model")
                         if base and is_vision_model(base, hf_token = hf_token):
                             base_is_vision = True
@@ -2912,7 +2917,7 @@ class ModelConfig:
                         token = hf_token,
                         cache_dir = active_hf_hub_cache(),
                     )
-                    with open(config_path, "r") as f:
+                    with open(config_path, "r", encoding = "utf-8-sig") as f:
                         adapter_config = json.load(f)
                     base_model = adapter_config.get("base_model_name_or_path")
                     if base_model:
