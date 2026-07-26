@@ -2692,7 +2692,10 @@ async def get_kv_cache_estimate(
     repo_id: str = Query(..., description = "HF repo ID or local path"),
     quant: str = Query(..., description = "Quantization label (e.g. Q4_K_M)"),
     n_ctx: int = Query(..., ge = 1, description = "Context length to size the KV cache for"),
-    cache_type_kv: Optional[str] = Query(None, description = "KV cache dtype (e.g. q8_0)"),
+    cache_type_kv: Optional[str] = Query(
+        None,
+        description = "KV cache dtype (e.g. q8_0, q4_0, q5_0, iq4_nl, f32)",
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Estimate KV cache + weight bytes for a downloaded GGUF at n_ctx.
