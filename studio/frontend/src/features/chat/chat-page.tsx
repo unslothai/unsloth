@@ -2600,8 +2600,10 @@ export function ChatPage({
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider
-          // render gate shows stale stats until the next completion.
+          // render gate shows stale stats until the next completion. The
+          // per-thread copies go too, so a switch back cannot re-apply them.
           contextUsage: null,
+          contextUsageByThreadId: {},
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,

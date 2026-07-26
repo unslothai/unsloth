@@ -832,12 +832,18 @@ export function useChatModelRuntime() {
               : undefined;
 
             if (currentCheckpoint) {
-              // Covered by the load's confirmation; without the flag the gate
-              // would 409 the swap the user just approved.
-              await unloadModel({
-                model_path: currentCheckpoint,
-                force_cancel_active: forceCancelActive,
-              });
+              // With chats generating, skip this preliminary unload: it cancels
+              // them ahead of the load's identifier resolution, GPU/training
+              // guards and download check, so a rejected target truncates
+              // replies for a model that never loads. /load evicts the resident
+              // model itself past those checks. With nothing running there is
+              // nothing to truncate, so unload first and free VRAM early.
+              if (!forceCancelActive) {
+                await unloadModel({ model_path: currentCheckpoint });
+              }
+              // Set either way: /load can still leave no model resident, and an
+              // unneeded rollback re-requests the loaded model, which /load
+              // answers already_loaded before reaching its gate.
               previousWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");

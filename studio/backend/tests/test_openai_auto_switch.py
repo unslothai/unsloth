@@ -1499,21 +1499,30 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
 
 def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
     # Both replacement directions drain active inference, then recheck whether a
-    # sidecar install reserved the lifecycle gate during that wait. Exact-model
-    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
+    # sidecar install reserved the lifecycle gate during that wait. That recheck is
+    # the last thing that can reject the load, so the destructive cancel has to come
+    # after it: cancelling first strands every chat behind a 409 for a model that
+    # never loads. Exact-model reuse exits earlier, so an already-loaded model never
+    # waits on unrelated inference.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)
+    already_loaded = src.index('status = "already_loaded"')
+    standard_branch = src.index("# ── Standard path")
+
     gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
     gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
+    gguf_cancel = src.index("on_reload_confirmed(cancel = True)", gguf_wait)
     unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
-    standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
-    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
-    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
-    already_loaded = src.index('status = "already_loaded"')
 
-    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
-    assert standard_wait < standard_sidecar_check < unload_gguf
+    standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
+    standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
+    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+
+    assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
+    assert standard_branch < standard_wait < standard_sidecar_check
+    assert standard_sidecar_check < standard_cancel < unload_gguf
 
 
 def test_switch_waiter_deregisters_before_swap_gate_release():

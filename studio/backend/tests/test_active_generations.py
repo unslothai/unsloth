@@ -368,6 +368,102 @@ def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
     assert exc.value.status_code == 400
 
 
+def _stub_standard_load_route(monkeypatch):
+    """Drive _load_model_impl down the Unsloth path as far as the pre-teardown drain."""
+    import contextlib
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+
+    real_sidecar_check = inf_mod._raise_if_sidecar_swap_in_progress
+    _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    # _stub_load_route neutralises the sidecar guard; this test is about it.
+    monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", real_sidecar_check)
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(inf_mod, "_mlx_distributed_launch_detected", lambda: False)
+    monkeypatch.setattr(
+        inf_mod.ModelConfig,
+        "from_identifier",
+        staticmethod(
+            lambda **kwargs: SimpleNamespace(
+                is_gguf = False,
+                identifier = "org/A",
+                display_name = "A",
+                is_vision = False,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_effective_load_in_4bit", lambda config, requested: False)
+    monkeypatch.setattr(inf_mod, "_resolve_inherited_extra_args", lambda *a, **k: None)
+    monkeypatch.setattr(inf_mod, "_guard_chat_load_against_training", lambda *a, **k: None)
+    return inf_mod
+
+
+def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(monkeypatch):
+    # The pre-teardown drain awaits, and a sidecar install/repair reserves the swap
+    # window while it does (the installer reserves BEFORE waiting on the lifecycle
+    # gate this load holds). The recheck after that drain is the last thing that can
+    # reject the load, so it has to run ahead of the destructive cancel: rejecting
+    # after it would hand back a 409 with every chat already stopped and no new
+    # model loaded.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from core.inference import llama_keepwarm as kw
+    from models.inference import LoadRequest
+
+    import utils.transformers_version as tv
+
+    inf_mod = _stub_standard_load_route(monkeypatch)
+    reserved = {"v": False}
+    monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: reserved["v"])
+
+    # Two tracked inference requests: the chat registered below, plus one a forced
+    # cancel cannot stop (an embeddings call, say). The install reserves the window
+    # the moment that second request finishes, i.e. while the drain is still awaiting.
+    monkeypatch.setattr(kw, "_inflight", 2)
+
+    def _installer():
+        time.sleep(0.10)
+        kw._inflight = 1  # the non-cancellable request finished ...
+        reserved["v"] = True  # ... and an install reserved the swap window
+        time.sleep(0.35)
+        kw._inflight = 0  # the chat's own request drains last
+
+    thread = threading.Thread(target = _installer, daemon = True)
+    ev = threading.Event()
+    try:
+        with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+            thread.start()
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(
+                    inf_mod.load_model(
+                        LoadRequest(model_path = "org/A", force_cancel_active = True),
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1)
+                            )
+                        ),
+                        "tester",
+                    )
+                )
+            # Rejected, so the chat the user agreed to trade for a model it never
+            # got must still be streaming.
+            assert not ev.is_set()
+            assert active_generations.count() == 1
+        assert exc.value.status_code == 409
+        assert "transformers installation" in str(exc.value.detail)
+    finally:
+        thread.join(timeout = 5)
+        kw._inflight = 0
+
+
 def _stub_unload_backends(monkeypatch, *, llama, backend):
     """Point the /unload route at in-memory backends."""
     import routes.inference as inf_mod
@@ -750,6 +846,72 @@ def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
 
     # Stopped after the first event instead of relaying the rest.
     assert body.count(b'"text"') == 1
+    assert active_generations.count() == 0
+
+
+def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # ``stream`` defaults to false on /v1/completions, so the non-streaming branch
+    # is the common shape of the route. It decodes on llama-server for the whole
+    # request, and /unload runs no idle drain: without its own registration a
+    # non-forced /unload counts zero generations and tears the server down
+    # mid-request, and force_cancel_active has no event to signal.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    import httpx
+
+    import routes.inference as inf_mod
+
+    seen = {}
+
+    def handler(request):
+        # Sampled while the upstream call is in flight: exactly the window a
+        # concurrent /unload would tear llama-server down in.
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        # And the gate must reach this run, not just see it.
+        seen["cancelled"] = active_generations.cancel_all()
+        return httpx.Response(200, json = {"id": "cmpl-x", "choices": [{"text": "33"}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    # The pooled client too, so a route that never took a per-request one still
+    # reaches this transport (keeps the pre-fix behaviour observable, not a 502).
+    monkeypatch.setattr(
+        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            context_length = 4096,
+            base_url = "http://llama.test",
+            model_identifier = "org/M-GGUF",
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
+
+    async def _no_auto_switch(request, current_subject):
+        return await request.json()
+
+    monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
+
+    request = _CompletionsRequest({"prompt": "hi", "model": "org/M-GGUF", "max_tokens": 8})
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(inf_mod.openai_completions(request, "tester"))
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    assert seen["cancelled"] == 1
+    # And it unregisters, or one completion would 409 every later reload.
     assert active_generations.count() == 0
 
 

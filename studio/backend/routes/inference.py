@@ -3474,13 +3474,23 @@ def _switch_waiter_count() -> int:
         return sum(max(0, count) for count in _auto_switch_waiters.values())
 
 
-async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
+async def _wait_for_model_switch_idle(
+    *, current_request_counted: bool, cancel_pending: bool = False
+) -> None:
     """Wait until a model replacement cannot interrupt active inference.
 
     The caller holds ``inference_lifecycle_gate``, which prevents new inference
     from starting while existing requests drain. Auto-switch requests that have
     resolved their targets are scheduler waiters, not active generations, so
     exclude them to avoid a queue deadlock.
+
+    ``cancel_pending`` is set by a forced swap that has NOT cancelled yet: the
+    registered generations are the ones it is about to stop, so waiting on them
+    would wait out exactly what the force exists to end. Excluding them lets the
+    drain finish ahead of the cancel, which keeps every check that can still
+    reject the swap in front of the destructive step. Recomputed each poll (not
+    snapshotted) so a generation that ends on its own stops being discounted and
+    the remaining, non-cancellable requests are still waited out.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
     while True:
@@ -3491,6 +3501,8 @@ async def _wait_for_model_switch_idle(*, current_request_counted: bool) -> None:
             current_request_counted = current_request_counted,
             include_pending = False,
         )
+        if cancel_pending:
+            active_others -= min(active_others, active_generations.count())
         if active_others <= queued_switches:
             return
         await asyncio.sleep(0.02)
@@ -4644,6 +4656,12 @@ async def _load_model_impl(
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
 
+        # True when a destructive cancel is still owed at the teardown below. Only a
+        # forced swap cancels: without force the refusal above already 409'd, and
+        # auto-switch passes no hook at all. The drains key off this so the cancel can
+        # be deferred past every check that can still reject the load.
+        cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
+
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
         # checks before the worker starts.
@@ -4757,24 +4775,38 @@ async def _load_model_impl(
                         ),
                     )
 
-            # A sidecar install can reserve the swap window during the awaits above,
-            # and the recheck after the drain would then 409 a load whose chats the
-            # next line has already stopped. Reject it before that.
+            # Fast path only: a swap can still be reserved while the drain below
+            # runs, so the decisive check is the one after it.
+            _raise_if_sidecar_swap_in_progress()
+
+            # Keep the resident model alive until every active generation finishes;
+            # the caller's lifecycle gate blocks new starts. A forced swap has not
+            # cancelled yet, so the generations it is about to stop are excluded here
+            # rather than waited out.
+            await _wait_for_model_switch_idle(
+                current_request_counted = current_request_counted,
+                cancel_pending = cancel_pending,
+            )
+            # A sidecar install can reserve the gate while inference drains, after the
+            # route-level checks above, so recheck before replacing either backend.
+            # Last thing that can reject this load, so it runs BEFORE the cancel:
+            # rejecting after it would leave every chat stopped for a model that never
+            # loads.
             _raise_if_sidecar_swap_in_progress()
 
             # Point of no return for the GGUF path: nothing left can reject this load,
             # so stop the chats the swap interrupts (or refuse, if the caller never
-            # opted in). Must precede the drain below, which would otherwise wait out
-            # the very generations force is meant to end.
+            # opted in).
             if on_reload_confirmed is not None:
                 on_reload_confirmed(cancel = True)
 
-            # Keep the resident model alive until every active generation finishes;
-            # the caller's lifecycle gate blocks new starts.
-            await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
-            # A sidecar install can reserve the gate while inference drains, after the
-            # route-level checks above, so recheck before replacing either backend.
-            _raise_if_sidecar_swap_in_progress()
+            # Let the cancelled generations unwind before the teardown replaces the
+            # server under them. No check follows, so this wait can never strand a
+            # cancelled chat behind a 409.
+            if cancel_pending:
+                await _wait_for_model_switch_idle(
+                    current_request_counted = current_request_counted
+                )
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
@@ -4986,8 +5018,15 @@ async def _load_model_impl(
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = get_inference_backend()
 
-        # Same sidecar rejection as GGUF, ahead of the cancel so a reservation taken
-        # during preflight cannot 409 chats already stopped.
+        # Same sidecar rejection as GGUF: a fast path ahead of the drain, rechecked
+        # after it.
+        _raise_if_sidecar_swap_in_progress()
+
+        llama_backend = get_llama_cpp_backend()
+        await _wait_for_model_switch_idle(
+            current_request_counted = current_request_counted,
+            cancel_pending = cancel_pending,
+        )
         _raise_if_sidecar_swap_in_progress()
 
         # Point of no return for the Unsloth path: cancel only once nothing left
@@ -4995,10 +5034,11 @@ async def _load_model_impl(
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)
 
+        # Let the cancelled generations unwind before the teardown. No check
+        # follows, so this wait cannot strand a cancelled chat behind a 409.
+        if cancel_pending:
+            await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
         # Unload any active GGUF model first
-        llama_backend = get_llama_cpp_backend()
-        await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
-        _raise_if_sidecar_swap_in_progress()
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
             llama_backend.unload_model()
@@ -11117,18 +11157,56 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return _sse_streaming_response(_stream())
     else:
-        try:
-            resp = await nonstreaming_client().post(
-                target_url,
-                json = body,
-                timeout = _llama_non_streaming_generation_timeout(),
+        # ``stream`` defaults to false here, so this is the common shape of the
+        # route: register it with the swap gate exactly like the streaming branch
+        # above. Without an entry a non-forced /unload counts zero generations and
+        # tears llama-server down mid-request (/unload runs no idle drain), and
+        # force_cancel_active has no event to signal. A dedicated (unpooled) client
+        # so closing it on cancel interrupts this call only -- same shape as the
+        # chat-completions non-streaming pass-through.
+        _cancel_event = threading.Event()
+        _client = _cancelable_nonstreaming_client()
+        _tracker = _TrackedCancel(_cancel_event, model = monitor_model)
+        _tracker.__enter__()
+        _cancel_watcher = asyncio.create_task(
+            _await_cancel_or_disconnect_then_close_client(
+                cancel_event = _cancel_event,
+                request = request,
+                client = _client,
             )
+        )
+        try:
+            try:
+                resp = await _client.post(
+                    target_url,
+                    json = body,
+                    timeout = _llama_non_streaming_generation_timeout(),
+                )
+            except httpx.RequestError:
+                # The watcher closed the client out from under the request: report
+                # the cancel, not a bare transport failure.
+                if _cancel_event.is_set():
+                    raise asyncio.CancelledError()
+                raise
+            if _cancel_event.is_set():
+                raise asyncio.CancelledError()
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except Exception as e:
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise
+        finally:
+            # Nested so a close-time failure can't skip the unregister and leave a
+            # phantom generation 409-ing every later swap (mirrors the stream above).
+            try:
+                await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+                try:
+                    await _client.aclose()
+                except Exception:
+                    pass
+            finally:
+                _tracker.__exit__(None, None, None)
 
         if resp.status_code != 200:
             api_monitor.fail(monitor_id, resp.text[:500])

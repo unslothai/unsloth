@@ -724,6 +724,15 @@ export function isDownloadableHubRepo(x: {
   );
 }
 
+type ContextUsageSnapshot = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  // Anthropic-only; optional so pre-cache-stats persisted entries load.
+  cacheWriteTokens?: number;
+};
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -742,6 +751,8 @@ type ChatRuntimeStore = {
    * appear in `active_generations` or trigger the 409.
    */
   localRunByThreadId: Record<string, boolean>;
+  /** Which run set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. */
+  runOwnerByThreadId: Record<string, () => void>;
   cancelByThreadId: Record<string, () => void>;
   /**
    * Backend cancel for a thread generating in the background.
@@ -967,14 +978,17 @@ type ChatRuntimeStore = {
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
-  contextUsage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    cachedTokens: number;
-    // Anthropic-only; optional so pre-cache-stats persisted entries load.
-    cacheWriteTokens?: number;
-  } | null;
+  contextUsage: ContextUsageSnapshot | null;
+  /**
+   * Per-thread copy of the above, so the bar survives a switch away and back.
+   *
+   * `contextUsage` is the VISIBLE conversation's usage and a background run is
+   * barred from writing it, so a run that finishes while another chat is on
+   * screen would otherwise leave nothing to restore: `setActiveThreadId` clears
+   * the single value, and a still-mounted thread runtime does not re-run the
+   * history loader on the way back. Keyed like `toolStatusByThreadId`.
+   */
+  contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
   activeNativePathToken: string | null;
@@ -996,11 +1010,16 @@ type ChatRuntimeStore = {
   /**
    * `local` defaults to true: an unqualified caller is a llama-server run, so
    * the model-swap gate keeps counting it.
+   *
+   * `owner` narrows the clear to the run that set the flag, like
+   * `clearThreadServerCancel`. A run whose thread id is not yet resolved is
+   * keyed "__default", so two of them (concurrent compare panes) share one
+   * entry and a blind delete would drop the live one's spinner and stop handle.
    */
   setThreadRunning: (
     threadId: string,
     running: boolean,
-    options?: { local?: boolean },
+    options?: { local?: boolean; owner?: () => void },
   ) => void;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
@@ -1091,6 +1110,14 @@ type ChatRuntimeStore = {
   ) => void;
   clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
+  /**
+   * Remember a finished run's usage against its own thread, whether or not that
+   * thread is the visible one. Switching back re-applies it.
+   */
+  setThreadContextUsage: (
+    threadId: string,
+    usage: ContextUsageSnapshot,
+  ) => void;
 };
 
 type PersistedChatSettings = Awaited<
@@ -1307,6 +1334,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loras: [],
   runningByThreadId: {},
   localRunByThreadId: {},
+  runOwnerByThreadId: {},
   cancelByThreadId: {},
   serverCancelByThreadId: {},
   autoTitle: false,
@@ -1419,6 +1447,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   pendingAudioName: null,
   pendingImageEditReference: null,
   contextUsage: null,
+  contextUsageByThreadId: {},
   modelLoading: false,
   loadingModelPick: null,
   activeNativePathToken: null,
@@ -1491,7 +1520,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
-        ...(checkpointChanged ? { contextUsage: null } : {}),
+        ...(checkpointChanged
+          ? { contextUsage: null, contextUsageByThreadId: {} }
+          : {}),
       };
     }),
   setCustomPresets: (customPresets) =>
@@ -1518,18 +1549,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       const next = { ...state.runningByThreadId };
       const nextLocal = { ...state.localRunByThreadId };
+      const nextOwner = { ...state.runOwnerByThreadId };
       if (running) {
         next[threadId] = true;
+        if (options?.owner) {
+          nextOwner[threadId] = options.owner;
+        }
         if (options?.local === false) {
           delete nextLocal[threadId];
         } else {
           nextLocal[threadId] = true;
         }
       } else {
+        const owner = state.runOwnerByThreadId[threadId];
+        if (options?.owner && owner && owner !== options.owner) {
+          return state;
+        }
         delete next[threadId];
         delete nextLocal[threadId];
+        delete nextOwner[threadId];
       }
-      return { runningByThreadId: next, localRunByThreadId: nextLocal };
+      return {
+        runningByThreadId: next,
+        localRunByThreadId: nextLocal,
+        runOwnerByThreadId: nextOwner,
+      };
     }),
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {
@@ -1550,8 +1594,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = cancel;
       return { serverCancelByThreadId: next };
     }),
-  // `cancel` narrows removal to the run that registered it: a tool continuation
-  // starts the next leg first, and a blind delete would drop the live handle.
+  // `cancel` narrows removal to the run that registered it. A run whose thread
+  // id is not yet resolved is keyed "__default", so two of them (concurrent
+  // compare panes) share one entry and a blind delete would drop the live one.
   clearThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const current = state.serverCancelByThreadId[threadId];
@@ -1605,11 +1650,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           maxTokens: nextMaxTokens,
         },
         activeGgufVariant: ggufVariant ?? null,
-        ...(checkpointChanged ? { contextUsage: null } : {}),
+        ...(checkpointChanged
+          ? { contextUsage: null, contextUsageByThreadId: {} }
+          : {}),
       };
     }),
+  // Re-apply the incoming thread's own usage rather than always blanking the
+  // bar: a run that finished in the background never got to write the visible
+  // value, and a still-mounted runtime skips the history loader on the way back.
   setActiveThreadId: (activeThreadId) =>
-    set({ activeThreadId, contextUsage: null }),
+    set((state) => ({
+      activeThreadId,
+      contextUsage: activeThreadId
+        ? (state.contextUsageByThreadId[activeThreadId] ?? null)
+        : null,
+    })),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
@@ -1632,6 +1687,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufNativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
+      contextUsageByThreadId: {},
       supportsReasoning: false,
       reasoningAlwaysOn: false,
       reasoningEnabled: true,
@@ -2026,6 +2082,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   clearPendingImageEditReference: () =>
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
+  setThreadContextUsage: (threadId, usage) =>
+    set((state) => ({
+      contextUsageByThreadId: {
+        ...state.contextUsageByThreadId,
+        [threadId]: usage,
+      },
+    })),
 }));
 
 // Mirror token edits made through the shared store (e.g. Unsloth's field).

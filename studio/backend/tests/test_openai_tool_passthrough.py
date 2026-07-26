@@ -4580,6 +4580,9 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             class FailingAsyncClient:
                 async def __aenter__(self):
                     return self
@@ -4587,14 +4590,19 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def __aexit__(self, *_args):
                     return False
 
+                async def aclose(self):
+                    return None
+
                 async def post(self, *_args, **_kwargs):
                     raise httpx.ConnectError("llama down")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # The proxy takes a per-request client so a forced swap can close it
+            # mid-call; the pooled one is shared and must not be torn down.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FailingAsyncClient(),
             )
             monkeypatch.setattr(
@@ -4632,9 +4640,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4652,7 +4666,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4683,9 +4699,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False, "max_tokens": 0}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4703,7 +4725,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4741,6 +4765,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",

@@ -2518,6 +2518,10 @@ export function createOpenAIStreamAdapter(
       const runAbort = new AbortController();
       const runSignal = runAbort.signal;
       const forwardAbort = () => runAbort.abort(abortSignal.reason);
+      // Declared here rather than at its registration below because it doubles
+      // as this run's identity token on the per-thread maps, which the
+      // streaming path writes first. See registerThreadServerCancel.
+      const serverCancel = () => runAbort.abort();
       if (abortSignal.aborted) {
         forwardAbort();
       } else {
@@ -2531,7 +2535,7 @@ export function createOpenAIStreamAdapter(
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
-        runtime.setThreadRunning(threadKey, true);
+        runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
@@ -2572,7 +2576,7 @@ export function createOpenAIStreamAdapter(
           throw err;
         } finally {
           abortSignal.removeEventListener("abort", forwardAbort);
-          runtime.setThreadRunning(threadKey, false);
+          runtime.setThreadRunning(threadKey, false, { owner: audioCancel });
           runtime.clearThreadServerCancel(threadKey, audioCancel);
         }
         return;
@@ -2614,7 +2618,10 @@ export function createOpenAIStreamAdapter(
       // Flagged local/external so the model-swap gate only counts the chats a
       // reload ends: an external-provider run never touches llama-server, and
       // the backend leaves it out of active_generations for the same reason.
-      runtime.setThreadRunning(threadKey, true, { local: !isExternalRequest });
+      runtime.setThreadRunning(threadKey, true, {
+        local: !isExternalRequest,
+        owner: serverCancel,
+      });
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
@@ -2783,11 +2790,11 @@ export function createOpenAIStreamAdapter(
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
-        // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
-        // unmounts (navigation / background thread switch) and detach=false for an
-        // explicit Stop. Only a real Stop cancels the backend run; a detach must
-        // leave a backgrounded generation streaming; runSignal forwards the
-        // reason so a detach still reads as one here.
+        // assistant-ui aborts with AbortError(detach=true) when a thread's
+        // runtime unmounts (deleting a conversation, tearing the provider down)
+        // and detach=false for an explicit Stop. Switching threads unmounts
+        // nothing, so it does not abort at all. Only a real Stop cancels the
+        // backend run; runSignal forwards the reason so a detach reads as one.
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
@@ -2815,7 +2822,6 @@ export function createOpenAIStreamAdapter(
       // closes just its request, and the listener above posts its cancel_id so
       // llama-server stops decoding too. For an external provider, whose
       // cancel_id is never registered backend-side, the abort is the stop.
-      const serverCancel = () => runAbort.abort();
       runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
         if (runSignal.aborted) {
@@ -4079,16 +4085,26 @@ export function createOpenAIStreamAdapter(
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
           typeof meta.usage.total_tokens === "number" &&
-          usageThreadIsVisible &&
           useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
-          useChatRuntimeStore.getState().setContextUsage({
+          const usage = {
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
             cachedTokens,
             cacheWriteTokens,
-          });
+          };
+          // Always file it under this run's own thread, even when the gate
+          // below blocks the visible write: switching back re-applies it, so a
+          // background run no longer leaves the bar blank until the next turn.
+          if (resolvedThreadKey !== null) {
+            useChatRuntimeStore
+              .getState()
+              .setThreadContextUsage(resolvedThreadKey, usage);
+          }
+          if (usageThreadIsVisible) {
+            useChatRuntimeStore.getState().setContextUsage(usage);
+          }
         }
 
         const finishedAt = Date.now();
@@ -4215,9 +4231,10 @@ export function createOpenAIStreamAdapter(
             settleFirstTokenErr(new Error("No tokens received"));
           }
         }
-        runtime.setThreadRunning(threadKey, false);
-        // Passing serverCancel keeps a newer run's handle: a tool continuation
-        // registers the next leg before this one unwinds.
+        // Passing serverCancel keeps a sibling's state: every run with no
+        // resolved thread id shares the "__default" key, so neither clear may
+        // drop an entry another run owns.
+        runtime.setThreadRunning(threadKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(threadKey, serverCancel);
       }
     },
