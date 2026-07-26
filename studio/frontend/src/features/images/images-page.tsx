@@ -74,6 +74,7 @@ import { ModelLoadDescription } from "@/features/chat/components/model-load-stat
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
+import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
 import {
@@ -1180,6 +1181,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // a valid pick can be a free-text HF repo id absent from the (often empty) curated list.
   const loraCapable = Boolean(status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
+  // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
+  const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
     if (!loraCapable) {
       // Options are gone with the model, but keep the selection: it may have just been
@@ -1226,6 +1229,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       cancelled = true;
     };
   }, [loraCapable, status?.family, loraRefreshKey]);
+
+  // A torchao int8/fp8 build takes adapters ONLY at load time, baked in before quantize_ and
+  // compile. Switching artifact within one family keeps the selection (the family-swap clear
+  // above sees no change) while the new load was started without baking it, so the next
+  // Generate would 400 on "reload with the adapter selection" against a picker still showing
+  // the adapter as active. Drop it once per resident build and say why.
+  const residentBuildKey = `${status?.repo_id ?? ""}|${String(
+    status?.resolved?.transformer_quant?.value ?? "",
+  )}`;
+  const checkedBuildForBake = useRef<string | null>(null);
+  useEffect(() => {
+    if (!loraCapable || checkedBuildForBake.current === residentBuildKey) return;
+    checkedBuildForBake.current = residentBuildKey;
+    const engaged = status?.resolved?.transformer_quant?.value;
+    if (engaged !== "int8" && engaged !== "fp8") return;
+    if (bakedLorasOnLoad.current || loras.length === 0) return;
+    setLoras([]);
+    toast.info("LoRA selection cleared", {
+      description:
+        "This quantized load bakes adapters in at load time. Pick them, then load again.",
+    });
+  }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
   // Refresh the ControlNet picker's options when the loaded model (family) changes, and clear
   // a stale selection the new model can't use so an incompatible ControlNet is never sent.
@@ -1699,6 +1724,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             .map((l) => ({ id: l.id.trim(), weight: l.weight }))
             .filter((l) => l.id && l.weight > 0)
         : [];
+      // Whether THIS load carries the selection into the build, so a quantized load that did
+      // not can drop a selection it can never apply rather than failing the next Generate.
+      bakedLorasOnLoad.current = bakeLoras.length > 0;
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails
@@ -1867,13 +1895,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
-    void loadOrStage(
-      wanted,
-      routeSearch.quant
-        ? { kind: "gguf", filename: routeSearch.quant }
-        : { kind: "pipeline" },
-      false,
-    );
+    const pick = diffusionRoutePick(wanted, routeSearch.quant);
+    void loadOrStage(pick.repoId, pick.opts, false);
   }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.

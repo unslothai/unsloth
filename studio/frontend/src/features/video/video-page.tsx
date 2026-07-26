@@ -59,6 +59,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
+import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
 import {
@@ -1197,13 +1198,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/video", search: {}, replace: true });
-    void loadOrStage(
-      wanted,
-      routeSearch.quant
-        ? { kind: "gguf", filename: routeSearch.quant }
-        : { kind: "pipeline" },
-      false,
-    );
+    const pick = diffusionRoutePick(wanted, routeSearch.quant);
+    void loadOrStage(pick.repoId, pick.opts, false);
   }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.

@@ -745,42 +745,90 @@ class VideoBackend:
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
-        entries: list[dict[str, Any]] = []
+        # The load narrows the base pull for an LTX-2.3 checkpoint (its VAEs, vocoder and
+        # connectors come from the checkpoint and the 2.3 extras, not the 2.0 base), but it can
+        # only tell 2.3 from 2.0 by the checkpoint header, which is not on disk yet. Name-based
+        # here: a wrong guess costs at most an inline pull at load time, while staging the wide
+        # base list costs gigabytes of weights the pipeline never opens.
+        ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)
+        # Keyed by repo so a 2.3 pick's checkpoint and extras (both in the 2.3 repo) stay ONE
+        # scoped job; two entries for one repo would collide on the job key.
+        entries: dict[str, dict[str, Any]] = {}
         total = 0
+
+        def add(repo: str, files: list[tuple[str, int]], gguf: Optional[str] = None) -> int:
+            if not files:
+                return 0
+            entry = entries.setdefault(
+                repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
+            )
+            seen = set(entry["files"])
+            added = 0
+            for name, size in files:
+                if name in seen:
+                    continue
+                seen.add(name)
+                entry["files"].append(name)
+                entry["bytes"] += int(size)
+                added += int(size)
+            if gguf:
+                entry["gguf_filename"] = gguf
+            return added
+
         try:
             api = HfApi(token = hf_token or None)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
-                size = sum(
-                    int(s.size or 0) for s in (info.siblings or []) if s.rfilename == gguf_filename
-                )
-                total += size
-                entries.append(
-                    {
-                        "repo_id": repo_id,
-                        "files": [gguf_filename],
-                        "bytes": size,
-                        "gguf_filename": gguf_filename,
-                    }
-                )
+                sizes = [
+                    (s.rfilename, int(s.size or 0))
+                    for s in (info.siblings or [])
+                    if s.rfilename == gguf_filename
+                ]
+                total += add(repo_id, sizes, gguf = gguf_filename)
+                if ltx23:
+                    # The 2.3 assembly reads these companion files at load; without them here
+                    # they would be pulled inline, outside the panel and its disk preflight.
+                    from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
+
+                    wanted = set(ltx23_extras_files(gguf_filename))
+                    extras_info = (
+                        info
+                        if LTX23_EXTRAS_REPO == repo_id
+                        else api.model_info(LTX23_EXTRAS_REPO, files_metadata = True)
+                    )
+                    total += add(
+                        LTX23_EXTRAS_REPO,
+                        [
+                            (s.rfilename, int(s.size or 0))
+                            for s in (extras_info.siblings or [])
+                            if s.rfilename in wanted
+                        ],
+                    )
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(base, files_metadata = True)
-                pairs = self._base_download_files(info, kind)
-                size = sum(s for _, s in pairs)
-                total += size
-                if pairs:
-                    entries.append(
-                        {
-                            "repo_id": base,
-                            "files": [name for name, _ in pairs],
-                            "bytes": size,
-                            "gguf_filename": None,
-                        }
-                    )
+                total += add(base, self._base_download_files(info, kind, ltx23 = ltx23))
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0}
-        return {"entries": entries, "total_bytes": total}
+        return {"entries": list(entries.values()), "total_bytes": total}
+
+    @staticmethod
+    def _pick_looks_like_ltx23(
+        fam: Any, repo_id: str, gguf_filename: Optional[str], kind: str
+    ) -> bool:
+        """Whether a pick is an LTX-2.3 checkpoint, judged by name alone.
+
+        The load decides this from the checkpoint header (authoritative), which the plan cannot
+        read before downloading. Only the file list differs, and under-guessing merely falls back
+        to the load-time pull, so a name match is the right trade here."""
+        if kind == "pipeline" or fam is None or getattr(fam, "name", None) != "ltx-2":
+            return False
+        from .video_ltx2 import LTX23_EXTRAS_REPO
+
+        if repo_id.strip().lower() == LTX23_EXTRAS_REPO.lower():
+            return True
+        text = f"{repo_id} {gguf_filename or ''}".lower()
+        return "2.3" in text or "2_3" in text or "23b" in text
 
     def _predownload_base(
         self,

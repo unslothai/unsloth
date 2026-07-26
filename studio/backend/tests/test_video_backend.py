@@ -1824,3 +1824,106 @@ def test_detect_load_family_arch_fallback_for_local_gguf(tmp_path, monkeypatch):
         lambda p: {"general.architecture": "ltxv"},
     )
     assert vid._detect_load_family(str(d), "model.gguf", "ltx-2").name == "ltx-2"
+
+
+class _PlanSibling:
+    def __init__(self, rfilename: str, size: int) -> None:
+        self.rfilename = rfilename
+        self.size = size
+
+
+class _PlanInfo:
+    def __init__(self, siblings) -> None:
+        self.siblings = siblings
+
+
+_LTX_BASE_SIBLINGS = [
+    _PlanSibling("model_index.json", 1000),
+    _PlanSibling("scheduler/scheduler_config.json", 1000),
+    _PlanSibling("tokenizer/tokenizer.json", 5_000_000),
+    _PlanSibling("text_encoder/model-00001-of-00005.safetensors", 10_000_000_000),
+    _PlanSibling("vae/diffusion_pytorch_model.safetensors", 2_400_000_000),
+    _PlanSibling("vocoder/diffusion_pytorch_model.safetensors", 200_000_000),
+    _PlanSibling("connectors/diffusion_pytorch_model.safetensors", 2_900_000_000),
+    _PlanSibling("transformer/diffusion_pytorch_model.safetensors", 37_800_000_000),
+]
+
+_LTX23_REPO_SIBLINGS = [
+    _PlanSibling("ltx-2.3-22b-distilled.gguf", 12_000_000_000),
+    _PlanSibling("vae/ltx-2.3-22b-distilled_video_vae.safetensors", 2_400_000_000),
+    _PlanSibling("vae/ltx-2.3-22b-distilled_audio_vae.safetensors", 200_000_000),
+    _PlanSibling(
+        "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors", 900_000_000
+    ),
+    _PlanSibling("vae/ltx-2.3-22b-dev_video_vae.safetensors", 2_400_000_000),
+]
+
+
+def _plan_api(monkeypatch, repos):
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _PlanInfo(repos[repo_id])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+
+
+def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
+    # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base's
+    # copies downloads gigabytes the pipeline never opens -- and the companion files it DOES
+    # read were left out of the plan entirely, so they were pulled inline at load time,
+    # outside the panel's progress, cancel and disk preflight.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    by_repo = {e["repo_id"]: e for e in plan["entries"]}
+    # Checkpoint and extras share one repo, so they must be ONE entry: two jobs for the same
+    # repo would collide on the scoped job key.
+    assert set(by_repo) == {"unsloth/LTX-2.3-GGUF", "Lightricks/LTX-2"}
+    ckpt = by_repo["unsloth/LTX-2.3-GGUF"]
+    assert ckpt["gguf_filename"] == "ltx-2.3-22b-distilled.gguf"
+    assert "vae/ltx-2.3-22b-distilled_video_vae.safetensors" in ckpt["files"]
+    assert "vae/ltx-2.3-22b-distilled_audio_vae.safetensors" in ckpt["files"]
+    assert (
+        "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors" in ckpt["files"]
+    )
+    # The other variant's companions are not this checkpoint's.
+    assert "vae/ltx-2.3-22b-dev_video_vae.safetensors" not in ckpt["files"]
+
+    base = by_repo["Lightricks/LTX-2"]
+    assert "scheduler/scheduler_config.json" in base["files"]
+    assert any(f.startswith("text_encoder/") for f in base["files"])
+    for dropped in ("vae/", "vocoder/", "connectors/", "transformer/"):
+        assert not any(f.startswith(dropped) for f in base["files"]), dropped
+    assert plan["total_bytes"] == ckpt["bytes"] + base["bytes"]
+
+
+def test_download_plan_keeps_the_wide_base_for_a_plain_ltx2_pick(monkeypatch):
+    # Only 2.3 checkpoints supply their own companions; a 2.0 pick still needs the base's.
+    _plan_api(
+        monkeypatch,
+        {
+            "someone/LTX-2-GGUF": [_PlanSibling("ltx-2-dev.gguf", 12_000_000_000)],
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "someone/LTX-2-GGUF", gguf_filename = "ltx-2-dev.gguf", family_override = "ltx-2"
+    )
+
+    base = next(e for e in plan["entries"] if e["repo_id"] == "Lightricks/LTX-2")
+    assert any(f.startswith("vae/") for f in base["files"])
+    assert any(f.startswith("connectors/") for f in base["files"])
+    # The GGUF still replaces the DiT, so the transformer shards stay out.
+    assert not any(f.startswith("transformer/") for f in base["files"])

@@ -349,6 +349,18 @@ def checkpoint_variant(checkpoint_path: Path | str) -> str:
     return "dev" if "dev" in Path(checkpoint_path).name.lower() else "distilled"
 
 
+def ltx23_extras_files(checkpoint_path: Path | str) -> tuple[str, ...]:
+    """The companion files in ``LTX23_EXTRAS_REPO`` a 2.3 checkpoint loads alongside itself.
+
+    Same variant rule as the assembly, so the download plan stages exactly what the load reads
+    (they are otherwise fetched inline, outside the panel's progress, cancel and disk preflight)."""
+    variant = checkpoint_variant(checkpoint_path)
+    return tuple(
+        template.format(variant = variant)
+        for template in (_EXTRAS_TEXT_PROJ, _EXTRAS_VIDEO_VAE, _EXTRAS_AUDIO_VAE)
+    )
+
+
 # Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step sampling curve the 22B distilled
 # DiT was trained against (the scheduler appends the terminal 0 itself). The base scheduler's
 # resolution-shifted flow-match spacing lands FAR from it at every mu the pipeline can compute

@@ -596,6 +596,43 @@ def test_variant_expander_forwards_the_gguf_filename():
     assert args[:2] == ["v.quant", "v.filename"], args
 
 
+def test_a_routed_local_single_file_pick_keeps_its_load_kind():
+    """A pick routed from the chat picker arrives as ?model=&quant= with no picker metadata,
+    so a bare local .gguf / .safetensors has to be recognised from the path. Loading one as a
+    pipeline evicts the resident model and then fails on the missing model_index.json, because
+    an explicit model_kind wins over the backend's filename sniffing."""
+    helper = _read("lib/diffusion-route-pick.ts")
+    assert '"gguf"' in helper and '"single_file"' in helper
+    assert 'lower.endsWith(".gguf")' in helper
+    assert 'lower.endsWith(".safetensors")' in helper
+    # A repo id (no recognised extension) still loads as a pipeline, as before.
+    assert 'kind: "pipeline"' in helper
+
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "diffusionRoutePick(" in src, f"{rel}: route pick not derived"
+        # And the derived pick is what gets loaded, not the raw search params.
+        assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
+
+
+def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
+    """int8/fp8 builds take adapters only at load time. Switching artifact inside one family
+    keeps the selection (same family, no clear) while the load did not bake it, so Generate
+    would 400 with the picker still showing the adapter as active."""
+    src = _read("features/images/images-page.tsx")
+    assert "bakedLorasOnLoad.current = bakeLoras.length > 0;" in src
+    guard = re.search(
+        r"if \(!loraCapable \|\| checkedBuildForBake\.current === residentBuildKey\) return;.*?\n  \}, \[",
+        src,
+        re.S,
+    )
+    assert guard, "the bake-only check is missing"
+    body = guard.group(0)
+    assert '"int8"' in body and '"fp8"' in body
+    assert "bakedLorasOnLoad.current" in body, "a baked selection must be kept"
+    assert "setLoras([])" in body and "toast.info(" in body, "cleared without telling the user"
+
+
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
     """The fallback branch splits a local path; a repo pick reaching it has no
     filename. It must say so instead of returning with no request and no toast."""
