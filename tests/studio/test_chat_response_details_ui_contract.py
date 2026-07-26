@@ -85,6 +85,21 @@ def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
     assert "streaming={isReasoningStreaming || retainStreamingHeight}" in src
 
 
+def test_reasoning_clears_manual_open_on_a_new_stream():
+    """A hand-opened block must not stay pinned open when the stream restarts.
+
+    isOpen is `(streaming && !dismissed) || manualOpen` and manualOpen is only
+    settable while idle, so the new-stream reset has to clear it too.
+    """
+    src = REASONING_TSX.read_text()
+
+    marker = "setDismissedWhileStreaming(false)"
+    start = src.find(marker)
+    assert start != -1, "new-stream reset effect is missing"
+    effect = src[src.rfind("useEffect(() => {", 0, start) : src.find("});", start)]
+    assert "setManualOpen(false)" in effect
+
+
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
     src = ADAPTER_TS.read_text()
     assert "interface ResponseDetailsMetadata" in src
