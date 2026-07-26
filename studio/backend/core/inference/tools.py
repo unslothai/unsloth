@@ -49,6 +49,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
+_DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -4194,13 +4195,18 @@ def _fetch_url_raw(
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
             if budget_error is not None:
                 return budget_error, "", ""
-            # Pin to the validated IP (prevents DNS rebinding): rewrite URL to
-            # the IP, set the Host header.
             cp = urlparse(current_url)
-            # Bracket IPv6 addresses so the netloc is valid in a URL.
-            ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-            ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+            validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
+            if cp.port:
+                validated_netloc = f"{validated_netloc}:{cp.port}"
+            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1":
+                # Enterprise proxies need the hostname in CONNECT for policy and TLS interception.
+                request_url = urlunparse(cp._replace(netloc = validated_netloc))
+            else:
+                # Pin to the validated IP to prevent DNS rebinding.
+                ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+                ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
+                request_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             opener = urllib.request.build_opener(
                 _NoRedirect,
@@ -4209,11 +4215,11 @@ def _fetch_url_raw(
 
             headers = {
                 "User-Agent": ua,
-                "Host": current_host,
+                "Host": validated_netloc,
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(pinned_url, headers = headers)
+            req = urllib.request.Request(request_url, headers = headers)
             try:
                 # Cap the socket timeout at the time left on the overall deadline
                 # so a single slow hop cannot outlast the whole fetch budget.
