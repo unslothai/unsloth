@@ -6215,24 +6215,42 @@ class LlamaCppBackend:
             nxt = out[i + 1] if i + 1 < len(out) else None
             return nxt if nxt in ("on", "auto", "off") else None
 
+        def flash_attn_parts(tok: str):
+            """(canonical flag, inline value or None), or (None, None).
+
+            User extras are appended after Unsloth's own ``--flash-attn on``, so
+            llama.cpp's last-wins parse lets them decide the effective value --
+            and it folds `_` to `-` on `--` args. Matching raw text here left an
+            appended ``--flash_attn=on`` untouched, so the retry re-enabled the
+            very kernels this rung disables and crashed again.
+            """
+            name, eq, inline = tok.partition("=")
+            canonical = _canonical_long_flag_name(name)
+            if canonical not in ("--flash-attn", "-fa"):
+                return None, None
+            return canonical, (inline if eq else None)
+
         effective = None
         for i, tok in enumerate(out):
-            if tok.startswith(("--flash-attn=", "-fa=")):
-                effective = tok.partition("=")[2]
-            elif tok in ("--flash-attn", "-fa"):
-                effective = explicit(i) or "on"
+            canonical, inline = flash_attn_parts(tok)
+            if canonical is None:
+                continue
+            effective = inline if inline is not None else (explicit(i) or "on")
         if effective not in ("on", "auto"):
             return None
         for i, tok in enumerate(out):
-            if tok.startswith(("--flash-attn=", "-fa=")):
-                flag, _, value = tok.partition("=")
-                if value in ("on", "auto"):
-                    out[i] = f"{flag}=off"
-            elif tok in ("--flash-attn", "-fa"):
-                if explicit(i) in ("on", "auto"):
-                    out[i + 1] = "off"
-                elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
-                    out[i] = f"{tok}=off"
+            canonical, inline = flash_attn_parts(tok)
+            if canonical is None:
+                continue
+            if inline is not None:
+                if inline in ("on", "auto"):
+                    # Rewrite in place keeping the user's own spelling; llama.cpp
+                    # accepts either and the list length must not change.
+                    out[i] = f"{tok.partition('=')[0]}=off"
+            elif explicit(i) in ("on", "auto"):
+                out[i + 1] = "off"
+            elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
+                out[i] = f"{tok}=off"
 
         # A quantized V cache requires flash attention in llama.cpp: the init
         # aborts with "V cache quantization requires flash_attn". A quantized K

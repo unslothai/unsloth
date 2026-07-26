@@ -2239,3 +2239,32 @@ def test_underscore_folding_is_long_flags_only():
     assert _extra_arg_flag_name("--") is None
     # The class helper and the module helper must stay one implementation.
     assert LlamaCppBackend._canonical_long_flag("--cache_type_v") == "--cache-type-v"
+
+
+def test_flash_attn_off_recovery_sees_underscore_aliases():
+    """The FA-off crash-recovery rung must beat an appended underscore alias.
+
+    Unsloth emits its own `--flash-attn on` and appends user extras after it, so
+    llama.cpp's last-wins parse lets a pass-through `--flash_attn=on` decide the
+    effective value. Matching raw text left it untouched, so the retry launched
+    with flash attention still on and hard-crashed exactly like the first try.
+    """
+    studio = ["llama-server", "-m", "/m.gguf", "--flash-attn", "on", "--no-context-shift"]
+    for extra, expected_tail in (
+        (["--flash_attn=on"], ["--flash_attn=off"]),
+        (["--flash_attn"], ["--flash_attn=off"]),
+        (["--flash_attn", "on"], ["--flash_attn", "off"]),
+        (["--flash-attn=auto"], ["--flash-attn=off"]),
+    ):
+        cmd = studio + extra
+        retry = LlamaCppBackend._with_flash_attn_off(cmd)
+        assert retry is not None, extra
+        # Length is preserved for the downstream slices, Unsloth's own flag is
+        # flipped, and the user's alias is neutralised in its own spelling.
+        assert len(retry) == len(cmd), extra
+        assert retry[3:5] == ["--flash-attn", "off"], extra
+        assert retry[len(studio) :] == expected_tail, extra
+
+    # An effective value that is already off still means there is nothing to retry.
+    assert LlamaCppBackend._with_flash_attn_off(studio + ["--flash_attn=off"]) is None
+    assert LlamaCppBackend._with_flash_attn_off(["llama-server", "-m", "/m.gguf"]) is None
