@@ -40,7 +40,7 @@ if sys.platform == "win32":
 
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
-_system_gpu_cache: Optional[tuple[float, dict[str, Any]]] = None
+_system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
 
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
@@ -1149,10 +1149,14 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     return {"status": "shutting_down"}
 
 
-def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
-    """Return merged GPU visibility/utilization with bounded live-probe churn."""
+def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return training and inference GPU info with bounded live-probe churn."""
     import time
-    from utils.hardware import get_backend_visible_gpu_info, get_visible_gpu_utilization
+    from utils.hardware import (
+        get_backend_visible_gpu_info,
+        get_visible_gpu_utilization,
+        get_vulkan_inference_gpu_info,
+    )
 
     global _system_gpu_cache
     now = time.monotonic()
@@ -1174,7 +1178,18 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             logger.debug(f"Failed to get GPU utilization info: {e}")
             utilization_info = {"devices": []}
 
-        util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
+        # Device indices are backend-specific. Never overlay CUDA/ROCm metrics
+        # onto compact Vulkan ordinals merely because both happen to start at 0.
+        visibility_backend = visibility_info.get("backend")
+        utilization_backend = utilization_info.get("backend")
+        metrics_match = (
+            not visibility_backend
+            or not utilization_backend
+            or visibility_backend == utilization_backend
+        )
+        util_devices = {
+            d.get("index"): d for d in utilization_info.get("devices", [])
+        } if metrics_match else {}
         enriched_devices = []
 
         for dev in visibility_info.get("devices", []):
@@ -1222,8 +1237,27 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             "devices": enriched_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
         }
-        _system_gpu_cache = (time.monotonic(), gpu_info)
-        return gpu_info
+
+        # Keep inference placement separate on train-capable hosts where a
+        # forced Vulkan llama.cpp bundle can enumerate a different device set.
+        # If Vulkan is installed but its probe fails, retain the unavailable
+        # Vulkan shape instead of budgeting training GPUs that llama.cpp cannot use.
+        if visibility_info.get("backend") == "vulkan":
+            inference_gpu_info = gpu_info
+        else:
+            vulkan_info = get_vulkan_inference_gpu_info()
+            inference_gpu_info = (
+                {
+                    **vulkan_info,
+                    "gguf_gpu_ids_supported": False,
+                }
+                if vulkan_info is not None
+                else gpu_info
+            )
+
+        combined_info = (gpu_info, inference_gpu_info)
+        _system_gpu_cache = (time.monotonic(), combined_info)
+        return combined_info
 
 
 @app.get("/api/system")
@@ -1244,7 +1278,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     logger = logging.getLogger(__name__)
 
-    gpu_info = _get_cached_system_gpu_info(logger)
+    gpu_info, inference_gpu_info = _get_cached_system_gpu_info(logger)
 
     memory = psutil.virtual_memory()
 
@@ -1311,6 +1345,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
             "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
+        "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,
         # Export capability + torch-aware reason. See /api/system/hardware.
         **export_capability(),
