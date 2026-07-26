@@ -269,7 +269,7 @@ export function SettingsDialog() {
           <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -330,7 +330,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
