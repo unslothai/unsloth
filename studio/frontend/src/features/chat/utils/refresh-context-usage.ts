@@ -161,6 +161,17 @@ function runtimeSelectedBranch(
     : null;
 }
 
+/** The stored records behind a runtime branch, in the order it displays them. */
+function recordsForRuntimeBranch(
+  records: MessageRecord[],
+  branch: readonly ThreadMessage[],
+): MessageRecord[] {
+  const byId = new Map(records.map((record) => [record.id, record]));
+  return branch
+    .map((message) => byId.get(message.id))
+    .filter((record): record is MessageRecord => record != null);
+}
+
 function zeroContextUsage(): SavedContextUsage {
   return {
     promptTokens: 0,
@@ -226,12 +237,21 @@ export async function refreshContextUsage(options?: {
     }
 
     if (records.length > 0) {
+      const runtimeBranch = options?.afterModelLoad
+        ? runtimeSelectedBranch(records)
+        : null;
+      // Scope the fallback to the branch being counted. A reverse scan over
+      // every record picks the newest assistant globally, which can sit on a
+      // sibling branch, and that stale value is what stays on the bar whenever
+      // the recount does not land (an image thread, a failed count).
+      const branchRecords = runtimeBranch
+        ? recordsForRuntimeBranch(records, runtimeBranch)
+        : orderBySelectedBranch(records);
       runMessages =
-        (options?.afterModelLoad ? runtimeSelectedBranch(records) : null) ??
-        orderBySelectedBranch(records).map(storedMessageToRunMessage);
+        runtimeBranch ?? branchRecords.map(storedMessageToRunMessage);
 
       const savedUsage = getSavedContextUsageFromMessages(
-        records,
+        branchRecords,
         capturedCheckpoint,
         useChatRuntimeStore.getState().ggufContextLength,
       );

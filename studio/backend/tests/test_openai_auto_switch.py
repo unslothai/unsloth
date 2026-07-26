@@ -3031,7 +3031,7 @@ def test_chat_count_tokens_returns_input_tokens(monkeypatch):
         model = "org/A-GGUF",
         messages = [ChatMessage(role = "user", content = "hello")],
     )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
     assert json.loads(response.body) == {"input_tokens": 42}
@@ -3073,7 +3073,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         enable_tools = True,
         enabled_tools = ["web_search"],
     )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
     assert json.loads(response.body) == {"input_tokens": 99}
@@ -3127,7 +3127,7 @@ def test_chat_count_tokens_refuses_image_messages(monkeypatch):
         ],
     )
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     assert excinfo.value.status_code == 503
     assert counted["called"] is False
     assert switched["called"] is False
@@ -3149,10 +3149,39 @@ def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
         model = "org/A-GGUF",
         messages = [ChatMessage(role = "user", content = [{"type": "text", "text": "hello"}])],
     )
-    response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
     import json
 
     assert json.loads(response.body) == {"input_tokens": 7}
+
+
+def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
+    # Codex P2: the recount has no abort signal, so a count naming the model that
+    # was loaded when it started must not drag the backend back to it after the
+    # user has moved on. This endpoint counts whatever is loaded, full stop.
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/B-GGUF")
+    backend.count_chat_tokens = lambda *args, **kwargs: 5
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    switched = {"called": False}
+
+    async def _switch(*args, **kwargs):
+        switched["called"] = True
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    # A stale recount still naming the previously loaded model A.
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "hello")],
+    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    import json
+
+    assert json.loads(response.body) == {"input_tokens": 5}
+    assert switched["called"] is False
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

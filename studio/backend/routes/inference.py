@@ -12921,28 +12921,27 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
-    request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer."""
+    """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
+
+    Unlike the /v1 count endpoints this one never auto-switches models: ``model``
+    here is informational (the active model is used), and the caller is a
+    background recount with no abort signal, so a count for the model that was
+    loaded when it started could otherwise land after the user picked another one
+    and drag the backend back -- a server-side reload the frontend's own
+    checkpoint guards cannot undo. Count against whatever is loaded now.
+    """
     # count_chat_tokens renders /apply-template and tokenizes the text it returns,
     # but llama-server swaps every image for a short media marker there and drops
     # the decoded bytes, so an image thread would come back short by the whole
-    # embedding. Refuse before the auto-switch (a refused count must not move the
-    # loaded model) so the caller keeps the usage it already has instead of a
-    # confident undercount.
+    # embedding. Refuse rather than hand back a confident undercount; the caller
+    # keeps the usage it already has.
     if _request_has_image(payload):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing images.",
         )
-
-    await _maybe_auto_switch_model(
-        _switch_model_for_payload(payload),
-        request,
-        current_subject,
-        require_vision = False,
-    )
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
