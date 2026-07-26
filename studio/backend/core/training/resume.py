@@ -4,10 +4,11 @@
 """Helpers for validating resumable training outputs."""
 
 import json
+import os
 import pickletools
 import zipfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Sequence
 
 from utils.paths import outputs_root, resolve_output_dir
 
@@ -166,6 +167,127 @@ def is_resume_checkpoint_valid(
                 path / "optimizer_state.safetensors"
             )
     return step_valid and valid_bundle
+
+
+class CheckpointImportError(ValueError):
+    """A checkpoint selected through the file browser is unsafe or incomplete."""
+
+    def __init__(self, errors: list[str]):
+        self.errors = errors
+        super().__init__("; ".join(errors))
+
+
+def _detected_backend(path: Path) -> str:
+    if (path / "adapters.safetensors").exists() or (
+        path / "optimizer_state.safetensors"
+    ).exists():
+        return "mlx"
+    return "transformers"
+
+
+def _configuration_metadata(path: Path) -> dict[str, Any]:
+    """Read safe JSON metadata only; never unpickle a user-selected file."""
+    metadata: dict[str, Any] = {}
+    for filename in ("training_config.json", "config.json", "adapter_config.json"):
+        candidate = path / filename
+        if not candidate.is_file() and path.name.startswith("checkpoint-"):
+            candidate = path.parent / filename
+        try:
+            value = json.loads(candidate.read_text(encoding = "utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict):
+            metadata[filename] = value
+    return metadata
+
+
+def _contained_in(path: Path, roots: Sequence[Path]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root.resolve(strict = True))
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def inspect_import_checkpoint(path_value: str, approved_roots: Sequence[Path]) -> dict[str, Any]:
+    """Validate an external checkpoint independently of training history policy."""
+    raw = Path(path_value).expanduser()
+    if ".." in raw.parts:
+        raise CheckpointImportError(["Path traversal ('..') is not allowed."])
+    try:
+        selected = raw.resolve(strict = True)
+    except OSError as exc:
+        raise CheckpointImportError([f"Checkpoint directory does not exist: {exc}"]) from exc
+    if not selected.is_dir():
+        raise CheckpointImportError(["Selected checkpoint path is not a directory."])
+    if not _contained_in(selected, approved_roots):
+        raise CheckpointImportError(
+            ["Checkpoint directory resolves outside the approved browse roots."]
+        )
+    if not os.access(selected, os.R_OK | os.W_OK | os.X_OK):
+        raise CheckpointImportError(
+            ["Selected checkpoint output directory is not readable and writable."]
+        )
+
+    checkpoint = selected
+    if _checkpoint_state(checkpoint) is None:
+        candidates = sorted(selected.glob("checkpoint-*"), key = _checkpoint_step, reverse = True)
+        checkpoint = next((p for p in candidates if _checkpoint_state(p) is not None), selected)
+    # Containment is checked again after selecting a nested checkpoint and catches
+    # checkpoint-* symlinks escaping the selected directory.
+    try:
+        checkpoint = checkpoint.resolve(strict = True)
+        checkpoint.relative_to(selected)
+    except (OSError, ValueError) as exc:
+        raise CheckpointImportError(["Selected checkpoint resolves outside its directory."]) from exc
+
+    errors: list[str] = []
+    step = _checkpoint_state(checkpoint)
+    if step is None:
+        errors.append("trainer_state.json is missing, corrupt, or has a mismatched global_step.")
+    backend = _detected_backend(checkpoint)
+    if backend == "mlx":
+        if not _valid_state_file(checkpoint / "adapters.safetensors"):
+            errors.append("adapters.safetensors is missing or corrupt.")
+        if not _valid_state_file(checkpoint / "optimizer_state.safetensors"):
+            errors.append("optimizer_state.safetensors is missing or corrupt.")
+    else:
+        if not _has_model_state(checkpoint):
+            errors.append("Model or adapter state is missing or corrupt.")
+        if not _valid_state_file(checkpoint / "optimizer.pt", require_tensor = False):
+            errors.append("optimizer.pt is missing or corrupt.")
+        if not _valid_state_file(checkpoint / "scheduler.pt", require_tensor = False):
+            errors.append("scheduler.pt is missing or corrupt.")
+    if errors:
+        raise CheckpointImportError(errors)
+    return {
+        "selected_checkpoint": str(checkpoint),
+        "output_dir": str(selected if checkpoint == selected else checkpoint.parent),
+        "global_step": step,
+        "backend_type": backend,
+        "configuration": _configuration_metadata(checkpoint),
+    }
+
+
+def validate_import_compatibility(info: dict[str, Any], request: Any, backend_type: str) -> None:
+    errors: list[str] = []
+    if info["backend_type"] != backend_type:
+        errors.append(
+            f"Checkpoint backend {info['backend_type']!r} is incompatible with active backend {backend_type!r}."
+        )
+    merged: dict[str, Any] = {}
+    for value in info.get("configuration", {}).values():
+        if isinstance(value, dict):
+            merged.update(value)
+    for key in ("model_name", "training_type", "load_in_4bit", "max_seq_length"):
+        expected = merged.get(key)
+        actual = getattr(request, key, None)
+        if expected is not None and actual is not None and expected != actual:
+            errors.append(f"Checkpoint {key}={expected!r} does not match requested {actual!r}.")
+    if errors:
+        raise CheckpointImportError(errors)
 
 
 def get_resume_checkpoint_path(

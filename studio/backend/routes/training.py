@@ -28,6 +28,9 @@ try:
         can_resume_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        CheckpointImportError,
+        inspect_import_checkpoint,
+        validate_import_compatibility,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
@@ -42,6 +45,9 @@ except ImportError:
         can_resume_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        CheckpointImportError,
+        inspect_import_checkpoint,
+        validate_import_compatibility,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
@@ -57,6 +63,7 @@ from models import (
     TrainingJobResponse,
     TrainingStatus,
     TrainingProgress,
+    ResumeImportRequest,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
 from pydantic import BaseModel as PydanticBaseModel
@@ -68,6 +75,31 @@ class TrainingStopRequest(PydanticBaseModel):
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _resume_browse_roots() -> list[Path]:
+    # Keep checkpoint import aligned with the directory picker's allowlist.
+    from routes.models import _build_browse_allowlist
+    return _build_browse_allowlist()
+
+
+def _active_backend_type() -> str:
+    from utils.hardware import hardware as _hw
+    return "mlx" if _hw.DEVICE == _hw.DeviceType.MLX else "transformers"
+
+
+@router.post("/resume/import/inspect")
+async def inspect_resume_import(
+    request: ResumeImportRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Inspect a user-selected checkpoint without requiring a history row."""
+    try:
+        return await asyncio.to_thread(
+            inspect_import_checkpoint, request.directory, _resume_browse_roots()
+        )
+    except CheckpointImportError as exc:
+        raise HTTPException(status_code = 400, detail = {"errors": exc.errors}) from exc
 
 # Consecutive 1s polls without a step update that count as a stall. Applied only
 # once stepping: the pre-first-step phase (model load + tokenization) can take far
@@ -203,6 +235,8 @@ async def start_training(
             )
         resume_output_dir: Optional[str] = None
         resume_run: Optional[dict] = None
+        imported_checkpoint: Optional[str] = None
+        import_source_output_dir: Optional[str] = None
         if request.resume_from_checkpoint:
             try:
                 resume_output_dir = normalize_resume_output_dir(request.resume_from_checkpoint)
@@ -224,6 +258,18 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
+        elif request.imported_resume_checkpoint:
+            try:
+                imported = inspect_import_checkpoint(
+                    request.imported_resume_checkpoint, _resume_browse_roots()
+                )
+                validate_import_compatibility(imported, request, _active_backend_type())
+            except CheckpointImportError as exc:
+                raise HTTPException(status_code = 400, detail = {"errors": exc.errors}) from exc
+            imported_checkpoint = imported["selected_checkpoint"]
+            import_source_output_dir = imported["output_dir"]
+            resume_output_dir = import_source_output_dir
+            request.imported_resume_checkpoint = imported_checkpoint
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
@@ -357,7 +403,7 @@ async def start_training(
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
             "output_dir": resume_output_dir,
-            "resume_from_checkpoint": request.resume_from_checkpoint,
+            "resume_from_checkpoint": request.resume_from_checkpoint or imported_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
@@ -458,6 +504,8 @@ async def start_training(
                 job_id = job_id,
                 before_spawn = _free_vram_for_training,
                 resume_source_run_id = resume_run["id"] if resume_run else None,
+                imported_checkpoint = imported_checkpoint,
+                import_source_output_dir = import_source_output_dir,
                 **training_kwargs,
             )
         except SidecarSwapInProgress as exc:
