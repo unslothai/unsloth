@@ -755,5 +755,11 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
     eager = list(re.finditer(r"page\.videos\.forEach\(\(video\) => void ensureSrc\(video\)\)", src))
     assert eager, "the jsdom/old-webview fallback fetch is missing"
     for match in eager:
-        assert 'typeof IntersectionObserver === "undefined"' in src[max(0, match.start() - 260) : match.start()]
-    assert re.search(r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);", src)
+        assert (
+            'typeof IntersectionObserver === "undefined"'
+            in src[max(0, match.start() - 260) : match.start()]
+        )
+    assert re.search(
+        r"if \(!selected\) return;\s*\n\s*void \(async \(\) => \{\s*\n\s*await ensureSrc\(selected\);",
+        src,
+    )

@@ -345,7 +345,9 @@ def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
         encoding = "utf-8"
     )
     load_impl = route_src[route_src.index("async def _load_model_impl") :]
-    unsloth_load = load_impl.index("success = await asyncio.to_thread(\n            backend.load_model,")
+    unsloth_load = load_impl.index(
+        "success = await asyncio.to_thread(\n            backend.load_model,"
+    )
     tail = load_impl[unsloth_load:]
     guard = tail.index("if current_owner() != CHAT:")
     assert "await asyncio.to_thread(backend.unload_model, config.identifier)" in tail[guard:]
