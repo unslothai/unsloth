@@ -235,6 +235,7 @@ export function useTrainingActions() {
             : config.hfToken.trim() || null,
         wandb_token: null,
         resume_from_checkpoint: outputDir,
+        in_place_continuation: true,
       } as TrainingStartRequest;
 
       const preparedToken = await prepareHfTokenForUse(payload.hf_token);

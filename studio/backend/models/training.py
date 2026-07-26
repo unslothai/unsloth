@@ -555,6 +555,18 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    resume_checkpoint_path: Optional[str] = Field(
+        None, description = "Read-only source checkpoint used for continuation"
+    )
+    output_dir: Optional[str] = Field(
+        None, description = "Writable destination for the continued run"
+    )
+    in_place_continuation: bool = Field(
+        False, description = "Explicitly allow a supported history run to continue in place"
+    )
+    copy_checkpoint_to_local: bool = Field(
+        False, description = "Stage the resume checkpoint on local working storage"
+    )
     imported_resume_checkpoint: Optional[str] = Field(
         None,
         description = "Checkpoint directory explicitly inspected with /resume/import/inspect",
@@ -566,9 +578,14 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _distinct_resume_flows(self) -> "TrainingStartRequest":
-        if self.resume_from_checkpoint and self.imported_resume_checkpoint:
+        selected = [
+            self.resume_from_checkpoint,
+            self.resume_checkpoint_path,
+            self.imported_resume_checkpoint,
+        ]
+        if sum(bool(value) for value in selected) > 1:
             raise ValueError(
-                "Choose either resume_from_checkpoint (history) or imported_resume_checkpoint, not both"
+                "Choose only one resume checkpoint source"
             )
         return self
 

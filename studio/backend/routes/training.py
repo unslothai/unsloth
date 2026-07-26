@@ -16,6 +16,7 @@ import asyncio
 from datetime import datetime
 import uuid as _uuid
 import json as _json
+import os
 
 # Add backend directory to path.
 backend_path = Path(__file__).parent.parent.parent
@@ -86,6 +87,45 @@ def _resume_browse_roots() -> list[Path]:
 def _active_backend_type() -> str:
     from utils.hardware import hardware as _hw
     return "mlx" if _hw.DEVICE == _hw.DeviceType.MLX else "transformers"
+
+
+def _validate_resume_destination(value: Optional[str], source: str, in_place: bool) -> str:
+    """Resolve a writable outputs destination without ever probing source writes."""
+    from utils.paths import resolve_output_dir
+
+    source_path = Path(source).resolve(strict = True)
+    source_root = source_path.parent if source_path.name.startswith("checkpoint-") else source_path
+    if value:
+        try:
+            destination = resolve_output_dir(value).resolve(strict = False)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    elif in_place:
+        destination = source_root
+    else:
+        destination = resolve_output_dir(
+            f"continuation_{source_root.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        ).resolve(strict = False)
+
+    conflicts = (
+        destination == source_root
+        or source_path == destination
+        or destination in source_path.parents
+        or source_root in destination.parents
+    )
+    if conflicts and not in_place:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Destination could overwrite the source checkpoint; explicitly select in-place continuation or choose another output_dir.",
+        )
+    if in_place and destination != source_root:
+        raise HTTPException(status_code = 400, detail = "In-place continuation requires output_dir to be the source run directory.")
+    probe = destination if destination.exists() else destination.parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    if not os.access(probe, os.W_OK | os.X_OK):
+        raise HTTPException(status_code = 400, detail = "Resume output_dir is not writable.")
+    return str(destination)
 
 
 @router.post("/resume/import/inspect")
@@ -258,10 +298,11 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
-        elif request.imported_resume_checkpoint:
+        elif request.imported_resume_checkpoint or request.resume_checkpoint_path:
             try:
                 imported = inspect_import_checkpoint(
-                    request.imported_resume_checkpoint, _resume_browse_roots()
+                    request.imported_resume_checkpoint or request.resume_checkpoint_path,
+                    _resume_browse_roots(),
                 )
                 validate_import_compatibility(imported, request, _active_backend_type())
             except CheckpointImportError as exc:
@@ -270,6 +311,18 @@ async def start_training(
             import_source_output_dir = imported["output_dir"]
             resume_output_dir = import_source_output_dir
             request.imported_resume_checkpoint = imported_checkpoint
+
+        resume_source = request.resume_from_checkpoint or imported_checkpoint
+        destination_output_dir: Optional[str] = None
+        if resume_source:
+            if request.in_place_continuation and imported_checkpoint:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "In-place continuation is supported only for checkpoints owned by Studio history.",
+                )
+            destination_output_dir = _validate_resume_destination(
+                request.output_dir, resume_source, request.in_place_continuation
+            )
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
@@ -403,8 +456,10 @@ async def start_training(
             "wandb_project": request.wandb_project or "",
             "enable_tensorboard": request.enable_tensorboard,
             "tensorboard_dir": request.tensorboard_dir or "",
-            "output_dir": resume_output_dir,
-            "resume_from_checkpoint": request.resume_from_checkpoint or imported_checkpoint,
+            "output_dir": destination_output_dir,
+            "resume_checkpoint_path": resume_source,
+            "resume_from_checkpoint": resume_source,
+            "copy_checkpoint_to_local": request.copy_checkpoint_to_local,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,

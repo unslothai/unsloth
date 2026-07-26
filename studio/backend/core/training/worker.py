@@ -23,6 +23,7 @@ import gc
 import re
 import types
 import subprocess as _sp
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -46,6 +47,7 @@ logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 from utils.training_runs import build_default_output_dir_name
 from core.training.manifest import atomic_write_manifest, write_checkpoint_manifests
+from core.training.resume_storage import stage_checkpoint, synchronize_checkpoints
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
@@ -61,6 +63,20 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
         return None
     path = Path(resume_from_checkpoint)
     return str(path.parent if path.name.startswith("checkpoint-") else path)
+
+
+def _prepare_resume_storage(config: dict, event_queue: Any, persistent_output: str) -> tuple[str | None, str]:
+    """Return (read-only resume source, trainer output), optionally on local storage."""
+    source = config.get("resume_checkpoint_path") or config.get("resume_from_checkpoint")
+    if not source or not config.get("copy_checkpoint_to_local"):
+        return source, persistent_output
+
+    def progress(message: str) -> None:
+        _send_status(event_queue, message)
+
+    source = stage_checkpoint(source, config.get("resume_working_dir"), progress)
+    local_root = Path(tempfile.mkdtemp(prefix = "unsloth-continuation-"))
+    return source, str(local_root / "output")
 
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
@@ -3339,7 +3355,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 embedding_lr_value = None
 
         # Generate output dir
-        resume_from_checkpoint = config.get("resume_from_checkpoint")
+        resume_from_checkpoint = config.get("resume_checkpoint_path") or config.get("resume_from_checkpoint")
         output_dir = config.get("output_dir") or _output_dir_from_resume_checkpoint(
             resume_from_checkpoint
         )
@@ -3349,13 +3365,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 config.get("project_name"),
             )
         output_dir = str(resolve_output_dir(output_dir))
-        ensure_dir(Path(output_dir))
+        persistent_output_dir = output_dir
+        resume_from_checkpoint, trainer_output_dir = _prepare_resume_storage(
+            config, event_queue, persistent_output_dir
+        )
+        ensure_dir(Path(trainer_output_dir))
         # The manifest is independent of studio.db, so copied/imported runs remain
         # reconstructable. Publish it before any checkpoint can be announced.
         from core.training.training import _build_training_manifest
 
-        atomic_write_manifest(output_dir, _build_training_manifest(config))
-        _emit_output_dir(event_queue, output_dir)
+        atomic_write_manifest(persistent_output_dir, _build_training_manifest(config))
+        _emit_output_dir(event_queue, persistent_output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
@@ -3374,7 +3394,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         trainer._train_worker(
             dataset,
-            output_dir = output_dir,
+            output_dir = trainer_output_dir,
             num_epochs = config.get("num_epochs", 3),
             learning_rate = lr_value,
             embedding_learning_rate = embedding_lr_value,
@@ -3414,7 +3434,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         progress = trainer.get_training_progress()
         # Covers MLX, embedding, and any trainer variant without the shared HF
         # callback. Only completed trainer_state/checkpoint pairs are published.
-        write_checkpoint_manifests(output_dir)
+        write_checkpoint_manifests(trainer_output_dir)
+        if trainer_output_dir != persistent_output_dir:
+            synchronize_checkpoints(
+                trainer_output_dir,
+                persistent_output_dir,
+                lambda message: _send_status(event_queue, message),
+            )
         if progress.error:
             event_queue.put(
                 {
@@ -3426,7 +3452,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             saved_output_dir = (
-                None if trainer.should_stop and not trainer.save_on_stop else output_dir
+                None if trainer.should_stop and not trainer.save_on_stop else persistent_output_dir
             )
             event_queue.put(
                 {

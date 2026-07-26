@@ -225,9 +225,9 @@ def inspect_import_checkpoint(path_value: str, approved_roots: Sequence[Path]) -
         raise CheckpointImportError(
             ["Checkpoint directory resolves outside the approved browse roots."]
         )
-    if not os.access(selected, os.R_OK | os.W_OK | os.X_OK):
+    if not os.access(selected, os.R_OK | os.X_OK):
         raise CheckpointImportError(
-            ["Selected checkpoint output directory is not readable and writable."]
+            ["Selected checkpoint output directory is not readable."]
         )
 
     checkpoint = selected

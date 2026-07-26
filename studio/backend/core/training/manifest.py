@@ -195,6 +195,16 @@ def build_manifest(
             "checkpoint_pattern": "checkpoint-{step}",
             "trainer_state": "trainer_state.json",
         },
+        "continuation": {
+            "resumed": bool(safe.get("resume_checkpoint_path") or safe.get("resume_from_checkpoint")),
+            "source_identity": fingerprint(
+                safe.get("resume_checkpoint_path") or safe.get("resume_from_checkpoint")
+            )
+            if (safe.get("resume_checkpoint_path") or safe.get("resume_from_checkpoint"))
+            else None,
+            "destination_name": Path(str(safe.get("output_dir") or "")).name or None,
+            "copied_to_local_storage": bool(safe.get("copy_checkpoint_to_local")),
+        },
         "fingerprints": {
             "model": fingerprint(model),
             "tokenizer": fingerprint(
