@@ -358,12 +358,16 @@ def _uses_flash_attention_for_generation(config):
     def _mapping_uses_flash_attention(attn_implementation):
         if not isinstance(attn_implementation, dict):
             return _is_flash_attention_requested(attn_implementation)
-        return any(
-            _is_flash_attention_requested(attn_implementation.get(config_name))
-            for config_name in ("", *language_config_names)
-        )
+        language_implementations = [
+            attn_implementation[config_name]
+            for config_name in language_config_names
+            if attn_implementation.get(config_name) is not None
+        ]
+        if language_implementations:
+            return any(map(_is_flash_attention_requested, language_implementations))
+        return _is_flash_attention_requested(attn_implementation.get(""))
 
-    configs = [config]
+    language_configs = []
     get_text_config = _config_get(config, "get_text_config", None)
     if callable(get_text_config):
         try:
@@ -371,15 +375,31 @@ def _uses_flash_attention_for_generation(config):
         except Exception:
             text_config = None
         if text_config is not None and text_config is not config:
-            configs.append(text_config)
+            language_configs.append(text_config)
     for config_name in language_config_names:
         nested_config = _config_get(config, config_name, None)
-        if nested_config is not None and nested_config is not config:
-            configs.append(nested_config)
+        if (
+            nested_config is not None
+            and nested_config is not config
+            and all(nested_config is not item for item in language_configs)
+        ):
+            language_configs.append(nested_config)
+
+    language_implementations = [
+        _config_get(language_config, config_field, None)
+        for language_config in language_configs
+        for config_field in ("_attn_implementation", "attn_implementation")
+    ]
+    language_implementations = [
+        implementation
+        for implementation in language_implementations
+        if implementation is not None
+    ]
+    if language_implementations:
+        return any(map(_mapping_uses_flash_attention, language_implementations))
 
     return any(
-        _mapping_uses_flash_attention(_config_get(attention_config, config_field, None))
-        for attention_config in configs
+        _mapping_uses_flash_attention(_config_get(config, config_field, None))
         for config_field in ("_attn_implementation", "attn_implementation")
     )
 

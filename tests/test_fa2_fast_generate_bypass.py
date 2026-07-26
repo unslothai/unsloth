@@ -77,6 +77,24 @@ def test_default_backbone_flash_attention_is_detected():
     assert uses_flash_attention(config)
 
 
+def test_explicit_language_backend_overrides_default_backend():
+    config = SimpleNamespace(
+        _attn_implementation = {
+            "": "flash_attention_2",
+            "text_config": "sdpa",
+        }
+    )
+    assert not uses_flash_attention(config)
+
+
+def test_nested_language_backend_overrides_normalized_default_backend():
+    config = SimpleNamespace(
+        _attn_implementation = "flash_attention_2",
+        text_config = SimpleNamespace(_attn_implementation = "sdpa"),
+    )
+    assert not uses_flash_attention(config)
+
+
 def test_nested_text_and_decoder_configs_are_detected():
     nested_text = SimpleNamespace(attn_implementation = "flash_attention_2")
     assert uses_flash_attention(
@@ -199,6 +217,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
             raise FastPathReached
 
     fake_torch._dynamo = ExpectFastPath()
+    Model.config._attn_implementation = "flash_attention_2"
     Model.config.text_config._attn_implementation = "sdpa"
     captured.clear()
     try:
