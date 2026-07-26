@@ -1325,6 +1325,25 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
     assert entry["id"] == "abc123"
 
 
+def test_subagent_model_id_warns_when_a_path_load_cannot_pin_the_quant(capsys):
+    """A path is advertised as a bare basename, so the quant cannot be recorded."""
+    model_id = start._subagent_model_id(
+        BASE, "sk-test", {"id": "abc123"}, None, "UD-Q4_K_XL"
+    )
+
+    assert model_id == "abc123"
+    assert "cannot pin the UD-Q4_K_XL quant" in capsys.readouterr().err
+
+
+def test_subagent_model_id_pins_the_quant_for_repo_ids(capsys):
+    model_id = start._subagent_model_id(
+        BASE, "sk-test", {"id": "unsloth/gemma-4-E4B-it-GGUF"}, None, "UD-Q4_K_XL"
+    )
+
+    assert model_id == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+    assert capsys.readouterr().err == ""
+
+
 def test_public_model_id_leaves_repo_ids_alone():
     """Only a path gets reduced; a repo id must not match some unrelated model."""
     assert start._public_model_id("unsloth/gemma-4-E4B-it-GGUF") is None

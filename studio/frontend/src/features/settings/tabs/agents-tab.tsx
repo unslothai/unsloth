@@ -260,20 +260,22 @@ function discoverGgufModels(
 }
 
 // Scanned local GGUFs (./models, LM Studio, custom folders) that the caches above
-// miss. /api/models/local ids are load ids, which for an out-of-cache repo is an
-// on-disk path, and a path cannot be named as --model, so take the clean repo id.
-function localGgufRepos(models: LocalModelInfo[]): string[] {
-  const repos: string[] = [];
+// miss. The id is the load id, i.e. the on-disk path for anything outside the active
+// cache, so label the row by repo id when there is one but keep the path to load by.
+function localGgufEntries(
+  models: LocalModelInfo[],
+): { label: string; loadId: string }[] {
+  const entries: { label: string; loadId: string }[] = [];
   for (const model of models) {
-    if ((model.model_format ?? "").toLowerCase() !== "gguf") {
+    if ((model.model_format ?? "").toLowerCase() !== "gguf" || !model.id) {
       continue;
     }
-    const repo = model.model_id ?? model.id;
-    if (repo && isHuggingFaceRepo(repo)) {
-      repos.push(repo);
-    }
+    entries.push({
+      label: model.model_id || model.display_name || model.id,
+      loadId: model.id,
+    });
   }
-  return repos;
+  return entries;
 }
 
 // First candidate the repo actually offers: an explicit pick, then the remembered
@@ -608,8 +610,9 @@ export function AgentsTab() {
   });
   const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
   const modelSelectionChanged = useRef(false);
-  // A quant picked by hand: polling and refetches must not overwrite it.
-  const chosenVariant = useRef<string | null>(null);
+  // A quant picked by hand, scoped to its repo: polling and refetches must not
+  // overwrite it, but it must not follow the selection onto a different repo.
+  const chosenVariant = useRef<{ model: string; variant: string } | null>(null);
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
@@ -747,15 +750,21 @@ export function AgentsTab() {
         if (cancelled) {
           return;
         }
+        const localEntries = localGgufEntries(local?.models ?? []);
         const discovered = discoverGgufModels(info?.models ?? [], [
           ...cachedGgufs.map((cached) => cached.repo_id),
-          ...localGgufRepos(local?.models ?? []),
+          ...localEntries.map((entry) => entry.label),
         ]);
         // Keep the snapshot load_id for --model while listing the model by repo id.
         const loadIds: Record<string, string> = {};
         for (const cached of cachedGgufs) {
           if (cached.load_id && cached.load_id !== cached.repo_id) {
             loadIds[cached.repo_id] = cached.load_id;
+          }
+        }
+        for (const entry of localEntries) {
+          if (entry.loadId !== entry.label) {
+            loadIds[entry.label] = entry.loadId;
           }
         }
         const active = activeGgufSelection(status);
@@ -803,7 +812,7 @@ export function AgentsTab() {
       }
       if (!modelSelectionChanged.current) {
         setSelectedModel(active.model);
-        if (!chosenVariant.current) {
+        if (chosenVariant.current?.model !== active.model) {
           setSelectedVariant(active.variant);
         }
       }
@@ -824,18 +833,23 @@ export function AgentsTab() {
   // Following it means letting go too, or the command would name a stale model and
   // switch the shared server back. A native-grant label is not even loadable, so it
   // leaves the list entirely. An explicit pick still wins.
-  const dropActiveModel = useCallback((attachOnly: string | null) => {
-    if (attachOnly) {
-      setModels((current) => current.filter((model) => model !== attachOnly));
-    }
-    if (modelSelectionChanged.current) {
-      return;
-    }
-    setSelectedModel((current) =>
-      current === attachOnly ? EXAMPLE_MODEL_REPO : current,
-    );
-    setSelectedVariant((current) => (attachOnly ? null : current));
-  }, []);
+  const dropActiveModel = useCallback(
+    (attachOnly: string | null, wasActive: string | null) => {
+      if (attachOnly) {
+        setModels((current) => current.filter((model) => model !== attachOnly));
+      }
+      if (modelSelectionChanged.current || !wasActive) {
+        return;
+      }
+      // Only the model this tab adopted by itself is dropped; anything the user
+      // picked is theirs to keep.
+      setSelectedModel((current) =>
+        current === wasActive ? EXAMPLE_MODEL_REPO : current,
+      );
+      setSelectedVariant((current) => (current === null ? current : null));
+    },
+    [],
+  );
 
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
@@ -844,7 +858,7 @@ export function AgentsTab() {
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
       if (!active) {
-        dropActiveModel(wasAttachOnly);
+        dropActiveModel(wasAttachOnly, activeStatusModel);
         return;
       }
       if (wasAttachOnly && wasAttachOnly !== active.model) {
@@ -852,7 +866,13 @@ export function AgentsTab() {
       }
       adoptActiveModel(active);
     },
-    [adoptActiveModel, attachOnlyModel, dropActiveModel, retireAttachOnly],
+    [
+      activeStatusModel,
+      adoptActiveModel,
+      attachOnlyModel,
+      dropActiveModel,
+      retireAttachOnly,
+    ],
   );
 
   // Another client, or a load that finishes after this tab opens, can change what
@@ -927,7 +947,9 @@ export function AgentsTab() {
         );
         const nextVariant =
           pickVariant(available, [
-            chosenVariant.current,
+            chosenVariant.current?.model === selectedModel
+              ? chosenVariant.current.variant
+              : null,
             preferredVariant,
             info.default_variant,
           ]) ??
@@ -1148,7 +1170,6 @@ export function AgentsTab() {
                         data-checked={model === selectedModel}
                         onSelect={() => {
                           modelSelectionChanged.current = true;
-                          chosenVariant.current = null;
                           setSelectedModel(model);
                           setSelectedVariant(knownVariants[model] ?? null);
                           setVariants([]);
@@ -1188,7 +1209,7 @@ export function AgentsTab() {
             <Select
               value={selectedVariant ?? undefined}
               onValueChange={(variant) => {
-                chosenVariant.current = variant;
+                chosenVariant.current = { model: selectedModel, variant };
                 setSelectedVariant(variant);
                 resetCopied();
               }}

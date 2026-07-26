@@ -559,11 +559,18 @@ def _subagent_model_id(
             )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
-    return (
-        _display_model_spec(model_id, str(variant))
-        if variant and _is_hub_model_id(model_id)
-        else model_id
-    )
+    if variant and _is_hub_model_id(model_id):
+        return _display_model_spec(model_id, str(variant))
+    if variant:
+        # A path load is advertised as a bare basename with no ":variant" channel,
+        # so the quant cannot be recorded and a later reload picks for itself.
+        typer.echo(
+            f"Warning: {model_id} loaded from a path, so the subagent config cannot "
+            f"pin the {variant} quant; a reload may choose a different one. Load the "
+            "model by repository id to pin it.",
+            err = True,
+        )
+    return model_id
 
 
 def _fail(message: str) -> NoReturn:
