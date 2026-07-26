@@ -80,7 +80,8 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
 
   const blocked = inspection && (
     !inspection.optimizerComplete || !inspection.schedulerComplete ||
-    !inspection.trainerStateComplete || inspection.incompatibilities.length > 0 ||
+    !inspection.trainerStateComplete || !inspection.bundledConfigurationFound ||
+    inspection.incompatibilities.length > 0 ||
     inspection.missingDatasets.length > 0
   );
 
@@ -145,7 +146,7 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
         </ul>
         {inspection.incompatibilities.length > 0 && <div className="text-destructive"><strong>Configuration incompatibilities:</strong><ul className="list-disc pl-4">{inspection.incompatibilities.map((item) => <li key={item}>{item}</li>)}</ul></div>}
         {inspection.missingDatasets.length > 0 && <div className="text-destructive"><strong>Missing datasets:</strong><ul className="list-disc pl-4">{inspection.missingDatasets.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-        {blocked && <p className="text-amber-600">Resolve incomplete state, incompatibilities, and missing datasets before starting.</p>}
+        {blocked && <p className="text-amber-600">A complete portable training configuration and dataset state are required before this checkpoint can be resumed.</p>}
         {inspection.external && <label htmlFor={`${id}-confirm`} className="flex items-start gap-2 border-t pt-2 font-medium"><Checkbox id={`${id}-confirm`} checked={confirmed} onCheckedChange={(value) => setConfirmation(value === true)} />I understand this checkpoint was imported from outside Studio and want to resume it.</label>}
       </div>}
 

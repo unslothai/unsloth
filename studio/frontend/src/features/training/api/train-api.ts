@@ -67,6 +67,26 @@ export async function inspectCheckpoint(path: string): Promise<CheckpointInspect
   const adapterModel = typeof adapterConfig?.base_model_name_or_path === "string"
     ? adapterConfig.base_model_name_or_path
     : null;
+  const manifest = value.manifest;
+  const datasets = manifest?.datasets && typeof manifest.datasets === "object"
+    ? manifest.datasets as Record<string, unknown>
+    : {};
+  const resumeConfig = manifest
+    ? {
+        ...(manifest.training_arguments as Partial<TrainingStartRequest> | undefined),
+        ...(manifest.fine_tuning as Partial<TrainingStartRequest> | undefined),
+        ...(manifest.preprocessing as Partial<TrainingStartRequest> | undefined),
+        model_name: manifestModel ?? adapterModel ?? "",
+        hf_dataset: typeof datasets.repository === "string" ? datasets.repository : null,
+        training_datasets: Array.isArray(datasets.descriptors) ? datasets.descriptors : [],
+        local_datasets: Array.isArray(datasets.local) ? datasets.local as string[] : [],
+        local_eval_datasets: Array.isArray(datasets.local_eval) ? datasets.local_eval as string[] : [],
+        portable_resume_data:
+          datasets.portable_resume_data === "pinned" || datasets.portable_resume_data === "snapshot"
+            ? datasets.portable_resume_data
+            : "metadata",
+      } satisfies Partial<TrainingStartRequest>
+    : null;
   return {
     checkpointPath: value.selected_checkpoint,
     checkpointName: value.selected_checkpoint.split(/[\\/]/).filter(Boolean).pop() ?? `checkpoint-${value.global_step}`,
@@ -82,6 +102,7 @@ export async function inspectCheckpoint(path: string): Promise<CheckpointInspect
     incompatibilities: value.compatibility_warnings ?? [],
     missingDatasets: [],
     external: true,
+    resumeConfig,
   };
 }
 

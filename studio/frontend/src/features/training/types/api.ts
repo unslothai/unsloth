@@ -107,6 +107,7 @@ export interface CheckpointInspection {
   incompatibilities: string[];
   missingDatasets: string[];
   external: boolean;
+  resumeConfig: Partial<TrainingStartRequest> | null;
 }
 
 export interface TrainingStartResponse {

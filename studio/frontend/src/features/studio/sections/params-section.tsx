@@ -186,6 +186,9 @@ export function ParamsSection({ disabled = false }: { disabled?: boolean }): Rea
   const isLora = isAdapterMethod(store.trainingMethod);
   const isCpt = store.trainingMethod === "cpt";
   const isRawText = isRawTextDatasetFormat(store.datasetFormat);
+  const hasNonHfDataset =
+    store.datasetSource !== "huggingface" ||
+    store.trainingDatasets.some((dataset) => dataset.source !== "huggingface");
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
   // DeepSeek OCR uses a coupled preset; backend ignores user image size.
   const _selectedModelLower = (store.selectedModel ?? "").toLowerCase();
@@ -240,6 +243,14 @@ export function ParamsSection({ disabled = false }: { disabled?: boolean }): Rea
       setPacking(false);
     }
   }, [isMac, store.packing, setPacking]);
+
+  // Local, uploaded, and S3 datasets may disappear between notebook sessions.
+  // Always retain the processed data needed to resume when any such source is used.
+  useEffect(() => {
+    if (hasNonHfDataset && store.portableResumeData !== "snapshot") {
+      useTrainingConfigStore.setState({ portableResumeData: "snapshot" });
+    }
+  }, [hasNonHfDataset, store.portableResumeData]);
 
   const trySetContextLength = (input: string): number | null => {
     const n = Number(input);
@@ -308,6 +319,7 @@ export function ParamsSection({ disabled = false }: { disabled?: boolean }): Rea
             </span>
             <Select
               value={store.portableResumeData}
+              disabled={hasNonHfDataset}
               onValueChange={(value) =>
                 useTrainingConfigStore.setState({
                   portableResumeData: value as "metadata" | "pinned" | "snapshot",
@@ -334,9 +346,13 @@ export function ParamsSection({ disabled = false }: { disabled?: boolean }): Rea
               </SelectContent>
             </Select>
             <p className="text-ui-10 leading-relaxed text-muted-foreground">
-              {store.portableResumeData === "metadata" && "Saves configuration only. The dataset must still be available when you resume."}
-              {store.portableResumeData === "pinned" && "Records exact Hugging Face revisions. Resume still needs network access and any required token."}
-              {store.portableResumeData === "snapshot" && "Copies the processed train and evaluation data into the run output. Uses the most storage."}
+              {hasNonHfDataset
+                ? "A full processed snapshot is required because at least one dataset is local, uploaded, or stored outside Hugging Face."
+                : store.portableResumeData === "metadata"
+                  ? "Saves configuration only. The dataset must still be available when you resume."
+                  : store.portableResumeData === "pinned"
+                    ? "Records exact Hugging Face revisions. Resume still needs network access and any required token."
+                    : "Copies the processed train and evaluation data into the run output. Uses the most storage."}
             </p>
             {store.portableResumeData === "snapshot" && store.datasetStreaming && (
               <p className="rounded-md bg-amber-500/10 px-2.5 py-2 text-ui-10 leading-relaxed text-amber-700 dark:text-amber-300">
