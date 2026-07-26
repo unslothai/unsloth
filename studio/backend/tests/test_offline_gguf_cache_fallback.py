@@ -999,13 +999,9 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("models/MXFP4_MOE/foo.gguf") == "MXFP4_MOE"
 
     def test_mtp_flavor_suffixes_are_distinct(self):
+        assert _extract_quant_label("Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-MTP.gguf") == "Q6_K-MTP"
         assert (
-            _extract_quant_label("Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-MTP.gguf")
-            == "Q6_K-MTP"
-        )
-        assert (
-            _extract_quant_label("Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-PT-MTP.gguf")
-            == "Q6_K-PT-MTP"
+            _extract_quant_label("Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-PT-MTP.gguf") == "Q6_K-PT-MTP"
         )
 
 
