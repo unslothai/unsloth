@@ -326,22 +326,22 @@ def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
     assert gallery.list_videos() == []
 
 
-def _real_mp4_bytes() -> bytes:
-    # A real (tiny) MP4 for the transcode tests: 8 frames of flat color at
-    # 32x32, encoded with mpeg4 (bundled in every PyAV build, unlike libx264).
+def _real_mp4_bytes(frames: int = 8, size: int = 32, rate: int = 8) -> bytes:
+    # A real (tiny) MP4 for the transcode tests: flat-color frames encoded with mpeg4 (bundled in
+    # every PyAV build, unlike libx264). The GIF cap tests ask for more/larger frames.
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
     import io
 
     buf = io.BytesIO()
     with av.open(buf, "w", format = "mp4") as out:
-        stream = out.add_stream("mpeg4", rate = 8)
-        stream.width = 32
-        stream.height = 32
+        stream = out.add_stream("mpeg4", rate = rate)
+        stream.width = size
+        stream.height = size
         stream.pix_fmt = "yuv420p"
-        for i in range(8):
+        for i in range(frames):
             frame = av.VideoFrame.from_ndarray(
-                np.full((32, 32, 3), i * 30, dtype = np.uint8), format = "rgb24"
+                np.full((size, size, 3), (i * 30) % 256, dtype = np.uint8), format = "rgb24"
             )
             for packet in stream.encode(frame):
                 out.mux(packet)
@@ -364,3 +364,31 @@ def test_transcode_unknown_id_and_bad_format():
     record = gallery.save(_real_mp4_bytes(), _meta())
     with pytest.raises(ValueError):
         gallery.transcode(record["id"], "avi")
+
+
+def test_gif_export_bounds_frames_and_edge(monkeypatch):
+    """Every kept frame is held as a paletted image before the encoder runs, so an unbounded walk
+    is a memory bomb: the generate request allows 2048x2048 for 1024 frames, and at the 12 fps
+    target the step is 1, which is over 4 GB of frames plus the GIF buffer. Cap both axes."""
+    import io as _io
+
+    from core.inference import video_gallery as vg
+
+    Image = pytest.importorskip("PIL.Image")
+    monkeypatch.setattr(vg, "_GIF_MAX_EDGE", 16)
+    monkeypatch.setattr(vg, "_GIF_MAX_FRAMES", 4)
+
+    record = gallery.save(_real_mp4_bytes(frames = 24, size = 64, rate = 12), _meta())
+    gif = vg._transcode_gif(vg.gallery_dir() / f"{record['id']}.mp4")
+
+    assert gif.startswith(b"GIF8")
+    with Image.open(_io.BytesIO(gif)) as im:
+        assert max(im.size) <= 16, im.size
+        frames = 1
+        try:
+            while True:
+                im.seek(im.tell() + 1)
+                frames += 1
+        except EOFError:
+            pass
+    assert frames <= 4, frames

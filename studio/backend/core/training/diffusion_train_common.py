@@ -598,6 +598,10 @@ class DiffusionLoraConfig:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
+        # torch.manual_seed unpacks int64/uint64, so anything wider raises inside the trainer --
+        # after the route already evicted the resident models. Catch it here, with the request.
+        if not -(2**63) <= int(self.seed) <= 2**64 - 1:
+            raise ValueError("seed must fit in torch's 64-bit range")
         # Refuse fp16 for a bf16-only DiT family up front, before evicting resident models.
         if self.mixed_precision == "fp16" and resolved_family in _FORCE_BF16_FAMILIES:
             raise ValueError(

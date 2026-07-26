@@ -130,6 +130,13 @@ def _transcode_webm(path: Path) -> bytes:
     return buf.getvalue()
 
 
+# Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px
+# and 300 frames (25s at the 12 fps target) bound that at roughly 150 MB for the widest clip the
+# generate request allows, and cover the share/preview case a GIF is for.
+_GIF_MAX_EDGE = 720
+_GIF_MAX_FRAMES = 300
+
+
 def _transcode_gif(path: Path) -> bytes:
     import io
 
@@ -147,10 +154,30 @@ def _transcode_gif(path: Path) -> bytes:
             rate = float(in_v.average_rate or 24)
             # Full-rate GIFs are huge and stutter; ~12 fps (skipping source frames) is the sweet spot.
             step = max(1, round(rate / 12))
+            # Every kept frame is held as a paletted image until the encoder runs, so an unbounded
+            # walk is a memory bomb: a clip may be 2048x2048 for 1024 frames, and at 12 fps or
+            # below step is 1, which is >4 GB of frames plus the GIF buffer -- enough to take the
+            # whole backend down from one export click. Bound both axes instead: downscale past
+            # _GIF_MAX_EDGE and widen the step so at most _GIF_MAX_FRAMES are retained (GIF is the
+            # share/preview format; MP4 keeps the full clip).
+            total = in_v.frames or 0
+            kept = (total + step - 1) // step if total else 0
+            if kept > _GIF_MAX_FRAMES:
+                step = -(-total // _GIF_MAX_FRAMES)
             for i, frame in enumerate(src.decode(in_v)):
                 if i % step:
                     continue
-                frames.append(frame.to_image().convert("P", palette = Image.Palette.ADAPTIVE))
+                if len(frames) >= _GIF_MAX_FRAMES:
+                    # Frame count unknown up front (no stream metadata): stop at the cap.
+                    break
+                image = frame.to_image()
+                if max(image.size) > _GIF_MAX_EDGE:
+                    scale = _GIF_MAX_EDGE / max(image.size)
+                    image = image.resize(
+                        (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+                        Image.Resampling.LANCZOS,
+                    )
+                frames.append(image.convert("P", palette = Image.Palette.ADAPTIVE))
     except RuntimeError:
         raise
     except Exception as exc:  # noqa: BLE001 -- surface as "decoder unavailable"

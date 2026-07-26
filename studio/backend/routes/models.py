@@ -3565,12 +3565,24 @@ def _cached_repo_task(repo_info) -> Optional[str]:
         from core.inference.video_families import detect_video_family
 
         # Both gates: a detected video family (so image repos don't match) AND the load path's trust rule
-        # (so an untrusted video repo isn't advertised as loadable).
-        if detect_video_family(repo_id) is not None and _is_trusted_video_repo(repo_id):
-            return _VIDEO_GEN_TASK
+        # (so an untrusted video repo isn't advertised as loadable). An untrusted one is hidden outright
+        # rather than falling through to the image tag below: it is a video pipeline, so advertising it
+        # under Images would only move the same refusal to a different picker.
+        if detect_video_family(repo_id) is not None:
+            return _VIDEO_GEN_TASK if _is_trusted_video_repo(repo_id) else None
     except Exception:
         pass
-    return "text-to-image" if _repo_is_diffusers(repo_info) else None
+    if not _repo_is_diffusers(repo_info):
+        return None
+    # Same trust rule the image load path applies, so every advertised row can actually load: a
+    # cached community pipeline has a model_index.json like any other, but validate_load_request
+    # refuses its repo id, so tagging it text-to-image put a row in the Images picker that 400s.
+    try:
+        from core.inference.diffusion import _is_trusted_diffusion_repo
+
+        return "text-to-image" if _is_trusted_diffusion_repo(repo_id) else None
+    except Exception:  # noqa: BLE001 -- an import failure must not hide a usable repo
+        return "text-to-image"
 
 
 @router.get("/cached-models", response_model = CachedModelsResponse)

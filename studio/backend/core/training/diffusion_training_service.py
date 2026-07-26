@@ -17,6 +17,7 @@ runs a scripted target on a thread.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import multiprocessing as mp
@@ -67,6 +68,14 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
 # Cap on retained metric points; over it, arrays are decimated (every other point) so a long run
 # stays bounded while the loss chart keeps its shape.
 _METRIC_CAP = 4000
+
+
+class TrainingActiveError(RuntimeError):
+    """A dataset mutation was refused because a run owns the dataset (route: 409)."""
+
+
+class DatasetMutationInFlight(RuntimeError):
+    """A start was refused because a dataset mutation is open (route: 409)."""
 
 
 # ── persisted run history ──────────────────────────────────────────────────────
@@ -215,6 +224,10 @@ class DiffusionTrainingService:
         # Set by reserve() while a start is in flight (before the route frees GPU models) so the load
         # guards refuse a concurrent load during the free-then-spawn window. Cleared by unreserve().
         self._reserved = False
+        # Dataset mutations in flight (caption edit, upload commit, image delete, example import).
+        # A start refuses while any is open and a mutation refuses once a start is reserved, both
+        # decided under _lock, so neither can slip through the other's check-then-act window.
+        self._dataset_mutations = 0
         self._proc: Any = None
         self._stop_queue: Any = None
         self._pump: Optional[threading.Thread] = None
@@ -244,6 +257,11 @@ class DiffusionTrainingService:
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise RuntimeError("A diffusion training job is already running.")
+            if self._dataset_mutations:
+                raise DatasetMutationInFlight(
+                    "The training images are being changed right now. Wait for that to finish, "
+                    "then start the run."
+                )
             self._reserved = True
 
     def unreserve(self) -> None:
@@ -251,6 +269,31 @@ class DiffusionTrainingService:
         _proc, so a live job stays active on success and a failed start is fully rolled back."""
         with self._lock:
             self._reserved = False
+
+    @contextlib.contextmanager
+    def dataset_mutation(self):
+        """Hold the dataset interlock for one mutation, refusing if a run owns the dataset.
+
+        The route layer used to check ``is_active()`` and only then hand the filesystem work to a
+        thread, so a ``/diffusion/start`` could reserve inside that gap: the caption or the image
+        then changed underneath a preflight or a live trainer, which is what the immutability rule
+        exists to prevent. Registering the mutation under the same lock ``reserve()`` uses closes
+        it from both sides -- this raises once a start is committed, and ``reserve()`` raises while
+        a mutation is open, so neither waits on the other (a start must never block on a
+        minutes-long dataset import).
+        """
+        with self._lock:
+            if self._reserved or (self._proc is not None and self._proc.is_alive()):
+                raise TrainingActiveError(
+                    "Training images cannot be changed while diffusion training is active. "
+                    "Stop the run before uploading, importing, editing captions, or deleting images."
+                )
+            self._dataset_mutations += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._dataset_mutations = max(0, self._dataset_mutations - 1)
 
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.

@@ -1923,7 +1923,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
-    const pick = diffusionRoutePick(wanted, routeSearch.quant);
+    // Same catalog lookup a direct pick makes: the chat picker can only forward a GGUF filename,
+    // so a curated single-file artifact would otherwise be loaded as a pipeline and fail.
+    const pick = diffusionRoutePick(
+      wanted,
+      routeSearch.quant,
+      loadSpecFor(wanted, IMAGE_CATALOG),
+    );
     void loadOrStage(pick.repoId, pick.opts, false);
   }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 

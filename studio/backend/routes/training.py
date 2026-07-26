@@ -1175,6 +1175,31 @@ def _require_diffusion_dataset_mutable() -> None:
         )
 
 
+def diffusion_dataset_interlock():
+    """Dependency holding the dataset interlock for a whole mutating request.
+
+    The check above only covers the instant it runs: every one of these endpoints then hands its
+    filesystem work to a thread, and a ``/diffusion/start`` reserving in that gap would move
+    captions or images underneath the preflight or the running trainer. As a yield dependency the
+    registration spans the endpoint, so ``reserve()`` sees it and refuses instead. Fails open on an
+    import error, like the check it replaces."""
+    try:
+        from core.training.diffusion_training_service import (
+            TrainingActiveError,
+            get_diffusion_training_service,
+        )
+
+        service = get_diffusion_training_service()
+    except Exception:  # noqa: BLE001 -- unknowable state never blocks a mutation
+        yield
+        return
+    try:
+        with service.dataset_mutation():
+            yield
+    except TrainingActiveError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
 def _free_gpu_for_diffusion_training() -> None:
     """Free GPU residents before the diffusion trainer spawns its own SDXL pipeline.
 
@@ -1429,7 +1454,8 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except RuntimeError as e:
-        # A job is already running (or a start is already reserved).
+        # A job is already running (or a start is already reserved), or a dataset mutation is open
+        # (DatasetMutationInFlight) -- the same interlock from the other side, so also a 409.
         raise HTTPException(status_code = 409, detail = str(e))
     except HTTPException:
         raise
@@ -1642,6 +1668,7 @@ async def upload_diffusion_dataset(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
     current_subject: str = Depends(get_current_subject),
+    _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """Upload training images (and optional caption .txt / metadata.jsonl files) into a
     named folder under the Studio datasets root, creating it if needed. Repeat uploads
@@ -2082,6 +2109,7 @@ async def set_diffusion_dataset_caption(
     filename: str,
     body: DiffusionCaptionUpdateRequest,
     current_subject: str = Depends(get_current_subject),
+    _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """Write (or, when blank, clear) an image's ``.txt`` caption sidecar. Returns the
     updated image record."""
@@ -2127,6 +2155,7 @@ async def delete_diffusion_dataset_image(
     name: str,
     filename: str,
     current_subject: str = Depends(get_current_subject),
+    _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """Remove an image, its caption sidecars, and any cached thumbnails."""
     _require_diffusion_dataset_mutable()
@@ -2375,7 +2404,9 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
 
 @router.post("/diffusion/dataset/import-example", response_model = DiffusionDatasetImportResponse)
 async def import_diffusion_dataset_example(
-    body: DiffusionDatasetImportRequest, current_subject: str = Depends(get_current_subject)
+    body: DiffusionDatasetImportRequest,
+    current_subject: str = Depends(get_current_subject),
+    _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """Materialize a curated example dataset into a Studio dataset folder (images + .txt
     captions), ready to train. Idempotent: a folder that already holds images is returned

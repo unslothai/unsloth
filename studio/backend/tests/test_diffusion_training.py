@@ -16,6 +16,7 @@ import queue as _queue
 import threading
 import time
 
+import contextlib
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -302,6 +303,19 @@ class _FakeService:
 
     def is_active(self):
         return self._reserved or self._running
+
+    @contextlib.contextmanager
+    def dataset_mutation(self):
+        # Mirrors the real interlock: refuse while a run owns the dataset, and register the
+        # mutation so a concurrent reserve() would be refused for its duration.
+        from core.training.diffusion_training_service import TrainingActiveError
+
+        if self.is_active():
+            raise TrainingActiveError(
+                "Training images cannot be changed while diffusion training is active."
+            )
+        self.calls.append("dataset_mutation")
+        yield
 
     def start(self, config):
         self.started_with = config
@@ -1801,3 +1815,65 @@ def test_request_model_rejects_non_finite_learning_rate():
     for bad in (float("inf"), 1e309, float("nan"), 1.0, 5.0, 0.0):
         with pytest.raises(ValidationError):
             R(**base, learning_rate = bad)
+
+
+def test_dataset_mutation_and_reserve_refuse_each_other():
+    """The route layer checked is_active() and only then handed the filesystem work to a thread, so
+    a /diffusion/start could reserve inside that gap and the caption or image changed underneath the
+    preflight or the live trainer. Registering the mutation under the same lock closes it from both
+    sides, and neither side waits on the other (a start must not block on a long dataset import)."""
+    from core.training.diffusion_training_service import (
+        DatasetMutationInFlight,
+        DiffusionTrainingService,
+        TrainingActiveError,
+    )
+
+    svc = DiffusionTrainingService()
+    # A start cannot slip in while a mutation is open.
+    with svc.dataset_mutation():
+        with pytest.raises(DatasetMutationInFlight):
+            svc.reserve()
+    svc.reserve()  # claimable again once the mutation closed
+    # And a mutation is refused once the start is reserved.
+    with pytest.raises(TrainingActiveError):
+        with svc.dataset_mutation():
+            pass
+    svc.unreserve()
+    with svc.dataset_mutation():
+        pass
+
+
+def test_dataset_mutation_releases_on_failure():
+    # A mutation that raises must not leave the counter set, or every later start would 409.
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    svc = DiffusionTrainingService()
+    with pytest.raises(ValueError):
+        with svc.dataset_mutation():
+            raise ValueError("boom")
+    svc.reserve()  # the failed mutation left nothing behind
+
+
+def test_diffusion_seed_is_bounded_to_torch_range():
+    """torch.manual_seed unpacks int64/uint64, so a wider value raised inside the trainer -- after
+    the route had already evicted the resident image/video/chat models."""
+    from pydantic import ValidationError
+
+    from core.training.diffusion_lora_trainer import _config_from_dict
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {
+        "base_model": "unsloth/sdxl-turbo",
+        "data_dir": "/tmp/x",
+        "output_dir": "/tmp/out",
+        "seed": 2**64,
+    }
+    with pytest.raises(ValueError, match = "seed"):
+        _config_from_dict(base).normalized()
+    request = {k: v for k, v in base.items() if k != "seed"}
+    for bad in (2**64, -(2**63) - 1):
+        with pytest.raises(ValidationError):
+            DiffusionTrainingStartRequest(**request, seed = bad)
+    # The extremes torch does accept stay valid.
+    for good in (2**64 - 1, -(2**63)):
+        assert DiffusionTrainingStartRequest(**request, seed = good).seed == good

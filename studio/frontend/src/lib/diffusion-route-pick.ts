@@ -15,12 +15,21 @@ export interface DiffusionRoutePick {
  * resident model and then fails on the missing `model_index.json`, since an explicit
  * `model_kind` wins over the backend's filename sniffing. Split into (parent dir, basename) the
  * same way the pages' own picker handlers do.
+ *
+ * `spec` is the target page's catalog entry for the repo (`loadSpecFor`), which the chat picker
+ * cannot put in the URL: `ggufFilename` is GGUF-specific, so a curated single-file artifact
+ * (LTX-2.3, an FP8 checkpoint) arrives with no `quant` and would be read as a pipeline. Passing
+ * the spec makes a routed pick load exactly what a direct pick on that page loads.
  */
 export function diffusionRoutePick(
   model: string,
   quant?: string | null,
+  spec?: { kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null,
 ): DiffusionRoutePick {
   if (quant) return { repoId: model, opts: { kind: "gguf", filename: quant } };
+  // A spec exists only for a catalog repo id (loadSpecFor matches on that), never for a local
+  // path, so it takes precedence over the extension sniffing below.
+  if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };
   const norm = model.replace(/\\/g, "/");
   const slash = norm.lastIndexOf("/");
   const filename = slash >= 0 ? norm.slice(slash + 1) : norm;

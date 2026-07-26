@@ -1468,3 +1468,43 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     assert rows["unsloth/Qwen-Image-fp8-single"].get("single_file") is True
     assert "single_file" not in rows["unsloth/Qwen-Image-pipeline"]
     assert "single_file" not in rows["Org/ChatRepo"]
+
+
+def _pipeline_repo(repo_id: str, tmp_path: Path) -> SimpleNamespace:
+    return _repo(
+        repo_id,
+        [
+            _file("model_index.json", 1_000),
+            _file("transformer/diffusion_pytorch_model.safetensors", 5_000_000),
+        ],
+        tmp_path / f"models--{repo_id.replace('/', '--')}",
+    )
+
+
+def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tmp_path):
+    """Every advertised row must be loadable. A cached community pipeline has a model_index.json
+    like any other, so tagging it text-to-image put a row in the Images picker that the loader's
+    trust check refuses -- the pick 400s. Gate the tag on the same rule."""
+    assert models_route._cached_repo_task(_pipeline_repo("unsloth/Qwen-Image", tmp_path)) == (
+        "text-to-image"
+    )
+    assert models_route._cached_repo_task(_pipeline_repo("someone/their-sdxl-mix", tmp_path)) is None
+
+
+def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_under_images(
+    monkeypatch, tmp_path
+):
+    """A detected video pipeline that fails the video trust rule used to fall through to the image
+    fallback and show up in the Images picker, where it is just as unloadable."""
+    import core.inference.video as video_mod
+
+    repo = _pipeline_repo("someone/their-ltx-fork", tmp_path)
+    monkeypatch.setattr(
+        "core.inference.video_families.detect_video_family",
+        lambda repo_id: object(),
+    )
+    monkeypatch.setattr(video_mod, "_is_trusted_video_repo", lambda repo_id: False)
+    assert models_route._cached_repo_task(repo) is None
+
+    monkeypatch.setattr(video_mod, "_is_trusted_video_repo", lambda repo_id: True)
+    assert models_route._cached_repo_task(repo) == models_route._VIDEO_GEN_TASK

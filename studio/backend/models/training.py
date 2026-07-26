@@ -770,7 +770,10 @@ class DiffusionTrainingStartRequest(BaseModel):
     max_grad_norm: float = Field(
         1.0, ge = 0, description = "Gradient clipping max-norm; 0 disables clipping"
     )
-    seed: int = Field(42)
+    # Bounded to what torch.manual_seed unpacks (int64 low / uint64 high): an out-of-range value
+    # otherwise passes every route preflight, evicts the resident image/video/chat models, spawns
+    # the trainer, and only then dies on "Overflow when unpacking long long".
+    seed: int = Field(42, ge = -(2**63), le = 2**64 - 1)
     mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
     snr_gamma: Optional[float] = Field(
         5.0, gt = 0, description = "Min-SNR loss weighting; null disables"

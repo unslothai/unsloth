@@ -615,6 +615,26 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
 
 
+def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
+    """The chat picker can only forward a GGUF filename (ggufFilename is GGUF-specific), so a
+    curated single-file artifact -- an LTX-2.3 checkpoint, an FP8 transformer -- arrives with no
+    quant. Classifying it by shape alone made it a pipeline load, which calls from_pretrained on a
+    repo that has no model_index.json. The catalog spec the page's own picker consults has to win."""
+    helper = _read("lib/diffusion-route-pick.ts")
+    assert re.search(r"spec\?:\s*\{\s*kind:", helper), "the helper takes no catalog spec"
+    assert "if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };" in helper
+    for rel, catalog in (
+        ("features/images/images-page.tsx", "IMAGE_CATALOG"),
+        ("features/video/video-page.tsx", "VIDEO_CATALOG"),
+    ):
+        src = _read(rel)
+        call = re.search(
+            r"diffusionRoutePick\(\s*wanted,\s*routeSearch\.quant,\s*(.*?),?\s*\);", src, re.S
+        )
+        assert call, f"{rel}: the routed pick passes no spec"
+        assert f"loadSpecFor(wanted, {catalog})" in call.group(1), rel
+
+
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
     """int8/fp8 builds take adapters only at load time. Switching artifact inside one family
     keeps the selection (same family, no clear) while the load did not bake it, so Generate
