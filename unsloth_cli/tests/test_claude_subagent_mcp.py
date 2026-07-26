@@ -278,7 +278,9 @@ def test_read_only_local_child_uses_plan_mode(monkeypatch, tmp_path):
     command = captured["command"]
     assert command[command.index("--permission-mode") + 1] == "plan"
     disallowed = command[command.index("--disallowedTools") + 1]
-    assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit"
+    assert disallowed == "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
+    # Bash matters: plan mode routes it through a classifier served by this same
+    # local model, so without the deny a "read-only" child can still write files.
     prompt = command[command.index("--append-system-prompt") + 1]
     assert "read-only local coding subagent" in prompt
 

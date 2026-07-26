@@ -68,7 +68,7 @@ def test_gate_denies_the_editing_tool_in_plan_mode(tmp_path):
     assert "unsloth_plan_agent" in output["permissionDecisionReason"]
 
 
-@pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions", "dontAsk"])
+@pytest.mark.parametrize("mode", ["default", "acceptEdits", "bypassPermissions", "dontAsk", "auto"])
 def test_gate_allows_every_non_plan_mode(tmp_path, mode):
     gate = _plugin(tmp_path) / "hooks" / "plan_gate.py"
 
@@ -96,3 +96,20 @@ def test_plugin_still_writes_the_mcp_server_and_skill(tmp_path):
     assert (plugin / ".mcp.json").exists()
     assert (plugin / "skills" / "local-agent" / "SKILL.md").exists()
     assert (plugin / ".claude-plugin" / "plugin.json").exists()
+
+
+def test_wsl_run_clears_a_gate_left_by_an_earlier_windows_run(tmp_path, monkeypatch):
+    # The plugin dir survives across runs when persisted, so a gate written by a
+    # Windows run would otherwise be shipped into the distro with an interpreter
+    # path it cannot execute.
+    plugin = _plugin(tmp_path)
+    gate = plugin / "hooks" / "plan_gate.py"
+    hooks = plugin / "hooks" / "hooks.json"
+    assert gate.exists() and hooks.exists()
+
+    monkeypatch.setattr(start, "_wsl_windows_executable", lambda _argv: True)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    _plugin(tmp_path)
+
+    assert not gate.exists()
+    assert not hooks.exists()

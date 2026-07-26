@@ -153,11 +153,14 @@ def run_local_agent(
         "--output-format",
         "json",
         "--no-session-persistence",
-        # Strip human-blocking tools so the child runs unattended. The read-only child
-        # also drops file writers; it keeps ExitPlanMode, as Claude does under plan mode.
+        # Strip human-blocking tools so the child runs unattended. Only the read-only
+        # child's writers bite today, since a --print child is never offered the plan
+        # or prompt tools; those are listed anyway so a version that starts offering
+        # them cannot stall the subagent. Bash is denied read-only side because plan
+        # mode gates it through the same local model, which is not a write barrier.
         "--disallowedTools",
         (
-            "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit"
+            "AskUserQuestion,EnterPlanMode,Edit,Write,NotebookEdit,Bash"
             if read_only
             else "AskUserQuestion,EnterPlanMode,ExitPlanMode"
         ),

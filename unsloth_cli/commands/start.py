@@ -2074,8 +2074,13 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     # model to pick the read-only tool; this PreToolUse hook reads permission_mode
     # itself, so the routing holds even when the model forgets. Skipped under the
     # WSL bridge, where a Windows interpreter path is not runnable in the distro.
-    if command != "wsl.exe":
-        gate = plugin / "hooks" / "plan_gate.py"
+    gate = plugin / "hooks" / "plan_gate.py"
+    if command == "wsl.exe":
+        # A persisted plugin dir may still hold a gate from an earlier non-WSL run,
+        # whose interpreter path the distro cannot run. Drop it rather than ship it.
+        for stale in (gate, plugin / "hooks" / "hooks.json"):
+            stale.unlink(missing_ok = True)
+    else:
         _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
         _write_private_json(
             plugin / "hooks" / "hooks.json",
