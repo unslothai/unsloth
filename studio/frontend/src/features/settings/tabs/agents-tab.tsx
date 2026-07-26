@@ -67,6 +67,7 @@ const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
+const GGUF_NAME_PATTERN = /gguf/i;
 
 function isLoopbackBase(base: string): boolean {
   try {
@@ -278,12 +279,25 @@ function discoverGgufModels(
 // Scanned local GGUFs (./models, LM Studio, custom folders) that the caches above
 // miss. The id is the load id, i.e. the on-disk path for anything outside the active
 // cache, so label the row by repo id when there is one but keep the path to load by.
+// model_format is only set by the scanners that compute it: _scan_hf_cache leaves it
+// unset, so a custom scan folder holding an HF cache layout would vanish from the
+// picker on an exclusive check. Treat unset as unknown and fall back to the name.
+function isLocalGguf(model: LocalModelInfo): boolean {
+  const format = (model.model_format ?? "").toLowerCase();
+  if (format) {
+    return format === "gguf";
+  }
+  return [model.id, model.model_id, model.display_name].some(
+    (value) => typeof value === "string" && GGUF_NAME_PATTERN.test(value),
+  );
+}
+
 function localGgufEntries(
   models: LocalModelInfo[],
 ): { id: string; label: string }[] {
   const entries: { id: string; label: string }[] = [];
   for (const model of models) {
-    if ((model.model_format ?? "").toLowerCase() !== "gguf" || !model.id) {
+    if (!(model.id && isLocalGguf(model))) {
       continue;
     }
     // The path is the identity: two scanned models can share a basename, and it is
@@ -844,8 +858,16 @@ export function AgentsTab() {
   // it was picked by hand: leaving it selected would emit it as --model.
   const retireAttachOnly = useCallback((label: string, replacement: string) => {
     setModels((current) => current.filter((model) => model !== label));
-    setSelectedModel((current) => (current === label ? replacement : current));
-    setSelectedVariant((current) => (current === label ? null : current));
+    setSelectedModel((current) => {
+      if (current !== label) {
+        return current;
+      }
+      // Drop the quant in the same transition: it belonged to the label, and an
+      // explicit pick stops adoptActiveModel from correcting it afterwards.
+      chosenVariant.current = null;
+      setSelectedVariant(null);
+      return replacement;
+    });
   }, []);
 
   // The resident GGUF went away (unloaded, or replaced by a transformer model).
@@ -929,9 +951,16 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
 
-    // A scanned local directory is not repo-shaped but still has a path to scan,
-    // so only a model with neither is genuinely variantless.
-    if (!(isHuggingFaceRepo(selectedModel) || cachedLoadId)) {
+    // A scanned directory is not repo-shaped but still has a path to enumerate, and
+    // after discovery that path IS the identity. Only a standalone .gguf file, which
+    // is one quant by definition, is genuinely variantless.
+    const localDir =
+      cachedLoadId ??
+      (looksLikePath(selectedModel) &&
+      !selectedModel.toLowerCase().endsWith(".gguf")
+        ? selectedModel
+        : null);
+    if (!(isHuggingFaceRepo(selectedModel) || localDir)) {
       queueMicrotask(() => {
         if (cancelled) {
           return;
@@ -954,8 +983,8 @@ export function AgentsTab() {
     setVariantsLoading(true);
     // Offer the quants from the same place the command loads from, not remote-only ones.
     listGgufVariants(selectedModel, hfToken || undefined, {
-      preferLocalCache: cachedLoadId != null,
-      localPath: cachedLoadId,
+      preferLocalCache: localDir != null,
+      localPath: localDir,
     })
       .then((info) => {
         if (cancelled) {

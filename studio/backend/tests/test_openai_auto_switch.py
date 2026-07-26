@@ -1108,7 +1108,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     monkeypatch.setattr(
         models_route,
         "_scan_hf_cache",
-        lambda d: scanned.append(("hf", str(Path(d).resolve()))) or [],
+        lambda d, **_: scanned.append(("hf", str(Path(d).resolve()))) or [],
     )
     monkeypatch.setattr(
         models_route,

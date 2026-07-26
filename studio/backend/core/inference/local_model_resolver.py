@@ -152,6 +152,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     index: dict[str, _LocalGgufEntry] = {}
     seen_hf: set[str] = set()
 
+    try:
+        active_root = str(Path(_resolve_hf_cache_dir()).resolve())
+    except Exception:
+        active_root = None
+
     def _scan_hf_once(directory) -> list:
         if directory is None:
             return []
@@ -163,7 +168,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             if rp in seen_hf:
                 return []
             seen_hf.add(rp)
-            return _scan_hf_cache(directory)
+            # Only the active cache loads by repo id. Say so, or an inactive repo is
+            # indexed under an id it cannot load by, and its snapshot basename (what
+            # /v1/models advertises once loaded by path) is never a key at all.
+            return _scan_hf_cache(directory, active_cache = rp == active_root)
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
@@ -221,9 +229,9 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Index every alias (including the path) so a client can resolve by any of
         # them, even though only the non-path loader_id is advertised.
-        # public_model_id too: a repo outside the active cache loads by snapshot path,
-        # and /v1/models then advertises only that directory's basename, so anything
-        # durable pinned to that id (a subagent config) must resolve back here.
+        # public_model_id too: an inactive-cache repo carries its snapshot path as the
+        # id, and /v1/models advertises only that directory's basename once loaded, so
+        # anything durable pinned to it (a subagent config) must resolve back here.
         for key in (
             raw_id,
             getattr(info, "model_id", None),
