@@ -27,8 +27,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   type Ref,
+  forwardRef,
   useEffect,
   useId,
+  useImperativeHandle,
   useRef,
   useState,
 } from "react";
@@ -418,30 +420,65 @@ function GpuMemorySettings({
   );
 }
 
-function LlamaExtraArgsSetting({
-  config,
-  update,
-}: {
-  config: PerModelConfig;
-  update: (patch: Partial<PerModelConfig>) => void;
-}) {
+export type LlamaExtraArgsInputHandle = {
+  /** Commit a focused/same-click draft; null when none is pending. */
+  commit: () => string[] | null;
+};
+
+const LlamaExtraArgsSetting = forwardRef<
+  LlamaExtraArgsInputHandle,
+  {
+    config: PerModelConfig;
+    update: (patch: Partial<PerModelConfig>) => void;
+  }
+>(function LlamaExtraArgsSetting({ config, update }, ref) {
   const [draft, setDraft] = useState(() =>
     formatLlamaExtraArgs(config.llamaExtraArgs),
   );
+  const draftRef = useRef(draft);
+  const dirtyRef = useRef(false);
+  // Same-click Load: this field's blur commits via update() before the button's
+  // onClick runs, but handleRun's closure still holds the pre-blur config. Keep
+  // the blur result for one imperative commit(), dropped on any settled render
+  // (the gesture is over), exactly as NumericValueInput bridges its drafts.
+  const lastBlurCommittedRef = useRef<string[] | null>(null);
   useEffect(() => {
-    setDraft(formatLlamaExtraArgs(config.llamaExtraArgs));
+    lastBlurCommittedRef.current = null;
+  });
+  useEffect(() => {
+    const next = formatLlamaExtraArgs(config.llamaExtraArgs);
+    setDraft(next);
+    draftRef.current = next;
+    dirtyRef.current = false;
   }, [config.llamaExtraArgs]);
-  const commit = () => {
-    const parsed = parseLlamaExtraArgsInput(draft);
-    const next = parsed.length > 0 ? parsed : [];
+  const commitDraft = (raw: string): string[] => {
+    const next = parseLlamaExtraArgsInput(raw);
     const current = config.llamaExtraArgs;
     const same =
       (current?.length ?? 0) === next.length &&
       (current ?? []).every((token, index) => token === next[index]);
     if (!same) {
-      update({ llamaExtraArgs: next.length > 0 ? next : [] });
+      update({ llamaExtraArgs: next });
     }
+    return next;
   };
+  const commit = () => {
+    lastBlurCommittedRef.current = commitDraft(draftRef.current);
+    dirtyRef.current = false;
+  };
+  useImperativeHandle(ref, () => ({
+    commit: () => {
+      if (dirtyRef.current) {
+        const committed = commitDraft(draftRef.current);
+        dirtyRef.current = false;
+        lastBlurCommittedRef.current = null;
+        return committed;
+      }
+      const blurCommitted = lastBlurCommittedRef.current;
+      lastBlurCommittedRef.current = null;
+      return blurCommitted;
+    },
+  }));
   return (
     <div className="space-y-2">
       <div className="flex min-w-0 items-center gap-1.5">
@@ -456,7 +493,11 @@ function LlamaExtraArgsSetting({
       <input
         type="text"
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          draftRef.current = event.target.value;
+          dirtyRef.current = true;
+        }}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
@@ -469,7 +510,7 @@ function LlamaExtraArgsSetting({
       />
     </div>
   );
-}
+});
 
 function GgufAdvancedSettings({
   config,
@@ -481,6 +522,7 @@ function GgufAdvancedSettings({
   moeLayerCount,
   gpuLayersInputRef,
   moeLayersInputRef,
+  llamaExtraArgsInputRef,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -491,6 +533,7 @@ function GgufAdvancedSettings({
   moeLayerCount: number | null;
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
+  llamaExtraArgsInputRef?: Ref<LlamaExtraArgsInputHandle>;
 }) {
   return (
     <>
@@ -623,7 +666,11 @@ function GgufAdvancedSettings({
         moeLayersInputRef={moeLayersInputRef}
       />
 
-      <LlamaExtraArgsSetting config={config} update={update} />
+      <LlamaExtraArgsSetting
+        config={config}
+        update={update}
+        ref={llamaExtraArgsInputRef}
+      />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
     </>
@@ -689,6 +736,7 @@ export function ModelConfigPage({
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
   const moeLayersInputRef = useRef<NumericValueInputHandle>(null);
+  const llamaExtraArgsInputRef = useRef<LlamaExtraArgsInputHandle>(null);
   const nativePathToken =
     target.meta.nativePathToken ??
     (isActiveModel ? activeNativePathToken : null);
@@ -864,6 +912,9 @@ export function ModelConfigPage({
     const committedMoeLayers = target.isGguf
       ? moeLayersInputRef.current?.commit()
       : undefined;
+    const committedLlamaExtraArgs = target.isGguf
+      ? llamaExtraArgsInputRef.current?.commit()
+      : undefined;
 
     const pendingPatch: Partial<PerModelConfig> = {};
     if (committedContext != null) {
@@ -881,11 +932,15 @@ export function ModelConfigPage({
     if (committedMoeLayers != null) {
       pendingPatch.nCpuMoe = committedMoeLayers;
     }
+    if (committedLlamaExtraArgs != null) {
+      pendingPatch.llamaExtraArgs = committedLlamaExtraArgs;
+    }
     const hasPending =
       committedContext != null ||
       committedMaxSeqLength != null ||
       committedGpuLayers != null ||
-      committedMoeLayers != null;
+      committedMoeLayers != null ||
+      committedLlamaExtraArgs != null;
 
     const effectiveConfig = hasPending
       ? { ...config, ...pendingPatch }
@@ -1051,6 +1106,7 @@ export function ModelConfigPage({
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
+                llamaExtraArgsInputRef={llamaExtraArgsInputRef}
               />
             )}
 

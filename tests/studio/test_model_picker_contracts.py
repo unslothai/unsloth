@@ -655,3 +655,56 @@ def test_llama_extra_args_parser_keeps_non_escape_backslashes():
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
     assert 'ch === "\\\\" && (next === quote || next === "\\\\")' in src
+
+
+def test_same_click_commit_covers_the_custom_llama_args_field():
+    """The Custom llama-server Args field needs the same blur bridge.
+
+    It stages its draft only on blur, and NumericValueInput's own comment records
+    why that is not enough: the blur commits via the parent update() before the
+    button's onClick runs, while handleRun's closure still holds the pre-blur
+    config. Without an imperative commit, typing flags and clicking Load in one
+    gesture validates and launches the previous args while the panel then shows
+    the new ones as though they had applied.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "const llamaExtraArgsInputRef = useRef<LlamaExtraArgsInputHandle>(null);" in page
+    assert "llamaExtraArgsInputRef.current?.commit()" in page
+    assert "ref={llamaExtraArgsInputRef}" in page
+    assert "llamaExtraArgsInputRef?: Ref<LlamaExtraArgsInputHandle>;" in page
+    # Folded into the staged config, gated on non-null like the numeric drafts so
+    # an untouched field never fabricates an override.
+    assert "committedLlamaExtraArgs != null" in page
+    assert "pendingPatch.llamaExtraArgs = committedLlamaExtraArgs;" in page
+    # The handle mirrors NumericValueInputHandle, including the one-shot blur
+    # cache that a settled render clears.
+    assert "commit: () => string[] | null;" in page
+    assert "lastBlurCommittedRef" in page
+
+
+def test_load_paths_baseline_on_the_servers_effective_args():
+    """Every GGUF load path must baseline on what the server launched with.
+
+    /load strips the offload group from explicit extras when gpu_memory_mode is
+    manual, so seeding from the request advertises a dropped --cpu-moe as active
+    and leaves dirty tracking measuring against a baseline that never ran. Every
+    sibling in these same setState calls (KV dtype, tensor parallel, speculative
+    type) already reads the load response back; the extras must too.
+    """
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "loadResponse.llama_extra_args !== undefined" in runtime
+    assert "loadedLlamaExtraArgs: loadedExtraArgs," in runtime
+    for rel, var in (
+        ("features/chat/api/chat-adapter.ts", "loadResp"),
+        ("features/chat/shared-composer.tsx", "resp"),
+    ):
+        src = _read(rel)
+        assert f"llamaExtraArgs: {var}.llama_extra_args ??" in src, rel
+        assert f"{var}.llama_extra_args ??" in src, rel
+    # The response type carries it, so an older backend (undefined) still falls
+    # back to the request rather than blanking a field that is running.
+    types_src = _read("features/chat/types/api.ts")
+    load_response = types_src.split("export interface LoadModelResponse")[1].split(
+        "export interface"
+    )[0]
+    assert "llama_extra_args?: string[] | null;" in load_response

@@ -1703,8 +1703,11 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
-        llamaExtraArgs: config.llamaExtraArgs ?? null,
-        loadedLlamaExtraArgs: config.llamaExtraArgs ?? null,
+        // What the server launched with, not what was asked for: manual GPU
+        // mode strips the offload group it owns. undefined = older backend.
+        llamaExtraArgs: loadResp.llama_extra_args ?? config.llamaExtraArgs ?? null,
+        loadedLlamaExtraArgs:
+          loadResp.llama_extra_args ?? config.llamaExtraArgs ?? null,
         loadedCustomContextLength: keepCustomCtx,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: effectiveChatTemplateOverride,

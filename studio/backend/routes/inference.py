@@ -4435,6 +4435,7 @@ async def _load_model_impl(
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
                     requested_gpu_ids = llama_backend.requested_gpu_ids,
+                    llama_extra_args = llama_backend.extra_args,
                 )
         else:
             if (
@@ -4807,6 +4808,7 @@ async def _load_model_impl(
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 requested_gpu_ids = llama_backend.requested_gpu_ids,
+                llama_extra_args = llama_backend.extra_args,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────

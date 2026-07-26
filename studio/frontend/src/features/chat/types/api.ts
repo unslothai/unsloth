@@ -194,6 +194,12 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /**
+   * Pass-through llama-server flags the load actually launched with, after
+   * manual GPU mode strips the offload group it owns. Baseline on this, not on
+   * the request, or the panel reports a stripped flag as active.
+   */
+  llama_extra_args?: string[] | null;
 }
 
 export interface UnloadModelRequest {

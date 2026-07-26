@@ -1229,8 +1229,11 @@ export function SharedComposer({
           // plus loaded baselines) so the GPU controls round-trip. (gguf context,
           // customContextLength and native-path token/expiry clear in the tail below.)
           ...loadedGpuMemoryFields(resp),
-          llamaExtraArgs: ownConfig.llamaExtraArgs ?? null,
-          loadedLlamaExtraArgs: ownConfig.llamaExtraArgs ?? null,
+          // What the server launched with, not what was asked for: manual GPU
+          // mode strips the offload group it owns. undefined = older backend.
+          llamaExtraArgs: resp.llama_extra_args ?? ownConfig.llamaExtraArgs ?? null,
+          loadedLlamaExtraArgs:
+            resp.llama_extra_args ?? ownConfig.llamaExtraArgs ?? null,
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,

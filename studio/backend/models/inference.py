@@ -516,6 +516,15 @@ class LoadResponse(BaseModel):
             "or None for automatic selection."
         ),
     )
+    llama_extra_args: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Pass-through llama-server flags the load actually launched with, after "
+            "manual GPU mode strips the offload group it owns. The UI baselines on this "
+            "rather than the request, so the panel never reports a stripped flag as "
+            "active. None for non-GGUF."
+        ),
+    )
 
 
 class UnloadResponse(BaseModel):

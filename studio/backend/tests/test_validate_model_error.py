@@ -389,3 +389,47 @@ def test_status_exposes_the_active_llama_extra_args(monkeypatch, extra_args):
     resp = asyncio.run(inf.get_status(current_subject = "tester"))
     assert resp.is_gguf is True
     assert resp.llama_extra_args == extra_args
+
+
+def test_load_response_reports_the_effective_llama_extra_args():
+    """The GGUF /load response must echo what the server launched with.
+
+    Manual GPU memory owns the offload group, so /load strips --cpu-moe /
+    --gpu-layers / --fit from EXPLICIT extras before launching. Echoing the
+    request instead would make the settings panel advertise a flag that was
+    dropped, and leave dirty tracking baselined on a launch that never happened.
+    """
+    import inspect
+
+    from core.inference.llama_server_args import strip_shadowing_flags
+    from models.inference import LoadResponse
+
+    # The strip the route applies in manual mode, with its own toggles.
+    effective = strip_shadowing_flags(
+        ["--cpu-moe", "--no-mmap"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+        strip_tensor_split = False,
+        strip_offload = True,
+    )
+    assert effective == ["--no-mmap"]
+
+    # The response can carry it, and defaults to None for the non-GGUF paths.
+    assert LoadResponse.model_fields["llama_extra_args"].default is None
+    echoed = LoadResponse(
+        status = "loaded",
+        model = "org/gguf-repo",
+        display_name = "org/gguf-repo",
+        inference = {},
+        llama_extra_args = effective,
+    )
+    assert echoed.llama_extra_args == effective
+
+    # Both GGUF response sites (fresh load and the already-loaded dedupe) source
+    # it from the backend's effective list, never from the request.
+    src = inspect.getsource(inf._load_model_impl)
+    assert src.count("llama_extra_args = llama_backend.extra_args,") == 2
+    assert "llama_extra_args = request.llama_extra_args," not in src
