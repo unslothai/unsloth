@@ -78,6 +78,7 @@ def _snapshot_complete_on_disk(
     expected_total: int,
     completed_bytes: int,
     in_progress_bytes: int,
+    metadata_verified: bool,
 ) -> bool:
     if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
@@ -101,7 +102,13 @@ def _snapshot_complete_on_disk(
         hub_cache = hub_cache,
     )
     if manifest is None:
-        return False
+        # Training's datasets.load_dataset() writes a normal HF snapshot but
+        # does not go through our Hub download worker, so it has no Unsloth
+        # manifest to verify. Revision metadata still gives us the complete set
+        # of expected blob hashes and bytes; with a snapshot present and no
+        # incomplete blobs, that is sufficient to finish the training UI bar.
+        # Keep models manifest-only because model variants can share blob dirs.
+        return repo_type == "dataset" and metadata_verified
     return download_manifest.verify_against_disk(manifest, snapshot_dir).ok
 
 
@@ -202,6 +209,7 @@ def compute_snapshot_progress(
                     expected_total = expected_total,
                     completed_bytes = completed_bytes,
                     in_progress_bytes = in_progress_bytes,
+                    metadata_verified = bool(expected_hashes),
                 ),
             )
         )

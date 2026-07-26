@@ -3710,6 +3710,51 @@ def test_snapshot_progress_confirms_complete_only_with_verified_snapshot(monkeyp
     assert result["complete_on_disk"] is True
 
 
+def test_dataset_snapshot_progress_completes_without_worker_manifest(monkeypatch, tmp_path):
+    """load_dataset creates an HF snapshot without an Unsloth worker manifest."""
+    entry = tmp_path / "datasets--Org--Data"
+    blobs = entry / "blobs"
+    snap = entry / "snapshots" / "rev0"
+    blobs.mkdir(parents = True)
+    snap.mkdir(parents = True)
+    (blobs / "datahash").write_bytes(b"a" * 100)
+    (snap / "data.parquet").write_bytes(b"a" * 100)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda _repo_type, _repo_id, force_active = False: [entry],
+    )
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "has_cancel_marker",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "dataset",
+        repo_id = "Org/Data",
+        job_key = "org/data",
+        expected_bytes = 0,
+        hf_token = None,
+        registry = SimpleNamespace(
+            get_job = lambda _key: SimpleNamespace(state = "idle"),
+        ),
+        metadata_resolver = lambda _repo_id, _hf_token: (
+            100,
+            frozenset({"datahash"}),
+        ),
+    )
+
+    assert result["progress"] == 1.0
+    assert result["complete_on_disk"] is True
+
+
 def test_expected_files_from_snapshot_dir_records_relative_paths_and_sizes(tmp_path):
     snap = tmp_path / "snapshots" / "rev0"
     (snap / "nested").mkdir(parents = True)
