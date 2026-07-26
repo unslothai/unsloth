@@ -136,9 +136,7 @@ def test_registry_survives_concurrent_register_unregister():
         try:
             barrier.wait(timeout = 10)
             for _ in range(50):
-                with active_generations.ActiveGeneration(
-                    threading.Event(), thread_id = f"t{i}"
-                ):
+                with active_generations.ActiveGeneration(threading.Event(), thread_id = f"t{i}"):
                     active_generations.snapshot()
         except BaseException as exc:  # noqa: BLE001 - surfaced via assert below
             errors.append(exc)
@@ -159,9 +157,9 @@ def test_registry_survives_concurrent_register_unregister():
 # The registry needs only the stdlib, so it runs anywhere. The gate lives in
 # routes.inference, which pulls the whole inference stack: skip when absent.
 def _route_gate():
-    pytest.importorskip("fastapi", reason="inference stack not installed")
+    pytest.importorskip("fastapi", reason = "inference stack not installed")
     routes_inference = pytest.importorskip(
-        "routes.inference", reason="inference stack not installed"
+        "routes.inference", reason = "inference stack not installed"
     )
     return routes_inference._raise_or_cancel_active_generations
 
@@ -250,15 +248,12 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
 
 
 def test_load_and_unload_requests_default_to_not_cancelling():
-    pytest.importorskip("pydantic", reason="pydantic not installed")
+    pytest.importorskip("pydantic", reason = "pydantic not installed")
     from models.inference import LoadRequest, UnloadRequest
 
     assert LoadRequest(model_path = "m").force_cancel_active is False
     assert UnloadRequest(model_path = "m").force_cancel_active is False
-    assert (
-        LoadRequest(model_path = "m", force_cancel_active = True).force_cancel_active
-        is True
-    )
+    assert LoadRequest(model_path = "m", force_cancel_active = True).force_cancel_active is True
 
 
 def _parallel_constants(path: str) -> dict:
@@ -286,11 +281,7 @@ def test_studio_defaults_to_more_than_one_decode_slot():
     consts = _parallel_constants(os.path.join(_backend, "run.py"))
 
     assert consts["_PARALLEL_DEFAULT_PLAIN"] > 1
-    assert (
-        consts["_PARALLEL_MIN"]
-        <= consts["_PARALLEL_DEFAULT_PLAIN"]
-        <= consts["_PARALLEL_MAX"]
-    )
+    assert consts["_PARALLEL_MIN"] <= consts["_PARALLEL_DEFAULT_PLAIN"] <= consts["_PARALLEL_MAX"]
 
 
 def test_cli_and_backend_parallel_defaults_agree():
@@ -298,7 +289,9 @@ def test_cli_and_backend_parallel_defaults_agree():
     backend = _parallel_constants(os.path.join(_backend, "run.py"))
     cli_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(_backend))),
-        "unsloth_cli", "commands", "studio.py",
+        "unsloth_cli",
+        "commands",
+        "studio.py",
     )
     cli = _parallel_constants(cli_path)
 

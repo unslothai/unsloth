@@ -2214,18 +2214,23 @@ class _TrackedCancel:
     so either one cancels down the same per-request path.
     """
 
-    def __init__(self, event: threading.Event, *keys, thread_id = None, model = None):
+    def __init__(
+        self,
+        event: threading.Event,
+        *keys,
+        thread_id = None,
+        model = None,
+    ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
-        self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, model = model
-        )
+        self._active = active_generations.ActiveGeneration(event, thread_id = thread_id, model = model)
 
     @classmethod
     def for_payload(cls, event: threading.Event, payload, *keys):
         """Track the run against the conversation its request names."""
         return cls(
-            event, *keys,
+            event,
+            *keys,
             thread_id = getattr(payload, "thread_id", None),
             model = getattr(payload, "model", None),
         )
@@ -4311,8 +4316,7 @@ def _raise_or_cancel_active_generations(*, force: bool, action: str) -> int:
 
 @studio_router.get("/active-generations")
 async def get_active_generations(
-    fastapi_request: Request,
-    current_subject: str = Depends(get_current_subject),
+    fastapi_request: Request, current_subject: str = Depends(get_current_subject)
 ):
     """Conversations currently generating, plus how many can decode at once.
 
@@ -4357,9 +4361,7 @@ async def load_model(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     _raise_if_sidecar_swap_in_progress()
-    _raise_or_cancel_active_generations(
-        force = request.force_cancel_active, action = "Loading a model"
-    )
+    _raise_or_cancel_active_generations(force = request.force_cancel_active, action = "Loading a model")
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
@@ -14082,7 +14084,11 @@ async def _anthropic_passthrough_stream(
     # No thread_id: this is the public API surface, not a Studio conversation.
     # It still registers so a reload cannot yank llama-server out from under it.
     _tracker = _TrackedCancel(
-        cancel_event, cancel_id, session_id, message_id, model = model_name,
+        cancel_event,
+        cancel_id,
+        session_id,
+        message_id,
+        model = model_name,
     )
     _tracker.__enter__()
 
