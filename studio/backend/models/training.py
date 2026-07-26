@@ -112,6 +112,12 @@ class TrainingDatasetSelection(BaseModel):
         return self
 
 
+class ResumeImportRequest(BaseModel):
+    """An explicitly selected checkpoint directory (not a history run)."""
+
+    directory: str = Field(..., min_length = 1, max_length = 4096)
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
@@ -526,6 +532,18 @@ class TrainingStartRequest(BaseModel):
     resume_from_checkpoint: Optional[str] = Field(
         None, description = "Saved training output directory to resume from"
     )
+    imported_resume_checkpoint: Optional[str] = Field(
+        None,
+        description = "Checkpoint directory explicitly inspected with /resume/import/inspect",
+    )
+
+    @model_validator(mode = "after")
+    def _distinct_resume_flows(self) -> "TrainingStartRequest":
+        if self.resume_from_checkpoint and self.imported_resume_checkpoint:
+            raise ValueError(
+                "Choose either resume_from_checkpoint (history) or imported_resume_checkpoint, not both"
+            )
+        return self
 
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(

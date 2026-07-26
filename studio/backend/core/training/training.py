@@ -818,6 +818,8 @@ class TrainingBackend:
         self.current_job_id: Optional[str] = None
         self._output_dir: Optional[str] = None
         self._resume_source_run_id: Optional[str] = None
+        self._imported_checkpoint: Optional[str] = None
+        self._import_source_output_dir: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
 
         # DB persistence
@@ -847,6 +849,8 @@ class TrainingBackend:
         *,
         before_spawn = None,
         resume_source_run_id: Optional[str] = None,
+        imported_checkpoint: Optional[str] = None,
+        import_source_output_dir: Optional[str] = None,
         **kwargs,
     ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
@@ -1006,9 +1010,15 @@ class TrainingBackend:
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
             self.eval_enabled = False
-            self._output_dir = config.get("output_dir") if resume_source_run_id else None
+            self._output_dir = (
+                config.get("output_dir")
+                if (resume_source_run_id or imported_checkpoint)
+                else None
+            )
             self._progress.output_dir = self._output_dir
             self._resume_source_run_id = resume_source_run_id
+            self._imported_checkpoint = imported_checkpoint
+            self._import_source_output_dir = import_source_output_dir
             self._terminal_finalize_payload = None
             self._metric_buffer.clear()
             self._run_finalized = False
@@ -1028,7 +1038,7 @@ class TrainingBackend:
             # in history during model loading and a fast terminal worker can't race the
             # pump into a duplicate create/finalize. From here the pump only finalizes.
             self._ensure_db_run_created()
-            if resume_source_run_id and not self._db_run_created:
+            if (resume_source_run_id or imported_checkpoint) and not self._db_run_created:
                 if proc.is_alive():
                     proc.terminate()
                 proc.join(timeout = 5.0)
@@ -1036,7 +1046,10 @@ class TrainingBackend:
                     proc.kill()
                     proc.join(timeout = 2.0)
                 self._progress.is_training = False
-                self._progress.error = "Resume checkpoint is no longer available."
+                self._progress.error = (
+                    "Resume checkpoint is no longer available or its output directory "
+                    "is already being imported."
+                )
                 self._spawn_in_progress = False
                 return False
 
@@ -2127,6 +2140,8 @@ class TrainingBackend:
                 output_dir = self._output_dir
                 cancel_requested = self._cancel_requested
                 resumed_from_run_id = self._resume_source_run_id
+                imported_checkpoint = getattr(self, "_imported_checkpoint", None)
+                import_source_output_dir = getattr(self, "_import_source_output_dir", None)
             create_run(
                 id = job_id,
                 model_name = db_config["model_name"],
@@ -2137,6 +2152,8 @@ class TrainingBackend:
                 output_dir = output_dir,
                 cancel_requested = cancel_requested,
                 resumed_from_run_id = resumed_from_run_id,
+                imported_checkpoint = imported_checkpoint,
+                import_source_output_dir = import_source_output_dir,
             )
             created = True
         except Exception:

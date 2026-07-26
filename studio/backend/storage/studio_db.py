@@ -204,6 +204,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE training_runs ADD COLUMN resume_blocked INTEGER NOT NULL DEFAULT 0"
         )
+    if "imported_checkpoint" not in existing_cols:
+        conn.execute("ALTER TABLE training_runs ADD COLUMN imported_checkpoint TEXT")
+    if "import_source_output_dir" not in existing_cols:
+        conn.execute("ALTER TABLE training_runs ADD COLUMN import_source_output_dir TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_running_import_output "
+        "ON training_runs(import_source_output_dir) "
+        "WHERE status = 'running' AND import_source_output_dir IS NOT NULL"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_metrics (
@@ -743,6 +752,8 @@ def create_run(
     output_dir: Optional[str] = None,
     cancel_requested: bool = False,
     resumed_from_run_id: Optional[str] = None,
+    imported_checkpoint: Optional[str] = None,
+    import_source_output_dir: Optional[str] = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -750,9 +761,9 @@ def create_run(
             """
             INSERT INTO training_runs (
                 id, model_name, dataset_name, config_json, started_at, total_steps,
-                output_dir, resume_blocked
+                output_dir, resume_blocked, imported_checkpoint, import_source_output_dir
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -763,6 +774,8 @@ def create_run(
                 total_steps,
                 None if cancel_requested else output_dir,
                 int(cancel_requested),
+                imported_checkpoint,
+                import_source_output_dir,
             ),
         )
         if resumed_from_run_id:
