@@ -14,10 +14,27 @@ source-scanning tests do constantly:
     "byte 0x81", taking test_cancel_atomicity.py and test_cancel_id_wiring.py
     out at collection time.
 
-Nothing that runs at import can see a tmp_path fixture, so a bare read there is
-always touching a checked-in file. That makes the rule mechanical enough to
-enforce with no allowlist, while staying quiet about temp-dir I/O inside test
-bodies where the platform default is harmless.
+A call is an offence when it does un-pinned text I/O and any of three things
+holds. It runs at import, where nothing can see a tmp_path fixture yet. Its
+path is a module-level constant, which a fixture parameter cannot be. Or its
+path is built from `__file__`, which is checked in by construction. The last
+two reach test bodies, where the same failure lands one step later:
+
+    test_gemma4_chat_template.py opens unsloth/chat_templates.py through a
+    helper its tests call, and cp1252 cannot decode that file ("byte 0x90").
+    test_gguf_load_cache_reuse.py reads routes/inference.py the same way, via
+    `Path(__file__).parent.parent`, and dies on the same 0x81 as the two cancel
+    modules do at collection.
+
+Each rule is a property of the path expression alone, so together they stay
+mechanical enough to enforce with no allowlist while staying quiet about
+temp-dir I/O, where the platform default is harmless and the test wrote the
+bytes itself.
+
+One shape is deliberately out of reach: text read from a checked-in file and
+then written back out to a tmp_path, as at test_studio_install_workspace_guard
+.py:851, is only unsafe because of where the string came from, and tracing that
+needs dataflow rather than a look at the call.
 """
 
 # `str | None` below is evaluated at import on Python 3.9 without this, and
@@ -65,6 +82,12 @@ EAGER_CONSUMERS = {
 }
 # Values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
+# `Path.read_text(p)` is the unbound spelling of `p.read_text()`: same API, same
+# platform default, but the instance takes the first slot so every argument
+# shifts one place right.
+PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+# Where each API takes its encoding positionally, for the bound call.
+ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
 
@@ -134,15 +157,7 @@ def _import_time_calls(tree: ast.Module):
                     scopes.append(node.body)
 
     _collect(tree.body)
-    # A generator expression only runs its element where an EAGER consumer takes
-    # it. iter/zip/map/enumerate leave it lazy, so those must not count.
-    consumed = {
-        id(arg)
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call) and _is_eager_consumer(call.func)
-        for arg in [*call.args, *(k.value for k in call.keywords)]
-        if isinstance(arg, ast.GeneratorExp)
-    }
+    consumed = _consumed_genexps(tree)
     entered = set()
     frontier = [list(tree.body)]
     while frontier:
@@ -176,6 +191,113 @@ def _import_time_calls(tree: ast.Module):
                     _collect(body)  # a def nested in this helper is now callable
                     frontier.append(body)
             stack.extend(ast.iter_child_nodes(node))
+
+
+def _consumed_genexps(tree: ast.Module) -> set:
+    """Generator expressions handed straight to something that drains them.
+
+    An unconsumed one has not run where it is written, so neither rule should
+    read anything into the calls inside it.
+    """
+    return {
+        id(arg)
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call) and _is_eager_consumer(call.func)
+        for arg in [*call.args, *(k.value for k in call.keywords)]
+        if isinstance(arg, ast.GeneratorExp)
+    }
+
+
+def _module_level_names(tree: ast.Module) -> set:
+    """Names assigned at module scope."""
+    names = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _local_names(func) -> set:
+    """Every name the function binds, so a module constant it shadows is skipped.
+
+    Walking nested defs too over-approximates, which only ever drops a call from
+    the scan.
+    """
+    args = func.args
+    names = {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
+    for extra in (args.vararg, args.kwarg):
+        if extra is not None:
+            names.add(extra.arg)
+    for node in ast.walk(func):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+    return names
+
+
+def _path_expr(call: ast.Call):
+    """The expression the call reads from."""
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.value
+    if isinstance(func, ast.Name) and func.id == "open" and call.args:
+        return call.args[0]
+    return None
+
+
+def _rooted_at_file(node: ast.AST) -> bool:
+    """True for a path built from `__file__`, which is checked in by definition.
+
+    `(Path(__file__).parent.parent / "routes" / "inference.py").read_text()` is
+    the same read as through a constant, just spelled inline, and no tmp_path
+    can be written that way.
+    """
+    return any(isinstance(n, ast.Name) and n.id == "__file__" for n in ast.walk(node))
+
+
+def _checked_in_path_calls(tree: ast.Module):
+    """Yield calls, at any depth, whose path is provably a checked-in file.
+
+    The import-time walk alone leaves test bodies unguarded, and a bare read
+    there is the same Windows failure one step later: `_extract_template()` in
+    test_gemma4_chat_template.py opens unsloth/chat_templates.py, which cp1252
+    cannot decode ("byte 0x90"), so the test errors rather than the collection.
+
+    Two spellings qualify. A tmp_path arrives as a fixture parameter and a
+    tempfile is built in the body, so neither can be bound at module scope nor
+    derived from `__file__`. That keeps temp-dir I/O out of scope without an
+    allowlist, since there the platform default is harmless and the test wrote
+    the bytes itself.
+    """
+    module_names = _module_level_names(tree)
+    consumed = _consumed_genexps(tree)
+
+    def visit(node, shadowed):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            shadowed = shadowed | _local_names(node)
+        elif _is_main_guard(node):
+            # Never runs under pytest, so rule 1 skips it for the same reason.
+            for child in node.orelse:
+                yield from visit(child, shadowed)
+            return
+        elif isinstance(node, ast.GeneratorExp) and id(node) not in consumed:
+            if node.generators:
+                yield from visit(node.generators[0].iter, shadowed)
+            return
+        elif isinstance(node, ast.Call):
+            expr = _path_expr(node)
+            name = expr.id if isinstance(expr, ast.Name) else None
+            if expr is not None and (
+                _rooted_at_file(expr) or (name in module_names and name not in shadowed)
+            ):
+                yield node
+        for child in ast.iter_child_nodes(node):
+            yield from visit(child, shadowed)
+
+    yield from visit(tree, frozenset())
 
 
 def _open_mode(call: ast.Call, mode_index: int):
@@ -221,55 +343,85 @@ def _names_encoding(call: ast.Call) -> bool:
     return False
 
 
+def _pins_encoding(call: ast.Call, position: int) -> bool:
+    """True when the call names an encoding, positionally or by keyword.
+
+    A splat makes the positions meaningless, so it counts as named rather than
+    demanding an edit the contributor cannot make correctly.
+    """
+    if any(isinstance(a, ast.Starred) for a in call.args):
+        return True
+    if len(call.args) > position:
+        node = call.args[position]
+        if isinstance(node, ast.Constant):
+            return node.value not in PLATFORM_DEFAULT_ENCODINGS
+        return True
+    return _names_encoding(call)
+
+
 def _offender(call: ast.Call) -> str | None:
     """The call's name if it reads text without an encoding, else None."""
     func = call.func
     if isinstance(func, ast.Attribute):
+        receiver = func.value.id if isinstance(func.value, ast.Name) else None
+        # An unbound `Path.read_text(p)` puts the instance in slot 0.
+        shift = 1 if receiver in PATH_CLASSES else 0
         if func.attr in GUARDED_METHODS:
-            if func.attr == "read_text" and call.args:
+            if func.attr == "read_text" and not shift and call.args:
                 first = call.args[0]
-                # Path.read_text takes encoding first, so None or "locale" there
-                # is a platform-default read. Any other positional means the
-                # receiver is importlib.metadata's Distribution, whose argument
-                # is a filename and which has no encoding parameter at all.
+                # Bound read_text takes encoding first, so None or "locale"
+                # there is a platform-default read. Any other positional means
+                # the receiver is importlib.metadata's Distribution, whose
+                # argument is a filename and which takes no encoding at all.
                 if isinstance(first, ast.Constant) and first.value in PLATFORM_DEFAULT_ENCODINGS:
                     return "read_text()"
                 return None
-            return None if _names_encoding(call) else f"{func.attr}()"
+            position = ENCODING_POSITION[func.attr] + shift
+            return None if _pins_encoding(call, position) else f"{func.attr}()"
         if func.attr == "open":
-            receiver = func.value.id if isinstance(func.value, ast.Name) else None
-            # io.open IS the builtin, so it takes the builtin's mode position
-            # and carries the same platform default.
+            # io.open IS the builtin, so it takes the builtin's argument
+            # positions and carries the same platform default.
             if receiver == "io":
-                return None if not _is_text(call, 1) or _names_encoding(call) else "io.open()"
+                if not _is_text(call, 1) or _pins_encoding(call, ENCODING_POSITION["open"]):
+                    return None
+                return "io.open()"
             # Any other `<module>.open(...)` is somebody else's opener:
             # tarfile.open takes a compression mode, fitz.open takes filetype=.
             if receiver in NOT_PATH_RECEIVERS:
                 return None
-            if not _is_text(call, 0):
+            if not _is_text(call, shift):
                 return None
-            return None if _names_encoding(call) else "Path.open()"
+            return (
+                None
+                if _pins_encoding(call, ENCODING_POSITION["Path.open"] + shift)
+                else "Path.open()"
+            )
         return None
     # Binary handles have no encoding to name.
     if isinstance(func, ast.Name) and func.id == "open" and _is_text(call, 1):
-        return None if _names_encoding(call) else "open()"
+        return None if _pins_encoding(call, ENCODING_POSITION["open"]) else "open()"
     return None
 
 
-def test_module_level_file_reads_name_an_encoding():
+def _scan(tree: ast.Module, rel: str):
+    """Offenders from both rules, reported once each and in source order."""
+    calls = {id(c): c for c in _import_time_calls(tree)}
+    calls.update({id(c): c for c in _checked_in_path_calls(tree)})
+    for call in sorted(calls.values(), key = lambda c: (c.lineno, c.col_offset)):
+        name = _offender(call)
+        if name is not None:
+            yield f"{rel}:{call.lineno}: {name}"
+
+
+def test_checked_in_file_reads_name_an_encoding():
     offenders = []
     for root in ROOTS:
         for path in sorted(root.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
-            for call in _import_time_calls(tree):
-                name = _offender(call)
-                if name is None:
-                    continue
-                rel = path.relative_to(REPO).as_posix()
-                offenders.append(f"{rel}:{call.lineno}: {name}")
+            offenders.extend(_scan(tree, path.relative_to(REPO).as_posix()))
     assert offenders == [], (
-        "Import-time file reads in the test trees touch a checked-in file with "
-        "the platform default encoding, so they break on Windows as soon as "
-        'that file gains a non-ASCII byte. Pass encoding = "utf-8": '
+        f"{len(offenders)} file reads in the test trees touch a checked-in file "
+        "with the platform default encoding, so they break on Windows as soon "
+        'as that file gains a non-ASCII byte. Pass encoding = "utf-8": '
         f"{offenders[:10]}"
     )

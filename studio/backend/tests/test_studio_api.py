@@ -363,17 +363,17 @@ def test_openai_tools_nonstream(base_url: str, api_key: str):
     data = json.loads(text)
     assert "choices" in data, f"Missing 'choices': {text[:300]}"
     choice = data["choices"][0]
-    assert (
-        choice["finish_reason"] == "tool_calls"
-    ), f"Expected finish_reason='tool_calls', got {choice['finish_reason']!r}"
+    assert choice["finish_reason"] == "tool_calls", (
+        f"Expected finish_reason='tool_calls', got {choice['finish_reason']!r}"
+    )
     msg = choice["message"]
     tool_calls = msg.get("tool_calls") or []
     assert len(tool_calls) >= 1, f"No tool_calls in response: {msg}"
     first = tool_calls[0]
     assert first["type"] == "function"
-    assert (
-        first["function"]["name"] == "get_weather"
-    ), f"Wrong tool name: {first['function']['name']!r}"
+    assert first["function"]["name"] == "get_weather", (
+        f"Wrong tool name: {first['function']['name']!r}"
+    )
     # arguments must be valid JSON
     parsed = json.loads(first["function"]["arguments"])
     assert "city" in parsed, f"Tool call missing required 'city' arg: {parsed}"
@@ -404,7 +404,7 @@ def test_openai_tools_stream(base_url: str, api_key: str):
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received"
     assert _final_finish_reason(chunks) == "tool_calls", (
-        f"Expected final finish_reason='tool_calls', got " f"{_final_finish_reason(chunks)!r}"
+        f"Expected final finish_reason='tool_calls', got {_final_finish_reason(chunks)!r}"
     )
     assembled = _collect_streamed_tool_calls(chunks)
     assert len(assembled) >= 1, "No tool_calls reassembled from stream"
@@ -464,9 +464,9 @@ def test_openai_tools_multiturn(base_url: str, api_key: str):
     msg = data["choices"][0]["message"]
     # The model should respond with text now it has the tool result
     content = msg.get("content") or ""
-    assert len(content) > 0 or msg.get(
-        "tool_calls"
-    ), f"Expected text or follow-up tool call, got empty message: {msg}"
+    assert len(content) > 0 or msg.get("tool_calls"), (
+        f"Expected text or follow-up tool call, got empty message: {msg}"
+    )
     print(f"  PASS  openai tools multiturn: {content[:80]!r}")
 
 
@@ -487,7 +487,7 @@ def test_openai_sdk_tool_calling(base_url: str, api_key: str):
         stream = False,
     )
     assert resp.choices[0].finish_reason == "tool_calls", (
-        f"Expected finish_reason='tool_calls', got " f"{resp.choices[0].finish_reason!r}"
+        f"Expected finish_reason='tool_calls', got {resp.choices[0].finish_reason!r}"
     )
     tool_calls = resp.choices[0].message.tool_calls
     assert tool_calls and len(tool_calls) >= 1, "No tool_calls from SDK"
@@ -495,7 +495,7 @@ def test_openai_sdk_tool_calling(base_url: str, api_key: str):
     assert tc.function.name == "get_weather"
     parsed = json.loads(tc.function.arguments)
     assert "city" in parsed
-    print(f"  PASS  openai SDK tool calling: " f"tool={tc.function.name}, args={parsed}")
+    print(f"  PASS  openai SDK tool calling: tool={tc.function.name}, args={parsed}")
 
 
 def test_invalid_key_rejected(base_url: str):
@@ -783,7 +783,7 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         cmd.extend(["--gguf-variant", variant])
 
     LOG_FILE.parent.mkdir(parents = True, exist_ok = True)
-    log_fh = open(LOG_FILE, "w")
+    log_fh = open(LOG_FILE, "w", encoding = "utf-8")
     proc = subprocess.Popen(
         cmd,
         stdout = log_fh,
@@ -798,16 +798,16 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         time.sleep(2)
         if proc.poll() is not None:
             log_fh.flush()
-            log_text = LOG_FILE.read_text()
+            log_text = LOG_FILE.read_text(encoding = "utf-8")
             raise RuntimeError(f"Server exited early (code {proc.returncode}):\n{log_text[-2000:]}")
-        log_text = LOG_FILE.read_text()
+        log_text = LOG_FILE.read_text(encoding = "utf-8")
         m = re.search(r"API Key:\s+(sk-unsloth-[a-f0-9]+)", log_text)
         if m:
             api_key = m.group(1)
             break
 
     if not api_key:
-        log_text = LOG_FILE.read_text()
+        log_text = LOG_FILE.read_text(encoding = "utf-8")
         _kill_server(proc)
         raise RuntimeError(f"Timed out waiting for API key in server output:\n{log_text[-2000:]}")
 

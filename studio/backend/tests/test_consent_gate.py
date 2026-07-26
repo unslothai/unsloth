@@ -402,7 +402,7 @@ class TestWorkersWireTheGate:
         ],
     )
     def test_worker_invokes_gate(self, rel):
-        src = (Path(__file__).resolve().parent.parent / rel).read_text()
+        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding = "utf-8")
         assert "evaluate_remote_code_consent" in src
         assert "remote_code_blocked" in src
         assert ".blocked" in src
@@ -505,7 +505,9 @@ class TestStructuredFindingsForDialog:
         assert d.findings and d.fingerprint  # structured findings for the UI
 
     def test_scan_route_uses_preflight(self):
-        src = (Path(__file__).resolve().parent.parent / "routes/models.py").read_text()
+        src = (Path(__file__).resolve().parent.parent / "routes/models.py").read_text(
+            encoding = "utf-8"
+        )
         assert "remote-code-scan" in src
         # The scan route pins one combined fingerprint over adapter + base, so adapter code is reviewed and approvable too.
         assert "preflight_remote_code_consent_for_targets" in src
@@ -636,7 +638,7 @@ class TestStructuredFindingsForDialog:
         ],
     )
     def test_fingerprint_threaded_to_worker(self, rel):
-        src = (Path(__file__).resolve().parent.parent / rel).read_text()
+        src = (Path(__file__).resolve().parent.parent / rel).read_text(encoding = "utf-8")
         assert "approved_remote_code_fingerprint" in src
         # The per-user approval cache rides the same path as the fingerprint.
         assert "subject" in src

@@ -17,7 +17,7 @@ def _module_calls(source: str):
 
 def test_top_level_run_alias_registered():
     """`app.command("run", ...)` must be invoked with studio_run as its target."""
-    source = _CLI_INIT.read_text()
+    source = _CLI_INIT.read_text(encoding = "utf-8")
 
     # Find ``app.command("run", ...)`` call -- the decorator-call form.
     found_decorator_call = False
@@ -39,14 +39,14 @@ def test_top_level_run_alias_registered():
         if is_run:
             found_decorator_call = True
             break
-    assert (
-        found_decorator_call
-    ), 'Expected `app.command("run", ...)` registration in unsloth_cli/__init__.py'
+    assert found_decorator_call, (
+        'Expected `app.command("run", ...)` registration in unsloth_cli/__init__.py'
+    )
 
 
 def test_studio_run_imported_for_alias():
     """The alias must wire up to the studio.run function, not redefine it."""
-    source = _CLI_INIT.read_text()
+    source = _CLI_INIT.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     has_import = False
     for node in ast.walk(tree):
@@ -58,6 +58,6 @@ def test_studio_run_imported_for_alias():
             if alias.name == "run":
                 has_import = True
                 break
-    assert (
-        has_import
-    ), "Expected `from unsloth_cli.commands.studio import run` in unsloth_cli/__init__.py"
+    assert has_import, (
+        "Expected `from unsloth_cli.commands.studio import run` in unsloth_cli/__init__.py"
+    )

@@ -12,7 +12,7 @@ SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _read_source() -> str:
-    with open(SOURCE_PATH, "r") as fh:
+    with open(SOURCE_PATH, "r", encoding = "utf-8") as fh:
         return fh.read()
 
 
@@ -180,6 +180,6 @@ def test_guard_only_raises_when_both_checks_fail():
 def test_guard_introspection_failure_does_not_silent_no_op():
     src = _read_source()
     assert "(TypeError, OSError)" in src, "guard must catch inspect.getsource failures explicitly"
-    assert re.search(
-        r"_zoo_src\s*=\s*['\"]{2}", src
-    ), "introspection failure path must default _zoo_src to empty string"
+    assert re.search(r"_zoo_src\s*=\s*['\"]{2}", src), (
+        "introspection failure path must default _zoo_src to empty string"
+    )
