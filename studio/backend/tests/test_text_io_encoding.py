@@ -221,3 +221,32 @@ def test_resuming_a_legacy_jsonl_migrates_it(tmp_path: Path, codepage: str, name
     lines = [json.loads(x) for x in path.read_text(encoding = "utf-8").splitlines() if x.strip()]
     assert len(lines) == 3
     assert [line["author"] for line in lines] == [name] * 3
+
+
+def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
+    """One interrupted append must not get the whole shard read as cp1252."""
+    path = tmp_path / "out.jsonl"
+    good = [{"id": 1, "author": "Jürgen"}, {"id": 3, "author": "Grüße"}]
+    torn = '{"id": 2, "author": "Jürgen"}'.encode()[:-6]  # cut mid-character
+    path.write_bytes(
+        json.dumps(good[0], ensure_ascii = False).encode()
+        + b"\n"
+        + torn
+        + b"\n"
+        + json.dumps(good[1], ensure_ascii = False).encode()
+        + b"\n"
+    )
+    before = path.read_bytes()
+
+    writer = _load_state_store("cp1252").JsonlWriter(path)
+    try:
+        assert writer.has("id:1") and writer.has("id:3")
+        assert not writer.has("id:2")  # torn line yields no key
+    finally:
+        writer.close()
+
+    # Untouched: no rewrite, so no record was re-encoded into mojibake.
+    after = path.read_bytes()
+    assert after.startswith(before)
+    assert "Jürgen".encode() in after
+    assert "Jürgen".encode("utf-8").decode("cp1252").encode() not in after

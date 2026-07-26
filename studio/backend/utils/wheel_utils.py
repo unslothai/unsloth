@@ -206,6 +206,8 @@ def install_wheel(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             env = child_env_without_native_path_secret(),
         )
         attempts.append(("uv", result))
@@ -218,6 +220,8 @@ def install_wheel(
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         env = child_env_without_native_path_secret(),
     )
     attempts.append(("pip", result))
