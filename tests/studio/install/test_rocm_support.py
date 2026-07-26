@@ -4492,15 +4492,55 @@ class TestApplyHostOverrides:
 
     def test_forwarded_gfx_does_not_clobber_probed_arch(self, monkeypatch):
         # setup.ps1's own pick is NOT fully visible-device aware (it ignores
-        # CUDA_VISIBLE_DEVICES and its amd-smi branch drops comma masks), so it
-        # must not replace an arch detect_host() already resolved for the
-        # runtime-visible GPU.
+        # CUDA_VISIBLE_DEVICES and its amd-smi branch drops comma masks), so on a
+        # host whose OTHER physical GPU it resolved it must not replace the arch
+        # detect_host() picked for the runtime-visible one.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1100")
+        assert out.rocm_gfx_target == "gfx1010"
+        assert out.rocm_gfx_targets == ["gfx1100", "gfx1010"]
+        assert out.has_rocm is True
+
+    def test_forwarded_gfx_absent_from_host_stays_authoritative(self, monkeypatch):
+        # An arch no probe on this host ever reported is not setup picking the wrong
+        # GPU -- it is an explicit --rocm-gfx for a host whose probe is wrong or
+        # stale, which is precisely what the flag documents. It must still win.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         host = rocm_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
-        assert out.rocm_gfx_target == "gfx1100"
-        assert out.rocm_gfx_targets == ["gfx1100"]
+        assert out.rocm_gfx_target == "gfx1151"
+        assert out.rocm_gfx_targets == ["gfx1151"]
         assert out.has_rocm is True
+
+    def test_forwarded_family_label_never_overrides_a_probed_arch(self, monkeypatch):
+        # The llama.cpp update path re-derives --rocm-gfx from the marker's family
+        # named asset, so a family label is a bundle name and not a real GPU arch.
+        # It must stay advisory: gfx1033 is in-generation but unbuilt, and letting
+        # gfx103X win would serve it a family bundle it cannot run.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx1033", rocm_gfx_targets = ["gfx1033"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx103X")
+        assert out.rocm_gfx_target == "gfx1033"
+        assert out.has_rocm is True
+
+    def test_forwarded_family_label_still_fills_an_unprobed_arch(self, monkeypatch):
+        # Negative control: with no probed arch the marker forward is the only
+        # source, so the family label must still apply.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        out = _apply_host_overrides(cpu_host(), override_rocm_gfx = "gfx110X")
+        assert out.rocm_gfx_target == "gfx110x"
+        assert out.has_rocm is True
+
+    def test_forwarded_gfx_matching_active_keeps_physical_gfx_list(self, monkeypatch):
+        # When the forward agrees with the probe, the per-GPU list must survive:
+        # collapsing it to one entry would hide the host's other AMD cards from
+        # the Windows auto-Vulkan floor check.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1010")
+        assert out.rocm_gfx_target == "gfx1010"
+        assert out.rocm_gfx_targets == ["gfx1100", "gfx1010"]
 
     def test_manual_env_override_still_wins_over_probe(self, monkeypatch):
         # UNSLOTH_ROCM_GFX_ARCH is the documented manual escape hatch for hosts

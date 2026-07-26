@@ -847,16 +847,76 @@ def test_route_to_vulkan_prebuilt_keeps_hip_when_one_gpu_is_supported():
     assert persist is None
 
 
-def test_route_to_vulkan_prebuilt_auto_fallback_uses_active_gfx_only():
-    # HIP_VISIBLE_DEVICES can hide a supported dGPU, so follow the active arch.
+def test_route_to_vulkan_prebuilt_auto_fallback_skips_hip_masked_hosts():
+    # HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES can hide a HIP-capable dGPU, but the
+    # Vulkan runtime honours neither (it enumerates via GGML_VK_VISIBLE_DEVICES and
+    # Vulkan ordinals), so auto-routing here would let the installed backend grab the
+    # gfx1201 the user deliberately masked off. Stay on the HIP / fork / source path.
     host = _windows_amd_host(
         rocm_gfx_target = "gfx803",
         rocm_gfx_targets = ["gfx1201", "gfx803"],
     )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == FORK
+    assert persist is None
+    assert routed is host
+
+
+def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
+    # Every physical AMD device is below the HIP prebuilt floor, so no card can be
+    # exposed to HIP and the #7357 auto-Vulkan fallback still fires.
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx900",
+        rocm_gfx_targets = ["gfx803", "gfx900"],
+    )
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == UPSTREAM
     assert persist == "vulkan"
     assert routed.has_rocm is False
+
+
+def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(monkeypatch):
+    # The mask guard only suppresses the AUTOMATIC fallback; an explicit opt-in is
+    # the user taking responsibility for the Vulkan device mask themselves.
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx803",
+        rocm_gfx_targets = ["gfx1201", "gfx803"],
+    )
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
+    assert repo == UPSTREAM
+    assert persist == "vulkan"
+
+
+def test_auto_vulkan_is_repository_specific_for_fork_only_gfx():
+    # gfx1034 is served only by the fork's gfx103X bundle. ggml-org's windows-hip
+    # radeon build does not target it, and direct_upstream_release_plan() offers
+    # win-hip then CPU with no Vulkan branch, so the predicate must answer per repo.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
+    assert ilp._should_auto_vulkan_for_amd_windows(host, UPSTREAM) is True
+    # An arch upstream really does build stays on HIP for both repos.
+    supported = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    assert ilp._should_auto_vulkan_for_amd_windows(supported, FORK) is False
+    assert ilp._should_auto_vulkan_for_amd_windows(supported, UPSTREAM) is False
+    # Family labels resolve to members both repos build, so neither needs Vulkan.
+    family = _windows_amd_host(rocm_gfx_target = "gfx110X", rocm_gfx_targets = ["gfx110X"])
+    assert ilp._should_auto_vulkan_for_amd_windows(family, UPSTREAM) is False
+
+
+def test_upstream_windows_hip_targets_are_a_subset_of_the_combined_floor():
+    # The combined floor must stay a superset, else auto-Vulkan would steal a host
+    # upstream already builds for.
+    assert ilp.UPSTREAM_WINDOWS_HIP_GFX_TARGETS <= ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS
+    # The fork-only extras are exactly the archs that must route to Vulkan upstream.
+    assert ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS - ilp.UPSTREAM_WINDOWS_HIP_GFX_TARGETS == {
+        "gfx908",
+        "gfx90a",
+        "gfx1034",
+        "gfx1103",
+    }
 
 
 def test_route_to_vulkan_prebuilt_unknown_gfx_does_not_auto_fallback():
@@ -1023,10 +1083,13 @@ def test_forwarded_gfx_does_not_undo_visible_device_auto_vulkan(monkeypatch):
     host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])
     host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1100")
     assert ilp._active_rocm_gfx_target(host) == "gfx1010"
-    assert ilp._should_auto_vulkan_for_amd_windows(host) is True
+    assert host.rocm_gfx_targets == ["gfx1100", "gfx1010"]
+    # gfx1100 is merely masked off, not absent, and Vulkan does not honour the HIP
+    # mask -- so the automatic fallback stays off and the HIP / fork path is kept.
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
-    assert repo == UPSTREAM
-    assert persist == "vulkan"
+    assert repo == FORK
+    assert persist is None
 
 
 def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
