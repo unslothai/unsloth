@@ -251,6 +251,17 @@ function discoverGgufModels(
 } {
   const models = [EXAMPLE_MODEL_REPO];
   const variants: Record<string, string> = {};
+  // Hugging Face ids are case-insensitive, and the catalog and cache endpoints can
+  // disagree on spelling; two rows for one repo would leave the load id on only one.
+  const seen = new Set(models.map((model) => model.toLowerCase()));
+  const add = (model: string) => {
+    const key = model.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    models.push(model);
+  };
   for (const model of items) {
     // /api/models/list reports the backend's raw identifier, which for a native
     // grant is the host path that status deliberately withholds. The resident
@@ -260,17 +271,15 @@ function discoverGgufModels(
       continue;
     }
     const parsed = splitModelVariant(model.id);
-    if (parsed.repo && !models.includes(parsed.repo)) {
-      models.push(parsed.repo);
+    if (parsed.repo) {
+      add(parsed.repo);
     }
     if (parsed.variant && !variants[parsed.repo]) {
       variants[parsed.repo] = parsed.variant;
     }
   }
   for (const repo of cachedRepos) {
-    if (!models.includes(repo)) {
-      models.push(repo);
-    }
+    add(repo);
   }
 
   return { models, variants };
@@ -698,7 +707,9 @@ export function AgentsTab() {
   const cachedLoadId =
     selectedModel === activeStatusModel
       ? null
-      : (cachedLoadIds[selectedModel] ?? null);
+      : (cachedLoadIds[selectedModel] ??
+        cachedLoadIds[selectedModel.toLowerCase()] ??
+        null);
   const modelId = cachedLoadId ?? selectedModel;
   const suffixVariant = isHuggingFaceRepo(modelId);
   const commandModel =
@@ -799,7 +810,10 @@ export function AgentsTab() {
         const loadIds: Record<string, string> = {};
         for (const cached of cachedGgufs) {
           if (cached.load_id && cached.load_id !== cached.repo_id) {
+            // Key both spellings: the merge above keeps whichever casing arrived
+            // first, which may not be this endpoint's.
             loadIds[cached.repo_id] = cached.load_id;
+            loadIds[cached.repo_id.toLowerCase()] = cached.load_id;
           }
         }
         const labels: Record<string, string> = {};
@@ -961,13 +975,17 @@ export function AgentsTab() {
         ? selectedModel
         : null);
     if (!(isHuggingFaceRepo(selectedModel) || localDir)) {
+      // A loose .gguf is one quant already. Status can record a quant parsed from its
+      // filename, and restoring that would add --gguf-variant, which a bare file path
+      // cannot resolve, so it stays null here.
+      const standaloneFile = selectedModel.toLowerCase().endsWith(".gguf");
       queueMicrotask(() => {
         if (cancelled) {
           return;
         }
         setVariants([]);
         setDefaultVariant(null);
-        setSelectedVariant(preferredVariant);
+        setSelectedVariant(standaloneFile ? null : preferredVariant);
         setVariantsFailed(false);
         setVariantsLoading(false);
       });

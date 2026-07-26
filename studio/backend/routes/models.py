@@ -392,13 +392,19 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
         partial = partial or hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
 
         load_id = model_id
+        snapshot = _resolve_hf_cache_realpath(repo_dir)
         if not active_cache:
-            load_id = _resolve_hf_cache_realpath(repo_dir) or str(repo_dir.resolve())
+            load_id = snapshot or str(repo_dir.resolve())
+        # Classify from the snapshot's own weights. A GGUF repo without a -GGUF
+        # suffix is common, and leaving this unset makes every consumer guess from
+        # the name; the snapshot is already resolved just above.
+        model_format = _dir_model_format(Path(snapshot)) if snapshot else None
         found.append(
             LocalModelInfo(
                 id = load_id,
                 model_id = model_id,
                 display_name = model_id.split("/")[-1],
+                model_format = model_format,
                 path = load_id if not active_cache else str(repo_dir),
                 source = "hf_cache",
                 active_cache = active_cache,
