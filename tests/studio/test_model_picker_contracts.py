@@ -588,8 +588,12 @@ def test_variant_expander_forwards_the_gguf_filename():
     handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
     assert handler, "handleVariantClick not found"
     assert "ggufFilename: filename," in handler.group(0)
-    # The call site has to actually pass it through.
-    assert "handleVariantClick(v.quant, v.downloaded, expectedBytes, v.filename)" in src
+    # The call site has to actually pass it through, in the handler's argument order.
+    # Matched structurally: prettier wraps the call across lines once it grows.
+    call = re.search(r"handleVariantClick\(([^)]*)\)", src)
+    assert call, "handleVariantClick call site not found"
+    args = [a.strip() for a in call.group(1).split(",") if a.strip()]
+    assert args[:2] == ["v.quant", "v.filename"], args
 
 
 def test_diffusion_pages_never_drop_a_gguf_pick_silently():
