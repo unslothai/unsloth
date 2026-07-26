@@ -19,10 +19,18 @@ type RuntimeMessagesGetter = () => readonly ThreadMessage[];
 
 let runtimeMessagesGetter: RuntimeMessagesGetter | null = null;
 
+/**
+ * Register the mounted runtime's message list and return its own disposer.
+ * Compare mode mounts several providers, so a departing one must only clear the
+ * slot while it still owns it, or unmounting one pane would blind the survivor.
+ */
 export function registerRuntimeMessagesGetter(
-  getter: RuntimeMessagesGetter | null,
-): void {
+  getter: RuntimeMessagesGetter,
+): () => void {
   runtimeMessagesGetter = getter;
+  return () => {
+    if (runtimeMessagesGetter === getter) runtimeMessagesGetter = null;
+  };
 }
 
 export type SavedContextUsage = {
@@ -257,10 +265,15 @@ export async function refreshContextUsage(options?: {
         useChatRuntimeStore.getState().setContextUsage(savedUsage);
       }
     } else {
-      // No thread means no history to source; the runtime getter is for a
-      // persisted-but-empty read (an incognito thread), where the messages live
-      // only in the mounted runtime.
-      runMessages = threadId ? (runtimeMessagesGetter?.() ?? []) : [];
+      // The runtime getter is for a persisted-but-empty read (an incognito
+      // thread), where the messages live only in the mounted runtime. It is a
+      // single slot shared by every provider, so only trust it for the active
+      // thread; a compare pane reading it would get the other pane's branch.
+      runMessages =
+        threadId &&
+        threadId === useChatRuntimeStore.getState().activeThreadId
+          ? (runtimeMessagesGetter?.() ?? [])
+          : [];
     }
 
     if (generation !== refreshGeneration) return;

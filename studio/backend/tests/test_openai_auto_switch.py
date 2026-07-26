@@ -3155,6 +3155,50 @@ def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
     assert json.loads(response.body) == {"input_tokens": 7}
 
 
+def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
+    # Codex P2: the GGUF and Anthropic tool paths strip stale tool-call markup
+    # from replayed assistant turns before rendering, so the count has to as
+    # well or it prices text the next completion never sends.
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.supports_tools = True
+    captured = {}
+
+    def _count(messages, system, tools, strict = False):
+        captured["messages"] = messages
+        return 11
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    async def _select_tools(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select_tools)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [
+            ChatMessage(role = "user", content = "search for cats"),
+            ChatMessage(
+                role = "assistant",
+                content = "<tool_call>{\"name\": \"web_search\"}</tool_call>Here you go.",
+            ),
+        ],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+    )
+    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assistant = [m for m in captured["messages"] if m.get("role") == "assistant"]
+    assert assistant, captured["messages"]
+    assert "<tool_call>" not in assistant[0]["content"]
+    assert "Here you go." in assistant[0]["content"]
+
+
 def test_chat_count_tokens_never_switches_the_loaded_model(monkeypatch):
     # Codex P2: the recount has no abort signal, so a count naming the model that
     # was loaded when it started must not drag the backend back to it after the

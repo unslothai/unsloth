@@ -12984,6 +12984,20 @@ async def chat_count_tokens(
             if _nudge:
                 openai_messages = _append_to_system_message(openai_messages, _nudge)
 
+            # Same stale tool-call XML strip the GGUF and Anthropic tool paths run
+            # over replayed history, gated on the enabled tool names so documented
+            # inactive examples survive. Without it the count prices markup the
+            # next completion would have removed.
+            _count_history_gate = _display_tool_name_gate(tools_to_use)
+            openai_messages = [dict(msg) for msg in openai_messages]
+            for _msg in openai_messages:
+                if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                    _msg["content"] = _strip_tool_xml_for_display(
+                        _msg["content"],
+                        auto_heal_tool_calls = True,
+                        enabled_tool_names = _count_history_gate,
+                    ).strip()
+
     try:
         count = await asyncio.to_thread(
             llama_backend.count_chat_tokens,

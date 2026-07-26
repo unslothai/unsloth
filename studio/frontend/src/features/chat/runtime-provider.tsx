@@ -1367,10 +1367,11 @@ function ActiveThreadSync({
 function RuntimeMessagesRegistrar(): ReactElement | null {
   const aui = useAui();
 
-  useEffect(() => {
-    registerRuntimeMessagesGetter(() => aui.thread().getState().messages);
-    return () => registerRuntimeMessagesGetter(null);
-  }, [aui]);
+  useEffect(
+    () =>
+      registerRuntimeMessagesGetter(() => aui.thread().getState().messages),
+    [aui],
+  );
 
   return null;
 }
