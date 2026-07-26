@@ -191,11 +191,19 @@ def _get_new_mapper():
             .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
         )
 
-        exec(new_mapper, globals())
+        # Exec into a throwaway namespace, never globals(). The slice also carries
+        # FLOAT_TO_FP8_BLOCK_MAPPER / FLOAT_TO_FP8_ROW_MAPPER and the builder's
+        # loop variables, and only the three names above get the NEW_ prefix, so
+        # exec'ing into globals() swaps the FP8 tables this module imported from
+        # the installed mapper for the ones on GitHub main. This is only a probe
+        # for "would a newer Unsloth support this name?", so it must not change
+        # what the installed version resolves.
+        namespace = {}
+        exec(new_mapper, namespace)
         return (
-            NEW_INT_TO_FLOAT_MAPPER,
-            NEW_FLOAT_TO_INT_MAPPER,
-            NEW_MAP_TO_UNSLOTH_16bit,
+            namespace["NEW_INT_TO_FLOAT_MAPPER"],
+            namespace["NEW_FLOAT_TO_INT_MAPPER"],
+            namespace["NEW_MAP_TO_UNSLOTH_16bit"],
         )
     except:
         return {}, {}, {}
