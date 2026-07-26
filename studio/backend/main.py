@@ -780,6 +780,7 @@ def _user_asset_transport_limit_bytes(canonical_limit: int) -> int:
     """Leave bounded room for IDs, names, and revision outside canonical JSON."""
     return canonical_limit + _USER_ASSET_TRANSPORT_HEADROOM_BYTES
 
+
 _BODY_PROTECTED_PREFIXES = (
     "/api/user-assets",
     "/v1/chat/completions",
