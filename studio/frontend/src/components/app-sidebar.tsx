@@ -105,7 +105,6 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
-  createChatProject,
   deleteChatProject,
   deleteChatItem,
   listStoredChatThreads,
@@ -123,6 +122,7 @@ import {
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
+import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
@@ -696,7 +696,6 @@ export function AppSidebar() {
     });
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
     useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
@@ -849,28 +848,26 @@ export function AppSidebar() {
     }
   }
 
-  async function commitCreateProject() {
-    const name = projectNameDraft.trim();
-    if (!name) return;
+  // "New project" from a chat's menu moves that chat in and stays put;
+  // otherwise open the project, unless a slow upload outlasted the route the
+  // user was on when they hit create.
+  async function afterCreateProject(
+    project: ProjectRecord,
+    { stayedOnRoute }: { stayedOnRoute: boolean },
+  ) {
     const moveTarget = projectCreateMoveTarget;
+    setProjectCreateMoveTarget(null);
+    if (!moveTarget) {
+      if (stayedOnRoute) openProject(project.id);
+      return;
+    }
     try {
-      const project = await createChatProject(name);
-      if (moveTarget) {
-        await moveChatItemToProject(moveTarget, project.id);
-        if (activeThreadId === moveTarget.id) {
-          useChatRuntimeStore.getState().setActiveProjectId(project.id);
-        }
-      }
-      setCreatingProject(false);
-      setProjectNameDraft("");
-      setProjectCreateMoveTarget(null);
-      if (moveTarget) {
-        return;
-      } else {
-        openProject(project.id);
+      await moveChatItemToProject(moveTarget, project.id);
+      if (activeThreadId === moveTarget.id) {
+        useChatRuntimeStore.getState().setActiveProjectId(project.id);
       }
     } catch (err) {
-      toast.error(moveTarget ? "Failed to create and move chat" : "Failed to create project", {
+      toast.error("Failed to move chat to the new project", {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -1050,7 +1047,6 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   onSelect={() => {
                     setProjectCreateMoveTarget(item);
-                    setProjectNameDraft("");
                     setCreatingProject(true);
                   }}
                 >
@@ -1393,7 +1389,6 @@ export function AppSidebar() {
                   onClick={(e) => {
                     e.stopPropagation();
                     setProjectCreateMoveTarget(null);
-                    setProjectNameDraft("");
                     setCreatingProject(true);
                   }}
                   className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
@@ -1855,6 +1850,18 @@ export function AppSidebar() {
               </button>
             </SidebarMenuItem>
           )}
+          {/* Collapsed rail has no room for the cog on the profile row, so it
+              sits above the avatar instead. */}
+          <NavItem
+            className="hidden group-data-[collapsible=icon]:block"
+            icon={Settings02Icon}
+            label={t("shell.navigation.settings")}
+            active={false}
+            onClick={() => {
+              useSettingsDialogStore.getState().openDialog();
+              closeMobileIfOpen();
+            }}
+          />
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2160,58 +2167,18 @@ export function AppSidebar() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    <Dialog
+    <NewProjectDialog
       open={creatingProject}
       onOpenChange={(open) => {
         setCreatingProject(open);
-        if (!open) {
-          setProjectNameDraft("");
-          setProjectCreateMoveTarget(null);
-        }
+        if (!open) setProjectCreateMoveTarget(null);
       }}
-    >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>
-            {projectCreateMoveTarget ? "Move to new project" : "New project"}
-          </DialogTitle>
-        </DialogHeader>
-        <Input
-          value={projectNameDraft}
-          onChange={(event) => setProjectNameDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void commitCreateProject();
-            }
-          }}
-          autoFocus
-          maxLength={120}
-          placeholder="Project name"
-          aria-label="Project name"
-          className="focus-visible:border-input focus-visible:ring-0"
-        />
-        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setCreatingProject(false);
-              setProjectCreateMoveTarget(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            onClick={() => void commitCreateProject()}
-            disabled={!projectNameDraft.trim()}
-          >
-            Create
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      title={
+        projectCreateMoveTarget ? "Move to new project" : "Create project"
+      }
+      submitLabel={projectCreateMoveTarget ? "Create and move" : "Create project"}
+      onCreated={afterCreateProject}
+    />
     </>
   );
 }
