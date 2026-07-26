@@ -1373,6 +1373,7 @@ export const en = {
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",
+      datasetProgress: "Dataset {current}/{total}",
       datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },

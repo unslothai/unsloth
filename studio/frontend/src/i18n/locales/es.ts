@@ -1041,6 +1041,7 @@ export const es = {
       resumingTraining: "Reanudando entrenamiento...",
       startingTraining: "iniciando entrenamiento...",
       dataset: "Conjunto de datos",
+      datasetProgress: "Conjunto de datos {current}/{total}",
       datasetStreaming:
         "Conjunto de datos: streaming (sin descarga completa)",
       modelWeights: "Pesos del modelo",

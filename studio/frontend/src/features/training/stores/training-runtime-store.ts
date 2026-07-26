@@ -23,7 +23,10 @@ const initialState: TrainingRuntimeState = {
   isStarting: false,
   startError: null,
   startModelName: null,
-  startDatasetName: null,
+  startDatasetNames: [],
+  currentDatasetIndex: null,
+  currentDatasetTotal: null,
+  currentDatasetRepositoryId: null,
   startProjectName: null,
   startFromResume: false,
   sseConnected: false,
@@ -129,10 +132,18 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   setStartError: (value) => set({ startError: value }),
   setStartResources: (
     startModelName,
-    startDatasetName,
+    startDatasetNames,
     startFromResume = false,
     startProjectName = null,
-  ) => set({ startModelName, startDatasetName, startProjectName, startFromResume }),
+  ) => set({
+    startModelName,
+    startDatasetNames: [...startDatasetNames],
+    startProjectName,
+    startFromResume,
+    currentDatasetIndex: null,
+    currentDatasetTotal: null,
+    currentDatasetRepositoryId: null,
+  }),
   setSseConnected: (value) => set({ sseConnected: value }),
   setLastEventId: (value) => set({ lastEventId: value }),
 
@@ -314,6 +325,12 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
         etaSeconds: payload.eta_seconds,
         currentGradNorm,
         currentNumTokens: payload.num_tokens,
+        currentDatasetIndex:
+          payload.current_dataset_index ?? state.currentDatasetIndex,
+        currentDatasetTotal:
+          payload.current_dataset_total ?? state.currentDatasetTotal,
+        currentDatasetRepositoryId:
+          payload.current_dataset_repository_id ?? state.currentDatasetRepositoryId,
         firstStepReceived: state.firstStepReceived || step > 0,
         lastEventId: typeof eventId === "number" ? eventId : state.lastEventId,
         lossHistory:

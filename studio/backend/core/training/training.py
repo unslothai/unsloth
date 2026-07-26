@@ -342,6 +342,9 @@ class TrainingProgress:
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
     output_dir: Optional[str] = None
+    current_dataset_index: Optional[int] = None
+    current_dataset_total: Optional[int] = None
+    current_dataset_repository_id: Optional[str] = None
     checkpoint_upload: dict[str, Any] = field(
         default_factory = lambda: {"state": "idle", "message": ""}
     )
@@ -713,6 +716,16 @@ class _MLXTrainerAdapter:
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
                 peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
+                current_dataset_index = event.get(
+                    "current_dataset_index", self.training_progress.current_dataset_index
+                ),
+                current_dataset_total = event.get(
+                    "current_dataset_total", self.training_progress.current_dataset_total
+                ),
+                current_dataset_repository_id = event.get(
+                    "current_dataset_repository_id",
+                    self.training_progress.current_dataset_repository_id,
+                ),
             )
             return
         if etype == "complete":

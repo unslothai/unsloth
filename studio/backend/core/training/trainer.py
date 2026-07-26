@@ -95,6 +95,7 @@ from .training import (
 
 logger = get_logger(__name__)
 
+
 # A streaming eval dataset has no __len__, so a streaming evaluation would
 # iterate the entire (potentially unbounded) source on every eval step. Cap it
 # to a fixed sample count so each evaluation terminates predictably.
@@ -2462,7 +2463,9 @@ class UnslothTrainer:
                 if dataset_streaming and len(training_datasets) > 1:
                     raise ValueError("Streaming multiple datasets is not supported")
                 loaded, labels = [], []
-                for entry in training_datasets:
+                from core.training.dataset_progress import training_dataset_entries_with_progress
+
+                for entry in training_dataset_entries_with_progress(self, training_datasets):
                     label = entry.get("hf_dataset") or entry.get("local_path")
                     labels.append(label)
                     try:

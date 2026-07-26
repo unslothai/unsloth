@@ -1067,6 +1067,7 @@ export const zhCN = {
       resumingTraining: "正在继续训练...",
       startingTraining: "正在开始训练...",
       dataset: "数据集",
+      datasetProgress: "数据集 {current}/{total}",
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
     },

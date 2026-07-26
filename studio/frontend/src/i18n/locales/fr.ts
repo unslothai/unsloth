@@ -1037,6 +1037,7 @@ export const fr = {
       resumingTraining: "Reprise de l'entraînement...",
       startingTraining: "démarrage de l'entraînement...",
       dataset: "Jeu de données",
+      datasetProgress: "Jeu de données {current}/{total}",
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
     },

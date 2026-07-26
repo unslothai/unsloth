@@ -998,6 +998,7 @@ export const hi = {
       resumingTraining: "ट्रेनिंग फिर से शुरू हो रही है...",
       startingTraining: "ट्रेनिंग शुरू हो रही है...",
       dataset: "डेटासेट",
+      datasetProgress: "डेटासेट {current}/{total}",
       datasetStreaming: "डेटासेट: स्ट्रीमिंग (कोई पूर्ण डाउनलोड नहीं)",
       modelWeights: "मॉडल वेट्स",
     },

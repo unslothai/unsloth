@@ -892,6 +892,11 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                current_dataset_index = getattr(progress, "current_dataset_index", None),
+                current_dataset_total = getattr(progress, "current_dataset_total", None),
+                current_dataset_repository_id = getattr(
+                    progress, "current_dataset_repository_id", None
+                ),
                 checkpoint_upload = getattr(progress, "checkpoint_upload", None) or {},
             )
 
@@ -1013,6 +1018,7 @@ async def stream_training_progress(
 
         # ── Live polling loop ────────────────────────────────────
         last_step = resume_from_step if resume_from_step is not None else -1
+        last_dataset_progress: tuple[Any, Any, Any] = (None, None, None)
         last_upload = _json.dumps(latest_upload, sort_keys = True) if latest_upload else ""
         no_update_count = 0
         # The stall timeout applies only once the run is stepping (pre-step prep
@@ -1037,6 +1043,22 @@ async def stream_training_progress(
                     yield format_sse(serialized_upload, event = "checkpoint_upload")
                     last_upload = serialized_upload
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
+                dataset_progress = (
+                    getattr(tp_inner, "current_dataset_index", None),
+                    getattr(tp_inner, "current_dataset_total", None),
+                    getattr(tp_inner, "current_dataset_repository_id", None),
+                )
+                if dataset_progress[0] is not None and dataset_progress != last_dataset_progress:
+                    progress_payload = build_progress(
+                        live_step,
+                        getattr(tp_inner, "loss", None),
+                        getattr(tp_inner, "learning_rate", None),
+                        getattr(tp_inner, "total_steps", 0),
+                        getattr(tp_inner, "epoch", None),
+                        progress = tp_inner,
+                    )
+                    yield format_sse(progress_payload.model_dump_json(), event = "progress")
+                    last_dataset_progress = dataset_progress
                 if backend.step_history or live_step > 0:
                     current_step = backend.step_history[-1] if backend.step_history else 0
                     current_loss = backend.loss_history[-1] if backend.loss_history else None

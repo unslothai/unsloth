@@ -3020,6 +3020,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
+                    "current_dataset_index": progress.current_dataset_index,
+                    "current_dataset_total": progress.current_dataset_total,
+                    "current_dataset_repository_id": progress.current_dataset_repository_id,
                     "ts": time.time(),
                 }
             )

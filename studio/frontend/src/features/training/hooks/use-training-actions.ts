@@ -12,6 +12,7 @@ import { getTrainingRun } from "../api/history-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import { resetTraining, startTraining, stopTraining } from "../api/train-api";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
+import { getTrainingDatasetRepositoryIds } from "../lib/dataset-start-progress";
 import { syncTrainingRuntimeFromBackend } from "../lib/sync-runtime";
 import { validateTrainingConfig } from "../lib/validation";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
@@ -39,6 +40,7 @@ function normalizeTrainingStartError(message: string): string {
   return message;
 }
 
+/** Return only Hub repository IDs, preserving request order and legacy payloads. */
 export function useTrainingActions() {
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
   const startError = useTrainingRuntimeStore((state) => state.startError);
@@ -70,7 +72,7 @@ export function useTrainingActions() {
 
     runtimeStore.setStartResources(
       config.selectedModel ?? null,
-      getHfDatasetName(config),
+      getHfDatasetName(config) ? [getHfDatasetName(config)!] : [],
       false,
       config.projectName || "",
     );
@@ -175,7 +177,7 @@ export function useTrainingActions() {
       payload.imported_resume_checkpoint = options?.resumeCheckpointPath ?? null;
       runtimeStore.setStartResources(
         payload.model_name,
-        payload.hf_dataset,
+        getTrainingDatasetRepositoryIds(payload),
         Boolean(options?.resumeCheckpointPath),
         payload.project_name ?? "",
       );
@@ -222,7 +224,7 @@ export function useTrainingActions() {
   const resumeTrainingRunFromHistory = useCallback(async (runId: string): Promise<boolean> => {
     const runtimeStore = useTrainingRuntimeStore.getState();
     runtimeStore.setStartError(null);
-    runtimeStore.setStartResources(null, null, true, null);
+    runtimeStore.setStartResources(null, [], true, null);
     runtimeStore.setStarting(true);
 
     try {
@@ -256,7 +258,7 @@ export function useTrainingActions() {
 
       runtimeStore.setStartResources(
         payload.model_name,
-        payload.hf_dataset,
+        getTrainingDatasetRepositoryIds(payload),
         true,
         payload.project_name ?? "",
       );

@@ -35,6 +35,7 @@ import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState, type ReactElement } from "react";
 import { useT } from "@/i18n";
+import { resolveActiveDataset } from "@/features/training/lib/dataset-start-progress";
 
 const HF_REPO_REGEX = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -258,7 +259,12 @@ export function TrainingStartOverlay({
   const phase = useTrainingRuntimeStore((s) => s.phase);
   const jobId = useTrainingRuntimeStore((s) => s.jobId);
   const startModelName = useTrainingRuntimeStore((s) => s.startModelName);
-  const startDatasetName = useTrainingRuntimeStore((s) => s.startDatasetName);
+  const startDatasetNames = useTrainingRuntimeStore((s) => s.startDatasetNames);
+  const currentDatasetIndex = useTrainingRuntimeStore((s) => s.currentDatasetIndex);
+  const currentDatasetTotal = useTrainingRuntimeStore((s) => s.currentDatasetTotal);
+  const currentDatasetRepositoryId = useTrainingRuntimeStore(
+    (s) => s.currentDatasetRepositoryId,
+  );
   const startFromResume = useTrainingRuntimeStore((s) => s.startFromResume);
   const configuredModel = useTrainingConfigStore((s) => s.selectedModel);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
@@ -279,11 +285,22 @@ export function TrainingStartOverlay({
     : useConfiguredResources
       ? configuredModel
       : null;
-  const datasetName = hasStartResources
-    ? startDatasetName
+  const datasetNames = hasStartResources
+    ? startDatasetNames
     : useConfiguredResources
-      ? hfDatasetName
-      : null;
+      ? hfDatasetName ? [hfDatasetName] : []
+      : [];
+  // Backend progress is authoritative: a cached first repository can complete
+  // without ever producing a useful 100% cache-poll transition.
+  const activeDataset = resolveActiveDataset(
+    datasetNames,
+    currentDatasetIndex,
+    currentDatasetTotal,
+    currentDatasetRepositoryId,
+  );
+  const datasetIndex = activeDataset.index;
+  const datasetTotal = activeDataset.total;
+  const datasetName = activeDataset.repositoryId;
   const displayMessage = message || t("studio.trainingStart.startingTraining");
   const rawModelDownload = useModelDownloadProgress(modelName);
   const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
@@ -392,7 +409,14 @@ export function TrainingStartOverlay({
           ) : datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
               <DownloadRow
-                label={t("studio.trainingStart.dataset")}
+                label={
+                  datasetTotal > 1
+                    ? t("studio.trainingStart.datasetProgress", {
+                        current: datasetIndex,
+                        total: datasetTotal,
+                      })
+                    : t("studio.trainingStart.dataset")
+                }
                 state={datasetDownload}
               />
             </AnimatedSpan>
