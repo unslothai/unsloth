@@ -4490,11 +4490,26 @@ class TestApplyHostOverrides:
         assert out.has_rocm is True
         assert out.rocm_gfx_target == "gfx1200"
 
-    def test_forwarded_gfx_is_authoritative(self):
-        # setup already applied visible-device selection; its value wins.
-        host = rocm_host(rocm_gfx_target = "gfx1100")
+    def test_forwarded_gfx_does_not_clobber_probed_arch(self, monkeypatch):
+        # setup.ps1's own pick is NOT fully visible-device aware (it ignores
+        # CUDA_VISIBLE_DEVICES and its amd-smi branch drops comma masks), so it
+        # must not replace an arch detect_host() already resolved for the
+        # runtime-visible GPU.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
+        assert out.rocm_gfx_target == "gfx1100"
+        assert out.rocm_gfx_targets == ["gfx1100"]
+        assert out.has_rocm is True
+
+    def test_manual_env_override_still_wins_over_probe(self, monkeypatch):
+        # UNSLOTH_ROCM_GFX_ARCH is the documented manual escape hatch for hosts
+        # whose arch the probes get wrong; it stays authoritative.
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1151")
+        host = rocm_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx1151")
         assert out.rocm_gfx_target == "gfx1151"
+        assert out.rocm_gfx_targets == ["gfx1151"]
 
     def test_has_rocm_only_keeps_probe_gfx(self):
         out = _apply_host_overrides(cpu_host(), override_has_rocm = True)

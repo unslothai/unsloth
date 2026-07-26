@@ -2584,12 +2584,13 @@ def _apply_host_overrides(
     force_cpu: bool = False,
 ) -> HostInfo:
     """Fold setup.sh/setup.ps1's forwarded detection into the host profile.
-    A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) is authoritative and
-    implies ROCm: the installer's own hipinfo/amd-smi probe can miss the arch on
-    amd-smi-only hosts or when setup inferred it from the GPU name, leaving
-    rocm_gfx_target None and no per-gfx ROCm prebuilt selected. force_cpu is the
-    opposite explicit signal (arm64 Linux GPU host whose source build failed):
-    drop GPU attributes so the CPU prebuilt for this OS/arch is selected."""
+    A forwarded gfx (--rocm-gfx or UNSLOTH_ROCM_GFX_ARCH) implies ROCm: the
+    installer's own hipinfo/amd-smi probe can miss the arch on amd-smi-only hosts
+    or when setup inferred it from the GPU name, leaving rocm_gfx_target None and
+    no per-gfx ROCm prebuilt selected. It fills that gap but does not replace an
+    arch the probe did resolve -- see below. force_cpu is the opposite explicit
+    signal (arm64 Linux GPU host whose source build failed): drop GPU attributes
+    so the CPU prebuilt for this OS/arch is selected."""
     if force_cpu:
         return dataclasses_replace(
             host,
@@ -2602,6 +2603,19 @@ def _apply_host_overrides(
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
+        # setup.ps1 picks the arch from its own probe, and that pick is not fully
+        # visible-device aware: neither its hipinfo nor its amd-smi branch reads
+        # CUDA_VISIBLE_DEVICES, and the amd-smi branch matches a bare integer only,
+        # so a comma-separated mask ("1,0") also falls back to GPU 0.
+        # _pick_rocm_gfx_target() honours all three vars with HIP's semantics, so
+        # when detect_host() resolved an active arch, keep it: replacing it with
+        # GPU 0's arch makes _should_auto_vulkan_for_amd_windows() read a
+        # HIP-supported GPU the user masked off, installing an unusable HIP bundle
+        # instead of Vulkan. An explicit UNSLOTH_ROCM_GFX_ARCH still wins -- it is
+        # the documented manual override for hosts whose arch the probes get wrong.
+        _manual = _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))
+        if gfx != _manual and _active_rocm_gfx_target(host):
+            return dataclasses_replace(host, has_rocm = True)
         return dataclasses_replace(
             host,
             has_rocm = True,

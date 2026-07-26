@@ -1011,6 +1011,46 @@ def test_route_to_vulkan_prebuilt_keeps_every_fork_windows_rocm_arch(gfx, monkey
     assert persist is None
 
 
+def test_forwarded_gfx_does_not_undo_visible_device_auto_vulkan(monkeypatch):
+    # Mixed-AMD Windows host: GPU 0 = gfx1100 (HIP prebuilt exists), GPU 1 = gfx1010
+    # (RDNA1, none). With CUDA_VISIBLE_DEVICES=1 -- or a comma mask on the amd-smi
+    # branch -- setup.ps1 still resolves GPU 0 and forwards gfx1100 via --rocm-gfx.
+    # detect_host() correctly resolved the visible gfx1010, so folding the forward in
+    # must not reinstate gfx1100 and install a HIP bundle the visible GPU cannot run.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    host = _windows_amd_host(
+        rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"]
+    )
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1100")
+    assert ilp._active_rocm_gfx_target(host) == "gfx1010"
+    assert ilp._should_auto_vulkan_for_amd_windows(host) is True
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False
+    )
+    assert repo == UPSTREAM
+    assert persist == "vulkan"
+
+
+def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
+    # Negative control: on an amd-smi-only / driver-only host detect_host() reports
+    # no arch at all, so the forward is the only source and must still apply --
+    # that is what --rocm-gfx exists for.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = [])
+    host = ilp._apply_host_overrides(host, override_rocm_gfx = "gfx1151")
+    assert ilp._active_rocm_gfx_target(host) == "gfx1151"
+    assert ilp._should_auto_vulkan_for_amd_windows(host) is False
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False
+    )
+    assert repo == FORK
+    assert persist is None
+
+
 def test_llama_backend_hip_opts_out_of_auto_vulkan(monkeypatch):
     # hip names a backend, so it keeps the fork path even on an auto-fallback arch.
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
