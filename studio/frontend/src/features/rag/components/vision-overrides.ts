@@ -8,9 +8,15 @@ import {
 } from "@/features/chat";
 
 function hasLocal(key: string): boolean {
-  return (
-    typeof window !== "undefined" && window.localStorage.getItem(key) !== null
-  );
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(key) !== null;
+  } catch {
+    // Storage can be blocked outright (sandboxed context). These overrides are
+    // optional, so fall back to the backend defaults rather than failing the
+    // upload that asked for them.
+    return false;
+  }
 }
 
 /** Ingest-time vision-pass overrides, sent only once the user has set them;

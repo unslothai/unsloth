@@ -849,12 +849,16 @@ export function AppSidebar() {
   }
 
   // "New project" from a chat's menu moves that chat in and stays put;
-  // otherwise open the project.
-  async function afterCreateProject(project: ProjectRecord) {
+  // otherwise open the project, unless a slow upload outlasted the route the
+  // user was on when they hit create.
+  async function afterCreateProject(
+    project: ProjectRecord,
+    { stayedOnRoute }: { stayedOnRoute: boolean },
+  ) {
     const moveTarget = projectCreateMoveTarget;
     setProjectCreateMoveTarget(null);
     if (!moveTarget) {
-      openProject(project.id);
+      if (stayedOnRoute) openProject(project.id);
       return;
     }
     try {

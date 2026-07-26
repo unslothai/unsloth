@@ -25,6 +25,11 @@ import { createChatProject } from "../hooks/use-chat-projects";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ProjectRecord } from "../types";
 
+function currentRoute(): string {
+  if (typeof window === "undefined") return "";
+  return window.location.pathname + window.location.search;
+}
+
 // Create-project dialog for the composer, sidebar, and projects page. Creating
 // opens the new project; `onCreated` overrides that for callers with their own
 // follow-up (the sidebar's "move this chat to a new project").
@@ -39,7 +44,10 @@ export function NewProjectDialog({
   onOpenChange: (open: boolean) => void;
   title?: string;
   submitLabel?: string;
-  onCreated?: (project: ProjectRecord) => void | Promise<void>;
+  onCreated?: (
+    project: ProjectRecord,
+    context: { stayedOnRoute: boolean },
+  ) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
   const [name, setName] = useState("");
@@ -74,17 +82,22 @@ export function NewProjectDialog({
     const trimmed = name.trim();
     if (!trimmed || busy) return;
     setBusy(true);
+    // Sidebar callers keep this mounted across routes, so unmounting alone
+    // cannot tell whether the user has moved on during a slow upload.
+    const origin = currentRoute();
     try {
       const project = await createChatProject(trimmed);
       // Upload before closing so the Sources panel lists them on first fetch.
       await uploadStagedSources(project.id, staged);
       if (!mounted.current) return;
+      const stayedOnRoute = currentRoute() === origin;
       onOpenChange(false);
       reset();
       if (onCreated) {
-        await onCreated(project);
+        await onCreated(project, { stayedOnRoute });
         return;
       }
+      if (!stayedOnRoute) return;
       const runtime = useChatRuntimeStore.getState();
       runtime.setActiveThreadId(null);
       runtime.setActiveProjectId(project.id);
