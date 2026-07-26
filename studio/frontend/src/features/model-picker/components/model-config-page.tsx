@@ -233,11 +233,13 @@ function GpuMemorySettings({
   update,
   layerCount,
   moeLayerCount,
+  isDiffusion,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
 }) {
   const gpuDevices = useGpuDevices();
   const mode = config.gpuMemoryMode ?? "auto";
@@ -400,44 +402,45 @@ function GpuMemorySettings({
           </div>
         </div>
       )}
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Host Memory</span>
-          <InfoHint>
-            Controls host RAM only, not whether a GPU driver keeps weights in VRAM.
-            Default preserves inherited llama.cpp settings. Auto uses normal
-            memory-mapped loading. Locked RAM prevents mapped host pages from being
-            swapped. RAM copy disables memory mapping, but newer llama.cpp builds
-            cannot also lock that copy.
-          </InfoHint>
-        </div>
-        <Select
-          value={config.ggufMemoryMode ?? "default"}
-          onValueChange={(value) =>
-            update({
-              ggufMemoryMode:
-                value === "default"
-                  ? undefined
-                  : (value as GgufMemoryMode),
-            })
-          }
-        >
-          <SelectTrigger
-            animateRadius={false}
-            icon={ChevronDownStandardIcon}
-            iconClassName="size-3.5"
-            className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+      {/* The diffusion runner has no host-memory modes and /load rejects them. */}
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Host Memory</span>
+            <InfoHint>
+              Controls host RAM only, not whether a GPU driver keeps weights in
+              VRAM. Default preserves inherited llama.cpp settings. Auto uses
+              normal memory-mapped loading. Locked RAM prevents mapped host pages
+              from being swapped. RAM copy disables memory mapping, but newer
+              llama.cpp builds cannot also lock that copy.
+            </InfoHint>
+          </div>
+          <Select
+            value={config.ggufMemoryMode ?? "default"}
+            onValueChange={(value) =>
+              update({
+                ggufMemoryMode:
+                  value === "default" ? undefined : (value as GgufMemoryMode),
+              })
+            }
           >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value="default">Default</SelectItem>
-            <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="pinned">Locked RAM</SelectItem>
-            <SelectItem value="resident">RAM copy</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              className={`w-[124px] shrink-0 ${SELECT_TRIGGER_CLASS}`}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value="default">Default</SelectItem>
+              <SelectItem value="auto">Auto</SelectItem>
+              <SelectItem value="pinned">Locked RAM</SelectItem>
+              <SelectItem value="resident">RAM copy</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
     </>
   );
 }
@@ -450,6 +453,7 @@ function GgufAdvancedSettings({
   onEditTemplate,
   layerCount,
   moeLayerCount,
+  isDiffusion,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -458,6 +462,7 @@ function GgufAdvancedSettings({
   onEditTemplate: () => void;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
 }) {
   return (
     <>
@@ -586,6 +591,7 @@ function GgufAdvancedSettings({
         update={update}
         layerCount={layerCount}
         moeLayerCount={moeLayerCount}
+        isDiffusion={isDiffusion}
       />
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -614,6 +620,7 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
+  const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -937,6 +944,7 @@ export function ModelConfigPage({
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
+                isDiffusion={isActiveModel && loadedIsDiffusion}
               />
             )}
 

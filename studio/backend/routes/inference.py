@@ -3994,7 +3994,8 @@ async def _resolve_gguf_gpu_ids_for_request(
 
     llama_backend = get_llama_cpp_backend()
     is_vulkan_build = await asyncio.to_thread(llama_backend.is_vulkan_build)
-    confirmed_diffusion = _classify_diffusion_gguf(config) is True
+    # Off-loop: classification reads the GGUF header from disk.
+    confirmed_diffusion = await asyncio.to_thread(_classify_diffusion_gguf, config) is True
     ids_are_vulkan_ordinals = is_vulkan_build and not confirmed_diffusion
     device = get_device()
     lacks_gpu_lib = getattr(llama_backend, "_backend_lacks_gpu_lib", None)
@@ -4017,8 +4018,10 @@ async def _resolve_gguf_gpu_ids_for_request(
             ),
         )
 
+    # XPU is rejected above; every other backend (including CPU-only torch on a
+    # host that still has NVIDIA cards) can be handed a pin llama.cpp ignores.
     if (
-        device == DeviceType.CUDA
+        device != DeviceType.XPU
         and not ids_are_vulkan_ordinals
         and not confirmed_diffusion
         and callable(lacks_gpu_lib)

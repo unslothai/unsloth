@@ -155,8 +155,8 @@ def _loaded_backend(**overrides):
         ("AUTO", []),
         ("pinned", ["--mlock"]),
         ("PINNED", ["--mlock"]),
-        ("resident", ["--no-mmap", "--mlock"]),
-        ("RESIDENT", ["--no-mmap", "--mlock"]),
+        ("resident", ["--mlock", "--no-mmap"]),
+        ("RESIDENT", ["--mlock", "--no-mmap"]),
         ("", []),
     ],
 )
@@ -787,6 +787,30 @@ def test_memory_mode_pinned_does_not_match_none():
     assert backend._already_in_target_state(**kwargs) is False
 
 
+def test_omitted_mode_keeps_the_recorded_explicit_auto():
+    """A client that omits the field must not collapse a recorded auto to null.
+
+    Omission and "auto" canonicalize the same, so the dedupe matches and the
+    recorder runs; keeping the value preserves the /status echo and the
+    _last_load_kwargs snapshot the crash respawn replays.
+    """
+    backend = _loaded_backend(_requested_memory_mode = "auto")
+    backend._last_load_kwargs = {"memory_mode": "auto"}
+    kwargs = _base_target_state_kwargs(backend)
+    kwargs["memory_mode"] = None
+    assert backend._already_in_target_state(**kwargs) is True
+    assert backend.requested_memory_mode == "auto"
+    assert backend._last_load_kwargs["memory_mode"] == "auto"
+
+
+def test_explicit_mode_still_updates_the_recorded_intent():
+    backend = _loaded_backend(_requested_memory_mode = None)
+    backend._last_load_kwargs = {"memory_mode": None}
+    backend._record_matching_memory_request("auto")
+    assert backend.requested_memory_mode == "auto"
+    assert backend._last_load_kwargs["memory_mode"] == "auto"
+
+
 def test_load_response_and_status_round_trip_placement_fields():
     """Placement fields round-trip through load and status schemas."""
     from models.inference import InferenceStatusResponse, LoadResponse
@@ -955,6 +979,53 @@ def test_confirmed_diffusion_allows_physical_gpu_id_on_vulkan_build(tmp_path):
         gpu_ids_are_vulkan_ordinals = False,
     )
     assert captured["gpu_ids"] == [1]
+
+
+def test_remote_confirmed_diffusion_allows_physical_gpu_id_on_vulkan_build(tmp_path):
+    """The HF preflight must gate on the same flag as the local-path branch."""
+    gguf = tmp_path / "diffusion.gguf"
+    _write_minimal_gguf(gguf, arch = "diffusion-gemma")
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._download_gguf = lambda **_kwargs: str(gguf)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_is_diffusion", True)
+    captured = {}
+    backend._start_diffusion_server = lambda **kwargs: captured.update(kwargs) or True
+
+    assert backend.load_model(
+        hf_repo = "diffusion/model",
+        hf_variant = "Q4_K_M",
+        model_identifier = "diffusion/model",
+        speculative_type = "off",
+        gpu_ids = [1],
+        gpu_ids_are_vulkan_ordinals = False,
+    )
+    assert captured["gpu_ids"] == [1]
+
+
+def test_physical_ids_never_reinterpreted_as_vulkan_ordinals(tmp_path):
+    """A model the route called diffusion but whose header disagrees must fail
+    loudly rather than pin --device Vulkan<physical id> on a different card."""
+    gguf = tmp_path / "diffusiongemma-derivative.gguf"
+    _write_minimal_gguf(gguf)
+
+    backend = LlamaCppBackend()
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    backend._is_vulkan_backend = lambda _binary = None: True
+    backend._download_gguf = lambda **_kwargs: str(gguf)
+    backend._start_diffusion_server = lambda **_kwargs: pytest.fail("not a diffusion GGUF")
+
+    with pytest.raises(ValueError, match = "validated as CUDA physical"):
+        backend.load_model(
+            hf_repo = "owner/diffusiongemma-derivative",
+            hf_variant = "Q4_K_M",
+            model_identifier = "owner/diffusiongemma-derivative",
+            speculative_type = "off",
+            gpu_ids = [1],
+            gpu_ids_are_vulkan_ordinals = False,
+        )
 
 
 def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):

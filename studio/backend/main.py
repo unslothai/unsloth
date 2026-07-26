@@ -1202,17 +1202,25 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             from utils.hardware import DeviceType, get_device
 
             is_vulkan = LlamaCppBackend._is_vulkan_backend()
-            if is_vulkan:
-                enriched_devices = LlamaCppBackend._get_vulkan_gpu_info()
-                visibility_info = {
-                    "available": bool(enriched_devices),
-                    "backend": "vulkan",
-                }
-                gpu_ids_supported = bool(enriched_devices)
+            vulkan_devices = LlamaCppBackend._get_vulkan_gpu_info() if is_vulkan else []
+            if vulkan_devices:
+                enriched_devices = vulkan_devices
+                visibility_info = {**visibility_info, "available": True, "backend": "vulkan"}
+                gpu_ids_supported = True
+            elif is_vulkan:
+                # Probe unreachable (no ICD, timeout). Keep torch's device list so
+                # the VRAM monitor and every fit badge still work; only hide the
+                # picker, whose ordinals can't be resolved.
+                gpu_ids_supported = False
             else:
                 # XPU indices cannot yet be applied safely across Level Zero's
-                # FLAT and COMPOSITE hierarchy modes.
-                gpu_ids_supported = get_device() != DeviceType.XPU
+                # FLAT and COMPOSITE hierarchy modes. A CPU-only llama.cpp build
+                # would ignore a pin, and /load rejects one, so hide the picker
+                # instead of offering IDs that fail the load.
+                gpu_ids_supported = (
+                    get_device() != DeviceType.XPU
+                    and not LlamaCppBackend._backend_lacks_gpu_lib()
+                )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True

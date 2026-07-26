@@ -2576,8 +2576,16 @@ class LlamaCppBackend:
             )
 
     def _record_matching_memory_request(self, memory_mode: Optional[str]) -> None:
-        """Adopt the caller's raw host-memory intent after a full match."""
-        self._requested_memory_mode = (memory_mode or "").strip().lower() or None
+        """Adopt the caller's raw host-memory intent after a full match.
+
+        Omission means "no opinion". Unlike gpu_ids, whose dedupe compares the
+        RAW pin, this dedupe compares the CANONICAL mode, so None reaches here
+        as a match for "auto"; overwriting would drop the explicit auto from
+        /status and from the _last_load_kwargs the crash respawn replays.
+        """
+        if memory_mode is None:
+            return
+        self._requested_memory_mode = memory_mode.strip().lower() or None
         if self._last_load_kwargs is not None and "memory_mode" in self._last_load_kwargs:
             self._last_load_kwargs["memory_mode"] = self._requested_memory_mode
 
@@ -3584,6 +3592,9 @@ class LlamaCppBackend:
                 [sys.executable, str(probe_script), str(binary_dir)],
                 capture_output = True,
                 text = True,
+                # Device names are vendor strings: never lose every reading to
+                # one undecodable byte.
+                errors = "replace",
                 timeout = 15,
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),
@@ -6403,7 +6414,10 @@ class LlamaCppBackend:
             if supports_load_mode:
                 # Unified load modes cannot combine a RAM copy with mlock.
                 return ["--load-mode", "none"]
-            return ["--no-mmap", "--mlock"]
+            # --mlock FIRST: a build that folds the legacy flags into one
+            # last-wins load mode would otherwise resolve this to mmap+mlock,
+            # the opposite of a RAM copy. Independent on a genuinely old build.
+            return ["--mlock", "--no-mmap"]
         return []
 
     @_with_gguf_load_marker
@@ -6570,7 +6584,11 @@ class LlamaCppBackend:
                         hf_variant = hf_variant,
                         hf_token = hf_token,
                     )
-                if self._gguf_path_is_diffusion(_preflight_model_path, model_identifier):
+                # Gate only the raise, not the download the Phase 2 call reuses:
+                # physical CUDA IDs stay valid for the diffusion runner.
+                if gpu_ids_are_vulkan_ordinals is not False and self._gguf_path_is_diffusion(
+                    _preflight_model_path, model_identifier
+                ):
                     raise ValueError(
                         "GPU selection (gpu_ids) is not supported for a DiffusionGemma "
                         "GGUF on a Vulkan llama.cpp build: the diffusion runner selects "
@@ -6720,6 +6738,18 @@ class LlamaCppBackend:
                         extra_args = extra_args,
                         gpu_ids = gpu_ids,
                     )
+
+            # The route validated these as CUDA physical IDs because it classified
+            # the model as diffusion (name hint on an uncached remote GGUF); the
+            # header disagrees, so the Vulkan pin below would silently reinterpret
+            # them as ggml ordinals and offload to a different card.
+            if is_vulkan_backend and gpu_ids and gpu_ids_are_vulkan_ordinals is False:
+                raise ValueError(
+                    f"Requested gpu_ids {sorted(int(x) for x in gpu_ids)} were validated "
+                    "as CUDA physical IDs for a diffusion model, but this GGUF is not "
+                    "diffusion. On a Vulkan llama.cpp build, omit gpu_ids or re-pick by "
+                    "Vulkan ordinal."
+                )
 
             if not binary:
                 # distinguish a transiently locked binary (antivirus / in-flight

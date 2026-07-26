@@ -349,7 +349,9 @@ def can_load_chat_during_training(
         per_gpu_fits = True
         per_gpu_needed_gb = None
         if mode == "gguf_vulkan":
-            per_gpu_needed_gb = needed_gb / len(requested_gpu_ids)
+            # Divide by the devices actually budgeted, not the requested count:
+            # free_vals is capped at the visible GPU count above.
+            per_gpu_needed_gb = needed_gb / len(free_vals)
         elif mode == "explicit" and len(free_vals) > 1:
             per_gpu_needed_gb = needed_gb / len(free_vals)
         if per_gpu_needed_gb is not None:

@@ -976,6 +976,9 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             patch.object(self.route, "load_inference_config", return_value = {}),
             patch.object(self.route, "_requires_trust_remote_code_for_model", return_value = False),
             patch.object(self.route, "get_llama_cpp_backend", return_value = loaded),
+            # GPU-less CI has an empty parent-visible set, which would reject
+            # gpu_ids before the draft-device check under test.
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
             with self.assertRaises(HTTPException) as ctx:
@@ -1298,6 +1301,9 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            # GPU-less CI has an empty parent-visible set, which would reject
+            # gpu_ids before the draft-device check under test.
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
             with self.assertRaises(HTTPException) as exc:
@@ -1361,6 +1367,9 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
             patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            # GPU-less CI has an empty parent-visible set, which would reject
+            # gpu_ids before the draft-device check under test.
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
             with self.assertRaises(HTTPException) as exc:

@@ -58,8 +58,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       gpuLayers,
       nCpuMoe,
       selectedGpuIds,
+      // Stay untagged while the device cache is cold: persisting a guessed
+      // namespace would make a later reconcile drop the saved pick.
       selectedGpuIndexKind:
-        selectedGpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null),
+        selectedGpuIds == null ? null : cachedPinnableGpuIndexKind(),
       ggufMemoryMode: ggufMemoryMode ?? undefined,
     };
   }, [

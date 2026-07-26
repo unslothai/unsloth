@@ -67,6 +67,13 @@ def main() -> int:
         return 0
     bindir = sys.argv[1]
 
+    # A vendor name outside the pipe's encoding (Windows ANSI codepage) must not
+    # fail the whole probe.
+    try:
+        sys.stdout.reconfigure(errors = "replace")
+    except Exception:
+        pass
+
     # Hold add_dll_directory's handle for the rest of main() (the documented
     # idiom) so bindir stays on the search path while the sibling ggml DLLs
     # resolve below.

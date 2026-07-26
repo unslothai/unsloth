@@ -91,8 +91,9 @@ export function currentRuntimePerModelConfig(
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
+    // Stay untagged while the device cache is cold (see useActiveModelConfig).
     selectedGpuIndexKind:
-      s.selectedGpuIds == null ? null : (cachedPinnableGpuIndexKind() ?? null),
+      s.selectedGpuIds == null ? null : cachedPinnableGpuIndexKind(),
     ggufMemoryMode: s.ggufMemoryMode ?? undefined,
   };
 }

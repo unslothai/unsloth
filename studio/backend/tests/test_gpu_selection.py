@@ -1151,6 +1151,68 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
+    def test_cpu_only_llama_build_reject_covers_cpu_torch_host(self):
+        # Chat-only Studio (CPU torch) still enumerates NVIDIA cards, so the
+        # CPU-only llama.cpp reject must not be scoped to a CUDA torch build.
+        import utils.hardware as hardware_pkg
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_cpu_torch_gpu_ids_test",
+            "routes/inference.py",
+        )
+        config = SimpleNamespace(is_gguf = True)
+        fake_backend = SimpleNamespace(
+            is_vulkan_build = lambda: False,
+            _backend_lacks_gpu_lib = lambda *a, **k: True,
+        )
+        with (
+            patch.object(inference_route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = fake_backend),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CPU),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(inference_route._resolve_gguf_gpu_ids_for_request(config, [0]))
+
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertIn("cpu-only build", exc_info.exception.detail.lower())
+
+    def test_system_hides_gpu_picker_on_cpu_only_llama_build(self):
+        # /api/system must agree with the reject above, or the picker offers
+        # IDs that every GGUF load then 400s on.
+        import logging
+
+        import utils.hardware as hardware_pkg
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend_main = _load_route_module("main_module_for_gpu_picker_gate_test", "main.py")
+        devices = [{"index": 0, "index_kind": "physical", "name": "GPU0"}]
+
+        def _supported(lacks_gpu_lib):
+            backend_main._system_gpu_cache = None
+            with (
+                patch.object(
+                    hardware_pkg,
+                    "get_backend_visible_gpu_info",
+                    return_value = {"available": True, "devices": devices},
+                ),
+                patch.object(
+                    hardware_pkg, "get_visible_gpu_utilization", return_value = {"devices": []}
+                ),
+                patch.object(hardware_pkg, "get_device", return_value = hardware_pkg.DeviceType.CUDA),
+                patch.object(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: False)),
+                patch.object(
+                    LlamaCppBackend,
+                    "_backend_lacks_gpu_lib",
+                    staticmethod(lambda *a: lacks_gpu_lib),
+                ),
+            ):
+                info = backend_main._get_cached_system_gpu_info(logging.getLogger("t"))
+            return info["gguf_gpu_ids_supported"]
+
+        self.assertFalse(_supported(True))
+        self.assertTrue(_supported(False))
+
     def test_cpu_only_llama_build_skips_reject_for_diffusion_gguf(self):
         # Diffusion uses its own runner, independent of llama.cpp GPU libraries.
         import utils.hardware as hardware_pkg
