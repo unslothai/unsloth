@@ -337,7 +337,6 @@ def test_validate_guard_honours_an_explicit_empty_extra_args(monkeypatch):
 def _loaded_llama_backend(extra_args):
     """Minimal stand-in for a loaded llama-server, as /status reads it."""
     from types import SimpleNamespace
-
     return SimpleNamespace(
         is_loaded = True,
         model_identifier = "org/gguf-repo",
