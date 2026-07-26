@@ -1611,7 +1611,7 @@ class TestOpenAICompatibilityHelpers:
     def test_openai_stream_error_sse_closes_with_done(self):
         error = {"error": {"message": "boom"}}
         assert _openai_stream_error_sse(error) == (
-            'data: {"error": {"message": "boom"}}\n\n' "data: [DONE]\n\n"
+            'data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n'
         )
 
     @pytest.mark.parametrize(
@@ -6473,7 +6473,16 @@ class TestApiMonitorSafetensorsUsage:
                     nonlocal reset_called
                     reset_called = True
 
-            async def fake_to_thread(*_args, **_kwargs):
+            async def fake_to_thread(
+                func = None,
+                *_args,
+                **_kwargs,
+            ):
+                # Only the generation hop should cancel. Model resolution also
+                # runs off the loop, and it happens before the monitor row opens,
+                # so cancelling there would test nothing about finalization.
+                if getattr(func, "__name__", "") == "resolve_local_gguf":
+                    return None
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)

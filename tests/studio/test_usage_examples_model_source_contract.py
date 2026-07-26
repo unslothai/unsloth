@@ -23,7 +23,8 @@ def test_examples_name_a_model_the_server_can_serve():
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded catalog entry, then any entry, then none.
-    assert "catalog?.find((m) => m.loaded) ?? catalog?.[0]" in hook
+    # An unloaded entry is only offered when switching would actually load it.
+    assert "catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined)" in hook
     # The snippet pins the quant so the request names the file on disk.
     assert "`${pick.id}:${pick.quant}`" in hook
 
@@ -67,7 +68,9 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     # ModelAutoSwitchSection renders the same setting just below this panel and shares no
     # state with it, so a second switch here would drift out of sync.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    assert "openai-auto-switch" not in src
+    # Reading the setting is required: an unloaded model only answers when
+    # switching is on. Writing it here is what would be the second control.
+    assert "updateOpenAIAutoSwitchSettings" not in src
     assert "SWITCH_NOTE" not in src
     assert "Switch model by request" not in src
     assert "pythonSwitchDemo" not in src

@@ -3804,12 +3804,13 @@ async def _reject_unservable_model(
     """Refuse rather than answer a named model with a different one.
 
     Only for a reference this server can tell was meant for it: an explicit GGUF
-    quant, or a repo that is actually here. A bare ``vendor/model`` is not enough
-    on its own, because that is how LiteLLM and OpenRouter name every provider,
-    so ``anthropic/claude-3.5-sonnet`` keeps falling through to the resident
-    model exactly like ``gpt-4``. Only runs while something is serving; with
-    nothing loaded the caller's own :func:`_no_model_loaded_error` already says
-    the right thing.
+    quant, or a model that is actually here. A namespace decides nothing either
+    way. ``vendor/model`` is how LiteLLM and OpenRouter name every provider, so
+    ``anthropic/claude-3.5-sonnet`` falls through like ``gpt-4``; a standalone or
+    custom-folder GGUF is advertised without one, so a slashless id that does
+    resolve locally is still a concrete reference. Only runs while something is
+    serving; with nothing loaded the caller's own :func:`_no_model_loaded_error`
+    already says the right thing.
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
@@ -3820,8 +3821,6 @@ async def _reject_unservable_model(
     ):
         return
     base, variant = split_model_ref(requested_model)
-    if "/" not in base:
-        return
     quantified = looks_like_quant(variant)
     from core.inference.local_model_resolver import resolve_local_gguf
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled

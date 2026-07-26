@@ -29,6 +29,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
+import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
 import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
@@ -372,6 +373,8 @@ function useExampleModelName(): string | null {
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
+  // A downloaded but unloaded model is only runnable when switching is on.
+  const [autoSwitch, setAutoSwitch] = useState(false);
   const usableCheckpoint =
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
   const needsCatalog = !usableCheckpoint;
@@ -385,12 +388,20 @@ function useExampleModelName(): string | null {
     let timeoutId: number | null = null;
 
     const update = () => {
-      void listOpenAIModels()
-        .then((models) => {
-          if (!cancelled) setCatalog(models);
-          return models.length > 0;
+      void Promise.all([
+        listOpenAIModels().catch(() => [] as OpenAIModel[]),
+        loadOpenAIAutoSwitchSettings()
+          .then((s) => s.enabled)
+          .catch(() => false),
+      ])
+        .then(([models, enabled]) => {
+          if (cancelled) return true;
+          setCatalog(models);
+          setAutoSwitch(enabled);
+          // Keep retrying until a snippet would actually run, so turning
+          // switching on in the row above is picked up here too.
+          return models.some((m) => m.loaded) || (enabled && models.length > 0);
         })
-        .catch(() => false)
         .then((resolved) => {
           if (cancelled || resolved) return;
           timeoutId = window.setTimeout(update, CATALOG_RETRY_MS);
@@ -412,15 +423,17 @@ function useExampleModelName(): string | null {
       return checkpoint;
     }
     // No usable checkpoint: name something this server holds, quant included so the
-    // request pins the file on disk rather than letting the server pick.
-    const pick = catalog?.find((m) => m.loaded) ?? catalog?.[0];
+    // request pins the file on disk rather than letting the server pick. An
+    // unloaded one only answers when switching is on, which is off by default.
+    const pick =
+      catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
     if (!pick) {
       return null;
     }
     return pick.quant && !pick.id.includes(":")
       ? `${pick.id}:${pick.quant}`
       : pick.id;
-  }, [catalog, checkpoint, ggufVariant, usableCheckpoint]);
+  }, [autoSwitch, catalog, checkpoint, ggufVariant, usableCheckpoint]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns

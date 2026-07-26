@@ -991,3 +991,49 @@ def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):
     assert _run("unsloth/x-GGUF").code == "model_downloading"
     assert seen["refusal"].code == "model_downloading"
     assert "queried" not in seen  # the stale job key was never consulted
+
+
+def test_a_bpw_qualified_quant_is_a_quant_request():
+    # _extract_quant_label emits these for repos shipping several files at one
+    # base quant, and the resolver and downloader both accept them.
+    assert auto_dl.looks_like_quant("IQ4_XS-3.53bpw")
+    assert auto_dl.looks_like_quant("UD-Q4_K_XL-4.19BPW")
+    assert not auto_dl.looks_like_quant("3.53bpw")
+
+
+def test_the_default_pick_survives_lowercase_quant_labels():
+    # _pick_best_gguf matches its upper-case preference tokens case-sensitively,
+    # so a lower-case repo would otherwise take the first entry, often F16.
+    lowered = {"f16": 20, "ud-q4_k_xl": 4, "q8_0": 9}
+    assert auto_dl._match_variant(None, lowered) == "ud-q4_k_xl"
+    # The upper-case case must be unchanged.
+    assert auto_dl._match_variant(None, {"F16": 20, "UD-Q4_K_XL": 4}) == "UD-Q4_K_XL"
+
+
+def test_a_slashless_local_model_is_still_a_concrete_reference(monkeypatch):
+    # Standalone and custom-folder GGUFs are advertised by /v1/models without a
+    # namespace, so a namespace cannot be what decides intent.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: False
+    )
+
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf",
+        lambda name: ("/p", None, name) if name.startswith("standalone-Q4_K_M") else None,
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._reject_unservable_model("standalone-Q4_K_M", _Req()))
+    assert excinfo.value.status_code == 404
+
+    # A slashless name that is not here stays a foreign label.
+    monkeypatch.setattr("core.inference.local_model_resolver.resolve_local_gguf", lambda name: None)
+    assert asyncio.run(inference_route._reject_unservable_model("gpt-4", _Req())) is None
+    assert asyncio.run(inference_route._reject_unservable_model("default", _Req())) is None

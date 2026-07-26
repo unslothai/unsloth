@@ -122,11 +122,16 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     ``name:latest`` is how Ollama tags one, so neither a namespace nor a colon
     proves a request was meant for this server. A real quant label does.
     """
+    import re
+
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
 
     if not variant:
         return False
-    return _GGUF_KNOWN_QUANT_RE.fullmatch(variant.strip()) is not None
+    # _extract_quant_label appends a bits-per-weight modifier when a repo ships
+    # several files at one base quant (IQ4_XS-3.53bpw); still a quant request.
+    label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
+    return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
 
 def _hub_token(hf_token: Optional[str]):
@@ -553,9 +558,14 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         return lowered.get(wanted.strip().lower())
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames, so feed it "<label>.gguf" and strip the suffix back off.
-    best = _pick_best_gguf([f"{name}.gguf" for name in variants])
-    return best[: -len(".gguf")] if best else None
+    # _pick_best_gguf ranks filenames, so feed it "<label>.gguf". Its preference
+    # tokens are upper case and matched case-sensitively, so upper-case the keys
+    # and map the winner back, or a lower-case repo takes the first entry.
+    synthetic: dict[str, str] = {}
+    for name in variants:
+        synthetic.setdefault(f"{name.upper()}.gguf", name)
+    best = _pick_best_gguf(list(synthetic))
+    return synthetic.get(best) if best else None
 
 
 async def _dispatch(
