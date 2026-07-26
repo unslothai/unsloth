@@ -121,7 +121,11 @@ RUN set -eux \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
         "unsloth[${UNSLOTH_EXTRA}] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}" \
-        "timm>=1.0.11" "addict"
+        `# structlog is a studio backend dep, not an unsloth[huggingface] dep,` \
+        `# but unsloth_cli's train / export / chat / list-checkpoints all import` \
+        `# studio.backend.core.*, so without it every one of them dies on` \
+        `# ModuleNotFoundError. The last builder stage imports it as a guard.` \
+        "timm>=1.0.11" "addict" "structlog"
 
 # vLLM: required by Unsloth's GRPO path (fast_inference=True). A SECOND uv pass so
 # torch 2.11.0 settles first; with torch held, uv picks the newest compatible vLLM
@@ -165,11 +169,21 @@ RUN set -eux \
        && ${VENV}/bin/python -c "import numba; print('numba', numba.__version__, 'imports ok')" \
         # flashinfer-jit-cache: precompiled cubins so flashinfer ops skip the JIT
         # path (standalone `vllm serve` dies there for fmha_gen on sm_100a). ~1.5 GB.
+        # The version MUST equal the flashinfer-python vLLM resolved: flashinfer
+        # raises at import when the two disagree, which takes the vLLM EngineCore
+        # down with it and breaks Unsloth's GRPO fast_inference path. So read the
+        # resolved version instead of pinning a literal that drifts.
+       && FI_VER="$(${VENV}/bin/python -c 'from importlib.metadata import version; print(version("flashinfer-python"))')" \
+       && echo ">> flashinfer-python ${FI_VER}, matching flashinfer-jit-cache" \
        && { ${VENV}/bin/uv pip install \
             --python ${VENV}/bin/python \
             --index-url https://flashinfer.ai/whl/cu128 \
-            "flashinfer-jit-cache==0.6.6" \
-         || echo ">> flashinfer-jit-cache unavailable for ${TARGETARCH:-amd64}; vllm serve may require nvcc for uncached ops"; } \
+            "flashinfer-jit-cache==${FI_VER}" \
+         || echo ">> flashinfer-jit-cache ${FI_VER} unavailable for ${TARGETARCH:-amd64}; vllm serve may require nvcc for uncached ops"; } \
+        # Whatever happened above, flashinfer has to import: a version mismatch
+        # here is silent until the first vLLM engine start.
+       && ${VENV}/bin/python -c \
+            "import flashinfer; print('OK: flashinfer', flashinfer.__version__, 'imports')" \
        && echo ">> vLLM installed (numpy + numba re-upgraded post-vllm)"; \
         } || { \
             if [ "${TARGETARCH:-amd64}" != "amd64" ]; then \
@@ -342,6 +356,15 @@ if target == "amd64":
 for pkg in LIGHT_IMPORTS:
     importlib.import_module(pkg)
 print(f"OK: {' + '.join(LIGHT_IMPORTS)} import cleanly on no-GPU host")
+
+# `unsloth train` / `export` / `chat` / `list-checkpoints` all import
+# studio.backend.core.*, whose dependency closure (structlog, and starlette by
+# way of the logging handlers) is NOT part of unsloth[huggingface]. Missing any
+# of it turns every one of those commands into a ModuleNotFoundError traceback,
+# which no functional test here would otherwise catch. Runs last in the builder,
+# after vLLM, because that is what pulls starlette in.
+from studio.backend.core.export import ExportBackend  # noqa: F401
+print("OK: the unsloth CLI can reach the studio export backend")
 PY
 
 # =============================================================================
