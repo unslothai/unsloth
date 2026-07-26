@@ -28,7 +28,6 @@ class _Sibling:
     ):
         self.rfilename = rfilename
         self.size = size
-        # The plan identifies cached blobs by hash; None means "not known".
         self.blob_id = blob_id
 
 
@@ -1035,8 +1034,7 @@ def test_a_slashless_local_model_is_still_a_concrete_reference(monkeypatch):
 
 
 def test_a_cancelled_download_is_not_reported_as_failed(hub, monkeypatch):
-    # The monitor has its own cancelled state; routing every non-complete state
-    # through fail_open rendered a deliberate cancel as "Model download failed".
+    # fail_open rendered a deliberate cancel as "Model download failed".
     from core.inference import api_monitor as monitor_module
 
     assert _run("unsloth/x-GGUF:UD-Q4_K_XL").code == "model_downloading"
@@ -1054,8 +1052,7 @@ def test_a_cancelled_download_is_not_reported_as_failed(hub, monkeypatch):
 
 
 def test_disk_admission_counts_only_what_is_left_to_fetch(hub, monkeypatch):
-    # A resumed quant, or a companion already pulled in by another quant, is on
-    # disk; charging for it 507s a download that fits.
+    # Charging again for bytes already on disk 507s a download that fits.
     seen = {}
 
     def _enough(need):
@@ -1081,8 +1078,7 @@ def test_disk_admission_counts_only_what_is_left_to_fetch(hub, monkeypatch):
 
 
 def test_a_resolver_alias_for_the_resident_model_is_not_refused(monkeypatch):
-    # A manual load stores the on-disk path while /v1/models advertises
-    # publisher/model for it, so the alias must not read as unservable.
+    # A manual load stores the on-disk path /v1/models aliases as publisher/model.
     loaded = _Loaded("/models/publisher/model/weights.gguf", None)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(

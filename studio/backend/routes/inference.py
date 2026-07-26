@@ -3860,9 +3860,8 @@ async def _reject_unservable_model(
         ):
             return
         resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
-        # A manual load stores the on-disk path while the resolver advertises a
-        # publisher/model alias for it (LM Studio, custom folders), so compare the
-        # resolved path too before calling a resident model unservable.
+        # A manual load stores the on-disk path that the resolver advertises under a
+        # publisher/model alias (LM Studio, custom folders); match on the path too.
         if resolved is not None and _resolves_to_resident(resolved[0]):
             return
         downloaded = resolved is not None
