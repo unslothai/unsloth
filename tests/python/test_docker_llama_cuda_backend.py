@@ -96,12 +96,12 @@ def test_flashinfer_jit_cache_tracks_flashinfer(dockerfile: str):
     # disagree, and that exception kills the vLLM EngineCore, which is what
     # Unsloth's GRPO fast_inference path runs on. A literal pin drifts the moment
     # vLLM bumps its flashinfer requirement, so the version has to be derived.
-    assert "flashinfer-jit-cache==${FI_VER}" in dockerfile, (
-        "flashinfer-jit-cache must be pinned to the resolved flashinfer-python version"
-    )
-    assert not re.search(r"flashinfer-jit-cache==[0-9]", dockerfile), (
-        "a literal flashinfer-jit-cache version will drift away from flashinfer-python"
-    )
+    assert (
+        "flashinfer-jit-cache==${FI_VER}" in dockerfile
+    ), "flashinfer-jit-cache must be pinned to the resolved flashinfer-python version"
+    assert not re.search(
+        r"flashinfer-jit-cache==[0-9]", dockerfile
+    ), "a literal flashinfer-jit-cache version will drift away from flashinfer-python"
     assert "import flashinfer" in dockerfile, (
         "the build must prove flashinfer imports, or a mismatch stays silent "
         "until the first vLLM engine start"
@@ -114,6 +114,6 @@ def test_cli_can_reach_the_studio_backend(dockerfile: str):
     # requirement rather than an unsloth[huggingface] one, so the base venv has
     # to ask for it explicitly or the whole CLI dies on ModuleNotFoundError.
     assert '"structlog"' in dockerfile, "the base venv must install structlog for unsloth_cli"
-    assert "from studio.backend.core.export import ExportBackend" in dockerfile, (
-        "a build-time import guard must prove the CLI can reach the studio backend"
-    )
+    assert (
+        "from studio.backend.core.export import ExportBackend" in dockerfile
+    ), "a build-time import guard must prove the CLI can reach the studio backend"
