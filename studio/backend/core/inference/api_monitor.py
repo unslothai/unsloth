@@ -59,6 +59,8 @@ class ApiMonitorEntry:
     event: Optional[str] = None
     reason: Optional[str] = None
     shared: bool = False
+    # 0-100 for a running download row; None when not applicable.
+    progress: Optional[float] = None
 
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         duration_ms = None
@@ -95,6 +97,7 @@ class ApiMonitorEntry:
             "kind": self.kind,
             "event": self.event,
             "reason": self.reason,
+            "progress": self.progress,
         }
         if include_details:
             payload["prompt"] = self.prompt
@@ -184,6 +187,16 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is not None:
                 entry.model = model
+                entry.updated_at = time.time()
+
+    def set_progress(self, entry_id: Optional[str], progress: Optional[float]) -> None:
+        """Update an open download row's percentage (clamped to 0-100)."""
+        if not entry_id or progress is None:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None and entry.status == "running":
+                entry.progress = min(100.0, max(0.0, float(progress)))
                 entry.updated_at = time.time()
 
     def discard(self, entry_id: Optional[str]) -> None:

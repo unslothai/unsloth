@@ -96,6 +96,17 @@ function lifecycleLabel(entry: ApiMonitorEntry): string {
   if (entry.event === "unload") {
     return entry.reason === "idle" ? "Model unloaded (idle)" : "Model unloaded";
   }
+  if (entry.event === "download") {
+    if (entry.status === "running") {
+      const pct = entry.progress;
+      return typeof pct === "number"
+        ? `Downloading model (${Math.round(pct)}%)`
+        : "Downloading model";
+    }
+    return entry.status === "completed"
+      ? "Model downloaded"
+      : "Model download failed";
+  }
   if (entry.status === "running") {
     return "Loading model";
   }
@@ -126,7 +137,7 @@ function LifecycleEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
         </div>
         <div className="shrink-0 text-right text-ui-11 text-muted-foreground">
           <div>{formatTime(entry.started_at)}</div>
-          {entry.event === "load" ? (
+          {entry.event === "load" || entry.event === "download" ? (
             <div>{formatDuration(entry.duration_ms)}</div>
           ) : null}
         </div>

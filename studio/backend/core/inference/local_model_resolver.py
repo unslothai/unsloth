@@ -232,6 +232,14 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     return index
 
 
+def invalidate_index() -> None:
+    """Drop the cached scan so the next resolve sees a just-finished download,
+    rather than waiting out the TTL."""
+    global _scan
+    with _lock:
+        _scan = (0.0, {})
+
+
 def _index() -> dict[str, _LocalGgufEntry]:
     global _scan
     # Build under the lock so concurrent callers with an expired cache don't all

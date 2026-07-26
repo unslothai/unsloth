@@ -283,11 +283,13 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
-  // "request" is an HTTP call; "lifecycle" is a model load/unload, which carries
-  // event/reason instead of a prompt and has no detail to fetch.
+  // "request" is an HTTP call; "lifecycle" is a model load/unload/download, which
+  // carries event/reason instead of a prompt and has no detail to fetch.
   kind?: "request" | "lifecycle";
-  event?: "load" | "unload" | null;
-  reason?: "manual" | "idle" | null;
+  event?: "load" | "unload" | "download" | null;
+  reason?: "manual" | "idle" | "api" | null;
+  // 0-100 while a download row is running.
+  progress?: number | null;
 }
 
 export interface ApiMonitorResponse {

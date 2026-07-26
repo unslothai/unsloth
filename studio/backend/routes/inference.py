@@ -3070,23 +3070,9 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
-def _hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
-    """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
-
-    An auto-switch load is handed the concrete snapshot dir, whose basename is the
-    commit sha, so public_model_id alone would label the row with a hash.
-    """
-    if not path:
-        return None
-    for part in str(path).replace("\\", "/").split("/"):
-        if part.startswith("models--"):
-            return part[len("models--") :].replace("--", "/")
-    return None
-
-
 def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
     """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
-    clean = _hf_cache_repo_id(model) or public_model_id(model) or model or "model"
+    clean = public_model_id(model) or model or "model"
     return f"{clean}:{variant}" if variant and ":" not in clean else clean
 
 
@@ -3707,6 +3693,69 @@ async def _no_model_loaded_error(
     )
 
 
+def _auto_download_hf_token(fastapi_request: Optional[Request]) -> Optional[str]:
+    """The token to fetch with: the Hub header if the caller sent one, else the
+    server's own. The OpenAI bearer key is never used as an HF token."""
+    from hub.dependencies import HUB_HF_TOKEN_HEADER, HUB_HF_TOKEN_MAX_LENGTH
+
+    headers = getattr(fastapi_request, "headers", None)
+    if headers is not None:
+        supplied = (headers.get(HUB_HF_TOKEN_HEADER) or "").strip()
+        if supplied and len(supplied) <= HUB_HF_TOKEN_MAX_LENGTH:
+            return supplied
+    try:
+        from routes.settings import _ambient_hf_token
+        return _ambient_hf_token()
+    except Exception:
+        return None
+
+
+async def _maybe_auto_download_model(
+    requested_model: str, fastapi_request: Optional[Request]
+) -> None:
+    """Opt-in: start fetching a named GGUF this server doesn't have.
+
+    Raises to stop the request when the model is downloading or cannot be
+    fetched. Off by default, and it never fires on a name that isn't shaped like
+    a Hub repo, so an unknown id like "gpt-4" still falls through to the resident
+    model as before.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
+    from core.inference.openai_auto_download import is_downloadable_ref, maybe_auto_download
+
+    if not requested_model or not get_openai_auto_download_enabled():
+        return
+    if not is_downloadable_ref(requested_model):
+        return
+    try:
+        refusal = await maybe_auto_download(
+            requested_model, hf_token = _auto_download_hf_token(fastapi_request)
+        )
+    except Exception as exc:
+        # Never turn a servable request into a 500 over the download attempt.
+        logger.warning("auto-download failed for %r: %s", requested_model, exc)
+        return
+    if refusal is None:
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    detail = (
+        error_body_for_path(
+            path,
+            refusal.message,
+            status = refusal.status,
+            code = refusal.code,
+            param = "model",
+        )
+        if isinstance(path, str)
+        else refusal.message
+    )
+    raise HTTPException(
+        status_code = refusal.status,
+        detail = detail,
+        headers = ({"Retry-After": str(refusal.retry_after)} if refusal.retry_after else None),
+    )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -3718,7 +3767,8 @@ async def _maybe_auto_switch_model(
 
     No-op unless enabled and ``requested_model`` resolves to a downloaded local
     model different from the loaded one. Unknown names fall through (drop-in
-    compat) and no remote download is triggered. ``require_vision`` rejects a swap
+    compat); a miss only reaches the network when auto-download is also on, and
+    even then only for ``namespace/name`` ids. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
     resident vision model only to 400 afterwards.
     """
@@ -3761,6 +3811,10 @@ async def _maybe_auto_switch_model(
             else None
         )
         if resolved is None:
+            # Not on disk. Opt-in: fetch it in the background and tell the caller to
+            # retry, rather than silently answering from whatever is resident.
+            if auto_switch_on and not reload_only:
+                await _maybe_auto_download_model(requested_model, fastapi_request)
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
@@ -6054,6 +6108,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 and os.path.isabs(_model_id)
             ):
                 _display_model_id = os.path.basename(_model_id)
+            elif not _native_grant_backed and _display_model_id == _model_id:
+                # Not a leased native path, so no label was registered and the raw
+                # identifier came back. Report the clean public id instead: an HF
+                # cache load would otherwise show the snapshot's commit sha.
+                _display_model_id = _llama_public_model_id(llama_backend) or _display_model_id
             _inference_cfg = load_inference_config(_model_id) if _model_id else None
             _audio_type = getattr(llama_backend, "_audio_type", None)
             # Don't surface Unsloth's auto-applied bundled family template (e.g. the

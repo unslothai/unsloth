@@ -78,3 +78,32 @@ def test_auto_switch_section_sits_above_the_monitor():
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
     assert tab.index("<ModelAutoSwitchSection />") < tab.index("<ApiMonitorConsole />")
     assert tab.index("<ApiMonitorConsole />") < tab.index("<UsageExamples")
+
+
+AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
+EN_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
+
+
+def test_api_monitor_renders_download_rows():
+    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    assert 'entry.event === "download"' in src
+    for label in ("Downloading model", "Model downloaded", "Model download failed"):
+        assert label in src
+
+
+def test_auto_download_toggle_is_gated_on_auto_switch():
+    # Downloading a model auto-switch is not allowed to load would fetch
+    # gigabytes nothing can then serve, so the row follows the enabled flag.
+    src = AUTO_SWITCH_TSX.read_text(encoding = "utf-8")
+    assert "modelAutoSwitch.autoDownload" in src
+    assert "settings?.autoDownloadModel ?? false" in src
+    row = src[src.find("modelAutoSwitch.autoDownload") :]
+    assert "disabled={!settings?.enabled || isSaving}" in row[: row.find("</SettingsRow>")]
+
+
+def test_auto_download_copy_warns_about_api_key_holders():
+    en = EN_TS.read_text(encoding = "utf-8")
+    start = en.find("autoDownloadDescription:")
+    assert start != -1
+    description = en[start : en.find("\n", en.find('",', start))]
+    assert "API key" in description

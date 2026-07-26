@@ -289,9 +289,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -578,7 +578,9 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "dir": str(tmp_path),
         "slots": [{"id": 0, "filename": saved.name}],
     }
-    monkeypatch.setattr(settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True))
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False)
+    )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
     payload = settings_route.OpenAIAutoSwitchPayload(enabled = False)
@@ -3954,10 +3956,11 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
+    assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv) == (False, 600, False)
+    assert (enabled, idle, keep_kv, auto_dl) == (False, 600, False, False)
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():

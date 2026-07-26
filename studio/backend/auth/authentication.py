@@ -164,6 +164,23 @@ async def get_current_subject_allow_password_change(
     )
 
 
+# The literal the copyable API examples ship with. Pasting a snippet unedited is
+# a much likelier mistake than a revoked key, so say so instead of "invalid".
+API_KEY_PLACEHOLDER = f"{API_KEY_PREFIX}YOUR_KEY"
+
+
+def _invalid_api_key_detail(token: str) -> str:
+    """Why the key failed. Only the unedited example placeholder is called out;
+    every real key still gets one indistinguishable message, so this reveals
+    nothing about which keys exist."""
+    if token == API_KEY_PLACEHOLDER:
+        return (
+            "This is the placeholder key from the example. Create an API key in "
+            f"Unsloth Studio under Settings > API and use it in place of {API_KEY_PLACEHOLDER}."
+        )
+    return "Invalid or expired API key"
+
+
 async def _get_current_subject(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
 ) -> str:
@@ -176,7 +193,7 @@ async def _get_current_subject(
         if username is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
-                detail = "Invalid or expired API key",
+                detail = _invalid_api_key_detail(token),
             )
         return username
 

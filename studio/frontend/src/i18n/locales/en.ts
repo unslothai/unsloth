@@ -283,6 +283,9 @@ export const en = {
         enable: "Switch model by request",
         enableDescription:
           "Load a downloaded GGUF named in an API request before serving. Off by default.",
+        autoDownload: "Download missing models",
+        autoDownloadDescription:
+          "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
