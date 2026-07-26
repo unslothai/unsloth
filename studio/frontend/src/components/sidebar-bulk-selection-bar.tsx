@@ -18,8 +18,11 @@ export function SidebarBulkSelectionBar({
   const t = useT();
   if (count <= 0) return null;
 
+  // Renders below the rows: above them it would push every row down the moment
+  // the first item is selected, which pulls rows the user never touched into a
+  // drag range.
   return (
-    <div className="mb-1 flex items-center justify-between gap-2 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1">
+    <div className="mt-1 flex items-center justify-between gap-2 rounded-full border border-border/60 bg-muted/40 px-2.5 py-1">
       <button
         type="button"
         onClick={onClear}

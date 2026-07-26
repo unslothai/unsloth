@@ -16,6 +16,9 @@ const AUTO_SCROLL_STEP_PX = 10;
 
 type DragState = {
   anchorIndex: number;
+  // The row the drag started on, by id: the list can reorder or reload
+  // mid-drag, which shifts every index.
+  anchorId: string | null;
   pointerId: number;
   pointerType: string;
   startX: number;
@@ -32,6 +35,13 @@ function rangeIndices(anchor: number, current: number): number[] {
   return out;
 }
 
+function parseSelectionIndex(row: HTMLElement | null | undefined): number | null {
+  const raw = row?.dataset.selectionIndex;
+  if (raw == null) return null;
+  const index = Number.parseInt(raw, 10);
+  return Number.isFinite(index) ? index : null;
+}
+
 function indexFromPointerTarget(
   target: EventTarget | null,
   listRoot: HTMLElement | null,
@@ -39,10 +49,19 @@ function indexFromPointerTarget(
   if (!listRoot || !(target instanceof Element)) return null;
   const row = target.closest<HTMLElement>("[data-selection-index]");
   if (!row || !listRoot.contains(row)) return null;
-  const raw = row.dataset.selectionIndex;
-  if (raw == null) return null;
-  const index = Number.parseInt(raw, 10);
-  return Number.isFinite(index) ? index : null;
+  return parseSelectionIndex(row);
+}
+
+// Dragging past either end of the list should extend to that end rather than
+// collapse the range back to the anchor.
+function edgeRowIndex(listRoot: HTMLElement, clientY: number): number | null {
+  const rows = listRoot.querySelectorAll<HTMLElement>("[data-selection-index]");
+  if (rows.length === 0) return null;
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  if (clientY < first.getBoundingClientRect().top) return parseSelectionIndex(first);
+  if (clientY > last.getBoundingClientRect().bottom) return parseSelectionIndex(last);
+  return null;
 }
 
 export function useSidebarListSelection({
@@ -58,27 +77,46 @@ export function useSidebarListSelection({
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
   const autoScrollDirectionRef = useRef<-1 | 1 | null>(null);
-  const anchorIndexRef = useRef<number | null>(null);
+  // The anchor is held by id, not index: the list reorders (a chat bumped to
+  // the top) and grows/shrinks under a stored anchor, which would silently
+  // re-point a later shift+click at a different row.
+  const anchorIdRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const updateDragSelectionRef = useRef<(clientY: number) => void>(() => undefined);
 
+  const indexOfId = useCallback(
+    (id: string | null) => (id == null ? -1 : itemIds.indexOf(id)),
+    [itemIds],
+  );
+
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
-    anchorIndexRef.current = null;
+    anchorIdRef.current = null;
   }, []);
 
-  // Drop stale selections when the visible list changes.
+  // Drop stale selections when the visible list changes. Bail out before
+  // setState unless something is genuinely stale: callers rebuild itemIds on
+  // most renders, and an unconditional update here re-arms this effect on
+  // every commit and trips React's nested-update limit.
   useEffect(() => {
+    if (selectedIds.size === 0) return;
     const valid = new Set(itemIds);
+    let hasStale = false;
+    for (const id of selectedIds) {
+      if (!valid.has(id)) {
+        hasStale = true;
+        break;
+      }
+    }
+    if (!hasStale) return;
     setSelectedIds((prev) => {
-      if (prev.size === 0) return prev;
       const next = new Set<string>();
       for (const id of prev) {
         if (valid.has(id)) next.add(id);
       }
-      return next.size === prev.size ? prev : next;
+      return next;
     });
-  }, [itemIds]);
+  }, [itemIds, selectedIds]);
 
   const applyRangeSelection = useCallback(
     (anchorIndex: number, currentIndex: number) => {
@@ -147,8 +185,11 @@ export function useSidebarListSelection({
         )
         .map((el) => indexFromPointerTarget(el, listRoot))
         .find((value) => value != null);
-      const currentIndex = index ?? drag.anchorIndex;
-      applyRangeSelection(drag.anchorIndex, currentIndex);
+      const liveAnchor = indexOfId(drag.anchorId);
+      const anchorIndex = liveAnchor === -1 ? drag.anchorIndex : liveAnchor;
+      const currentIndex =
+        index ?? edgeRowIndex(listRoot, clientY) ?? anchorIndex;
+      applyRangeSelection(anchorIndex, currentIndex);
 
       if (container) {
         const rect = container.getBoundingClientRect();
@@ -159,6 +200,7 @@ export function useSidebarListSelection({
     },
     [
       applyRangeSelection,
+      indexOfId,
       listRootRef,
       scrollContainerRef,
       startAutoScroll,
@@ -183,7 +225,10 @@ export function useSidebarListSelection({
 
       drag.lastClientY = event.clientY;
       event.preventDefault();
-      updateDragSelection(event.clientY);
+      // Read through the ref, not the closure: depending on the callback
+      // identity re-runs this effect on every render, and its cleanup would
+      // kill the edge auto-scroll interval one tick after it starts.
+      updateDragSelectionRef.current(event.clientY);
     };
 
     const onPointerUp = (event: PointerEvent) => {
@@ -191,6 +236,8 @@ export function useSidebarListSelection({
       if (!drag || event.pointerId !== drag.pointerId) return;
       if (drag.dragging) {
         suppressClickRef.current = true;
+        // Continue a later shift+click from where the drag started.
+        if (drag.anchorId != null) anchorIdRef.current = drag.anchorId;
       }
       dragRef.current = null;
       stopAutoScroll();
@@ -205,7 +252,7 @@ export function useSidebarListSelection({
       window.removeEventListener("pointercancel", onPointerUp);
       stopAutoScroll();
     };
-  }, [stopAutoScroll, updateDragSelection]);
+  }, [stopAutoScroll]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -231,9 +278,13 @@ export function useSidebarListSelection({
 
   const handleItemPointerDown = useCallback(
     (index: number, event: ReactPointerEvent) => {
+      // A drag released off the list never reaches an item click, so the flag
+      // set on pointer-up would otherwise swallow the next real click.
+      suppressClickRef.current = false;
       if (event.button !== 0 || event.pointerType !== "mouse") return;
       dragRef.current = {
         anchorIndex: index,
+        anchorId: itemIds[index] ?? null,
         pointerId: event.pointerId,
         pointerType: event.pointerType,
         startX: event.clientX,
@@ -242,7 +293,7 @@ export function useSidebarListSelection({
         dragging: false,
       };
     },
-    [],
+    [itemIds],
   );
 
   const handleItemClick = useCallback(
@@ -257,24 +308,20 @@ export function useSidebarListSelection({
       }
 
       const modifier = event.metaKey || event.ctrlKey;
-      if (event.shiftKey && anchorIndexRef.current != null) {
-        applyRangeSelection(anchorIndexRef.current, index);
+      const anchorIndex = indexOfId(anchorIdRef.current);
+      if (event.shiftKey && anchorIndex !== -1) {
+        applyRangeSelection(anchorIndex, index);
         return true;
       }
-      if (modifier) {
+      if (modifier || selectedIds.size > 0) {
         toggleId(id);
-        anchorIndexRef.current = index;
+        anchorIdRef.current = id;
         return true;
       }
-      if (selectedIds.size > 0) {
-        toggleId(id);
-        anchorIndexRef.current = index;
-        return true;
-      }
-      anchorIndexRef.current = index;
+      anchorIdRef.current = id;
       return false;
     },
-    [applyRangeSelection, selectedIds.size, toggleId],
+    [applyRangeSelection, indexOfId, selectedIds.size, toggleId],
   );
 
   const isItemSelected = useCallback(

@@ -814,7 +814,7 @@ export function AppSidebar() {
     | { kind: "chats-bulk"; items: SidebarItem[] }
     | { kind: "project"; project: ProjectRecord }
     | { kind: "run"; run: TrainingRunSummary }
-    | { kind: "runs-bulk"; runs: TrainingRunSummary[] };
+    | { kind: "runs-bulk"; runs: TrainingRunSummary[]; skipped: number };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
@@ -874,8 +874,13 @@ export function AppSidebar() {
       return;
     }
     if (target.kind === "runs-bulk") {
-      const deletable = target.runs.filter((run) => run.status !== "running");
-      const skipped = target.runs.length - deletable.length;
+      // Re-check status against the live list: a run can start between opening
+      // the dialog and confirming it.
+      const live = new Map(runItems.map((run) => [run.id, run]));
+      const deletable = target.runs.filter(
+        (run) => (live.get(run.id) ?? run).status !== "running",
+      );
+      const skipped = target.skipped + (target.runs.length - deletable.length);
       let failed = 0;
       for (const run of deletable) {
         try {
@@ -888,14 +893,15 @@ export function AppSidebar() {
           failed += 1;
         }
       }
-      runRecentsSelection.clearSelection();
+      if (failed === 0) {
+        runRecentsSelection.clearSelection();
+      } else {
+        toast.error(translate("shell.toast.failedToDeleteSomeRuns"));
+      }
       if (skipped > 0) {
         toast.error(
           t("shell.toast.skippedRunningRuns", { count: skipped }),
         );
-      }
-      if (failed > 0) {
-        toast.error(translate("shell.toast.failedToDeleteSomeRuns"));
       }
       return;
     }
@@ -1758,6 +1764,11 @@ export function AppSidebar() {
               <CollapsibleContent>
                 <SidebarGroupContent className="pl-1.5 pr-2">
                   <div ref={chatRecentsListRef}>
+                    <SidebarMenu>
+                      {recentChatItems.map((item, index) =>
+                        renderChatSidebarItem(item, "recent", index),
+                      )}
+                    </SidebarMenu>
                     <SidebarBulkSelectionBar
                       count={chatRecentsSelection.selectedCount}
                       onClear={chatRecentsSelection.clearSelection}
@@ -1769,11 +1780,6 @@ export function AppSidebar() {
                         setConfirmingDelete({ kind: "chats-bulk", items });
                       }}
                     />
-                    <SidebarMenu>
-                      {recentChatItems.map((item, index) =>
-                        renderChatSidebarItem(item, "recent", index),
-                      )}
-                    </SidebarMenu>
                   </div>
                   {/* "No chats yet" only when there is truly no history:
                       project-scoped and archived threads leave Recents empty
@@ -1803,17 +1809,6 @@ export function AppSidebar() {
             <CollapsibleContent>
               <SidebarGroupContent className="pl-1.5 pr-2">
                 <div ref={runRecentsListRef}>
-                  <SidebarBulkSelectionBar
-                    count={runRecentsSelection.selectedCount}
-                    onClear={runRecentsSelection.clearSelection}
-                    onDelete={() => {
-                      const runs = runItems.filter((run) =>
-                        runRecentsSelection.isItemSelected(run.id),
-                      );
-                      if (runs.length === 0) return;
-                      setConfirmingDelete({ kind: "runs-bulk", runs });
-                    }}
-                  />
                   <SidebarMenu>
                     {runItems.map((run, index) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -1915,6 +1910,32 @@ export function AppSidebar() {
                     );
                   })}
                   </SidebarMenu>
+                  <SidebarBulkSelectionBar
+                    count={runRecentsSelection.selectedCount}
+                    onClear={runRecentsSelection.clearSelection}
+                    onDelete={() => {
+                      // Drop running runs here, not at delete time, so the
+                      // confirmation count is exactly what gets deleted.
+                      const selected = runItems.filter((run) =>
+                        runRecentsSelection.isItemSelected(run.id),
+                      );
+                      const runs = selected.filter(
+                        (run) => run.status !== "running",
+                      );
+                      const skipped = selected.length - runs.length;
+                      if (runs.length === 0) {
+                        if (skipped > 0) {
+                          toast.error(
+                            t("shell.toast.skippedRunningRuns", {
+                              count: skipped,
+                            }),
+                          );
+                        }
+                        return;
+                      }
+                      setConfirmingDelete({ kind: "runs-bulk", runs, skipped });
+                    }}
+                  />
                 </div>
               </SidebarGroupContent>
             </CollapsibleContent>
