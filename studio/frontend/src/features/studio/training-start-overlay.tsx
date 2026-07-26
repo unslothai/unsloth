@@ -394,9 +394,17 @@ export function TrainingStartOverlay({
           <TypingAnimation duration={44}>
             {t("studio.trainingStart.gettingReady")}
           </TypingAnimation>
-          <AnimatedSpan className={startFromResume ? "mt-2 text-emerald-300" : "mt-2 text-muted-foreground"}>
+          <AnimatedSpan
+            className={
+              startFromResume
+                ? "mt-2 text-emerald-300"
+                : "mt-2 text-muted-foreground"
+            }
+            aria-live="polite"
+            aria-atomic="true"
+          >
             {startFromResume
-              ? `> ${t("studio.trainingStart.resumingTraining")}`
+              ? `> ${message.trim() || t("studio.trainingStart.resumingTraining")}`
               : t("studio.trainingStart.waitingForFirstStep", {
                   message: displayMessage,
                   step: currentStep,

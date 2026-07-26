@@ -5,6 +5,7 @@ import importlib.util
 import sqlite3
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ _SPEC.loader.exec_module(resume)
 CheckpointImportError = resume.CheckpointImportError
 inspect_import_checkpoint = resume.inspect_import_checkpoint
 validate_import_compatibility = resume.validate_import_compatibility
+preserve_checkpoint_training_target = resume.preserve_checkpoint_training_target
 
 
 def _archive(path, *, tensor = False):
@@ -29,10 +31,13 @@ def _archive(path, *, tensor = False):
             archive.writestr("archive/data/0", b"tensor")
 
 
-def _checkpoint(root, step = 7):
+def _checkpoint(root, step = 7, max_steps = None):
     checkpoint = root / f"checkpoint-{step}"
     checkpoint.mkdir(parents = True)
-    (checkpoint / "trainer_state.json").write_text(json.dumps({"global_step": step}))
+    state = {"global_step": step}
+    if max_steps is not None:
+        state["max_steps"] = max_steps
+    (checkpoint / "trainer_state.json").write_text(json.dumps(state))
     _archive(checkpoint / "adapter_model.bin", tensor = True)
     _archive(checkpoint / "optimizer.pt")
     _archive(checkpoint / "scheduler.pt")
@@ -77,6 +82,40 @@ def test_import_rejects_incompatible_backend(tmp_path):
     info = inspect_import_checkpoint(str(_checkpoint(tmp_path / "run")), [tmp_path])
     with pytest.raises(CheckpointImportError, match = "incompatible"):
         validate_import_compatibility(info, object(), "mlx")
+
+
+def test_import_rejects_checkpoint_that_already_reached_max_steps(tmp_path):
+    info = inspect_import_checkpoint(str(_checkpoint(tmp_path / "run", step = 30)), [tmp_path])
+    request = SimpleNamespace(model_name = None, max_steps = 30)
+
+    with pytest.raises(CheckpointImportError, match = "already reached Max Steps"):
+        validate_import_compatibility(info, request, "transformers")
+
+
+def test_import_allows_checkpoint_with_steps_remaining(tmp_path):
+    info = inspect_import_checkpoint(str(_checkpoint(tmp_path / "run", step = 20)), [tmp_path])
+    request = SimpleNamespace(
+        model_name = None,
+        max_steps = 30,
+        confirm_import_differences = True,
+    )
+
+    assert validate_import_compatibility(info, request, "transformers") == [
+        "No portable training manifest was found; compatibility checks are limited."
+    ]
+
+
+def test_import_preserves_original_trainer_target(tmp_path):
+    info = inspect_import_checkpoint(
+        str(_checkpoint(tmp_path / "run", step = 30, max_steps = 2000)),
+        [tmp_path],
+    )
+    request = SimpleNamespace(max_steps = 30)
+
+    preserve_checkpoint_training_target(info, request)
+
+    assert info["max_steps"] == 2000
+    assert request.max_steps == 2000
 
 
 def test_import_rejects_manifest_step_mismatch(tmp_path):

@@ -16,6 +16,7 @@ import type {
   TrainingProgressPayload,
   TrainingStatusResponse,
 } from "../types/runtime";
+import { getResumeStepConflict } from "../lib/resume-start-payload";
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
@@ -47,6 +48,7 @@ type CheckpointInspectionApi = {
   selected_checkpoint: string;
   output_dir: string;
   global_step: number;
+  max_steps?: number | null;
   backend_type: string;
   configuration?: Record<string, Record<string, unknown>>;
   manifest?: Record<string, unknown> | null;
@@ -87,6 +89,13 @@ export async function inspectCheckpoint(path: string): Promise<CheckpointInspect
             : "metadata",
       } satisfies Partial<TrainingStartRequest>
     : null;
+  const stepConflict = getResumeStepConflict(
+    value.global_step,
+    Math.max(
+      typeof resumeConfig?.max_steps === "number" ? resumeConfig.max_steps : 0,
+      typeof value.max_steps === "number" ? value.max_steps : 0,
+    ),
+  );
   return {
     checkpointPath: value.selected_checkpoint,
     checkpointName: value.selected_checkpoint.split(/[\\/]/).filter(Boolean).pop() ?? `checkpoint-${value.global_step}`,
@@ -99,7 +108,10 @@ export async function inspectCheckpoint(path: string): Promise<CheckpointInspect
     schedulerComplete: true,
     trainerStateComplete: true,
     bundledConfigurationFound: Boolean(value.manifest),
-    incompatibilities: value.compatibility_warnings ?? [],
+    incompatibilities: [
+      ...(value.compatibility_warnings ?? []),
+      ...(stepConflict ? [stepConflict] : []),
+    ],
     missingDatasets: [],
     external: true,
     resumeConfig,
