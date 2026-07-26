@@ -213,25 +213,16 @@ export async function refreshContextUsage(options?: {
   const capturedCheckpoint = checkpoint;
 
   if (!threadId) {
-    if (
-      generation !== refreshGeneration ||
-      useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint
-    ) {
-      return;
-    }
-    if (
-      capturedThreadId != null &&
-      useChatRuntimeStore.getState().activeThreadId !== capturedThreadId
-    ) {
-      return;
-    }
+    // Show something immediately for a chat with no persisted thread, then let
+    // the count below refine it: a configured system prompt, project
+    // instructions or enabled tools are already part of the next request, so
+    // zero is only right when that payload turns out to be empty.
     useChatRuntimeStore.getState().setContextUsage(zeroContextUsage());
-    return;
   }
 
   try {
     let runMessages: readonly ThreadMessage[];
-    const records = await listStoredChatMessages(threadId);
+    const records = threadId ? await listStoredChatMessages(threadId) : [];
     if (generation !== refreshGeneration) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
@@ -266,7 +257,10 @@ export async function refreshContextUsage(options?: {
         useChatRuntimeStore.getState().setContextUsage(savedUsage);
       }
     } else {
-      runMessages = runtimeMessagesGetter?.() ?? [];
+      // No thread means no history to source; the runtime getter is for a
+      // persisted-but-empty read (an incognito thread), where the messages live
+      // only in the mounted runtime.
+      runMessages = threadId ? (runtimeMessagesGetter?.() ?? []) : [];
     }
 
     if (generation !== refreshGeneration) return;
@@ -288,16 +282,19 @@ export async function refreshContextUsage(options?: {
     // would otherwise be captured here and compare equal.
     const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
+    // undefined, not null: a chat with no persisted thread has no project to
+    // resolve instructions or a RAG scope from.
+    const payloadThreadId = threadId ?? undefined;
     const outbound = await buildOutboundMessagesForTokenCount(
       runMessages,
-      threadId,
+      payloadThreadId,
     );
     if (generation !== refreshGeneration) return;
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
 
-    const toolExtras = await buildLocalTokenCountExtras(threadId, outbound);
+    const toolExtras = await buildLocalTokenCountExtras(payloadThreadId, outbound);
 
     let inputTokens = 0;
     if (outbound.length > 0) {
@@ -313,10 +310,9 @@ export async function refreshContextUsage(options?: {
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
-    if (
-      capturedThreadId != null &&
-      useChatRuntimeStore.getState().activeThreadId !== capturedThreadId
-    ) {
+    // Compared even when null: a count started on a chat with no persisted
+    // thread must not land on a thread the user has since opened.
+    if (useChatRuntimeStore.getState().activeThreadId !== capturedThreadId) {
       return;
     }
     if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
