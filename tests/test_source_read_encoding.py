@@ -17,14 +17,14 @@ source-scanning tests do constantly:
 A call is an offence when it does un-pinned text I/O and either of two things
 holds. It runs at import, where nothing can see a tmp_path fixture yet. Or the
 path it reads anchors on something checked in: a module-level constant or
-import, which a fixture parameter can never be, or `__file__`. Anchoring is
-what decides the second one, followed through `/` joins, path methods, the
-locals and loop variables of the enclosing function, and the parameters of
-helpers every caller hands a checked-in path. So
-`for p in (_B / "routes").rglob("*.py")` is in scope, `_source(LOADER_PATH)`
-puts the bare read inside `_source` in scope, and anything growing out of a
-tmp_path stays out. That reaches test bodies, where the same failure lands one
-step later:
+import, which a fixture parameter can never be, `__file__`, or a relative
+literal that names a file actually present in the tree. Anchoring is what
+decides the second one, followed through `/` joins, path methods, the locals
+and loop variables of the enclosing function, and the parameters of helpers
+every caller hands a checked-in path. So `for p in (_B / "routes").rglob("*.py")`
+is in scope, `_source(LOADER_PATH)` puts the bare read inside `_source` in
+scope, and anything growing out of a tmp_path stays out. That reaches test
+bodies, where the same failure lands one step later:
 
     test_gemma4_chat_template.py opens unsloth/chat_templates.py through a
     helper its tests call, and cp1252 cannot decode that file ("byte 0x90").
@@ -52,13 +52,30 @@ those two.
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 # Both trees ship to Windows contributors, and separate CI jobs collect them
 # (repo-cpu-tests and the studio-backend matrix), so the rule covers both.
-ROOTS = (TESTS, REPO / "studio" / "backend" / "tests", REPO / "unsloth_cli" / "tests")
+# Not a hand-written list: studio/backend/hub/tests and unsloth/kernels/moe/tests
+# are already here, and the next one has to be covered the day it lands.
+SKIP_DIRS = {".git", ".venv", "build", "dist", "frontend", "node_modules", "site-packages"}
+
+
+def _test_roots(repo: Path) -> tuple:
+    """Every checked-in pytest tree, discovered rather than enumerated."""
+    roots = []
+    for dirpath, dirnames, _ in os.walk(repo):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        if os.path.basename(dirpath) == "tests":
+            roots.append(Path(dirpath))
+            dirnames[:] = []  # rglob below already covers everything under it
+    return tuple(roots)
+
+
+ROOTS = _test_roots(REPO)
 GUARDED_METHODS = {"read_text", "write_text"}
 NOT_PATH_RECEIVERS = {
     "codecs",
@@ -303,8 +320,13 @@ def _path_expr(call: ast.Call):
         if isinstance(func.value, ast.Name) and func.value.id in MODULE_RECEIVERS:
             return call.args[0] if call.args else None
         return func.value
-    if isinstance(func, ast.Name) and func.id == "open" and call.args:
-        return call.args[0]
+    if isinstance(func, ast.Name) and func.id == "open":
+        if call.args:
+            return call.args[0]
+        # open(file = CHECKED_IN) is the same call spelled out.
+        for kw in call.keywords:
+            if kw.arg == "file":
+                return kw.value
     return None
 
 
@@ -345,7 +367,23 @@ def _is_checked_in_root(
     derived = (),
 ) -> bool:
     """True when a path expression anchors on something that ships in the repo."""
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        # `for path in (MODEL_SELECTOR, APP_SIDEBAR)` is checked in when every
+        # element is, which is what makes the loop variable one too.
+        return bool(node.elts) and all(
+            _is_checked_in_root(e, module_names, shadowed, derived) for e in node.elts
+        )
     root = _path_root(node)
+    if isinstance(root, ast.Constant) and isinstance(root.value, str):
+        # A relative literal naming something that exists here is checked in; a
+        # path the test creates at runtime is not in the tree to be found.
+        value = root.value
+        if not value or "\n" in value or "\0" in value or os.path.isabs(value):
+            return False
+        try:
+            return (REPO / value).exists()
+        except OSError:
+            return False  # too long to be a name, so not one
     if not isinstance(root, ast.Name):
         return False
     if root.id in derived:
@@ -353,7 +391,24 @@ def _is_checked_in_root(
     return root.id == "__file__" or (root.id in module_names and root.id not in shadowed)
 
 
-def _checked_in_locals(func, module_names: set, shadowed) -> set:
+def _reads_itself(name: str, value: ast.AST) -> bool:
+    """`source = source.read_text()` reads the path before replacing it.
+
+    The name holds a checked-in path right up to that call, so the assignment
+    is not evidence against it; it is the very read we are looking for.
+    """
+    if not isinstance(value, ast.Call):
+        return False
+    expr = _path_expr(value)
+    return isinstance(expr, ast.Name) and expr.id == name
+
+
+def _checked_in_locals(
+    func,
+    module_names: set,
+    shadowed,
+    seed = (),
+) -> set:
     """Locals that only ever hold a checked-in path.
 
     `route = Path(_BACKEND_DIR) / "routes" / "inference.py"` followed by
@@ -374,7 +429,8 @@ def _checked_in_locals(func, module_names: set, shadowed) -> set:
             continue
         if isinstance(target, ast.Name):
             targets.add(id(target))
-            assignments.append((target.id, value))
+            if not _reads_itself(target.id, value):
+                assignments.append((target.id, value))
     for node in ast.walk(func):
         # A with-as or an augassign says nothing about the value it binds.
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -382,9 +438,11 @@ def _checked_in_locals(func, module_names: set, shadowed) -> set:
                 bad.add(node.id)
     args = func.args
     bad.update(a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs])
-    good: set = set()
+    # A parameter every caller hands a checked-in path is the exception.
+    bad -= set(seed)
+    good: set = set(seed)
     while True:
-        grown = {
+        grown = set(good) | {
             name
             for name, value in assignments
             if name not in bad and _is_checked_in_root(value, module_names, shadowed, good)
@@ -418,23 +476,35 @@ def _checked_in_params(tree: ast.Module, module_names: set) -> set:
     # checked-in path can be passed on to the next helper.
     owner: dict = {}
 
-    def _mark(node, name):
+    def _mark(node, owning):
         if isinstance(node, ast.Call):
-            owner[id(node)] = name
+            owner[id(node)] = owning
         for child in ast.iter_child_nodes(node):
-            _mark(child, child.name if isinstance(child, ast.FunctionDef) else name)
+            nested = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            _mark(child, child if nested else owning)
 
     _mark(tree, None)
     good: set = set()
     while True:
         grown, bad = set(), set()
+        # What the calling function itself can prove, recomputed each pass so a
+        # parameter resolved last time can feed a local this time.
+        scope: dict = {}
         for call in ast.walk(tree):
             if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
                 continue
             func = funcs.get(call.func.id)
             if func is None or any(isinstance(a, ast.Starred) for a in call.args):
                 continue
-            here = {p for f, p in good if f == owner.get(id(call))}
+            caller = owner.get(id(call))
+            if caller is None:
+                here = set()
+            elif id(caller) in scope:
+                here = scope[id(caller)]
+            else:
+                params = {p for f, p in good if f == caller.name}
+                here = _checked_in_locals(caller, module_names, _local_names(caller), params)
+                scope[id(caller)] = here
             params = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
             supplied = dict(zip(params, call.args))
             supplied.update({k.arg: k.value for k in call.keywords if k.arg in params})
@@ -487,10 +557,7 @@ def _checked_in_path_calls(tree: ast.Module):
             return
         elif isinstance(node, ast.Call):
             expr = _path_expr(node)
-            root = _path_root(expr) if expr is not None else None
-            if isinstance(root, ast.Name) and (
-                root.id in derived or _is_checked_in_root(root, module_names, shadowed)
-            ):
+            if expr is not None and _is_checked_in_root(expr, module_names, shadowed, derived):
                 yield node
         for child in ast.iter_child_nodes(node):
             yield from visit(child, shadowed, derived)
