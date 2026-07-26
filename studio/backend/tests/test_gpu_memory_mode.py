@@ -747,6 +747,59 @@ def test_remote_vulkan_diffusion_rejection_keeps_active_server(monkeypatch):
     assert killed == []
 
 
+def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatch, tmp_path):
+    # An incomplete cache (missing split shard, no disk space, offline hub) must
+    # surface from the pre-teardown _download_gguf, never from Phase 2 after the
+    # kill. A locally resolvable main/shard-1 file does NOT prove the variant is
+    # complete, so short-circuiting the preflight on it would classify a header
+    # and then tear the live server down on the Phase 2 download. Pin that the
+    # download runs first even when such a file is resolvable.
+    import hub.utils.gguf as hub_gguf
+
+    cached_shard = tmp_path / "model-00001-of-00003.gguf"
+    cached_shard.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        hub_gguf,
+        "resolve_local_gguf_path",
+        lambda _repo, _variant: str(cached_shard),
+    )
+
+    for failure in (
+        FileNotFoundError("shard 2 of 3 missing"),
+        OSError("[Errno 28] No space left on device"),
+        ConnectionError("hub unreachable"),
+    ):
+        backend = LlamaCppBackend()
+        order = []
+
+        def _download(_failure = failure, **_kwargs):
+            order.append("download")
+            raise _failure
+
+        monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+        monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
+        monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 1024, 2048)])
+        monkeypatch.setattr(backend, "_download_gguf", _download)
+        monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
+        monkeypatch.setattr(backend, "_kill_process", lambda: order.append("kill"))
+        monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
+        monkeypatch.setattr(
+            llama_cpp_module,
+            "_hf_offline_if_dns_dead",
+            lambda: __import__("contextlib").nullcontext(),
+        )
+
+        with pytest.raises(type(failure)):
+            backend.load_model(
+                hf_repo = "owner/model",
+                hf_variant = "Q4_K_M",
+                model_identifier = "owner/model",
+                gpu_ids = [0],
+            )
+
+        assert order == ["download"], failure
+
+
 def test_local_vulkan_diffusion_rejection_keeps_active_server(monkeypatch, tmp_path):
     gguf_path = tmp_path / "diffusion.gguf"
     gguf_path.write_bytes(b"GGUF")
