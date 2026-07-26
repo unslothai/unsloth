@@ -15,9 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 IMPORT_FIXES_PATH = REPO_ROOT / "unsloth" / "import_fixes.py"
-EXTRAS_NO_DEPS_TXT = (
-    REPO_ROOT / "studio" / "backend" / "requirements" / "extras-no-deps.txt"
-)
+EXTRAS_NO_DEPS_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "extras-no-deps.txt"
 
 
 def _load_import_fixes_module():
@@ -211,12 +209,10 @@ def test_torch211_accepts_abi_stable_torchcodec(monkeypatch):
     for torch_version in ("2.11.0+cu128", "2.12.0", "2.13.0+cu130"):
         for codec_version in ("0.12.0", "0.15.0+cu130"):
             _stub_torch(monkeypatch, torch_version)
-            monkeypatch.setattr(
-                importlib.metadata, "version", lambda _name, _v = codec_version: _v
-            )
-            assert fixes._torchcodec_version_mismatch_hint() is None, (
-                f"{torch_version} + torchcodec {codec_version} is supported upstream"
-            )
+            monkeypatch.setattr(importlib.metadata, "version", lambda _name, _v = codec_version: _v)
+            assert (
+                fixes._torchcodec_version_mismatch_hint() is None
+            ), f"{torch_version} + torchcodec {codec_version} is supported upstream"
 
 
 def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
@@ -247,9 +243,7 @@ def test_notebook_validator_allows_abi_stable_pairing():
 
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
-    match = re.search(
-        r"^audio-torch211 = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL
-    )
+    match = re.search(r"^audio-torch211 = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
     assert match is not None, "pyproject must declare an audio-torch211 extra"
     assert "torchcodec>=0.11.0,<0.12.0" in match.group(1)
     assert "python_version >= '3.10'" in match.group(1)
@@ -302,9 +296,7 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
         ("2.9.0", "audio-torch290"),
         ("2.8.0", "audio-torch280"),
     ):
-        match = re.search(
-            rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL
-        )
+        match = re.search(rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
         assert match is not None, extra
         assert ips._select_torchcodec_spec(torch_version) in match.group(1), extra
 
