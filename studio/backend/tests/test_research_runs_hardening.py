@@ -332,7 +332,12 @@ def test_local_model_ready_fails_open_when_neither_backend_can_be_probed(monkeyp
     assert research_runs._local_model_ready() is True
 
 
-def _response(status: int, *, detail: str = "", body: str = "") -> httpx.Response:
+def _response(
+    status: int,
+    *,
+    detail: str = "",
+    body: str = "",
+) -> httpx.Response:
     request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
     if detail:
         return httpx.Response(status, json = {"detail": detail}, request = request)
@@ -430,7 +435,12 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
             sent.append(url)
             return responses.pop(0)
 
-        async def send(self, request, *, stream = False):
+        async def send(
+            self,
+            request,
+            *,
+            stream = False,
+        ):
             sent.append(request)
             return responses.pop(0)
 
@@ -438,9 +448,7 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
     monkeypatch.setattr(
         research_runs.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
     )
-    monkeypatch.setattr(
-        research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None
-    )
+    monkeypatch.setattr(research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None)
     return sent
 
 
@@ -494,9 +502,7 @@ def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
 
     supervisor = _make_supervisor(_check_active)
     report, reasoning, finish_reason = asyncio.run(
-        supervisor._stream_completion(
-            _waiting_run(30.0), [{"role": "user"}], report_progress = False
-        )
+        supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
     )
     assert (report, reasoning, finish_reason) == ("report", "", "stop")
     assert len(sent) == 2

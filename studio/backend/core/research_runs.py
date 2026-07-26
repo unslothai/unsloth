@@ -522,7 +522,6 @@ def _local_model_ready() -> bool:
     probed = False
     try:
         from routes.inference import get_llama_cpp_backend
-
         if getattr(get_llama_cpp_backend(), "is_loaded", False):
             return True
         probed = True
@@ -530,7 +529,6 @@ def _local_model_ready() -> bool:
         logger.debug("research.model_probe_llama_failed", exc_info = True)
     try:
         from core.inference import get_inference_backend
-
         if getattr(get_inference_backend(), "active_model_name", None):
             return True
         probed = True
