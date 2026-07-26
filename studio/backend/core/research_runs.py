@@ -90,10 +90,10 @@ _MAX_CONTEXT_CHARS = 12_000
 _MAX_CONTEXT_MESSAGE_CHARS = 4_000
 _MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
 # The synthesis prompt must fit the loaded context or it is silently truncated and the report
-# degenerates (echoes the evidence tail). Studio defaults context to 2048 tokens, far below the
-# cap above, so the evidence budget adapts to the loaded context: reserve tokens for the prompt
-# scaffolding (system prompt, plan, source catalogs) AND the generated report, then convert the
-# remainder to chars. Unknown context keeps the full cap.
+# degenerates (echoes the evidence tail). GGUF auto-fit floors at 4096 and transformers models
+# default to 4096, but the context box accepts anything from 128 up, so the budget adapts: the
+# reserve covers the generated report, and every trimmable section is measured against what the
+# untrimmable scaffolding leaves. Unknown context keeps the full cap.
 _MIN_SYNTHESIS_EVIDENCE_CHARS = 1_500
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
@@ -537,15 +537,33 @@ def _local_model_ready() -> bool:
     return not probed
 
 
-def _synthesis_evidence_budget() -> int:
-    """Char budget for synthesis evidence, sized to fit the loaded context (falls back to the
-    full cap when the context is unknown)."""
+def _prompt_char_budget(reserve_tokens: int) -> int | None:
+    """Chars the whole prompt may occupy on the loaded context, or None when it is unknown."""
     ctx = _loaded_context_length()
     if not ctx:
-        return _MAX_SYNTHESIS_EVIDENCE_CHARS
-    usable_tokens = max(0, ctx - _SYNTHESIS_CONTEXT_RESERVE_TOKENS)
-    budget = int(usable_tokens * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
-    return max(_MIN_SYNTHESIS_EVIDENCE_CHARS, min(budget, _MAX_SYNTHESIS_EVIDENCE_CHARS))
+        return None
+    return int(max(0, ctx - reserve_tokens) * _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
+
+
+def _trimmable_budget(total: int | None, fixed_chars: int, hard_cap: int) -> int:
+    """Chars left for a trimmable section once the rest of the prompt is counted.
+
+    Budgeting one section against the context while the others are unbounded does not stop an
+    overflow: at a 2048-token context the untrimmable scaffolding alone is several times the
+    window. Returns 0 rather than a floor, since a short report beats a failed run.
+    """
+    if total is None:
+        return hard_cap
+    return max(0, min(hard_cap, total - fixed_chars))
+
+
+def _synthesis_evidence_budget(fixed_chars: int = 0) -> int:
+    """Char budget for synthesis evidence (full cap when the context is unknown)."""
+    return _trimmable_budget(
+        _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS),
+        fixed_chars,
+        _MAX_SYNTHESIS_EVIDENCE_CHARS,
+    )
 
 
 def _bounded_synthesis_evidence(
@@ -1787,30 +1805,44 @@ class ResearchSupervisor:
                 for source in sources
             )
             evidence = "\n\n".join(decision_notes)
+            decision_system = _system_prompt_with_instructions(
+                _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else ""),
+                run["config"],
+            )
+            # Same whole-prompt budget as synthesis: a fixed 60k evidence tail is many times a
+            # small loaded context, and this runs on every step, so an overflow here kills the
+            # run long before it can synthesize what it already gathered.
+            decision_plan_json = json.dumps(run["plan"], ensure_ascii = False)
+            decision_scaffold = (
+                len(decision_system) + len(question) + len(decision_plan_json) + len(source_catalog)
+            )
+            decision_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+            evidence_chars = _trimmable_budget(
+                decision_total, decision_scaffold, _MAX_SYNTHESIS_EVIDENCE_CHARS
+            )
+            decision_context = conversation_context[
+                : _trimmable_budget(
+                    decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
+                )
+            ]
             decision, decision_reasoning, _finish_reason = await self._stream_completion(
                 run,
                 [
                     {
                         "role": "system",
-                        "content": (
-                            _system_prompt_with_instructions(
-                                _AGENT_SYSTEM_PROMPT
-                                + (f"\n\n{policy_prompt}" if policy_prompt else ""),
-                                run["config"],
-                            )
-                        ),
+                        "content": decision_system,
                     },
                     {
                         "role": "user",
                         "content": (
-                            f"Conversation context JSON:\n{_shield_untrusted(conversation_context)}\n\n"
+                            f"Conversation context JSON:\n{_shield_untrusted(decision_context)}\n\n"
                             f"Question:\n{_shield_untrusted(question)}\n\n"
                             f"Approved plan (guidance only):\n"
-                            f"{_shield_untrusted(json.dumps(run['plan'], ensure_ascii = False))}\n\n"
+                            f"{_shield_untrusted(decision_plan_json)}\n\n"
                             f"Actions remaining after this one: {max_steps - position - 1}\n"
                             f"<untrusted_web_evidence>\n"
                             f"Gathered sources:\n{_shield_untrusted(source_catalog) or '(none)'}\n\n"
-                            f"{_shield_untrusted(evidence[-60000:]) or '(none)'}\n"
+                            f"{_shield_untrusted(evidence[-evidence_chars:] if evidence_chars else '') or '(none)'}\n"
                             f"</untrusted_web_evidence>"
                         ),
                     },
@@ -2070,16 +2102,32 @@ class ResearchSupervisor:
             f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
             for index, source in enumerate(document_sources, 1)
         )
-        evidence_text = _bounded_synthesis_evidence(notes, _synthesis_evidence_budget())
+        # Budget the whole prompt, not just the evidence: trim the conversation context first,
+        # then the evidence, so the untrimmable scaffolding cannot push the request past the
+        # loaded context and turn a finished run into a failure.
+        report_system = _system_prompt_with_instructions(_REPORT_SYSTEM_PROMPT, run["config"])
+        plan_json = json.dumps(run["plan"], ensure_ascii = False)
+        scaffold_chars = (
+            len(report_system)
+            + len(question)
+            + len(plan_json)
+            + len(source_catalog)
+            + len(document_source_catalog)
+        )
+        # Evidence is the report, so it is budgeted first and the chat history takes what is left.
+        total_budget = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+        evidence_text = _bounded_synthesis_evidence(
+            notes, _synthesis_evidence_budget(scaffold_chars)
+        )
+        conversation_context = conversation_context[
+            : _trimmable_budget(total_budget, scaffold_chars + len(evidence_text), _MAX_CONTEXT_CHARS)
+        ]
         report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
             run,
             [
                 {
                     "role": "system",
-                    "content": _system_prompt_with_instructions(
-                        _REPORT_SYSTEM_PROMPT,
-                        run["config"],
-                    ),
+                    "content": report_system,
                 },
                 {
                     "role": "user",

@@ -161,6 +161,23 @@ def test_citation_title_strips_brackets_for_catalog_and_citation():
     assert _citation_title({}, "https://x/a") == "https://x/a"
 
 
+def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
+    # Budgeting only the evidence cannot prevent an overflow: at a small context the
+    # untrimmable scaffolding (system prompt, plan, source catalogs) is already several times
+    # the window, and the old floor added 1500 chars on top of that.
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: None)
+    assert research_runs._prompt_char_budget(4096) is None
+    assert research_runs._trimmable_budget(None, 99_999, 500) == 500
+
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 16384)
+    total = research_runs._prompt_char_budget(4096)
+    assert total == int((16384 - 4096) * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
+    # A trimmable section never exceeds what is left, and never goes negative.
+    assert research_runs._trimmable_budget(total, 0, 1_000) == 1_000
+    assert research_runs._trimmable_budget(total, total - 10, 1_000) == 10
+    assert research_runs._trimmable_budget(total, total + 5_000, 1_000) == 0
+
+
 def _make_payload(**overrides) -> CreateResearchRun:
     payload = {"threadId": "t1", "userMessageId": "u1", "inferenceRequest": {"model": "m"}}
     payload.update(overrides)
