@@ -133,6 +133,23 @@ def test_sanitize_config_rejects_nested_inference_credential():
         _sanitize_config(payload, {"modelId": "m"})
 
 
+def test_sanitize_config_rejects_nonscalar_inference_request_value():
+    # Companion to the ragScope case below. "model" is the one allowed field coerced with str(),
+    # which never raises, so a container whose inner key is not on the sensitive list ("auth" is
+    # not) was stringified into the durable run config as the model id.
+    for request in ({"model": {"auth": "sk-private-value"}}, {"model": ["sk-private-value"]}):
+        with pytest.raises(Exception):
+            _sanitize_config(_make_payload(inferenceRequest = request), {"modelId": "m"})
+
+
+def test_sanitize_config_accepts_scalar_inference_request():
+    # Well-formed runs must be unaffected by the rejection above.
+    request = {"model": "m", "temperature": 0.7, "topP": 0.9,
+               "maxTokens": 1024, "enableThinking": True, "reasoningEffort": "high"}
+    config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
+    assert config["inferenceRequest"] == request
+
+
 def test_sanitize_config_rejects_nested_rag_scope_secret():
     payload = _make_payload(ragScope = {"kb_id": {"token": "rag-secret"}})
     with pytest.raises(Exception):
@@ -199,3 +216,33 @@ def test_raw_url_citation_does_not_collide_on_prefix():
     )
     assert "[Report](https://ex.com/report)" in out
     assert "/report)-attack" not in out
+
+
+def test_raw_url_in_prose_parentheses_keeps_its_citation():
+    # ``_RAW_URL`` swallows the closing paren, so the catalog lookup used to miss and the
+    # whole citation was deleted, leaving an unbalanced "(" in the report.
+    sources = [{"url": "https://ex.com/report", "title": "Report"}]
+    out = _validate_report_sources("Public (https://ex.com/report) today.", sources)
+    assert out == "Public ([Report](https://ex.com/report)) today."
+
+
+def test_raw_url_keeps_parentheses_that_belong_to_the_url():
+    # Only unmatched trailing parens are prose; Wikipedia-style URLs must survive both bare
+    # and wrapped (GFM extended autolink path validation).
+    url = "https://en.wikipedia.org/wiki/Mercury_(planet)"
+    sources = [{"url": url, "title": "Mercury"}]
+    assert f"[Mercury]({url})" in _validate_report_sources(f"Bare {url} ok.", sources)
+    assert f"[Mercury]({url})" in _validate_report_sources(f"Wrapped ({url}) ok.", sources)
+
+
+def test_raw_url_trailing_punctuation_is_trimmed_in_one_pass():
+    # Trimming parens and punctuation in separate passes leaves a stray "." on ".)"; both
+    # rules have to run right to left in the same loop.
+    sources = [{"url": "https://ex.com/x", "title": "X"}]
+    assert "[X](https://ex.com/x)." in _validate_report_sources("End (https://ex.com/x.).", sources)
+
+
+def test_dropped_raw_url_does_not_unbalance_prose():
+    # An uncataloged URL is still removed, but the paren it swallowed belongs to the prose.
+    out = _validate_report_sources("Claim (https://nope.com/x) here.", [])
+    assert out == "Claim () here."

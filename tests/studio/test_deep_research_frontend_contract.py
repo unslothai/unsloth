@@ -83,6 +83,20 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "resolveChatInstructions" in adapter
 
 
+def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
+    # A level the loaded model lacks is dropped by llama.cpp, so the whole durable run
+    # would silently fall back to the template default. Must use the same helper and the
+    # same levels as normal local chat so the two paths cannot drift apart again.
+    adapter = source("features/chat/api/chat-adapter.ts")
+    branch = adapter.split("Deep research requires a selected local model.", 1)[1].split(
+        "createdRun = await createResearchRun({", 1
+    )[0]
+    assert "inferenceRequest.reasoningEffort = runtime.reasoningEffort;" not in branch
+    assert "inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(" in branch
+    assert "runtime.reasoningEffortLevels," in branch
+    assert "const localReasoningEffort = clampReasoningEffortToLevels(" in adapter
+
+
 def test_research_metadata_and_server_merge_are_persisted() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
     runtime = source("features/chat/runtime-provider.tsx")

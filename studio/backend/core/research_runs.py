@@ -645,6 +645,29 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
+def _trim_url_tail(raw: str) -> str:
+    """Strip trailing prose punctuation that ``_RAW_URL`` swallowed.
+
+    Mirrors GFM extended autolink path validation: walk right to left, dropping
+    ``.,;:!?`` and any ``)`` that has no matching ``(`` inside the URL, stopping at the
+    first character that is neither. Both rules must run in one interleaved pass, else
+    ``https://x/y.)`` keeps a stray dot. Without this, ``(https://x/y)`` never matches
+    the catalog and the citation is dropped from the report.
+    """
+    end = len(raw)
+    opening, closing = raw.count("("), raw.count(")")
+    while end:
+        char = raw[end - 1]
+        if char == ")":
+            if closing <= opening:
+                break
+            closing -= 1
+        elif char not in ".,;:!?":
+            break
+        end -= 1
+    return raw[:end]
+
+
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     return is_tool_error(web_result) and not rag_sources
 
@@ -746,10 +769,11 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     def replace_raw_url(match: re.Match) -> str:
         # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
         raw = match.group(0)
-        core = raw.rstrip(".,;:!?")
+        core = _trim_url_tail(raw)
         if core in source_by_url:
             return (citation(core) or core) + raw[len(core) :]
-        return ""
+        # Keep the trimmed tail so dropping the URL cannot unbalance the prose.
+        return raw[len(core) :]
 
     validated = replace_markdown_links(report)
     validated = _AUTOLINK.sub(replace_autolink, validated)

@@ -2170,7 +2170,13 @@ export function createOpenAIStreamAdapter(
           (runtime.reasoningStyle === "reasoning_effort" ||
             runtime.reasoningStyle === "enable_thinking_effort")
         ) {
-          inferenceRequest.reasoningEffort = runtime.reasoningEffort;
+          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
+          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
+          // this model lacks is dropped by llama.cpp and the run falls back to the default.
+          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
+            runtime.reasoningEffort,
+            runtime.reasoningEffortLevels,
+          );
         }
         const researchProjectId = await resolveProjectId(resolvedThreadId);
         const projectRagEnabled = researchProjectId

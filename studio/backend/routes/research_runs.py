@@ -183,6 +183,11 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             status_code = 400,
             detail = f"Unsupported inferenceRequest fields: {', '.join(sorted(unknown))}",
         )
+    # Mirrors the ragScope guard below. Every allowed field is a scalar; the numeric/bool/enum ones
+    # reject a container while coercing, but "model" is stringified, so {"auth": "sk-..."} slips past
+    # the sensitive-key scan (inner key unlisted) into the durable config as the model id.
+    if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
+        raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
     if not model:
         raise HTTPException(status_code = 400, detail = "A selected local model is required")
