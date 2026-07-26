@@ -637,3 +637,17 @@ def test_staged_downloads_always_scope_their_files():
     assert "scopeId," in body and "files: current.files," in body
     assert "? null" not in body and "? undefined" not in body
     assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+
+
+def test_local_model_sections_respect_the_task_filter():
+    """LM Studio / ./models / custom-folder rows must honour the picker's task filter.
+    The backend tags every local model with a task for exactly this; without the gate the
+    Images picker listed chat GGUFs (which 400 on a diffusion load) and buried the
+    diffusion models the page can actually run."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
+        block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
+        assert block, f"{memo} not found"
+        assert "passesTaskGate(m.task" in block.group(0), (
+            f"{memo} does not apply the task gate"
+        )
