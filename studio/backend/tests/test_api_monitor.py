@@ -355,7 +355,5 @@ def test_lifecycle_rows_share_the_retention_budget():
 
 def test_request_rows_report_kind_request():
     monitor = ApiMonitor(max_entries = 2)
-    monitor.start(
-        endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi"
-    )
+    monitor.start(endpoint = "/v1/chat/completions", method = "POST", model = "m", prompt = "hi")
     assert monitor.snapshot()[0]["kind"] == "request"

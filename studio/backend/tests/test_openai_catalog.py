@@ -242,8 +242,7 @@ def test_lifecycle_label_recovers_the_repo_id_from_an_hf_cache_path():
     # sha, so the row would otherwise be labelled with a hash.
     snap = "/home/me/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/bfc15c3"
     assert (
-        inf._lifecycle_model_label(snap, "UD-Q4_K_XL")
-        == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+        inf._lifecycle_model_label(snap, "UD-Q4_K_XL") == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
     )
 
 
