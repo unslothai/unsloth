@@ -68,7 +68,13 @@ class _LoadRecorder:
         request,
         fastapi_request,
         current_subject = None,
+        *,
+        current_request_counted = False,
     ):
+        # Mirror the production load boundary before recording any replacement.
+        await inference_route._wait_for_model_switch_idle(
+            current_request_counted = current_request_counted
+        )
         self.calls.append(request)
         if self.fail:
             from fastapi import HTTPException
@@ -94,7 +100,6 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     # gate that auto-switch already owns, so it calls the impl directly).
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
 
 def _run_hook(model = "some/model"):
@@ -1091,6 +1096,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     from pathlib import Path
     import routes.models as models_route
     from utils import paths as upaths
+    from utils import hf_cache_settings
     import storage.studio_db as studio_db
 
     scanned = []
@@ -1111,13 +1117,18 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "known_hf_hub_caches",
+        lambda: [tmp_path / "active", tmp_path / "previous"],
+    )
     monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [tmp_path / "lmstudio"])
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -1126,6 +1137,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     lm = {p for k, p in scanned if k == "lm"}
     assert str((tmp_path / "legacy").resolve()) in hf
     assert str((tmp_path / "default").resolve()) in hf
+    assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 
@@ -1205,10 +1217,9 @@ def test_middleware_ignores_non_post(monkeypatch):
 # ── review round 4: swap guard, idle variant identity, load-by-path, stash clear ──
 
 
-def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
-    # A cross-model swap must 409 (not kill) while another inference request is in
-    # flight; the requesting call itself is excluded from the count.
-    from fastapi import HTTPException
+def test_auto_switch_waits_for_another_inference_to_finish(monkeypatch):
+    # A cross-model swap queues while another request is generating, then loads
+    # after that request drains. The requesting call itself is excluded.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M")
@@ -1222,10 +1233,18 @@ def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # this request + another active one
     monkeypatch.setattr(kw, "_pending", 0)
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("org/B-GGUF:Q8_0")
-    assert exc.value.status_code == 409
-    assert rec.calls == []
+
+    async def _drive():
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
+        )
+        await asyncio.sleep(0.05)
+        assert rec.calls == []
+        kw._note_end()  # the other generation finishes; this request remains counted
+        await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(_drive())
+    assert len(rec.calls) == 1
 
 
 def test_auto_switch_swaps_when_only_caller_is_active(monkeypatch):
@@ -1411,13 +1430,12 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
     monkeypatch.setattr(kw, "_pending", 0)
     inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
     _run_hook("org/B-GGUF:Q8_0")
-    assert len(rec.calls) == 1  # loads once, no 409
+    assert len(rec.calls) == 1
 
 
-def test_swap_still_refused_when_other_request_targets_different_model(monkeypatch):
-    # A concurrent request heading to a different target still blocks the swap: the
-    # same-target exclusion must not swallow a genuinely conflicting request.
-    from fastapi import HTTPException
+def test_queued_different_target_does_not_deadlock_current_swap(monkeypatch):
+    # A concurrent request already queued for another target is not generating,
+    # so it must not prevent the current serialized swap from proceeding.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1432,10 +1450,8 @@ def test_swap_still_refused_when_other_request_targets_different_model(monkeypat
     monkeypatch.setattr(kw, "_inflight", 2)
     monkeypatch.setattr(kw, "_pending", 0)
     inference_route._note_switch_waiter(inference_route._switch_key("org/C-GGUF", "Q4_K_M"), 1)
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("org/B-GGUF:Q8_0")
-    assert exc.value.status_code == 409
-    assert rec.calls == []
+    _run_hook("org/B-GGUF:Q8_0")
+    assert len(rec.calls) == 1
 
 
 def test_v1_models_advertises_repo_id_not_load_path(monkeypatch):
@@ -1481,6 +1497,37 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
     assert "_load_model_impl" in src
 
 
+def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
+    # Both replacement directions drain active inference, then recheck whether a
+    # sidecar install reserved the lifecycle gate during that wait. Exact-model
+    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
+    gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
+    unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
+    standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
+    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
+    already_loaded = src.index('status = "already_loaded"')
+
+    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
+    assert standard_wait < standard_sidecar_check < unload_gguf
+
+
+def test_switch_waiter_deregisters_before_swap_gate_release():
+    # A waiter left registered after the swap gate is released would let a swap on
+    # another event loop count the finished request as still queued, pass the drain
+    # early, and unload the model that request is about to generate against.
+    import inspect
+
+    src = inspect.getsource(inference_route._maybe_auto_switch_model)
+    deregister = src.index("_note_switch_waiter(key, -1)")
+    release = src.index("_auto_switch_process_lock.release()")
+    assert deregister < release
+
+
 def _anthropic_payload(max_tokens = None):
     from models.inference import AnthropicMessagesRequest, AnthropicMessage
     return AnthropicMessagesRequest(
@@ -1519,9 +1566,9 @@ def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
 # ── review round 6: concurrency ordering, external untrack, unload gate, ids ──
 
 
-def test_pending_same_target_request_does_not_force_409(monkeypatch):
+def test_pending_same_target_request_does_not_block_swap(monkeypatch):
     # A second same-target request blocked in the middleware (pending, not yet
-    # generating) must not make the first request 409: pending is excluded.
+    # generating) must not block the first request: pending is excluded.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1536,13 +1583,13 @@ def test_pending_same_target_request_does_not_force_409(monkeypatch):
     monkeypatch.setattr(kw, "_inflight", 1)  # just the caller
     monkeypatch.setattr(kw, "_pending", 1)  # second request blocked in middleware
     _run_hook("org/B-GGUF:Q8_0")
-    assert len(rec.calls) == 1  # loads once, no 409
+    assert len(rec.calls) == 1
 
 
-def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypatch):
+def test_swap_waits_until_concurrent_request_finishes_resolving(monkeypatch):
     # The real middleware counts a concurrent same-model request as in-flight
-    # before it resolves and registers a target waiter. The raw-request waiter,
-    # registered before resolve, must still exclude it so the first request loads.
+    # before it resolves and registers a target waiter. Treat it as active until
+    # its target is known, then recognize it as another queued switch request.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1556,10 +1603,20 @@ def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypat
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # caller + a still-resolving twin
     monkeypatch.setattr(kw, "_pending", 0)
-    # The twin has only registered its raw requested model (not yet a target waiter).
-    inference_route._note_request_waiter(inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1)
-    _run_hook("org/B-GGUF:Q8_0")
-    assert len(rec.calls) == 1  # loads once, no 409
+    # The twin is still resolving, so it is counted in-flight but has not joined
+    # the concrete target queue yet.
+
+    async def _drive():
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
+        )
+        await asyncio.sleep(0.05)
+        assert rec.calls == []
+        inference_route._note_switch_waiter(inference_route._switch_key("org/B-GGUF", "Q8_0"), 1)
+        await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(_drive())
+    assert len(rec.calls) == 1
 
 
 def test_external_untrack_decrements_inflight_and_is_idempotent():
@@ -1595,11 +1652,9 @@ def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
     assert not backend.is_loaded  # torn down despite the active request
 
 
-def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
+def test_auto_switch_waits_when_unsloth_stream_active(monkeypatch):
     # The GGUF slot is empty but an Unsloth model is streaming (counted in-flight).
-    # _load_model_impl would unload it, so auto-switch must 409, not only when a
-    # GGUF is loaded.
-    from fastapi import HTTPException
+    # The replacement waits for it just as it does for a GGUF generation.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # no GGUF loaded
@@ -1613,10 +1668,18 @@ def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # an Unsloth stream + this request
     monkeypatch.setattr(kw, "_pending", 0)
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("org/B-GGUF:Q8_0")
-    assert exc.value.status_code == 409
-    assert rec.calls == []  # the active Unsloth model is not torn down
+
+    async def _drive():
+        task = asyncio.create_task(
+            inference_route._maybe_auto_switch_model("org/B-GGUF:Q8_0", object(), "tester")
+        )
+        await asyncio.sleep(0.05)
+        assert rec.calls == []
+        kw._note_end()
+        await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(_drive())
+    assert len(rec.calls) == 1
 
 
 def test_public_model_id_prefers_advertised_over_path():
@@ -3097,6 +3160,8 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         request,
         fastapi_request,
         current_subject = None,
+        *,
+        current_request_counted = False,
     ):
         with slock:
             state["cur"] += 1
@@ -3114,7 +3179,6 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inference_route, "_load_model_impl", _slow_load)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
-    monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
 
     barrier = threading.Barrier(2)
 

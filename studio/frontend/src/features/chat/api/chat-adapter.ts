@@ -91,6 +91,7 @@ import {
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
   generateAudio,
+  GenerationLengthError,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -1439,6 +1440,7 @@ const GGUF_KNOWN_QUANT_RE =
 
 type AutoLoadCandidate = {
   id: string;
+  loadId?: string | null;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
   maxSeqLength: number;
@@ -1565,6 +1567,7 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
+    const modelPath = candidate.loadId ?? candidate.id;
     const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
@@ -1617,7 +1620,7 @@ async function autoLoadSmallestModel(): Promise<{
       : null;
     if (
       !(await canAutoLoad({
-        model_path: candidate.id,
+        model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
@@ -1637,7 +1640,7 @@ async function autoLoadSmallestModel(): Promise<{
     }
     loadAttempts += 1;
     const loadResp = await loadModel({
-      model_path: candidate.id,
+      model_path: modelPath,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
       load_in_4bit: true,
@@ -1670,9 +1673,10 @@ async function autoLoadSmallestModel(): Promise<{
     }
     // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+    const loadedModelId = loadResp.model || modelPath;
     useChatRuntimeStore
       .getState()
-      .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
+      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
     const store = useChatRuntimeStore.getState();
     store.setModelRequiresTrustRemoteCode(
       loadResp.requires_trust_remote_code ?? false,
@@ -1688,7 +1692,7 @@ async function autoLoadSmallestModel(): Promise<{
           : effectiveMaxSeqLength,
     });
     const autoModel: ChatModelSummary = {
-      id: candidate.id,
+      id: loadedModelId,
       name: loadResp.display_name ?? candidate.id,
       isVision: loadResp.is_vision ?? false,
       isLora: loadResp.is_lora ?? false,
@@ -1697,7 +1701,7 @@ async function autoLoadSmallestModel(): Promise<{
       audioType: loadResp.audio_type ?? null,
       hasAudioInput: loadResp.has_audio_input ?? false,
     };
-    if (!store.models.some((m) => m.id === candidate.id)) {
+    if (!store.models.some((m) => m.id === loadedModelId)) {
       store.setModels([...store.models, autoModel]);
     }
     if (candidate.kind === "gguf") {
@@ -1784,7 +1788,10 @@ async function autoLoadSmallestModel(): Promise<{
         const repo = findCachedRepo(ggufRepos, lastLoaded.id);
         if (repo && lastLoaded.ggufVariant) {
           try {
-            const variants = await listGgufVariants(repo.repo_id);
+            const variants = await listGgufVariants(repo.repo_id, undefined, {
+              preferLocalCache: true,
+              localPath: repo.cache_path,
+            });
             const variant = variants.variants.find(
               (entry) =>
                 entry.downloaded &&
@@ -1801,6 +1808,7 @@ async function autoLoadSmallestModel(): Promise<{
               if (
                 await loadAutoLoadCandidate({
                   id: repo.repo_id,
+                  loadId: repo.load_id,
                   kind: "gguf",
                   ggufVariant: variant.quant,
                   maxSeqLength: 0,
@@ -1829,6 +1837,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "model",
                 ggufVariant: null,
                 maxSeqLength: store.params.maxSeqLength,
@@ -1858,7 +1867,10 @@ async function autoLoadSmallestModel(): Promise<{
       for (const repo of sorted) {
         if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
         try {
-          const variants = await listGgufVariants(repo.repo_id);
+          const variants = await listGgufVariants(repo.repo_id, undefined, {
+            preferLocalCache: true,
+            localPath: repo.cache_path,
+          });
           const downloaded = variants.variants
             .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
@@ -1874,6 +1886,7 @@ async function autoLoadSmallestModel(): Promise<{
             if (
               await loadAutoLoadCandidate({
                 id: repo.repo_id,
+                loadId: repo.load_id,
                 kind: "gguf",
                 ggufVariant: variant.quant,
                 maxSeqLength: 0,
@@ -1908,6 +1921,7 @@ async function autoLoadSmallestModel(): Promise<{
           if (
             await loadAutoLoadCandidate({
               id: repo.repo_id,
+              loadId: repo.load_id,
               kind: "model",
               ggufVariant: null,
               maxSeqLength: 4096,
@@ -4328,7 +4342,15 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof StreamInterruptedError) {
+          if (err instanceof GenerationLengthError) {
+            toast.error("Response ran out of tokens", {
+              description:
+                "The model used the full Max Tokens budget while thinking " +
+                "and did not produce a final answer. Increase Max Tokens in " +
+                "chat Settings or turn off thinking, then retry.",
+              duration: 8000,
+            });
+          } else if (err instanceof StreamInterruptedError) {
             // Connection dropped mid-turn: surface it explicitly (the rethrow
             // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {

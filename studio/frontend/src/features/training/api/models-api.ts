@@ -42,6 +42,7 @@ interface BackendLoraDefaults {
   target_modules?: string[];
   use_rslora?: boolean;
   use_loftq?: boolean;
+  use_dora?: boolean;
   finetune_vision_layers?: boolean;
   finetune_language_layers?: boolean;
   finetune_attention_modules?: boolean;
