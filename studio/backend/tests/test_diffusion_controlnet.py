@@ -240,10 +240,14 @@ class _FakeCNModel:
         torch_dtype = None,
         token = None,
         use_safetensors = None,
+        # cache_dir (and any future loader kwarg) rides through: the real call pins the
+        # live cache root so a load cannot split across two of them.
+        **kwargs,
     ):
         m = cls()
         m.path = path
         m.use_safetensors = use_safetensors
+        m.cache_dir = kwargs.get("cache_dir")
         return m
 
     def to(self, device):

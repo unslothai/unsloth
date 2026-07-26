@@ -578,3 +578,92 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_variant_expander_forwards_the_gguf_filename():
+    """A quant pick must carry the exact .gguf filename. The diffusion pages load
+    by filename and cannot map a quant label back to one, so without it every hub
+    GGUF pick on Images/Video fell through to a silent return and nothing loaded."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    handler = re.search(
+        r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S
+    )
+    assert handler, "handleVariantClick not found"
+    assert "ggufFilename: filename," in handler.group(0)
+    # The call site has to actually pass it through.
+    assert "handleVariantClick(v.quant, v.downloaded, expectedBytes, v.filename)" in src
+
+
+def test_diffusion_pages_never_drop_a_gguf_pick_silently():
+    """The fallback branch splits a local path; a repo pick reaching it has no
+    filename. It must say so instead of returning with no request and no toast."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        branch = re.search(
+            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\}', src, re.S
+        )
+        assert branch, f"{rel}: gguf extension guard not found"
+        assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"
+
+
+def test_diffusion_pages_stage_downloads_through_the_manager():
+    """Images/Video must not download inside the load: an undownloaded hub pick goes to
+    the Hub download manager first, so it shares the panel, progress, cancel/resume,
+    disk preflight and manifest verification with every other model."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "useStagedDownload" in src, f"{rel}: not wired to the download manager"
+        # The plan carries the loader's own file scope, so nothing extra is pulled.
+        assert "DownloadPlan(" in src, f"{rel}: does not fetch a download plan"
+        stage_fn = re.search(r"const loadOrStage = useCallback\(.*?\n  \);", src, re.S)
+        assert stage_fn, f"{rel}: loadOrStage not found"
+        body = stage_fn.group(0)
+        # Already-downloaded (and local) picks must skip staging and load straight away.
+        assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
+        # A missing plan must still load rather than dead-end.
+        assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
+
+
+def test_staged_downloads_always_scope_their_files():
+    """Every staged entry must go out as a scoped job carrying its file list, GGUF
+    checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so
+    it would finish instantly having fetched everything except the weights and leave the
+    repo on device unloadable."""
+    src = _read("features/hub/download-manager/use-staged-download.ts")
+    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    assert start, "requestStart call not found"
+    body = start.group(0)
+    # Unconditional: no branch may send a null scope or omit the files.
+    assert "scopeId," in body and "files: current.files," in body
+    assert "? null" not in body and "? undefined" not in body
+    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+
+
+def test_local_model_sections_respect_the_task_filter():
+    """LM Studio / ./models / custom-folder rows must honour the picker's task filter.
+    The backend tags every local model with a task for exactly this; without the gate the
+    Images picker listed chat GGUFs (which 400 on a diffusion load) and buried the
+    diffusion models the page can actually run."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
+        block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
+        assert block, f"{memo} not found"
+        assert "passesTaskGate(m.task" in block.group(0), (
+            f"{memo} does not apply the task gate"
+        )
+
+
+def test_chat_picker_routes_diffusion_picks_to_their_page():
+    """Chat cannot load a diffusion model. Rather than hiding an on-device one or letting
+    it 400, the unfiltered picker routes the pick to the Images/Video page, which loads it."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
+    assert gate, "passesTaskGate not found"
+    # The chat branch no longer drops the generation tasks outright.
+    assert "UNSUPPORTED_DIFFUSION_TASK" in gate.group(0)
+    wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
+    assert wrapper, "the routing wrapper around onSelect is missing"
+    body = wrapper.group(0)
+    assert "diffusionPageForTask" in body and "navigateToPage" in body
+    # Task-scoped pickers (already on those pages) must select normally.
+    assert "if (!task)" in body

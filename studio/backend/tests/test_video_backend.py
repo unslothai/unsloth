@@ -1150,7 +1150,7 @@ def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch
     # scan_cache_dir skips in-flight *.incomplete blobs, so the old counter froze at the
     # last completed blob for the whole multi-GB shard pull. The walk must count both,
     # without double-counting snapshot symlinks.
-    import huggingface_hub.constants as hub_constants
+    import core.inference.video as video_mod
 
     repo_dir = tmp_path / "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers"
     blobs = repo_dir / "blobs"
@@ -1160,7 +1160,9 @@ def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch
     snap = repo_dir / "snapshots" / "deadbeef"
     snap.mkdir(parents = True)
     (snap / "model_index.json").symlink_to(blobs / "aa11")  # must not double-count
-    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+    # The live cache root, not huggingface_hub's import-time constant: the counter follows
+    # a mid-session cache-folder change, which the constant does not.
+    monkeypatch.setattr(video_mod, "hub_cache_dir", lambda: str(tmp_path))
 
     backend = VideoBackend()
     assert backend._cache_bytes("Wan-AI/Wan2.2-TI2V-5B-Diffusers") == 1500

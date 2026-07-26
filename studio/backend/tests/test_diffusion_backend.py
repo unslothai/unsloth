@@ -3806,3 +3806,104 @@ def test_generate_resets_the_step_cache_before_every_chunk(fake_runtime, tmp_pat
     object.__setattr__(backend._state, "transformer_cache", "fbcache")
     backend.generate(prompt = "p", seeds = [1, 2, 3], batch_size = 2)
     assert trace == [("reset",), ("call", 2), ("reset",), ("call", 1)]
+class _FakeSibling:
+    def __init__(self, rfilename, size):
+        self.rfilename = rfilename
+        self.size = size
+
+
+class _FakeInfo:
+    def __init__(self, siblings):
+        self.siblings = siblings
+
+
+GB = 1024 ** 3
+# A FLUX-shaped base repo: the packaged root single and the transformer shards are what a
+# plain snapshot_download would drag in and the loader never opens.
+_FLUX_BASE_SIBLINGS = [
+    _FakeSibling("model_index.json", 1000),
+    _FakeSibling("flux1-dev.safetensors", 24 * GB),
+    _FakeSibling("transformer/diffusion_pytorch_model-00001-of-00003.safetensors", 8 * GB),
+    _FakeSibling("text_encoder/model.safetensors", 2 * GB),
+    _FakeSibling("text_encoder/model.fp16.safetensors", 1 * GB),
+    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 300),
+    _FakeSibling("assets/gallery.pdf", 5000),
+    _FakeSibling("README.md", 200),
+]
+
+
+def _fake_hf_api(monkeypatch, repos):
+    """Point HfApi.model_info at a canned sibling list per repo id."""
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _FakeInfo(repos[repo_id])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+
+
+def test_download_plan_scopes_the_base_repo_files(monkeypatch):
+    # The plan drives the Hub download manager, so its file list must match what the loader
+    # actually reads. A full snapshot would add the 24 GB root single and the transformer
+    # shards the GGUF replaces.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert [e["repo_id"] for e in plan["entries"]] == [
+        "unsloth/FLUX.1-dev-GGUF",
+        "black-forest-labs/FLUX.1-dev",
+    ]
+    checkpoint, base = plan["entries"]
+    assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
+    assert checkpoint["bytes"] == 7 * GB
+    assert "flux1-dev.safetensors" not in base["files"]
+    assert not any(f.startswith("transformer/") for f in base["files"])
+    assert not any(f.startswith("assets/") for f in base["files"])
+    assert "model_index.json" in base["files"]
+    assert "text_encoder/model.safetensors" in base["files"]
+    # Sized per repo, so each download job gets its own expected bytes.
+    assert base["bytes"] < 24 * GB
+    assert plan["total_bytes"] == checkpoint["bytes"] + base["bytes"]
+
+
+def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
+    # A pipeline load has no separate checkpoint repo: the repo IS the pipeline.
+    _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _FLUX_BASE_SIBLINGS})
+
+    plan = DiffusionBackend().download_plan("unsloth/some-pipeline", model_kind = "pipeline")
+
+    assert len(plan["entries"]) == 1
+    files = plan["entries"][0]["files"]
+    # The pipeline keeps its own transformer, but still drops fp16 twins and the root single.
+    assert any(f.startswith("transformer/") for f in files)
+    assert "flux1-dev.safetensors" not in files
+    assert "text_encoder/model.fp16.safetensors" not in files
+
+
+def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
+    # Nothing to stage: the files are already on disk.
+    local = tmp_path / "my-model"
+    (local / "transformer").mkdir(parents = True)
+    (local / "model_index.json").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: str(local))
+    monkeypatch.setattr(
+        DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: (0, []))
+    )
+
+    plan = DiffusionBackend().download_plan(str(local), gguf_filename = "weights.gguf")
+    assert plan["entries"] == []

@@ -47,7 +47,7 @@ import time
 import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Literal, Optional
+from typing import Callable, Iterator, Literal, Optional, Sequence
 
 from loggers import get_logger
 
@@ -773,6 +773,9 @@ class DownloadMetadata:
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
+    # Scoped jobs only: the exact files to fetch. Kept here so the XET -> HTTP retry
+    # respawns the same scoped download instead of a full snapshot.
+    scoped_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -1099,6 +1102,7 @@ class DownloadRegistry:
         cancel_marker_transport: Optional[str] = None,
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
+        scoped_files: Optional[Sequence[str]] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1174,6 +1178,7 @@ class DownloadRegistry:
                     ),
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
+                    scoped_files = tuple(scoped_files or ()),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport

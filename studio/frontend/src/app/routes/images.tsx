@@ -11,6 +11,14 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/images",
   staticData: { title: "Images" },
+  // A diffusion pick made from the chat picker arrives here as ?model= (+ ?quant=),
+  // which the page loads and then clears.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { model?: string; quant?: string } => ({
+    ...(typeof search.model === "string" ? { model: search.model } : {}),
+    ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
+  }),
   beforeLoad: () => requireAuth(),
   component: () => null,
 });

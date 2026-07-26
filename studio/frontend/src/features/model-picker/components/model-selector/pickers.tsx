@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useNavigate } from "@tanstack/react-router";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -1215,14 +1216,18 @@ export const VIDEO_GEN_TASKS = ["text-to-video"] as const;
 // them out (they'd 400 on load).
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
-// Tasks that must never appear as a loadable chat model: the Images- and Video-handled
-// generation tasks plus the non-loadable diffusion tag above. Keeping text-to-video here
-// stops a downloaded video GGUF from showing up as a loadable chat model (it would 400).
-const NON_CHAT_TASKS: readonly string[] = [
+// Generation tasks the Images / Video pages own. They are not chat-loadable, so an
+// on-device pick of one routes to its page instead of loading into chat.
+const DIFFUSION_PAGE_TASKS: readonly string[] = [
   ...IMAGE_GEN_TASKS,
   ...VIDEO_GEN_TASKS,
-  UNSUPPORTED_DIFFUSION_TASK,
 ];
+
+/** The page that runs this task, or null when chat should handle the pick. */
+function diffusionPageForTask(task: string | null | undefined): "images" | "video" | null {
+  if (!task || !DIFFUSION_PAGE_TASKS.includes(task)) return null;
+  return (VIDEO_GEN_TASKS as readonly string[]).includes(task) ? "video" : "images";
+}
 
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image the
 // text-to-image backend rejects (mirrors its _EDIT_KEYWORDS). Hidden by id so they don't show
@@ -1258,7 +1263,9 @@ function passesTaskGate(
 ): boolean {
   if (filter)
     return taskMatchesFilter(repoTask, filter) && !isImageEditModel(repoId);
-  return !(repoTask != null && NON_CHAT_TASKS.includes(repoTask));
+  // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to the
+  // Images/Video page on click. Only the never-loadable diffusion tag is hidden outright.
+  return repoTask !== UNSUPPORTED_DIFFUSION_TASK;
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
@@ -1463,7 +1470,7 @@ export function HubModelPicker({
   loraModels = [],
   externalModels = [],
   value,
-  onSelect,
+  onSelect: onSelectProp,
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
@@ -2138,13 +2145,16 @@ export function HubModelPicker({
       sortLocalModels(
         lmStudioModels.filter(
           (m) =>
+            // The backend tags every local model with its task for exactly this: on the
+            // Images/Video pages a chat GGUF must not be offered (it would 400 on load).
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
         ),
         downloadedSort,
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
+    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery, task],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF (any host) and MLX (Mac
   // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
@@ -2156,6 +2166,7 @@ export function HubModelPicker({
       sortLocalModels(
         localDirModels.filter(
           (m) =>
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
@@ -2183,13 +2194,48 @@ export function HubModelPicker({
       sortLocalModels(
         customFolderModels.filter(
           (m) =>
+            passesTaskGate(m.task, m.model_id ?? m.id, task) &&
             localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
         ),
         customSort,
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [customFolderModels, customSort, formatFilter, loadTimes, localQuery],
+    [customFolderModels, customSort, formatFilter, loadTimes, localQuery, task],
+  );
+
+  // Chat cannot load a diffusion model, but the Images/Video pages can: rather than hiding
+  // an on-device one or letting it 400, a pick routes to the page that runs it, which then
+  // loads it. Task-scoped pickers (already on those pages) select normally.
+  const navigateToPage = useNavigate();
+  const diffusionTaskById = useMemo(() => {
+    const byId = new Map<string, string>();
+    const put = (id: string | null | undefined, t: string | null | undefined) => {
+      if (id && t) byId.set(id.toLowerCase(), t);
+    };
+    for (const c of cachedGguf) put(c.repo_id, c.task);
+    for (const c of cachedModels) put(c.repo_id, c.task);
+    for (const m of lmStudioModels) put(m.model_id ?? m.id, m.task);
+    for (const m of localDirModels) put(m.model_id ?? m.id, m.task);
+    for (const m of customFolderModels) put(m.model_id ?? m.id, m.task);
+    return byId;
+  }, [cachedGguf, cachedModels, lmStudioModels, localDirModels, customFolderModels]);
+
+  const onSelect = useCallback(
+    (id: string, meta: ModelSelectorChangeMeta) => {
+      if (!task) {
+        const page = diffusionPageForTask(diffusionTaskById.get(id.toLowerCase()));
+        if (page) {
+          void navigateToPage({
+            to: `/${page}`,
+            search: { model: id, quant: meta.ggufVariant ?? undefined },
+          });
+          return;
+        }
+      }
+      onSelectProp(id, meta);
+    },
+    [task, diffusionTaskById, navigateToPage, onSelectProp],
   );
 
   // Fine-tuned models for the On Device "Fine-tuned" section: flat, query-

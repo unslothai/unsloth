@@ -92,6 +92,8 @@ from .video_families import (
     supported_video_family_names,
 )
 from utils.hardware import clear_gpu_cache
+# Shared with the image backend so both pin every loader call to the same live cache root.
+from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
 
@@ -724,6 +726,63 @@ class VideoBackend:
         except Exception:  # noqa: BLE001 -- progress totals are best-effort only
             return None
 
+    def download_plan(
+        self,
+        repo_id: str,
+        *,
+        gguf_filename: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        family_override: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """The repos + exact files this pick needs, for staging through the Hub download
+        manager. Mirrors the image backend's plan; the file list is the same scoped one
+        the load itself uses, so nothing extra is pulled. Local paths yield no entries."""
+        from huggingface_hub import HfApi
+
+        fam = _detect_load_family(repo_id, gguf_filename, family_override)
+        kind = resolve_video_model_kind(gguf_filename, model_kind)
+        base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+        entries: list[dict[str, Any]] = []
+        total = 0
+        try:
+            api = HfApi(token = hf_token or None)
+            if gguf_filename and not Path(repo_id).expanduser().exists():
+                info = api.model_info(repo_id, files_metadata = True)
+                size = sum(
+                    int(s.size or 0)
+                    for s in (info.siblings or [])
+                    if s.rfilename == gguf_filename
+                )
+                total += size
+                entries.append(
+                    {
+                        "repo_id": repo_id,
+                        "files": [gguf_filename],
+                        "bytes": size,
+                        "gguf_filename": gguf_filename,
+                    }
+                )
+            if base and not Path(base).expanduser().exists():
+                info = api.model_info(base, files_metadata = True)
+                pairs = self._base_download_files(info, kind)
+                size = sum(s for _, s in pairs)
+                total += size
+                if pairs:
+                    entries.append(
+                        {
+                            "repo_id": base,
+                            "files": [name for name, _ in pairs],
+                            "bytes": size,
+                            "gguf_filename": None,
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
+            logger.warning("video.download_plan_failed: %s", exc)
+            return {"entries": [], "total_bytes": 0}
+        return {"entries": entries, "total_bytes": total}
+
     def _predownload_base(
         self,
         base: str,
@@ -784,9 +843,7 @@ class VideoBackend:
         try:
             import os
 
-            from huggingface_hub.constants import HF_HUB_CACHE
-
-            folder = Path(HF_HUB_CACHE) / ("models--" + repo_id.strip().replace("/", "--"))
+            folder = Path(hub_cache_dir()) / ("models--" + repo_id.strip().replace("/", "--"))
             if not folder.is_dir():
                 return 0
             total = 0
@@ -999,7 +1056,9 @@ class VideoBackend:
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
-        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        # cache_dir pins every loader call to the live cache root, so a mid-session
+        # change can't split one model across the old and new roots.
+        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "cache_dir": hub_cache_dir()}
         if getattr(fam, "vae_force_fp32", False):
             # Wan's VAE must decode in float32. A scalar torch_dtype truncates its fp32 weights
             # to bf16 (no _keep_in_fp32_modules); a later .to(float32) only widens lossy values
@@ -1036,6 +1095,7 @@ class VideoBackend:
                 "config": base,
                 "subfolder": "transformer",
                 "token": hf_token,
+                "cache_dir": hub_cache_dir(),
             }
             if kind == "gguf":
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(

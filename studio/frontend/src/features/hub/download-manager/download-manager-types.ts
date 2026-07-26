@@ -32,6 +32,23 @@ export interface DownloadRequest {
   repoId: string;
   variant: string | null;
   expectedBytes: number;
+  /**
+   * Marks a partial-by-design download of `files` only, for a consumer that reads a
+   * deliberate subset of a repo (the diffusion loader skips the packaged root single,
+   * transformer/ shards and fp16 twins). Set `variant` to `scopedVariant(scopeId)` so
+   * this surface keys the job the same way the backend does.
+   */
+  scopeId?: string | null;
+  files?: string[];
+}
+
+/**
+ * The variant slot a scoped job occupies. Mirrors the backend's `_scope_variant`: no
+ * GGUF quant label starts with "@", so a scope collides with neither a real variant nor
+ * the repo's full snapshot.
+ */
+export function scopedVariant(scopeId: string): string {
+  return `@${scopeId}`;
 }
 
 export interface JobListeners {

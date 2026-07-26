@@ -179,12 +179,25 @@ export function DiffusionTrainPanel({
   loadedBaseRepo,
   onTrainingComplete,
   onDeploy,
+  familyName,
+  onFamilyNameChange,
+  baseChoice,
+  onBaseChoiceChange,
+  onFamiliesChange,
 }: {
   active: boolean;
   // The currently loaded generation model's family / base repo, to preselect a matching
   // training base when it is one we can train.
   loadedFamily?: string | null;
   loadedBaseRepo?: string | null;
+  // Family + base are controlled by the page: the top bar picks the training base while
+  // Train is showing, and these selects stay in sync with it.
+  familyName: string;
+  onFamilyNameChange: (name: string) => void;
+  baseChoice: string;
+  onBaseChoiceChange: (repo: string) => void;
+  // /info owns the family list, so publish it for the top bar's picker.
+  onFamiliesChange?: (families: FamilyPreset[]) => void;
   // Bump the page's LoRA discovery so a freshly trained adapter appears in the picker.
   onTrainingComplete?: () => void;
   // Deploy a finished adapter into Create mode: load the base then preselect the adapter.
@@ -198,7 +211,10 @@ export function DiffusionTrainPanel({
   const [info, setInfo] = useState<DiffusionTrainingInfo | null>(null);
   const families = useMemo(() => mergeFamilies(info?.families), [info?.families]);
 
-  const [familyName, setFamilyName] = useState(families[0]?.name ?? "flux.1");
+  const setFamilyName = onFamilyNameChange;
+  useEffect(() => {
+    onFamiliesChange?.(families);
+  }, [families, onFamiliesChange]);
   const family = useMemo(
     () => families.find((f) => f.name === familyName) ?? families[0],
     [families, familyName],
@@ -242,7 +258,7 @@ export function DiffusionTrainPanel({
   // an older backend does not report it.
   const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
 
-  const [baseChoice, setBaseChoice] = useState<string>(family?.base_repos[0] ?? "");
+  const setBaseChoice = onBaseChoiceChange;
   const [customBase, setCustomBase] = useState("");
 
   const [dataset, setDataset] = useState<string>(UPLOAD_DATASET);
@@ -414,8 +430,11 @@ export function DiffusionTrainPanel({
       seededBaseFamily.current = family.name;
       baseDirty.current = false;
     }
-    const preferLoaded =
-      loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
+    // An already-valid base wins: the top bar sets family and base together, so this must
+    // not snap the pick back to the family's first repo.
+    const preferLoaded = family.base_repos.includes(baseChoice)
+      ? baseChoice
+      : loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
         ? loadedBaseRepo
         : family.base_repos[0] ?? CUSTOM_BASE;
     if (!baseDirty.current) setBaseChoice(preferLoaded);

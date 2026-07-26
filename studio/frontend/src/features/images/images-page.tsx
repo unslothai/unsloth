@@ -94,10 +94,17 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  getDiffusionDownloadPlan,
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
+import {
+  TrainBaseSelector,
+  type TrainFamilyOption,
+} from "./train/train-base-selector";
 
 // Curated models come from the shared catalog: one canonical group per model, its artifacts
 // (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor
@@ -1050,6 +1057,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Page mode: "create" is the generation workspace; "train" is the full-page LoRA
   // training workspace. Independent of the loaded generation model.
   const [pageMode, setPageMode] = useState<"create" | "train">("create");
+  // Train's family + base live here so the top bar can pick them: on Train it replaces the
+  // generation model selector, which only ever offers GGUFs and none of those can be trained.
+  const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
+  const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
+  const [trainBaseChoice, setTrainBaseChoice] = useState("");
   // Bumped when a training run completes, to force the LoRA discovery effect to rescan so
   // a freshly-trained adapter appears in the picker without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
@@ -1747,6 +1759,81 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setMaskResetKey((k) => k + 1);
   }, []);
 
+  // Downloads go through the Hub download manager like every other model, so they share its
+  // panel, progress, cancel/resume, disk preflight and manifest verification. The load itself
+  // then finds a warm cache. Held in a ref so the completion callback is not a render dep.
+  const pendingStagedLoad = useRef<{
+    repoId: string;
+    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+  } | null>(null);
+  const handleLoadRef = useRef(handleLoad);
+  handleLoadRef.current = handleLoad;
+  const { stage } = useStagedDownload({
+    scopeId: "diffusion",
+    onReady: () => {
+      const pending = pendingStagedLoad.current;
+      pendingStagedLoad.current = null;
+      if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+    },
+  });
+
+  // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick
+  // was accepted either way, so the callers' optimistic picker state stands.
+  const loadOrStage = useCallback(
+    async (
+      repoId: string,
+      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      isDownloaded?: boolean,
+    ): Promise<boolean> => {
+      if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      try {
+        const plan = await getDiffusionDownloadPlan({
+          model_path: repoId,
+          gguf_filename: opts.filename,
+          model_kind: opts.kind,
+        });
+        if (plan.entries.length > 0) {
+          pendingStagedLoad.current = { repoId, opts };
+          stage(
+            plan.entries.map((e) => ({
+              repoId: e.repo_id,
+              files: e.files,
+              bytes: e.bytes,
+              ggufFilename: e.gguf_filename,
+            })),
+          );
+          return true;
+        }
+      } catch {
+        // No plan (older backend, metadata hiccup): fall back to the load's own download.
+      }
+      return handleLoadRef.current(repoId, opts);
+    },
+    [stage],
+  );
+
+  // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it
+  // once, then clear the params so a refresh or a later manual eject does not reload it.
+  const routeSearch = useSearch({ strict: false }) as {
+    model?: string;
+    quant?: string;
+  };
+  const navigateSelf = useNavigate();
+  const handledRouteModel = useRef<string | null>(null);
+  useEffect(() => {
+    const wanted = routeSearch.model;
+    if (!wanted || handledRouteModel.current === wanted) return;
+    handledRouteModel.current = wanted;
+    void navigateSelf({ to: "/images", search: {}, replace: true });
+    void loadOrStage(
+      wanted,
+      routeSearch.quant
+        ? { kind: "gguf", filename: routeSearch.quant }
+        : { kind: "pipeline" },
+      false,
+    );
+  }, [routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
@@ -1769,7 +1856,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void handleLoad(id, { kind: spec.kind, filename: spec.filename });
+        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but
@@ -1784,7 +1871,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const dq = defaultsFor(id);
         setSteps(dq.steps);
         setGuidance(dq.guidance);
-        void handleLoad(id, { kind: "gguf", filename: meta.ggufFilename }).then((started) => {
+        void loadOrStage(
+          id,
+          { kind: "gguf", filename: meta.ggufFilename },
+          meta.isDownloaded,
+        ).then((started) => {
           if (!started) {
             setQuant(prevQuant);
             quantRevert.current = null;
@@ -1800,7 +1891,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        if (!filename.toLowerCase().endsWith(".gguf")) return;
+        if (!filename.toLowerCase().endsWith(".gguf")) {
+          // A repo pick that reached here has no filename to load, and the backend
+          // can't map a quant label back to one. Say so instead of doing nothing.
+          toast.error("Pick a quantization for this model to load it");
+          return;
+        }
         // A direct pick carries no curated variant label; surface the filename so
         // the selector stops advertising the previously loaded quant. Optimistic,
         // reverted if the load fails to start OR fails later in the poll (mirrors the
@@ -1856,14 +1952,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void handleLoad(id, { kind: "pipeline" }).then((started) => {
+      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded).then((started) => {
         if (!started) {
           setQuant(prevQuant);
           quantRevert.current = null;
         }
       });
     },
-    [busy, handleLoad, quant],
+    [busy, handleLoad, loadOrStage, quant],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base as
@@ -2294,19 +2390,34 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           not here. ── */}
       <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
-          <ModelSelector
-            models={MODELS}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
-            activeGgufVariant={quant}
-            onValueChange={handleModelSelect}
-            onEject={status?.loaded ? handleUnload : undefined}
-            variant="ghost"
-            className="!h-[34px]"
-            task={IMAGE_GEN_TASKS}
-            catalog={IMAGE_CATALOG}
-            open={active && selectorOpen}
-            onOpenChange={(o) => setSelectorOpen(active && o)}
-          />
+          {pageMode === "train" ? (
+            <TrainBaseSelector
+              families={trainFamilies}
+              familyName={trainFamilyName}
+              base={trainBaseChoice}
+              onSelect={(family, repo) => {
+                // Set both together: the panel's reseed effect keeps a base that is
+                // valid for the new family, so the pick survives the family switch.
+                setTrainFamilyName(family);
+                setTrainBaseChoice(repo);
+              }}
+            />
+          ) : (
+            <ModelSelector
+              models={MODELS}
+              value={status?.loaded ? status.repo_id ?? undefined : undefined}
+              activeGgufVariant={quant}
+              onValueChange={handleModelSelect}
+              onEject={status?.loaded ? handleUnload : undefined}
+              variant="ghost"
+              className="!h-[34px]"
+              task={IMAGE_GEN_TASKS}
+              catalog={IMAGE_CATALOG}
+              placeholder="Select image model"
+              open={active && selectorOpen}
+              onOpenChange={(o) => setSelectorOpen(active && o)}
+            />
+          )}
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the
             selector's width (the selector stays leftmost: its position is shared with
@@ -2380,6 +2491,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           }
           onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
           onDeploy={handleDeployAdapter}
+          familyName={trainFamilyName}
+          onFamilyNameChange={setTrainFamilyName}
+          baseChoice={trainBaseChoice}
+          onBaseChoiceChange={setTrainBaseChoice}
+          onFamiliesChange={setTrainFamilies}
         />
       ) : (
       /* ── Controls rail + preview canvas. No cards: both sit on the page background,

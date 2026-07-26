@@ -233,6 +233,29 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
   );
 }
 
+export interface DiffusionDownloadPlan {
+  entries: {
+    repo_id: string;
+    files: string[];
+    bytes: number;
+    gguf_filename: string | null;
+  }[];
+  total_bytes: number;
+}
+
+/** What to stage through the download manager before loading this pick. */
+export async function getDiffusionDownloadPlan(
+  body: DiffusionLoadRequest,
+): Promise<DiffusionDownloadPlan> {
+  return parseJson(
+    await authFetch("/api/inference/images/download-plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
 ): Promise<DiffusionGenerateResponse> {

@@ -1702,6 +1702,7 @@ from models.inference import (
     DiffusionGenerateResponse,
     DiffusionGenerateProgressResponse,
     DiffusionStatusResponse,
+    DiffusionDownloadPlanResponse,
     DiffusionInferenceInfoResponse,
     DiffusionLoadProgressResponse,
     GalleryImage,
@@ -15954,6 +15955,56 @@ def _guard_diffusion_load_against_training() -> None:
             "was left untouched. Try again after training finishes."
         ),
     )
+
+
+@studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
+async def diffusion_download_plan(
+    request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """The repos + files this pick needs, so the frontend can stage them through the Hub
+    download manager (one mechanism, one panel) instead of the loader downloading inline.
+
+    Validates the same way /images/load does, so an unloadable pick fails here rather than
+    after a multi-GB download."""
+    from core.inference.diffusion import (
+        get_diffusion_backend,
+        resolve_local_single_file,
+        resolve_model_kind,
+    )
+    from utils.native_path_leases import redact_native_paths
+
+    backend = get_diffusion_backend()
+    try:
+        kind = resolve_model_kind(request.gguf_filename, request.model_kind)
+        # Same bare-single-file-directory reinterpretation as the load route, so the plan
+        # describes the load that will actually run.
+        if kind == "pipeline" and not request.gguf_filename:
+            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            if sole is not None:
+                request.gguf_filename = sole
+                kind = resolve_model_kind(sole)
+        await asyncio.to_thread(
+            backend.validate_load_request,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            family_override = request.family_override,
+            model_kind = kind,
+            base_repo = request.base_repo,
+        )
+        plan = await asyncio.to_thread(
+            backend.download_plan,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            base_repo = request.base_repo,
+            family_override = request.family_override,
+            model_kind = kind,
+            hf_token = request.hf_token,
+            transformer_quant = request.transformer_quant,
+            speed_mode = request.speed_mode,
+        )
+        return DiffusionDownloadPlanResponse(**plan)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
 
 
 @studio_router.post("/images/load", response_model = DiffusionStatusResponse)

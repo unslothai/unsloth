@@ -133,6 +133,16 @@ logger = get_logger(__name__)
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
 
+def hub_cache_dir() -> str:
+    """The cache root every loader call must be pinned to.
+
+    diffusers resolves an unset cache_dir through huggingface_hub's import-time constant,
+    which a mid-session cache-folder change does not update. The prefetch reads the live
+    setting, so without this a single load could split across two roots."""
+    from utils.hf_cache_settings import active_hf_hub_cache
+    return active_hf_hub_cache()
+
+
 def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] = None) -> str:
     """Classify a load request into one of ``_MODEL_KINDS``.
 
@@ -986,9 +996,13 @@ class DiffusionBackend:
         kind: str = "gguf",
         single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
+        sizes_out: Optional[dict[str, int]] = None,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
+
+        ``sizes_out``, when given, is filled with per-repo byte totals so the download
+        plan can size one job per repo off this same single pair of Hub lookups.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1016,12 +1030,17 @@ class DiffusionBackend:
                         continue
                     base_files.append(s.rfilename)
                     total += s.size or 0
+                if sizes_out is not None:
+                    sizes_out[repo_id] = total
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info would raise on a
             # filesystem path and (caught below) skip the base lookup, forcing a synchronous companion pull.
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
-                total += sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
+                gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
+                total += gguf_bytes
+                if sizes_out is not None:
+                    sizes_out[repo_id] = gguf_bytes
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1031,19 +1050,83 @@ class DiffusionBackend:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
+            base_bytes = 0
             for s in base_info.siblings:
                 if base_filter(s.rfilename):
                     base_files.append(s.rfilename)
-                    total += s.size or 0
+                    base_bytes += s.size or 0
+            total += base_bytes
+            if sizes_out is not None:
+                sizes_out[base_repo] = base_bytes
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
         return total, base_files
 
+    def download_plan(
+        self,
+        repo_id: str,
+        *,
+        gguf_filename: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        family_override: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        **load_kwargs: Any,
+    ) -> dict[str, Any]:
+        """The repos + exact files this pick needs, so the Hub download manager can fetch
+        them with the same file scope the loader would.
+
+        A plain snapshot_download would also pull what the loader deliberately skips (the
+        packaged root single, transformer/ shards, fp16 twins) -- tens of GB per FLUX repo.
+        Resolves family/kind/base exactly as ``_run_load`` does, so the plan and the load
+        agree. Local paths are already on disk and yield no entries."""
+        fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
+        kind = resolve_model_kind(gguf_filename, model_kind)
+        if kind == "pipeline":
+            base = repo_id  # the full pipeline IS the repo
+        else:
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        sizes: dict[str, int] = {}
+        total, base_files = self._estimate_download_bytes(
+            repo_id,
+            gguf_filename,
+            base,
+            hf_token,
+            kind = kind,
+            single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
+            include_transformer = kind == "gguf"
+            and self._dense_quant_prefetch_needed(fam, load_kwargs),
+            sizes_out = sizes,
+        )
+        entries: list[dict[str, Any]] = []
+        if gguf_filename and not Path(repo_id).expanduser().exists():
+            entries.append(
+                {
+                    "repo_id": repo_id,
+                    "files": [gguf_filename],
+                    "bytes": int(sizes.get(repo_id, 0)),
+                    "gguf_filename": gguf_filename,
+                }
+            )
+        if base_files and not Path(base).expanduser().exists():
+            entries.append(
+                {
+                    "repo_id": base,
+                    "files": base_files,
+                    "bytes": int(sizes.get(base, 0)),
+                    "gguf_filename": None,
+                }
+            )
+        return {"entries": entries, "total_bytes": int(total)}
+
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:
-        """Local HF hub cache dir for ``repo_id``."""
-        from huggingface_hub import constants
-        return Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}"
+        """Local HF hub cache dir for ``repo_id``.
+
+        Reads the live setting, not huggingface_hub's import-time constant: changing the
+        cache folder does not update the constant, so the old one would count bytes in a
+        root the download no longer writes to (progress stuck at 0 for the whole pull)."""
+        return Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
 
     @staticmethod
     def _cache_bytes(repo_id: str) -> int:
@@ -1503,7 +1586,10 @@ class DiffusionBackend:
                             # per-component too (see diffusion_ideogram4.py).
                             pipe = load_ideogram4_pipeline(repo_id, dtype, hf_token = hf_token)
                         else:
-                            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+                            pipe_kwargs: dict[str, Any] = {
+                                "torch_dtype": dtype,
+                                "cache_dir": hub_cache_dir(),
+                            }
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
                             if fam.name == HIDREAM_FAMILY_NAME:
@@ -1541,7 +1627,11 @@ class DiffusionBackend:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline, so load it
                         # through the pipeline class; ``config`` points at the base repo so diffusers
                         # builds the correct structure around the single-file weights.
-                        sf_pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "config": base}
+                        sf_pipe_kwargs: dict[str, Any] = {
+                            "torch_dtype": dtype,
+                            "config": base,
+                            "cache_dir": hub_cache_dir(),
+                        }
                         if hf_token:
                             sf_pipe_kwargs["token"] = hf_token
                         pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
@@ -1553,6 +1643,7 @@ class DiffusionBackend:
                             "subfolder": "transformer",
                             # Config is fetched from the (possibly gated) base before auth.
                             "token": hf_token,
+                            "cache_dir": hub_cache_dir(),
                         }
                         if kind == "gguf":
                             # Dequantise the GGUF transformer on-device at the compute dtype.
@@ -1585,7 +1676,11 @@ class DiffusionBackend:
                                 ).get("text_encoder"),
                             )
                         else:
-                            pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
+                            pipe_kwargs = {
+                                "torch_dtype": dtype,
+                                "transformer": transformer,
+                                "cache_dir": hub_cache_dir(),
+                            }
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
                             if fam.name == HIDREAM_FAMILY_NAME:
@@ -2016,7 +2111,11 @@ class DiffusionBackend:
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
         transformer = transformer_cls.from_pretrained(
-            base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
+            base,
+            subfolder = "transformer",
+            torch_dtype = dtype,
+            token = hf_token,
+            cache_dir = hub_cache_dir(),
         )
         pipe = self._assemble_pipe(
             pipeline_cls,
@@ -2104,7 +2203,11 @@ class DiffusionBackend:
             )
             pipe.to(device)
             return pipe
-        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
+        pipe_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "transformer": transformer,
+            "cache_dir": hub_cache_dir(),
+        }
         if hf_token:
             pipe_kwargs["token"] = hf_token
         if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
@@ -2327,7 +2430,7 @@ class DiffusionBackend:
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
             # Force safetensors for an untrusted remote repo: if the Hub scan failed open above, an
             # embedded pickle would still deserialize on load. A local dir the user chose is exempt.
-            cn_from_pretrained_kwargs: dict[str, Any] = {}
+            cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
             if remote_cn:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
             cn_model = getattr(diffusers, model_cls_name).from_pretrained(

@@ -28,6 +28,16 @@ class DownloadModelRequest(BaseModel):
         True,
         description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
     )
+    scope_id: Optional[str] = Field(
+        None,
+        description = "Marks a partial-by-design download of `files` only (e.g. 'diffusion', "
+        "whose loader reads a scoped subset of a repo). Keyed separately from the full "
+        "snapshot of the same repo, so neither one's manifest describes the other.",
+    )
+    files: List[str] = Field(
+        default_factory = list,
+        description = "Exact files to fetch. Required with scope_id, ignored without it.",
+    )
 
 
 class CancelDownloadRequest(BaseModel):

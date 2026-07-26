@@ -280,7 +280,12 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The Images/Video pages run these, so they are not "unsupported" to a user even
+  // though chat cannot load them.
+  const showUnsupported =
+    !isDataset &&
+    unslothSupport.status === "unsupported" &&
+    !unslothSupport.supportedIn;
   // The format-unsupported chip already explains itself; this one covers the
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
@@ -694,7 +699,7 @@ export const ModelInspector = memo(function ModelInspector({
               gpuGb={gpuGb}
               systemRamGb={systemRamGb}
               unsupportedReason={
-                unslothSupport.status === "unsupported"
+                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
