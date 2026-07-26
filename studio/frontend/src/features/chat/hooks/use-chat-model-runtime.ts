@@ -533,6 +533,46 @@ export function useChatModelRuntime() {
       };
       if (bailIfLoadInFlight()) return;
 
+      // Picking an external provider leaves the local model resident and stops
+      // the status poll mirroring it, so params.checkpoint cannot tell whether
+      // this pick is that same resident model. Ask the backend before
+      // prompting: /load answers already_loaded ahead of its cancel hook, so
+      // the dialog would promise to stop chats this pick never interrupts and
+      // "Keep generating" would block a free switch back. Adopt it instead,
+      // as the reselect of an already-selected model returns above. A staged
+      // config always carries forceReload, so Apply still reloads and prompts.
+      const selectedCheckpoint =
+        useChatRuntimeStore.getState().params.checkpoint;
+      if (!forceReload && isExternalModelId(selectedCheckpoint)) {
+        const residentStatus = await getInferenceStatus().catch(() => null);
+        if (
+          residentStatus &&
+          resolveInferenceCheckpointId(residentStatus) === modelId &&
+          (residentStatus.gguf_variant ?? null) === (ggufVariant ?? null)
+        ) {
+          // Same window as the confirm below: a rival load may have started
+          // while that GET was in flight, and it owns the resident model now.
+          if (bailIfLoadInFlight()) return;
+          // Roll back the config the caller pre-applied for the load that is
+          // not happening BEFORE hydrating, so the status of the model that is
+          // actually resident wins over the staged snapshot.
+          if (typeof selection !== "string" && selection.previousConfig) {
+            applyPerModelConfigToRuntime(selection.previousConfig);
+          }
+          const previousGgufVariant =
+            useChatRuntimeStore.getState().activeGgufVariant;
+          useChatRuntimeStore
+            .getState()
+            .setCheckpoint(modelId, residentStatus.gguf_variant);
+          applyActiveModelStatusToStore(residentStatus, {
+            previousCheckpoint: selectedCheckpoint,
+            previousGgufVariant,
+          });
+          syncModelCapabilities(modelId, residentStatus);
+          return;
+        }
+      }
+
       // Every chat decodes on the llama-server this load replaces, so ask
       // first, then allow the cancel; the 409 gate stays armed for callers
       // that never confirmed (second tab, desktop app, curl).

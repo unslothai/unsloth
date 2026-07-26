@@ -1138,6 +1138,35 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     assert active_generations.count() == 0
 
 
+def test_active_generations_redacts_native_model_paths(monkeypatch):
+    # The legacy stream records backend.active_model_name verbatim, which is an
+    # absolute path for a native local model. This route is the only place that
+    # serialises it, so an authenticated remote client must not learn host paths
+    # the error paths already redact.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+    from utils.native_path_leases import _remember_native_path_for_redaction
+
+    secret_path = "/home/somebody/models/private-model.gguf"
+    _remember_native_path_for_redaction(secret_path, "private-model.gguf")
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 4)))
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: SimpleNamespace())
+
+    with active_generations.ActiveGeneration(
+        threading.Event(), thread_id = "t1", model = secret_path
+    ):
+        body = asyncio.run(inf_mod.get_active_generations(request, "tester"))
+
+    assert body["count"] == 1
+    assert secret_path not in str(body)
+    assert body["active"][0]["model"] == "<native_path>"
+
+
 def test_legacy_generate_stream_is_visible_to_the_swap_gate(monkeypatch):
     # The legacy /generate/stream decodes on the standard backend for its whole run.
     # /unload runs no idle drain, so unregistered it passed the advertised 409 gate then

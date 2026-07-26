@@ -4423,6 +4423,13 @@ async def get_active_generations(
     requested --parallel; chats beyond it queue rather than fail.
     """
     entries = active_generations.snapshot()
+    # A tracker can be given a native local path as its model (the legacy stream
+    # records backend.active_model_name verbatim), and this is the one place that
+    # serialises it. Redact here rather than at each tracker so every source is
+    # covered, matching what the error paths already do.
+    for _entry in entries:
+        if isinstance(_entry.get("model"), str):
+            _entry["model"] = redact_native_paths(_entry["model"])
     slots = 1
     try:
         slots = _openai_llama_admission_capacity(fastapi_request, get_llama_cpp_backend())
