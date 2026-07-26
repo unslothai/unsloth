@@ -92,6 +92,8 @@ from .video_families import (
     supported_video_family_names,
 )
 from utils.hardware import clear_gpu_cache
+# Shared with the image backend so both pin every loader call to the same live cache root.
+from core.inference.diffusion import hub_cache_dir
 
 logger = get_logger(__name__)
 
@@ -784,9 +786,7 @@ class VideoBackend:
         try:
             import os
 
-            from huggingface_hub.constants import HF_HUB_CACHE
-
-            folder = Path(HF_HUB_CACHE) / ("models--" + repo_id.strip().replace("/", "--"))
+            folder = Path(hub_cache_dir()) / ("models--" + repo_id.strip().replace("/", "--"))
             if not folder.is_dir():
                 return 0
             total = 0
@@ -999,7 +999,9 @@ class VideoBackend:
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
-        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        # cache_dir pins every loader call to the live cache root, so a mid-session
+        # change can't split one model across the old and new roots.
+        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "cache_dir": hub_cache_dir()}
         if getattr(fam, "vae_force_fp32", False):
             # Wan's VAE must decode in float32. A scalar torch_dtype truncates its fp32 weights
             # to bf16 (no _keep_in_fp32_modules); a later .to(float32) only widens lossy values
@@ -1036,6 +1038,7 @@ class VideoBackend:
                 "config": base,
                 "subfolder": "transformer",
                 "token": hf_token,
+                "cache_dir": hub_cache_dir(),
             }
             if kind == "gguf":
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(

@@ -133,6 +133,16 @@ logger = get_logger(__name__)
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
 
+def hub_cache_dir() -> str:
+    """The cache root every loader call must be pinned to.
+
+    diffusers resolves an unset cache_dir through huggingface_hub's import-time constant,
+    which a mid-session cache-folder change does not update. The prefetch reads the live
+    setting, so without this a single load could split across two roots."""
+    from utils.hf_cache_settings import active_hf_hub_cache
+    return active_hf_hub_cache()
+
+
 def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] = None) -> str:
     """Classify a load request into one of ``_MODEL_KINDS``.
 
@@ -1041,9 +1051,12 @@ class DiffusionBackend:
 
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:
-        """Local HF hub cache dir for ``repo_id``."""
-        from huggingface_hub import constants
-        return Path(constants.HF_HUB_CACHE) / f"models--{repo_id.replace('/', '--')}"
+        """Local HF hub cache dir for ``repo_id``.
+
+        Reads the live setting, not huggingface_hub's import-time constant: changing the
+        cache folder does not update the constant, so the old one would count bytes in a
+        root the download no longer writes to (progress stuck at 0 for the whole pull)."""
+        return Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
 
     @staticmethod
     def _cache_bytes(repo_id: str) -> int:
@@ -1503,7 +1516,10 @@ class DiffusionBackend:
                             # per-component too (see diffusion_ideogram4.py).
                             pipe = load_ideogram4_pipeline(repo_id, dtype, hf_token = hf_token)
                         else:
-                            pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
+                            pipe_kwargs: dict[str, Any] = {
+                                "torch_dtype": dtype,
+                                "cache_dir": hub_cache_dir(),
+                            }
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
                             if fam.name == HIDREAM_FAMILY_NAME:
@@ -1541,7 +1557,11 @@ class DiffusionBackend:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline, so load it
                         # through the pipeline class; ``config`` points at the base repo so diffusers
                         # builds the correct structure around the single-file weights.
-                        sf_pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "config": base}
+                        sf_pipe_kwargs: dict[str, Any] = {
+                            "torch_dtype": dtype,
+                            "config": base,
+                            "cache_dir": hub_cache_dir(),
+                        }
                         if hf_token:
                             sf_pipe_kwargs["token"] = hf_token
                         pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
@@ -1553,6 +1573,7 @@ class DiffusionBackend:
                             "subfolder": "transformer",
                             # Config is fetched from the (possibly gated) base before auth.
                             "token": hf_token,
+                            "cache_dir": hub_cache_dir(),
                         }
                         if kind == "gguf":
                             # Dequantise the GGUF transformer on-device at the compute dtype.
@@ -1585,7 +1606,11 @@ class DiffusionBackend:
                                 ).get("text_encoder"),
                             )
                         else:
-                            pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
+                            pipe_kwargs = {
+                                "torch_dtype": dtype,
+                                "transformer": transformer,
+                                "cache_dir": hub_cache_dir(),
+                            }
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
                             if fam.name == HIDREAM_FAMILY_NAME:
@@ -2016,7 +2041,11 @@ class DiffusionBackend:
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
         transformer = transformer_cls.from_pretrained(
-            base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
+            base,
+            subfolder = "transformer",
+            torch_dtype = dtype,
+            token = hf_token,
+            cache_dir = hub_cache_dir(),
         )
         pipe = self._assemble_pipe(
             pipeline_cls,
@@ -2104,7 +2133,11 @@ class DiffusionBackend:
             )
             pipe.to(device)
             return pipe
-        pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
+        pipe_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "transformer": transformer,
+            "cache_dir": hub_cache_dir(),
+        }
         if hf_token:
             pipe_kwargs["token"] = hf_token
         if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
@@ -2327,7 +2360,7 @@ class DiffusionBackend:
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
             # Force safetensors for an untrusted remote repo: if the Hub scan failed open above, an
             # embedded pickle would still deserialize on load. A local dir the user chose is exempt.
-            cn_from_pretrained_kwargs: dict[str, Any] = {}
+            cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
             if remote_cn:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
             cn_model = getattr(diffusers, model_cls_name).from_pretrained(
