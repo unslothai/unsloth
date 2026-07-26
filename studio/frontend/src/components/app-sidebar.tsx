@@ -1855,6 +1855,18 @@ export function AppSidebar() {
               </button>
             </SidebarMenuItem>
           )}
+          {/* Collapsed rail has no room for the cog on the profile row, so it
+              sits above the avatar instead. */}
+          <NavItem
+            className="hidden group-data-[collapsible=icon]:block"
+            icon={Settings02Icon}
+            label={t("shell.navigation.settings")}
+            active={false}
+            onClick={() => {
+              useSettingsDialogStore.getState().openDialog();
+              closeMobileIfOpen();
+            }}
+          />
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
