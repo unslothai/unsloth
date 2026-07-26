@@ -52,9 +52,7 @@ export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
  * Permission level for local tool calls:
  * - "ask": always ask before every tool call runs.
  * - "auto" ("Approve for me", the default): only ask for calls the backend
- *   detects as high risk (credential access, privilege escalation, destructive
- *   or persistence changes, network exec/exfil); ordinary dev commands run
- *   immediately. Sandbox stays on.
+ *   detects as high risk; ordinary dev commands run immediately. Sandbox stays on.
  * - "off": never ask; tool calls run automatically inside the sandbox
  *   (the original default before permission levels existed).
  * - "full" ("Full access"): no confirmations and the python/terminal sandbox

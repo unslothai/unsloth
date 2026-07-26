@@ -77,8 +77,7 @@ export const FULL_ACCESS_WARNING =
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
-    // Fall back to the product default ("Approve for me") for an unknown value,
-    // not the first row ("Ask").
+    // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
     PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
   );

@@ -699,7 +699,6 @@ class TestBashBlocklistPosition:
         assert "." in self._find()("cat x && . ./payload")
 
     def test_dot_in_argument_position_allowed(self):
-        # `.` as a path argument (not the source builtin) must not be blocked.
         assert self._find()("find . -type f") == set()
         assert self._find()("ls .") == set()
         assert self._find()("cd .") == set()
@@ -710,8 +709,8 @@ class TestBashBlocklistPosition:
         assert "source" in self._find()("$'source' ./payload")
 
     def test_ansi_c_data_with_newline_is_not_a_command(self):
-        # Bash expands $'...' to a single word, so a newline inside it is data
-        # for printf, not a separator that starts a second command.
+        # $'...' expands to a single word, so a newline inside it is data for
+        # printf, not a separator that starts a second command.
         payload = "printf '%s' $'hello\\n" + "rm" + " -rf x\\n'"
         assert self._find()(payload) == set()
 
@@ -725,14 +724,13 @@ class TestBashBlocklistPosition:
         assert self._find()("echo '[a]'") == set()
 
     def test_attached_exec_flag_value_blocked(self):
-        # fd accepts the command attached to the flag, so the value is the
-        # command that runs rather than a discarded option argument.
+        # fd accepts the command attached to the flag, so the value is what runs.
         assert "rm" in self._find()("fd victim . --exec=rm")
         assert "rm" in self._find()("fd victim . --exec-batch=rm")
 
     def test_short_flag_neighbour_not_read_as_command(self):
-        # Only the long spellings carry an attached command; a short -x belongs
-        # to too many other utilities to read its neighbour as one.
+        # Only the long spellings carry an attached command; -x belongs to too
+        # many other utilities to read its neighbour as one.
         assert self._find()("grep -x rm file.txt") == set()
 
     def test_alias_body_scanned_as_command(self):

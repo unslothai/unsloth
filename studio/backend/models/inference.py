@@ -921,11 +921,9 @@ class ThinkingConfig(BaseModel):
 # Recognized permission_mode values. The field accepts a plain string rather than
 # a Literal so an unrecognized value from a newer UI/client degrades to the safest
 # gate ("ask") instead of a 422. None stays unset at the request boundary: the tool
-# loops normalize an unset mode to the product default "auto" ("Approve for me") for
-# the per-call gate, while the route's confirm-gate derivation keeps an unset mode
-# lenient (a non-streaming request, which cannot prompt, runs), so non-streaming
-# clients and health checks keep working. An unrecognized value still falls back to
-# the stricter "ask".
+# loops normalize it to the product default "auto", while the route's confirm-gate
+# derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
+# it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
 
 
@@ -1385,22 +1383,15 @@ class ChatCompletionRequest(BaseModel):
             and self.confirm_tool_calls is True
             and not (self.provider_id or self.provider_type)
         ):
-            # A legacy caller that explicitly set confirm_tool_calls=True with no
-            # permission_mode opted into the pre-permission-mode contract of gating
-            # every call, so resolve the unset mode to "ask" here instead of letting
-            # the loop apply the "auto" product default (which only prompts on
-            # high-risk calls and would silently weaken that explicit opt-in).
-            #
-            # Unlike the "ask" self-enable branch below (which mutates the confirm
-            # flag and so must be gated to an actual loop request), this only sets
-            # permission_mode, which is inert unless Unsloth's own tool loop runs:
-            # _permission_mode_confirm and _confirm_gate_needs_stream give the same
-            # answer for None vs "ask" when confirm is explicitly True, so a
-            # passthrough / no-tool request is unaffected. Not gating on
-            # enable_tools/mcp is deliberate: it also covers a process-wide
-            # --enable-tools policy that forces the loop when the request itself
-            # sets neither flag. External-provider requests are left untouched. A
-            # bare unset request (confirm_tool_calls is None) still defaults to auto.
+            # An explicit confirm_tool_calls=True with no mode opted into the
+            # pre-permission-mode contract of gating every call, so resolve it to
+            # "ask" rather than let the loop apply the "auto" default, which would
+            # silently weaken that opt-in to high-risk calls only. Unlike the "ask"
+            # branch below this only sets permission_mode, which is inert unless
+            # Unsloth's own tool loop runs, so it needs no enable_tools/mcp gate --
+            # deliberate, since a process-wide --enable-tools policy can force the
+            # loop when the request sets neither flag. A bare unset request
+            # (confirm_tool_calls is None) still defaults to auto.
             self.permission_mode = "ask"
         elif (
             self.permission_mode == "ask"

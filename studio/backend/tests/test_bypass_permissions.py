@@ -663,10 +663,9 @@ def test_bypass_env_does_not_add_unset_windows_profile_vars(monkeypatch, tmp_pat
 
 @_POSIX_ONLY
 def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
-    # Stripping the child env is not enough: a same-UID child can read the
-    # parent's /proc environ (cd /proc/$PPID; cat environ). Both exec paths must
-    # invoke the parent hardening in bypass mode (fail closed on failure) and in
-    # the normal sandboxed mode too (best-effort backstop for a classifier miss).
+    # Stripping the child env is not enough: a same-UID child can read the parent's
+    # /proc environ. Both exec paths harden the parent in bypass mode (fail closed)
+    # and in sandboxed mode too (best-effort backstop for a classifier miss).
     calls = {"n": 0}
 
     def fake_harden():
