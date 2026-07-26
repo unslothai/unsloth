@@ -67,7 +67,6 @@ const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
 const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
-const GGUF_NAME_PATTERN = /gguf/i;
 
 function isLoopbackBase(base: string): boolean {
   try {
@@ -292,13 +291,11 @@ function discoverGgufModels(
 // unset, so a custom scan folder holding an HF cache layout would vanish from the
 // picker on an exclusive check. Treat unset as unknown and fall back to the name.
 function isLocalGguf(model: LocalModelInfo): boolean {
-  const format = (model.model_format ?? "").toLowerCase();
-  if (format) {
-    return format === "gguf";
-  }
-  return [model.id, model.model_id, model.display_name].some(
-    (value) => typeof value === "string" && GGUF_NAME_PATTERN.test(value),
-  );
+  // The scanners set this only for a directory holding a primary, non-mmproj GGUF
+  // and no other weights, so an unset format means "not GGUF", not "unknown". Do not
+  // guess from the name: a safetensors folder called Foo-GGUF would load the
+  // transformers backend and then fail the GGUF-only agents.
+  return (model.model_format ?? "").toLowerCase() === "gguf";
 }
 
 function localGgufEntries(

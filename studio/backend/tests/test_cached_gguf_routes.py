@@ -233,6 +233,35 @@ def test_list_cached_gguf_load_id_skips_partial_split_snapshot(monkeypatch, tmp_
     assert rows[0]["load_id"] == str(older)
 
 
+def test_list_cached_gguf_omits_load_id_when_no_snapshot_is_complete(monkeypatch, tmp_path):
+    """With only a half-downloaded split quant, fall back to the repo id, not a path."""
+    active = tmp_path / "active"
+    repo_dir = tmp_path / "legacy" / "models--Org--Torn"
+    snapshot = repo_dir / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"\0")
+
+    repo = _repo(
+        "Org/Torn",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("Model-Q4_K_M-00001-of-00003.gguf", 6_000)], snapshot_path = snapshot
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+
+    rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
+
+    assert "load_id" not in rows[0]
+
+
 def test_list_cached_gguf_includes_non_suffix_repo_when_cache_contains_gguf(monkeypatch, tmp_path):
     repo = _repo(
         "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",

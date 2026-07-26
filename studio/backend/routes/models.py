@@ -314,7 +314,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         try:
             if not child.is_dir():
                 continue
-            has_gguf = any(child.glob("*.gguf"))
+            gguf_names = [p.name for p in child.glob("*.gguf")]
+            has_gguf = bool(gguf_names)
+            # mmproj alone is a vision adapter, not servable weights, so it decides
+            # presence but never format (same rule as _dir_model_format).
+            has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
             has_non_gguf_weights = _has_non_gguf_weights(child)
             has_config = (child / "config.json").exists() or (
                 child / "adapter_config.json"
@@ -332,7 +336,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         # A folder whose only weights are .gguf is GGUF-format even when it also
         # ships a config.json (common for HF GGUF repos); such folders often lack
         # a -GGUF suffix, so surface the format for the UI's GGUF classification.
-        model_format = "gguf" if has_gguf and not has_non_gguf_weights else None
+        model_format = "gguf" if has_main_gguf and not has_non_gguf_weights else None
         found.append(
             LocalModelInfo(
                 id = str(child),
@@ -398,7 +402,7 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
         # Classify from the snapshot's own weights. A GGUF repo without a -GGUF
         # suffix is common, and leaving this unset makes every consumer guess from
         # the name; the snapshot is already resolved just above.
-        model_format = _dir_model_format(Path(snapshot)) if snapshot else None
+        model_format = _dir_model_format(Path(snapshot), recursive = True) if snapshot else None
         found.append(
             LocalModelInfo(
                 id = load_id,
@@ -415,7 +419,7 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
     return found
 
 
-def _dir_model_format(path: Path) -> Optional[str]:
+def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
     """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files.
 
     LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
@@ -423,9 +427,14 @@ def _dir_model_format(path: Path) -> Optional[str]:
     rather than treating them as plain local checkpoints. A directory whose only
     ``.gguf`` is an mmproj vision adapter is not one: the variant selector drops
     mmproj, so that path would find nothing to serve.
+
+    ``recursive`` is for HF cache snapshots, which keep split quants in per-quant
+    subdirectories: a flat glob sees no ``.gguf`` there and would report the
+    snapshot as non-GGUF, hiding every sharded repo from the GGUF pickers.
     """
     try:
-        if not any(_is_main_gguf_filename(p.name) for p in path.glob("*.gguf")):
+        found = path.rglob("*.gguf") if recursive else path.glob("*.gguf")
+        if not any(_is_main_gguf_filename(p.name) for p in found):
             return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
@@ -3062,8 +3071,10 @@ def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
     for _, snapshot in candidates:
         if inventory_scan._completed_gguf_variants(Path(snapshot)):
             return snapshot
-    # Nothing complete anywhere: keep the newest rather than dropping the id.
-    return candidates[0][1] if candidates else None
+    # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
+    # path in the copied command and fail on load. Drop the id so the repo id is used,
+    # which fetches the missing shards instead.
+    return None
 
 
 @router.get("/cached-gguf")
