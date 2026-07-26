@@ -128,17 +128,25 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
     // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
     let retryId: number | undefined;
-    const update = (force = false) => {
+    const update = (force = false, retryVulkan = false) => {
       fetchSystemOnce(force).then((d) => {
         if (cancelled) return;
+        if (!d) {
+          // Once an unavailable Vulkan backend starts polling, a transient API
+          // failure must preserve the current state and continue the same loop.
+          if (retryVulkan) {
+            retryId = window.setTimeout(() => update(true, true), 3000);
+          }
+          return;
+        }
         setGpu(toGpuInfo(d, source));
-        const inferenceGpu = d?.inference_gpu;
+        const inferenceGpu = d.inference_gpu;
         if (
           source === "inference_gpu" &&
           inferenceGpu?.backend === "vulkan" &&
           !inferenceGpu.available
         ) {
-          retryId = window.setTimeout(() => update(true), 3000);
+          retryId = window.setTimeout(() => update(true, true), 3000);
         }
       });
     };
