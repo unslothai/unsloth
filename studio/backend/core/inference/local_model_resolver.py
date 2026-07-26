@@ -147,6 +147,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     )
     from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
     from utils.hf_cache_settings import known_hf_hub_caches
+    from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
     seen_hf: set[str] = set()
@@ -220,7 +221,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             continue
         # Index every alias (including the path) so a client can resolve by any of
         # them, even though only the non-path loader_id is advertised.
-        for key in (raw_id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
+        # public_model_id too: a repo outside the active cache loads by snapshot path,
+        # and /v1/models then advertises only that directory's basename, so anything
+        # durable pinned to that id (a subagent config) must resolve back here.
+        for key in (
+            raw_id,
+            getattr(info, "model_id", None),
+            getattr(info, "display_name", None),
+            public_model_id(raw_id),
+        ):
             if key:
                 index.setdefault(key.strip().lower(), entry)
     return index

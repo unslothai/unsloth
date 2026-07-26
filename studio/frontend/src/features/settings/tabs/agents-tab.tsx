@@ -212,6 +212,18 @@ function splitModelVariant(model: string): ParsedModel {
   return { repo, variant };
 }
 
+function looksLikePath(value: string): boolean {
+  return (
+    value.includes("\\") ||
+    value.startsWith("/") ||
+    value.startsWith("~") ||
+    value.startsWith("./") ||
+    value.startsWith("../") ||
+    (value.length >= 2 && value[1] === ":") ||
+    value.split("/").length > 2
+  );
+}
+
 function isHuggingFaceRepo(model: string): boolean {
   return HUGGING_FACE_REPO_PATTERN.test(model);
 }
@@ -239,7 +251,11 @@ function discoverGgufModels(
   const models = [EXAMPLE_MODEL_REPO];
   const variants: Record<string, string> = {};
   for (const model of items) {
-    if (!model.is_gguf) {
+    // /api/models/list reports the backend's raw identifier, which for a native
+    // grant is the host path that status deliberately withholds. The resident
+    // model reaches the picker through status instead, so drop path-shaped ids
+    // rather than leak one into the list and into the copied command.
+    if (!model.is_gguf || looksLikePath(model.id)) {
       continue;
     }
     const parsed = splitModelVariant(model.id);
@@ -264,15 +280,17 @@ function discoverGgufModels(
 // cache, so label the row by repo id when there is one but keep the path to load by.
 function localGgufEntries(
   models: LocalModelInfo[],
-): { label: string; loadId: string }[] {
-  const entries: { label: string; loadId: string }[] = [];
+): { id: string; label: string }[] {
+  const entries: { id: string; label: string }[] = [];
   for (const model of models) {
     if ((model.model_format ?? "").toLowerCase() !== "gguf" || !model.id) {
       continue;
     }
+    // The path is the identity: two scanned models can share a basename, and it is
+    // also what --model needs. The friendly name is display only.
     entries.push({
+      id: model.id,
       label: model.model_id || model.display_name || model.id,
-      loadId: model.id,
     });
   }
   return entries;
@@ -598,6 +616,8 @@ export function AgentsTab() {
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
+  // Display names for scanned models, keyed by the path that identifies them.
+  const [modelLabels, setModelLabels] = useState<Record<string, string>>({});
   // The model /api/inference/status reports as resident, so the command attaches to it
   // rather than remapping to another cached copy.
   const [activeStatusModel, setActiveStatusModel] = useState<string | null>(
@@ -627,6 +647,7 @@ export function AgentsTab() {
   const [variantsLoading, setVariantsLoading] = useState(true);
   const [variantsFailed, setVariantsFailed] = useState(false);
 
+  const labelFor = (model: string) => modelLabels[model] ?? model;
   const matchingModels = useMemo(() => {
     const tokens = modelSearch
       .trim()
@@ -637,8 +658,10 @@ export function AgentsTab() {
       tokens.length === 0
         ? models
         : models.filter((model) => {
-            const normalizedModel = model.toLowerCase();
-            return tokens.every((token) => normalizedModel.includes(token));
+            // Search both, so a scanned model is findable by name and by path.
+            const haystack =
+              `${model} ${modelLabels[model] ?? ""}`.toLowerCase();
+            return tokens.every((token) => haystack.includes(token));
           });
 
     if (tokens.length === 0 && matches.includes(selectedModel)) {
@@ -648,7 +671,7 @@ export function AgentsTab() {
       ];
     }
     return matches;
-  }, [modelSearch, models, selectedModel]);
+  }, [modelLabels, modelSearch, models, selectedModel]);
 
   const visibleModels = matchingModels.slice(0, MODEL_RESULT_LIMIT);
   const preferredVariant = knownVariants[selectedModel] ?? null;
@@ -756,7 +779,7 @@ export function AgentsTab() {
         const localEntries = localGgufEntries(local?.models ?? []);
         const discovered = discoverGgufModels(info?.models ?? [], [
           ...cachedGgufs.map((cached) => cached.repo_id),
-          ...localEntries.map((entry) => entry.label),
+          ...localEntries.map((entry) => entry.id),
         ]);
         // Keep the snapshot load_id for --model while listing the model by repo id.
         const loadIds: Record<string, string> = {};
@@ -765,9 +788,10 @@ export function AgentsTab() {
             loadIds[cached.repo_id] = cached.load_id;
           }
         }
+        const labels: Record<string, string> = {};
         for (const entry of localEntries) {
-          if (entry.loadId !== entry.label) {
-            loadIds[entry.label] = entry.loadId;
+          if (entry.label !== entry.id) {
+            labels[entry.id] = entry.label;
           }
         }
         // Status is applied on its own schedule now, so keep whatever model it has
@@ -779,6 +803,7 @@ export function AgentsTab() {
             : discovered.models;
         });
         setCachedLoadIds(loadIds);
+        setModelLabels(labels);
         setKnownVariants((current) => ({
           ...current,
           ...discovered.variants,
@@ -831,6 +856,11 @@ export function AgentsTab() {
     (attachOnly: string | null, wasActive: string | null) => {
       if (attachOnly) {
         setModels((current) => current.filter((model) => model !== attachOnly));
+        // Even a deliberate pick has to go: the label stood for a withheld path, so
+        // naming it would emit --model <label>, which cannot reload anything.
+        setSelectedModel((current) =>
+          current === attachOnly ? EXAMPLE_MODEL_REPO : current,
+        );
       }
       if (modelSelectionChanged.current || !wasActive) {
         return;
@@ -1134,7 +1164,7 @@ export function AgentsTab() {
                   className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
                 >
                   <span className="min-w-0 truncate font-mono text-xs">
-                    {selectedModel}
+                    {labelFor(selectedModel)}
                   </span>
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}
@@ -1180,7 +1210,9 @@ export function AgentsTab() {
                         }}
                         className="cursor-pointer font-mono text-xs"
                       >
-                        <span className="min-w-0 truncate">{model}</span>
+                        <span className="min-w-0 truncate" title={model}>
+                          {labelFor(model)}
+                        </span>
                       </CommandItem>
                     ))}
                   </CommandList>
