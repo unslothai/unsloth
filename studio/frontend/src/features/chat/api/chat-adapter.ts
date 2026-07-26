@@ -15,6 +15,8 @@ import {
   isHiddenModelId,
 } from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
+import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -1479,15 +1481,51 @@ const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "custom",
 ]);
 
+/** The picker's chat-only platform snapshot, read once per auto-load run. */
+type AutoLoadPlatform = {
+  chatOnly: boolean;
+  isMac: boolean;
+};
+
+// Mirrors the picker's localModelIsGguf / localModelIsMlx checks: the backend
+// format hint is authoritative for indexed rows, with the same name/path
+// fallbacks the picker applies.
+function localRowIsGgufLike(row: LocalModelInfo): boolean {
+  return (
+    row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
+  );
+}
+
+function localRowIsMlxNamed(row: LocalModelInfo): boolean {
+  return (
+    isMlxId(row.id) ||
+    isMlxId(row.display_name ?? "") ||
+    isMlxId(row.model_id ?? "")
+  );
+}
+
 /**
  * Backend-indexed local rows eligible for background auto-load: same policy
  * as the on-device picker (complete, chat-capable, not hidden infra), plus
  * no variant requirement, since a background load cannot ask for a quant.
  */
-function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
+function isAutoLoadableLocalRow(
+  row: LocalModelInfo,
+  platform: AutoLoadPlatform,
+): boolean {
   if (!AUTO_LOAD_LOCAL_SOURCES.has(row.source)) return false;
   if (row.capabilities?.can_chat !== true) return false;
   if (row.partial) return false;
+  // Chat-only installs run GGUF (any host) and MLX (Mac only); the picker
+  // hides other local formats there, so the background load must not pick a
+  // row the user could not have selected (mirrors sortedLocalDir's gate).
+  if (
+    platform.chatOnly &&
+    !localRowIsGgufLike(row) &&
+    !(platform.isMac && localRowIsMlxNamed(row))
+  ) {
+    return false;
+  }
   // Adapters are chat-capable but load by resolving their base model, which
   // for a Hub-id base can trigger the implicit remote fetch a background
   // auto-load must never start. Adapters stay interactive-only.
@@ -2007,9 +2045,20 @@ export async function autoLoadOnDeviceModel(): Promise<{
     };
   }
 
+  // Resolve the platform snapshot the picker's format gates key on. Cached
+  // after the app's boot fetch and never throws (falls back to client-side
+  // detection when the backend is not ready).
+  await fetchDeviceType();
+  const platformState = usePlatformStore.getState();
+  const platform: AutoLoadPlatform = {
+    chatOnly: platformState.isChatOnly(),
+    isMac: platformState.deviceType === "mac",
+  };
   const ggufRepos = allGgufRepos.filter(isAutoLoadableCachedRepo);
   const modelRepos = allModelRepos.filter(isAutoLoadableCachedRepo);
-  const localRows = allLocalRows.filter(isAutoLoadableLocalRow);
+  const localRows = allLocalRows.filter((row) =>
+    isAutoLoadableLocalRow(row, platform),
+  );
   // Dedupe candidates that resolve to the SAME load target (e.g. a custom
   // scan folder pointing into an HF cache). Keyed on kind + load target /
   // on-disk path: a shared model_id does not mean the same files (a distinct
@@ -2218,8 +2267,12 @@ export async function autoLoadOnDeviceModel(): Promise<{
       }
       readyPool.splice(at, 0, entry);
     };
-    // Non-GGUF cached repos need no scan: their snapshot loads whole.
-    for (const repo of modelRepos) {
+    // Non-GGUF cached repos need no scan: their snapshot loads whole. The
+    // picker hides cached non-GGUF rows entirely on chat-only installs, so
+    // the automatic cascade must not pick one there either; the remembered
+    // path above stays ungated since a recorded load is user precedent that
+    // the model runs on this install (e.g. an MLX repo loaded on a Mac).
+    for (const repo of platform.chatOnly ? [] : modelRepos) {
       insertReady({
         type: "cached-model",
         repo,
@@ -2335,6 +2388,11 @@ export async function autoLoadOnDeviceModel(): Promise<{
       }
     }
     let pendingJobs = resolutionJobs.length;
+    // Once auto-load reaches a terminal result (a model loaded, the attempt
+    // cap was hit, or the pool drained), the workers stop claiming jobs so a
+    // successful early load does not leave background scans hammering the
+    // backend while inference is already running. In-flight scans finish.
+    let resolutionStopped = false;
     let progressWaiters: Array<() => void> = [];
     const signalProgress = (): void => {
       const waiters = progressWaiters;
@@ -2356,7 +2414,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
             ),
           },
           async () => {
-            while (nextJob < resolutionJobs.length) {
+            while (!resolutionStopped && nextJob < resolutionJobs.length) {
               const job = resolutionJobs[nextJob];
               nextJob += 1;
               let entry: FallbackCandidate | null = null;
@@ -2385,151 +2443,165 @@ export async function autoLoadOnDeviceModel(): Promise<{
         });
       });
     }
-    while (loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
-      const candidate = readyPool[0];
-      if (!candidate) {
-        if (pendingJobs <= 0) {
-          break;
+    try {
+      while (loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+        const candidate = readyPool[0];
+        if (!candidate) {
+          if (pendingJobs <= 0) {
+            break;
+          }
+          await nextProgress();
+          continue;
         }
-        await nextProgress();
-        continue;
-      }
-      // Every pending scan job can still yield a GGUF candidate (no-scan
-      // rows were seeded upfront), and GGUF outranks safetensors in the
-      // documented order, so the model-kind group stays gated until the
-      // scans settle; resolved GGUF entries keep flowing immediately.
-      if (isModelKindEntry(candidate) && pendingJobs > 0) {
-        await nextProgress();
-        continue;
-      }
-      readyPool.shift();
-      if (candidate.type === "cached-gguf") {
-        const repo = candidate.repo;
-        if (!candidate.retry) {
-          // A shared load target may already have been visited through an
-          // indexed local row (e.g. a scan folder aliasing this cache).
-          if (isSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)) {
+        // The final attempt is precious: while scans are still pending, a
+        // smaller candidate can still enter the pool, so the last slot is
+        // not spent until resolution settles and the global order is
+        // complete. Earlier attempts keep flowing incrementally.
+        if (pendingJobs > 0 && loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS - 1) {
+          await nextProgress();
+          continue;
+        }
+        // Every pending scan job can still yield a GGUF candidate (no-scan
+        // rows were seeded upfront), and GGUF outranks safetensors in the
+        // documented order, so the model-kind group stays gated until the
+        // scans settle; resolved GGUF entries keep flowing immediately.
+        if (isModelKindEntry(candidate) && pendingJobs > 0) {
+          await nextProgress();
+          continue;
+        }
+        readyPool.shift();
+        if (candidate.type === "cached-gguf") {
+          const repo = candidate.repo;
+          if (!candidate.retry) {
+            // A shared load target may already have been visited through an
+            // indexed local row (e.g. a scan folder aliasing this cache).
+            if (isSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)) {
+              continue;
+            }
+            markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path);
+          }
+          const skipKey = autoLoadCandidateKey(
+            "gguf",
+            repo.load_id || repo.repo_id,
+            candidate.variant.quant,
+          );
+          if (skippedAutoLoadCandidates.has(skipKey)) {
             continue;
           }
-          markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path);
+          try {
+            if (
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                loadId: repo.load_id,
+                kind: "gguf",
+                ggufVariant: candidate.variant.quant,
+                maxSeqLength: 0,
+                successLabel: `Loaded ${repo.repo_id} (${candidate.variant.quant})`,
+                inventoryId: repo.inventory_id ?? null,
+                source: "hf_cache",
+              })
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(skipKey);
+            // A quant that passed validation can still fail /load (corrupt
+            // file, llama.cpp startup error). Re-enter the repo's next
+            // complete quant into the global size order, so one repo of
+            // failing quants cannot starve a smaller model elsewhere.
+            // Validation blocks are model-scoped, so they get no requeue.
+            try {
+              const next = await resolveCachedGgufEntry(repo);
+              if (next) {
+                insertReady({ ...next, retry: true });
+              }
+            } catch {
+              hadNonTrustFailure = true;
+            }
+          }
+          continue;
         }
-        const skipKey = autoLoadCandidateKey(
-          "gguf",
-          repo.load_id || repo.repo_id,
-          candidate.variant.quant,
-        );
-        if (skippedAutoLoadCandidates.has(skipKey)) {
+        if (candidate.type === "cached-model") {
+          const repo = candidate.repo;
+          if (isSeen("model", repo.load_id || repo.repo_id, repo.cache_path)) {
+            continue;
+          }
+          markSeen("model", repo.load_id || repo.repo_id, repo.cache_path);
+          if (
+            skippedAutoLoadCandidates.has(
+              autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
+            )
+          ) {
+            continue;
+          }
+          try {
+            if (
+              await loadAutoLoadCandidate({
+                id: repo.repo_id,
+                loadId: repo.load_id,
+                kind: "model",
+                ggufVariant: null,
+                maxSeqLength: 4096,
+                successLabel: `Loaded ${repo.repo_id}`,
+                inventoryId: repo.inventory_id ?? null,
+                source: "hf_cache",
+              })
+            ) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            hadNonTrustFailure = true;
+            skippedAutoLoadCandidates.add(
+              autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
+            );
+          }
+          continue;
+        }
+        const row = candidate.row;
+        const localCandidate = candidate.candidate;
+        if (!candidate.retry) {
+          if (isSeen(localCandidate.kind, row.load_id, row.id, row.path)) {
+            continue;
+          }
+          markSeen(localCandidate.kind, row.load_id, row.id, row.path);
+        }
+        if (isSkippedAutoLoadCandidate(localCandidate)) {
           continue;
         }
         try {
-          if (
-            await loadAutoLoadCandidate({
-              id: repo.repo_id,
-              loadId: repo.load_id,
-              kind: "gguf",
-              ggufVariant: candidate.variant.quant,
-              maxSeqLength: 0,
-              successLabel: `Loaded ${repo.repo_id} (${candidate.variant.quant})`,
-              inventoryId: repo.inventory_id ?? null,
-              source: "hf_cache",
-            })
-          ) {
+          if (await loadAutoLoadCandidate(localCandidate)) {
             return { loaded: true, blockedByTrustRemoteCode: false };
           }
         } catch {
           hadNonTrustFailure = true;
-          skippedAutoLoadCandidates.add(skipKey);
-          // A quant that passed validation can still fail /load (corrupt
-          // file, llama.cpp startup error). Re-enter the repo's next
-          // complete quant into the global size order, so one repo of
-          // failing quants cannot starve a smaller model elsewhere.
-          // Validation blocks are model-scoped, so they get no requeue.
+          skippedAutoLoadCandidates.add(autoLoadSkipKey(localCandidate));
+          // Same requeue as the cached-gguf branch: the folder's next complete
+          // quant re-enters the global size order instead of retrying inline.
           try {
-            const next = await resolveCachedGgufEntry(repo);
+            const next = await resolveLocalRowCandidate(
+              row,
+              null,
+              isSkippedAutoLoadCandidate,
+            );
             if (next) {
-              insertReady({ ...next, retry: true });
+              insertReady({
+                type: "local",
+                row,
+                candidate: next.candidate,
+                sizeBytes: next.sizeBytes,
+                retry: true,
+              });
             }
           } catch {
             hadNonTrustFailure = true;
           }
         }
-        continue;
       }
-      if (candidate.type === "cached-model") {
-        const repo = candidate.repo;
-        if (isSeen("model", repo.load_id || repo.repo_id, repo.cache_path)) {
-          continue;
-        }
-        markSeen("model", repo.load_id || repo.repo_id, repo.cache_path);
-        if (
-          skippedAutoLoadCandidates.has(
-            autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
-          )
-        ) {
-          continue;
-        }
-        try {
-          if (
-            await loadAutoLoadCandidate({
-              id: repo.repo_id,
-              loadId: repo.load_id,
-              kind: "model",
-              ggufVariant: null,
-              maxSeqLength: 4096,
-              successLabel: `Loaded ${repo.repo_id}`,
-              inventoryId: repo.inventory_id ?? null,
-              source: "hf_cache",
-            })
-          ) {
-            return { loaded: true, blockedByTrustRemoteCode: false };
-          }
-        } catch {
-          hadNonTrustFailure = true;
-          skippedAutoLoadCandidates.add(
-            autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
-          );
-        }
-        continue;
-      }
-      const row = candidate.row;
-      const localCandidate = candidate.candidate;
-      if (!candidate.retry) {
-        if (isSeen(localCandidate.kind, row.load_id, row.id, row.path)) {
-          continue;
-        }
-        markSeen(localCandidate.kind, row.load_id, row.id, row.path);
-      }
-      if (isSkippedAutoLoadCandidate(localCandidate)) {
-        continue;
-      }
-      try {
-        if (await loadAutoLoadCandidate(localCandidate)) {
-          return { loaded: true, blockedByTrustRemoteCode: false };
-        }
-      } catch {
-        hadNonTrustFailure = true;
-        skippedAutoLoadCandidates.add(autoLoadSkipKey(localCandidate));
-        // Same requeue as the cached-gguf branch: the folder's next complete
-        // quant re-enters the global size order instead of retrying inline.
-        try {
-          const next = await resolveLocalRowCandidate(
-            row,
-            null,
-            isSkippedAutoLoadCandidate,
-          );
-          if (next) {
-            insertReady({
-              type: "local",
-              row,
-              candidate: next.candidate,
-              sizeBytes: next.sizeBytes,
-              retry: true,
-            });
-          }
-        } catch {
-          hadNonTrustFailure = true;
-        }
-      }
+    } finally {
+      // Runs on every exit (successful return, cap, drained pool, or a
+      // thrown error) so no worker keeps scanning after the outcome is set.
+      resolutionStopped = true;
     }
 
     // No auto-loadable on-device model (or the attempt cap was hit). Never
