@@ -1017,7 +1017,9 @@ def test_a_backtick_in_a_fence_info_string_is_not_a_fence(changelog_module):
     # A tilde fence may hold backticks, and a normal fence still hides samples.
     assert [
         e.version
-        for e in changelog_module.parse_changelog("## 2.0\n\n```md\n## 9.9.9\n```\n\n## 1.0\n\n- old\n")
+        for e in changelog_module.parse_changelog(
+            "## 2.0\n\n```md\n## 9.9.9\n```\n\n## 1.0\n\n- old\n"
+        )
     ] == ["2.0", "1.0"]
     for source in (PREVIEW, LINKS):
         assert "info string" in source.read_text(encoding = "utf-8")
@@ -1054,9 +1056,9 @@ def test_the_overlay_stack_fits_the_viewport():
     stacked beneath it."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in provider
-    panel = (
-        FRONTEND / "features/hub/download-manager/download-manager-panel.tsx"
-    ).read_text(encoding = "utf-8")
+    panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
+        encoding = "utf-8"
+    )
     # Both overlays scroll internally, so they can give up height.
     assert "flex min-h-0" in panel
     assert "flex min-h-0" in WEB_BANNER.read_text(encoding = "utf-8")
