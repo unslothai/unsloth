@@ -5812,7 +5812,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # next /v1 request can't resurrect this model. The idle loop unloads via the
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
-
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
