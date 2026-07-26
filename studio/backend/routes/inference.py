@@ -3070,12 +3070,50 @@ def _monitor_context_length() -> Optional[int]:
     return None
 
 
+def _hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
+    """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
+
+    An auto-switch load is handed the concrete snapshot dir, whose basename is the
+    commit sha, so public_model_id alone would label the row with a hash.
+    """
+    if not path:
+        return None
+    for part in str(path).replace("\\", "/").split("/"):
+        if part.startswith("models--"):
+            return part[len("models--") :].replace("--", "/")
+    return None
+
+
+def _lifecycle_model_label(model: Optional[str], variant: Optional[str] = None) -> str:
+    """A path-free ``repo`` / ``repo:QUANT`` label for a monitor lifecycle row."""
+    clean = _hf_cache_repo_id(model) or public_model_id(model) or model or "model"
+    return f"{clean}:{variant}" if variant and ":" not in clean else clean
+
+
+def _close_load_event(
+    entry_id: Optional[str], model: Optional[str], variant: Optional[str]
+) -> None:
+    """Close a monitor load row, relabelled with the id the load actually resolved
+    (the row opened on the request's model_path, which may be an HF snapshot dir)."""
+    api_monitor.relabel(entry_id, _lifecycle_model_label(model, variant))
+    api_monitor.finish(entry_id)
+
+
 def _monitor_active_model() -> Optional[str]:
+    """The loaded model as a client-facing id, quant included when known.
+
+    Cleaned like /v1/models: this is rendered in the settings UI and served over
+    the public --secure tunnel, so it must never be the on-disk load path.
+    """
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
-        return getattr(llama_backend, "model_identifier", None)
+        model_id = _llama_public_model_id(llama_backend)
+        variant = getattr(llama_backend, "hf_variant", None)
+        if model_id and variant and ":" not in model_id:
+            return f"{model_id}:{variant}"
+        return model_id
     backend = get_inference_backend()
-    return backend.active_model_name
+    return public_model_id(backend.active_model_name) or backend.active_model_name
 
 
 def _validate_native_gguf_companion(
@@ -4402,6 +4440,15 @@ async def _load_model_impl(
     # sampled step logs even if it reports 100% immediately (cached/small load).
     _reset_load_progress_step()
 
+    # Open a live "loading" row in the API monitor. Discarded below if the model
+    # turned out to be already loaded, relabelled once the real id is known, and
+    # closed on every exit by the handlers at the end of this function.
+    _load_event = api_monitor.record_lifecycle(
+        event = "load",
+        model = _lifecycle_model_label(request.model_path, request.gguf_variant),
+        running = True,
+    )
+
     native_grant_backed = False
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
@@ -4495,6 +4542,8 @@ async def _load_model_impl(
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 llama_backend._record_matching_gpu_request(request.gpu_ids)
+                # Nothing was loaded, so the monitor must not show a load row.
+                api_monitor.discard(_load_event)
                 logger.info(
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
@@ -4548,6 +4597,7 @@ async def _load_model_impl(
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
             ):
+                api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
@@ -4860,6 +4910,11 @@ async def _load_model_impl(
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
+            _close_load_event(
+                _load_event,
+                model_log_label if native_grant_backed else config.identifier,
+                request.gguf_variant or getattr(llama_backend, "hf_variant", None),
+            )
             # Clear any idle-unload reload stash now, not only on the next poll.
             from core.inference.llama_keepwarm import note_model_loaded
 
@@ -4977,6 +5032,9 @@ async def _load_model_impl(
 
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
+        )
+        _close_load_event(
+            _load_event, model_log_label if native_grant_backed else config.identifier, None
         )
         # Clear any idle-unload reload stash: a manual load supersedes an idle-freed
         # GGUF, so the next /v1 request must not resurrect it. Mirror the GGUF branch
@@ -5100,6 +5158,9 @@ async def _load_model_impl(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
     finally:
         gguf_load_stack.close()
+        # Catch-all: any exit that did not already close or discard the row (an
+        # error, or a cancelled load) leaves it stuck "loading" otherwise.
+        api_monitor.fail_open(_load_event, "Load did not complete")
 
 
 def _requires_trust_remote_code_for_model(
@@ -5720,6 +5781,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 # request is mid-stream (only the automatic idle loop defers to it).
                 llama_backend.unload_model()
                 note_model_unloaded()
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(request.model_path),
+                    reason = "manual",
+                )
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -5729,6 +5795,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             backend = get_inference_backend()
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
+            api_monitor.record_lifecycle(
+                event = "unload",
+                model = _lifecycle_model_label(request.model_path),
+                reason = "manual",
+            )
             logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
@@ -10575,6 +10646,9 @@ def _openai_model_objects() -> list[dict]:
             "created": _created,
             "owned_by": _OWNED_BY,
         }
+        _quant = getattr(llama_backend, "hf_variant", None)
+        if _quant:
+            entry["quant"] = _quant
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
@@ -10681,11 +10755,15 @@ async def _openai_catalog_objects() -> list[dict]:
     # read from the on-disk files, not model_format: the HF-cache scanner leaves
     # model_format unset for GGUF snapshots, so a model_format filter would drop
     # every cached GGUF. The file checks run off the loop.
-    from core.inference.local_model_resolver import info_has_local_gguf
+    from core.inference.local_model_resolver import local_gguf_quants
 
     catalog = await _cached_local_catalog()
-    servable = await asyncio.to_thread(lambda: [i for i in catalog if info_has_local_gguf(i)])
-    for info in servable:
+    # One scan yields both "is this servable" and its on-disk quants, so an entry
+    # can advertise the quant to name without a second pass over the model dirs.
+    servable = await asyncio.to_thread(
+        lambda: [(i, q) for i in catalog if (q := local_gguf_quants(i)) is not None]
+    )
+    for info, quants in servable:
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
         if not cid or cid in by_id:
             continue
@@ -10696,6 +10774,10 @@ async def _openai_catalog_objects() -> list[dict]:
             "owned_by": _OWNED_BY,
             "loaded": False,
         }
+        # Bare label (never a filename or path): the id stays bare for OpenAI
+        # compat, and a client appends ":<quant>" to pin this exact quant.
+        if quants:
+            obj["quant"] = quants[0]
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display

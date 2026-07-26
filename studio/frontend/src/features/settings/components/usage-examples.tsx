@@ -350,6 +350,20 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
+// A checkpoint can be an on-disk load path (an auto-switch load resolves to the
+// GGUF/snapshot dir), which must never reach a printed snippet: it leaks the host
+// layout and is not an id /v1 advertises. Mirrors the backend's _looks_like_path.
+function looksLikePath(id: string): boolean {
+  return (
+    id.startsWith("/") ||
+    id.startsWith("~") ||
+    id.startsWith(".") ||
+    id.includes("\\") ||
+    id.toLowerCase().endsWith(".gguf") ||
+    (id.match(/\//g)?.length ?? 0) >= 2
+  );
+}
+
 // The model the examples name. With nothing loaded this used to print
 // MODEL_FALLBACK, a repo id the user likely never downloaded, so the copied
 // snippet 404d. Prefer a real id from the catalog /v1 resolves against; the
@@ -358,7 +372,9 @@ function useExampleModelName(): string {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const [catalog, setCatalog] = useState<OpenAIModel[]>([]);
-  const needsCatalog = !checkpoint || checkpoint.startsWith("external::");
+  const usableCheckpoint =
+    !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
+  const needsCatalog = !usableCheckpoint;
 
   // Only when the checkpoint can't answer it: /v1/models scans the model dirs and
   // HF caches. Re-runs when a model is loaded or unloaded.
@@ -378,18 +394,23 @@ function useExampleModelName(): string {
   }, [needsCatalog]);
 
   return useMemo(() => {
-    if (checkpoint && !checkpoint.startsWith("external::")) {
+    if (usableCheckpoint && checkpoint) {
       if (ggufVariant && !checkpoint.includes(":")) {
         return `${checkpoint}:${ggufVariant}`;
       }
       return checkpoint;
     }
-    // No local checkpoint (or an external provider, which /v1 cannot serve):
-    // name something this server actually holds.
-    return (
-      catalog.find((m) => m.loaded)?.id ?? catalog[0]?.id ?? MODEL_FALLBACK
-    );
-  }, [catalog, checkpoint, ggufVariant]);
+    // No usable checkpoint (none, an external provider, or a raw load path):
+    // name something this server actually holds, quant included so the request
+    // pins the file on disk instead of letting the server pick a quant.
+    const pick = catalog.find((m) => m.loaded) ?? catalog[0];
+    if (!pick) {
+      return MODEL_FALLBACK;
+    }
+    return pick.quant && !pick.id.includes(":")
+      ? `${pick.id}:${pick.quant}`
+      : pick.id;
+  }, [catalog, checkpoint, ggufVariant, usableCheckpoint]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns

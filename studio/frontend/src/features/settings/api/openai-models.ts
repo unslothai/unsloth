@@ -7,10 +7,13 @@ export type OpenAIModel = {
   id: string;
   // Resident in memory now; the rest are downloaded and servable.
   loaded?: boolean;
+  // On-disk GGUF quant. Ids stay bare for OpenAI compat, so append it as
+  // `id:quant` to pin this exact quant rather than letting the server pick.
+  quant?: string;
 };
 
 type ApiOpenAIModelList = {
-  data?: { id?: unknown; loaded?: unknown }[];
+  data?: { id?: unknown; loaded?: unknown; quant?: unknown }[];
 };
 
 /**
@@ -32,7 +35,13 @@ export async function listOpenAIModels(): Promise<OpenAIModel[]> {
   }
   return body.data.flatMap((entry) =>
     typeof entry?.id === "string" && entry.id
-      ? [{ id: entry.id, loaded: entry.loaded === true }]
+      ? [
+          {
+            id: entry.id,
+            loaded: entry.loaded === true,
+            quant: typeof entry.quant === "string" ? entry.quant : undefined,
+          },
+        ]
       : [],
   );
 }

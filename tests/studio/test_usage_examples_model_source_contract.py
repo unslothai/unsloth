@@ -25,7 +25,9 @@ def test_examples_name_a_model_the_server_can_serve():
     assert "listOpenAIModels()" in hook
     # Precedence: live checkpoint, then a loaded catalog entry, then any entry,
     # and only then the placeholder.
-    assert "catalog.find((m) => m.loaded)?.id ?? catalog[0]?.id ?? MODEL_FALLBACK" in hook
+    assert "catalog.find((m) => m.loaded) ?? catalog[0]" in hook
+    # The snippet pins the quant so the request names the file on disk.
+    assert "`${pick.id}:${pick.quant}`" in hook
 
     api = OPENAI_MODELS_TS.read_text(encoding = "utf-8")
     assert 'authFetch("/v1/models")' in api
@@ -45,3 +47,34 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
 
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
     assert "<ModelAutoSwitchSection />" in tab
+
+
+API_MONITOR_TSX = SETTINGS / "components/api-monitor-console.tsx"
+
+
+def test_api_monitor_pages_five_at_a_time():
+    # 50 terminal entries are retained backend-side; the console used to dump all
+    # of them into one scroller.
+    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    assert "const PAGE_SIZE = 5;" in src
+    assert "ordered.slice(" in src
+    # Paging back must freeze the id order, or live traffic reorders history
+    # under the cursor between polls.
+    assert "frozenIds" in src
+    assert "setFrozenIds((prev) => prev ?? entries.map((entry) => entry.id))" in src
+
+
+def test_api_monitor_renders_lifecycle_rows():
+    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    assert "function LifecycleEntry(" in src
+    assert 'entry.kind === "lifecycle"' in src
+    for label in ("Loading model", "Model loaded", "Model unloaded"):
+        assert label in src
+    # Lifecycle rows have no prompt/reply to fetch.
+    assert "isLifecycle(entry) || !expandedIds.has(entry.id)" in src
+
+
+def test_auto_switch_section_sits_above_the_monitor():
+    tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
+    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<ApiMonitorConsole />")
+    assert tab.index("<ApiMonitorConsole />") < tab.index("<UsageExamples")

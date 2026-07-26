@@ -108,12 +108,12 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         return None
 
 
-def info_has_local_gguf(info) -> bool:
-    """True when *info* (a LocalModelInfo) points to on-disk GGUF weights the
-    auto-switch path can load. Read from the files, not ``info.model_format``: the
-    HF-cache scanner leaves model_format unset for GGUF snapshots, so a
-    model_format filter would drop every cached GGUF. Lets /v1/models advertise
-    exactly what /v1 can serve."""
+def local_gguf_quants(info) -> Optional[tuple[str, ...]]:
+    """On-disk quant labels for *info*, or None when it is not a servable local
+    GGUF. Read from the files, not ``info.model_format``: the HF-cache scanner
+    leaves model_format unset for GGUF snapshots, so a model_format filter would
+    drop every cached GGUF. Lets /v1/models advertise exactly what /v1 can serve,
+    and which quant to name, from a single scan."""
     from pathlib import Path
 
     path = getattr(info, "path", None)
@@ -123,8 +123,14 @@ def info_has_local_gguf(info) -> bool:
     if isinstance(path, str) and any(
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
-        return False
-    return _local_gguf_entry(getattr(info, "id", "") or "", info) is not None
+        return None
+    entry = _local_gguf_entry(getattr(info, "id", "") or "", info)
+    return entry.variants if entry is not None else None
+
+
+def info_has_local_gguf(info) -> bool:
+    """True when *info* points to on-disk GGUF weights the auto-switch path can load."""
+    return local_gguf_quants(info) is not None
 
 
 def _build_index() -> dict[str, _LocalGgufEntry]:

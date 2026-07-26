@@ -283,6 +283,11 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
+  // "request" is an HTTP call; "lifecycle" is a model load/unload, which carries
+  // event/reason instead of a prompt and has no detail to fetch.
+  kind?: "request" | "lifecycle";
+  event?: "load" | "unload" | null;
+  reason?: "manual" | "idle" | null;
 }
 
 export interface ApiMonitorResponse {

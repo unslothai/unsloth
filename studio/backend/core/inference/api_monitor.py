@@ -52,6 +52,13 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
+    # "request" (an HTTP call) or "lifecycle" (a model load/unload). Lifecycle
+    # rows carry event/reason instead of a prompt and are server-wide, so they
+    # are shared across subjects rather than owned by the caller that caused them.
+    kind: str = "request"
+    event: Optional[str] = None
+    reason: Optional[str] = None
+    shared: bool = False
 
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
         duration_ms = None
@@ -85,6 +92,9 @@ class ApiMonitorEntry:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
             "error": self.error,
+            "kind": self.kind,
+            "event": self.event,
+            "reason": self.reason,
         }
         if include_details:
             payload["prompt"] = self.prompt
@@ -126,6 +136,65 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
         return entry.id
+
+    def record_lifecycle(
+        self,
+        *,
+        event: str,
+        model: str,
+        reason: Optional[str] = None,
+        running: bool = False,
+    ) -> str:
+        """Record a model load/unload alongside the request traffic that caused it.
+
+        ``running=True`` opens the row (a load in progress) and the caller closes
+        it with the usual :meth:`finish` / :meth:`fail`; an unload is terminal on
+        arrival. Rows are shared, so every subject sees them, and share the same
+        retention budget as requests.
+        """
+        now = time.time()
+        entry = ApiMonitorEntry(
+            id = f"apievt_{uuid.uuid4().hex[:12]}",
+            endpoint = f"model.{event}",
+            method = "",
+            model = model or "default",
+            prompt = "",
+            status = "running" if running else "completed",
+            started_at = now,
+            updated_at = now,
+            started_monotonic = time.monotonic(),
+            finished_at = None if running else now,
+            finished_monotonic = None if running else time.monotonic(),
+            kind = "lifecycle",
+            event = event,
+            reason = reason,
+            shared = True,
+        )
+        with self._lock:
+            self._entries.appendleft(entry)
+            self._trim_terminal_locked()
+        return entry.id
+
+    def relabel(self, entry_id: Optional[str], model: str) -> None:
+        """Rename an open lifecycle row once the load resolves its real id (the
+        caller only has the load path up front, which may be an HF snapshot dir)."""
+        if not entry_id or not model:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None:
+                entry.model = model
+                entry.updated_at = time.time()
+
+    def discard(self, entry_id: Optional[str]) -> None:
+        """Drop a row that turned out not to be an event (a load that was already
+        satisfied, so nothing was actually loaded)."""
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is not None:
+                self._entries.remove(entry)
 
     def append_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id or not text:
@@ -212,6 +281,18 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
 
+    def fail_open(self, entry_id: Optional[str], error: str) -> None:
+        """Fail only a still-open row. Unlike :meth:`fail` this never touches an
+        entry that already finished, so a catch-all in a ``finally`` cannot stamp
+        an error onto a request that in fact succeeded."""
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.finished_at is not None:
+                return
+        self.fail(entry_id, error)
+
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
@@ -244,7 +325,7 @@ class ApiMonitor:
             return [
                 entry.snapshot(include_details = include_details)
                 for entry in self._entries
-                if subject is None or entry.subject == subject
+                if self._visible(entry, subject)
             ]
 
     def get(
@@ -257,21 +338,29 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return None
-            if subject is not None and entry.subject != subject:
+            if not self._visible(entry, subject):
                 return None
             return entry.snapshot(include_details = True)
 
     def active_count(self, *, subject: Optional[str] = None) -> int:
+        # Lifecycle rows are excluded: a load in progress is "running" so the row
+        # can show as live, but it is not an in-flight API request.
         with self._lock:
             return sum(
                 1
                 for entry in self._entries
-                if entry.status == "running" and (subject is None or entry.subject == subject)
+                if entry.status == "running"
+                and entry.kind != "lifecycle"
+                and (subject is None or entry.subject == subject)
             )
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+
+    @staticmethod
+    def _visible(entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
+        return subject is None or entry.subject == subject or entry.shared
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:

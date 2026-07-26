@@ -22,6 +22,7 @@ import type { ApiMonitorEntry, ApiMonitorResponse } from "../../chat/types/api";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
+const PAGE_SIZE = 5;
 
 function formatTime(value: number): string {
   return new Date(value * 1000).toLocaleTimeString([], {
@@ -84,6 +85,53 @@ function UsageBar({ value }: { value?: number | null }): ReactElement | null {
         style={{ width: `${pct}%` }}
       />
     </div>
+  );
+}
+
+function isLifecycle(entry: ApiMonitorEntry): boolean {
+  return entry.kind === "lifecycle";
+}
+
+function lifecycleLabel(entry: ApiMonitorEntry): string {
+  if (entry.event === "unload") {
+    return entry.reason === "idle" ? "Model unloaded (idle)" : "Model unloaded";
+  }
+  if (entry.status === "running") {
+    return "Loading model";
+  }
+  if (entry.status === "completed") {
+    return "Model loaded";
+  }
+  return "Model load failed";
+}
+
+// Load/unload rows: a label, the model and a time. No prompt, reply, tokens or
+// detail fetch, so unlike a request row there is nothing to expand.
+function LifecycleEntry({ entry }: { entry: ApiMonitorEntry }): ReactElement {
+  return (
+    <article className="min-w-0 rounded-lg border border-border/70 bg-muted/25">
+      <div className="flex w-full min-w-0 items-start justify-between gap-3 p-3">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <ActivityIcon
+              className={cn("size-3.5 shrink-0", statusTone(entry.status))}
+            />
+            <span className="truncate text-xs font-medium">
+              {lifecycleLabel(entry)}
+            </span>
+          </div>
+          <div className="mt-1 truncate text-ui-11 text-muted-foreground">
+            {entry.model}
+          </div>
+        </div>
+        <div className="shrink-0 text-right text-ui-11 text-muted-foreground">
+          <div>{formatTime(entry.started_at)}</div>
+          {entry.event === "load" ? (
+            <div>{formatDuration(entry.duration_ms)}</div>
+          ) : null}
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -253,6 +301,51 @@ export function ApiMonitorConsole(): ReactElement {
   const statusLabel = data?.status ?? "idle";
   const hasActive = (data?.active_requests ?? 0) > 0;
   const entries = useMemo(() => data?.entries ?? [], [data]);
+
+  // Page 1 tracks the live list. Paging back freezes the id order captured at
+  // that moment: the poll keeps refreshing row contents, but new traffic must not
+  // shove history down a page while it is being read (finishing a request also
+  // moves it to the head, so even an idle server reorders).
+  const [page, setPage] = useState(0);
+  const [frozenIds, setFrozenIds] = useState<string[] | null>(null);
+  const byId = useMemo(
+    () => new Map(entries.map((entry) => [entry.id, entry])),
+    [entries],
+  );
+  const ordered = useMemo(() => {
+    if (frozenIds === null) {
+      return entries;
+    }
+    return frozenIds.flatMap((id) => {
+      const entry = byId.get(id);
+      return entry ? [entry] : [];
+    });
+  }, [byId, entries, frozenIds]);
+  const pageCount = Math.max(1, Math.ceil(ordered.length / PAGE_SIZE));
+  const pageIndex = Math.min(page, pageCount - 1);
+  const visible = ordered.slice(
+    pageIndex * PAGE_SIZE,
+    pageIndex * PAGE_SIZE + PAGE_SIZE,
+  );
+  const newerCount =
+    frozenIds === null
+      ? 0
+      : entries.filter((entry) => !frozenIds.includes(entry.id)).length;
+
+  const goToPage = useCallback(
+    (next: number): void => {
+      if (next <= 0) {
+        setFrozenIds(null);
+        setPage(0);
+        return;
+      }
+      // Freeze on the way off page 1 so the history under the cursor holds still.
+      setFrozenIds((prev) => prev ?? entries.map((entry) => entry.id));
+      setPage(next);
+    },
+    [entries],
+  );
+
   const loadDetail = useCallback(
     (id: string): void => {
       if (loadingDetailsRef.current.has(id)) {
@@ -305,8 +398,10 @@ export function ApiMonitorConsole(): ReactElement {
   );
 
   useEffect(() => {
-    for (const entry of entries) {
-      if (!expandedIds.has(entry.id)) {
+    // Only rows actually on screen: an expanded row left behind on another page
+    // would otherwise keep polling its detail every tick.
+    for (const entry of visible) {
+      if (isLifecycle(entry) || !expandedIds.has(entry.id)) {
         continue;
       }
       const cached = detailsRef.current[entry.id];
@@ -314,7 +409,7 @@ export function ApiMonitorConsole(): ReactElement {
         loadDetail(entry.id);
       }
     }
-  }, [entries, expandedIds, loadDetail]);
+  }, [visible, expandedIds, loadDetail]);
 
   return (
     <section className="flex min-w-0 flex-col rounded-lg border border-border/70 bg-background">
@@ -375,19 +470,52 @@ export function ApiMonitorConsole(): ReactElement {
           </div>
         ) : (
           <div className="grid gap-3">
-            {entries.map((entry) => (
-              <MonitorEntry
-                key={entry.id}
-                entry={entry}
-                detail={details[entry.id]}
-                expanded={expandedIds.has(entry.id)}
-                loading={loadingDetails.has(entry.id)}
-                onToggle={() => toggleEntry(entry)}
-              />
-            ))}
+            {visible.map((entry) =>
+              isLifecycle(entry) ? (
+                <LifecycleEntry key={entry.id} entry={entry} />
+              ) : (
+                <MonitorEntry
+                  key={entry.id}
+                  entry={entry}
+                  detail={details[entry.id]}
+                  expanded={expandedIds.has(entry.id)}
+                  loading={loadingDetails.has(entry.id)}
+                  onToggle={() => toggleEntry(entry)}
+                />
+              ),
+            )}
           </div>
         )}
       </div>
+
+      {ordered.length > PAGE_SIZE ? (
+        <div className="flex items-center justify-between gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
+          <span>
+            Page {pageIndex + 1} of {pageCount}
+            {newerCount > 0 ? ` (${newerCount.toLocaleString()} new)` : ""}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => goToPage(pageIndex - 1)}
+              disabled={pageIndex === 0}
+            >
+              Newer
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={() => goToPage(pageIndex + 1)}
+              disabled={pageIndex >= pageCount - 1}
+            >
+              Older
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

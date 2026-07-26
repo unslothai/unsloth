@@ -64,8 +64,11 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
         ]
 
     monkeypatch.setattr(inf, "_cached_local_catalog", _fake_catalog)
-    # GGUF-ness is read from the on-disk files; drive it off each info's flag here.
-    monkeypatch.setattr(resolver, "info_has_local_gguf", lambda info: info.is_gguf)
+    # GGUF-ness and the quant labels both come from the on-disk files in one scan;
+    # drive them off each info's flag here.
+    monkeypatch.setattr(
+        resolver, "local_gguf_quants", lambda info: ("Q8_0",) if info.is_gguf else None
+    )
 
     data = asyncio.run(inf._openai_catalog_objects())
     ids = {m["id"]: m for m in data}
@@ -73,8 +76,10 @@ def test_catalog_lists_loaded_and_available(monkeypatch):
     # Loaded model is present, marked loaded, and keeps context fields.
     assert ids["Qwen3-Q4"]["loaded"] is True
     assert ids["Qwen3-Q4"]["context_length"] == 4096
-    # Available-but-not-loaded GGUF models are listed too.
+    # Available-but-not-loaded GGUF models are listed too, with the quant a client
+    # appends to the id to pin it.
     assert ids["Llama-8B-Q8"]["loaded"] is False
+    assert ids["Llama-8B-Q8"]["quant"] == "Q8_0"
     # The HF-cache GGUF is listed despite model_format being unset.
     assert ids["org/Foo"]["loaded"] is False
     # The non-GGUF model is filtered out (/v1 can never serve it).
@@ -205,3 +210,46 @@ def test_cached_local_catalog_offloads_and_caches(monkeypatch):
     assert second is first or [i.id for i in second] == [i.id for i in first]
     assert calls["scan"] == 1  # cached: scanned once for two calls
     assert calls["threaded"] == 1  # offloaded to a worker thread
+
+
+def test_monitor_active_model_is_a_public_id_not_a_host_path(monkeypatch):
+    # The settings UI renders this and --secure serves it over a public tunnel, so
+    # it must never be the on-disk load path (it used to be model_identifier raw).
+    class _Llama:
+        is_loaded = True
+        model_identifier = "/home/me/.cache/huggingface/hub/models--org--A-GGUF/snapshots/abc"
+        hf_variant = "UD-Q4_K_XL"
+        _openai_advertised_id = "org/A-GGUF"
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _Llama())
+    assert inf._monitor_active_model() == "org/A-GGUF:UD-Q4_K_XL"
+
+
+def test_monitor_active_model_cleans_a_path_with_no_advertised_id(monkeypatch):
+    class _Llama:
+        is_loaded = True
+        model_identifier = "/data/models/Llama-8B-Q8.gguf"
+        hf_variant = None
+        _openai_advertised_id = None
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _Llama())
+    label = inf._monitor_active_model()
+    assert "/" not in label and ".gguf" not in label
+
+
+def test_lifecycle_label_recovers_the_repo_id_from_an_hf_cache_path():
+    # An auto-switch load is handed the snapshot dir, whose basename is a commit
+    # sha, so the row would otherwise be labelled with a hash.
+    snap = "/home/me/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/bfc15c3"
+    assert (
+        inf._lifecycle_model_label(snap, "UD-Q4_K_XL")
+        == "unsloth/gemma-4-E4B-it-GGUF:UD-Q4_K_XL"
+    )
+
+
+def test_lifecycle_model_label_is_path_free():
+    label = inf._lifecycle_model_label("/data/models/Llama-8B-Q8.gguf", "Q8_0")
+    assert "/" not in label and ".gguf" not in label
+    assert inf._lifecycle_model_label("org/A-GGUF", "Q4_K_M") == "org/A-GGUF:Q4_K_M"
+    # An id that already carries a quant is not double-suffixed.
+    assert inf._lifecycle_model_label("org/A-GGUF:Q4_K_M", "Q8_0") == "org/A-GGUF:Q4_K_M"
