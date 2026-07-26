@@ -87,6 +87,11 @@ function Install-UnslothStudio {
         )
         if ($Code -eq 0) { $Code = 1 }
         Write-TauriLog "ERROR" $Message
+        # Clear the release-preservation handoff on any failure: a non-Tauri `irm | iex`
+        # run throws below and leaves the caller's session alive, so a leaked
+        # UNSLOTH_KEPT_TORCH would let a later `studio setup`/`update` (or a retry that
+        # skips the branch-entry clear) re-pin the abandoned exact torch release.
+        Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
@@ -1295,11 +1300,80 @@ exit 0
             $suffix++
             $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
         }
-        Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
+        # Publish the rollback state before the atomic rename so interruption
+        # cannot land after Move-Item but before cleanup knows where the old venv went.
+        try {
+            Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
+        } catch {
+            # A collision or ordinary rename failure leaves the original in place.
+            # Keep state active only when the rename happened before interruption.
+            if (Test-Path -LiteralPath $ExistingDir) {
+                $script:StudioVenvRollbackActive = $false
+                $script:StudioVenvRollbackDir = $null
+            }
+            throw
+        }
         substep "previous environment preserved for rollback"
+    }
+
+    function Remove-StudioVenvTreeWithRetry {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [Parameter(Mandatory = $true)][string]$Label
+        )
+        $lastError = $null
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            } catch {
+                $lastError = $_.Exception.Message
+            }
+            if (-not (Test-Path -LiteralPath $Path)) { return $true }
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds (250 * $attempt) }
+        }
+        Write-Host "[WARN] Could not remove $Label at $Path" -ForegroundColor Yellow
+        if ($lastError) { Write-Host "       $lastError" -ForegroundColor Yellow }
+        return $false
+    }
+
+    function Test-StudioVenvRollbackMustBePreserved {
+        param([Parameter(Mandatory = $true)][System.IO.FileSystemInfo]$Rollback)
+        # Preserve anything outside the installer's timestamp.PID[.suffix] format.
+        if ($Rollback.Name -notmatch '^unsloth_studio\.rollback\.[0-9]{14}\.([0-9]+)(?:\.[0-9]+)?$') {
+            return $true
+        }
+        $ownerPid = 0
+        if (-not [int]::TryParse($Matches[1], [ref]$ownerPid)) { return $true }
+        if ($ownerPid -eq $PID) { return $true }
+        return $null -ne (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)
+    }
+
+    function Remove-StaleStudioVenvRollbacks {
+        try {
+            $rollbacks = @(
+                Get-ChildItem -LiteralPath $StudioHome -Directory -Force -ErrorAction Stop |
+                    Where-Object { $_.Name -like 'unsloth_studio.rollback.*' }
+            )
+        } catch {
+            Write-Host "[WARN] Could not inspect stale environment rollbacks in $StudioHome" -ForegroundColor Yellow
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            return
+        }
+        foreach ($rollback in $rollbacks) {
+            if (($rollback.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Write-Host "[WARN] Refusing to remove rollback reparse point $($rollback.FullName)" -ForegroundColor Yellow
+                continue
+            }
+            # A concurrent installer may have moved its live venv aside. The PID
+            # in the generated name keeps this run from deleting its rescue copy.
+            if (Test-StudioVenvRollbackMustBePreserved -Rollback $rollback) { continue }
+            if (Remove-StudioVenvTreeWithRetry -Path $rollback.FullName -Label "stale environment rollback") {
+                substep "removed stale environment rollback $($rollback.Name)"
+            }
+        }
     }
 
     function Restore-StudioVenvRollback {
@@ -1313,7 +1387,9 @@ exit 0
         substep "restoring previous environment after failed install..." "Yellow"
         try {
             if (Test-Path -LiteralPath $target) {
-                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+                if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
+                    throw "Could not remove incomplete environment at $target"
+                }
             }
             Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             substep "restored previous environment"
@@ -1328,11 +1404,13 @@ exit 0
     function Complete-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
-            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        # The replacement is committed. Disable restoration before deleting the
+        # backup so interruption cannot restore a partially deleted environment.
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
+        if ($backup -and (Test-Path -LiteralPath $backup)) {
+            Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
+        }
     }
 
     # Raw torch.__version__ from $PythonExe's venv (last non-empty stdout line), or $null.
@@ -1368,6 +1446,8 @@ exit 0
         } catch { return $null }
     }
 
+    $studioVenvReplacementCommitted = $false
+    try {
     if (Test-Path -LiteralPath $VenvPython) {
         # env-mode: $StudioHome is a user-chosen workspace, so refuse to nuke an existing venv lacking Unsloth sentinels (-PathType Leaf rejects a directory at the sentinel path; accept the in-VENV ownership marker so partial-install retries aren't blocked).
         if (
@@ -1712,7 +1792,7 @@ exit 0
                 $nameArchTable = @(
                     @{ P = "9070 XT|9080";                                        A = "gfx1201" }  # RDNA 4 (RX 9070 XT / 9080)
                     @{ P = "9070|9060";                                           A = "gfx1200" }  # RDNA 4 (RX 9070 / 9060)
-                    @{ P = "8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
+                    @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                     @{ P = "890M|880M|860M|840M|Strix Point|Krackan|HX 37[05]|AI 9 HX|AI 9 36[05]|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1150" }  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
                     @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
@@ -1881,16 +1961,18 @@ exit 0
     # Strip userinfo AND query/fragment so an authenticated pin never leaks. Shared with _strip_index_url_credentials (install.sh / py / setup.ps1).
     function Remove-IndexUrlCredentials {
         param([string]$Url)
-        $sep = $Url.IndexOf('://')
+        # Ordinal, not culture-aware: on non-English locales (e.g. th-TH) linguistic
+        # IndexOf treats "://" as ignorable, mis-locates it, and crashes Substring (issue #7279).
+        $sep = $Url.IndexOf('://', [System.StringComparison]::Ordinal)
         if ($sep -lt 0) { return $Url }
         $scheme = $Url.Substring(0, $sep)
         $rest = $Url.Substring($sep + 3)
         # Drop query / fragment (may hold auth tokens).
         $q = $rest.IndexOfAny([char[]]('?', '#'))
         if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
-        $slash = $rest.IndexOf('/')
+        $slash = $rest.IndexOf('/', [System.StringComparison]::Ordinal)
         $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
-        $at = $authority.LastIndexOf('@')
+        $at = $authority.LastIndexOf('@', [System.StringComparison]::Ordinal)
         $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
         if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
         return "${scheme}://${host_}"
@@ -2007,6 +2089,10 @@ exit 0
             "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"       # RDNA 3.5 (Strix Halo/Point)
             "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"   # RDNA 3
             "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+            "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"   # RDNA 2 (RX 6000)
+            "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+            "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+            "gfx1030" = "gfx103X-all"
             "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"        # MI200/MI100
         }
         # gfx120X (RDNA 4) and gfx1151/gfx1150 (Strix) hit a null-pointer bug in torch._C._grouped_mm on torch <2.11.0 (TheRock #5284 / #3284); force torch>=2.11.0 so pip skips the broken 2.10.0 wheels on the AMD index. The <2.12.0 ceiling (matches install_python_stack.py) blocks an unvalidated future 2.12.0+rocm wheel; bump both when 2.12.x is confirmed on gfx120X / Strix.
@@ -2140,7 +2226,7 @@ exit 0
         substep "upgrading unsloth in migrated environment..."
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo --no-deps, then runtime deps (typer, safetensors, transformers, etc.) --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins the matching pydantic-core (no-torch-runtime.txt below is --no-deps); all transitive deps are torch-free.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2152,7 +2238,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2259,7 +2345,7 @@ exit 0
         substep "installing unsloth (this may take a few minutes)..."
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo --no-deps, then runtime deps (typer, safetensors, transformers, etc.) --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2274,11 +2360,11 @@ exit 0
             # Freeze the installed torch trio so this with-deps resolve can't downgrade the pinned +cuXXX/+rocm build (twin of install.sh's _build_unsloth_torch_overrides).
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
                 Remove-Item -LiteralPath $script:TorchOverridesFile -Force -ErrorAction SilentlyContinue
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.4" "unsloth-zoo>=2026.7.4" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.7.5" "unsloth-zoo>=2026.7.6" }
             }
         } else {
             # Freeze the installed torch trio (see above) so the with-deps unsloth resolve can't strip the +cuXXX/+rocm suffix.
@@ -2315,7 +2401,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.4" "unsloth>=2026.7.4" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.7.6" "unsloth>=2026.7.5" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2339,6 +2425,13 @@ exit 0
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
         }
+    }
+
+    $installedPackageVersion = (& $VenvPython -c "from importlib.metadata import version; import sys; print(version(sys.argv[1]))" $PackageName 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $installedPackageVersion) {
+        step $PackageName "$installedPackageVersion installed"
+    } else {
+        substep "[WARN] installed $PackageName version could not be determined" "Yellow"
     }
 
     # ── Enforce the installed torch flavor matches the detected GPU build. PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv keeps a stale torch+cpu against a CUDA index and setup.ps1 loops on "cpu != required cuXXX". Reinstall the right triplet when a GPU build is expected: CUDA from $TorchIndexUrl, ROCm from $ROCmIndexUrl (a PEP 503 index uv resolves via --default-index). --no-torch / CPU-only hosts are no-ops. ──
@@ -2602,6 +2695,13 @@ exit 0
     }
     Refresh-SessionPath  # sync current session with registry
     Complete-StudioVenvRollback
+    $studioVenvReplacementCommitted = $true
+    Remove-StaleStudioVenvRollbacks
+    } finally {
+        if (-not $studioVenvReplacementCommitted) {
+            Restore-StudioVenvRollback
+        }
+    }
 
     # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy User PATH entry (Machine > User > current $env:Path) would win.
     if ($StudioRedirectMode -eq 'env' -and (Test-Path -LiteralPath $ShimExe)) {

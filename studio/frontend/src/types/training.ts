@@ -40,7 +40,7 @@ export interface WizardState {
   loraRank: number;
   loraAlpha: number;
   loraDropout: number;
-  loraVariant: "lora" | "rslora" | "loftq";
+  loraVariant: "lora" | "rslora" | "loftq" | "dora";
   batchSize: number;
   gradientAccumulation: number;
   weightDecay: number;
@@ -84,7 +84,7 @@ export interface WizardActions {
   setLoraRank: (rank: number) => void;
   setLoraAlpha: (alpha: number) => void;
   setLoraDropout: (dropout: number) => void;
-  setLoraVariant: (v: "lora" | "rslora" | "loftq") => void;
+  setLoraVariant: (v: "lora" | "rslora" | "loftq" | "dora") => void;
   setBatchSize: (v: number) => void;
   setGradientAccumulation: (v: number) => void;
   setWeightDecay: (v: number) => void;

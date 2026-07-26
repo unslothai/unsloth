@@ -103,6 +103,10 @@ def _build_cache(
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = tmp_path),
+    )
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     return tmp_path
@@ -117,6 +121,61 @@ def _fail_get_paths_info(*_args, **_kwargs):
 
 
 class TestLoadReusesCachedCopy:
+    def test_download_uses_selected_cache_for_lookup_preflight_and_write(
+        self, tmp_path, monkeypatch
+    ):
+        backend = LlamaCppBackend()
+        selected = tmp_path / "selected" / "hub"
+        startup = tmp_path / "startup" / "hub"
+        monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(startup))
+        monkeypatch.setattr(
+            "utils.hf_cache_settings.get_hf_cache_paths",
+            lambda: _types.SimpleNamespace(hub_cache = selected),
+        )
+        seen = {"lookups": [], "disk": [], "downloads": []}
+
+        def cached_lookup(
+            repo_id,
+            filename,
+            *,
+            cache_dir = None,
+            **_kwargs,
+        ):
+            seen["lookups"].append((repo_id, filename, cache_dir))
+            return None
+
+        def disk_usage(path):
+            seen["disk"].append(str(path))
+            return _types.SimpleNamespace(free = 1024)
+
+        def download(repo_id, filename, _token, **kwargs):
+            seen["downloads"].append((repo_id, filename, kwargs.get("cache_dir")))
+            return str(selected / filename)
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch(
+                "huggingface_hub.get_paths_info",
+                lambda _repo, paths, **_kwargs: [
+                    _types.SimpleNamespace(path = path, size = 4) for path in paths
+                ],
+            ),
+            patch("huggingface_hub.try_to_load_from_cache", cached_lookup),
+            patch("core.inference.llama_cpp.shutil.disk_usage", disk_usage),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                download,
+            ),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(selected / MAIN)
+        assert seen == {
+            "lookups": [(REPO, MAIN, str(selected))],
+            "disk": [str(selected)],
+            "downloads": [(REPO, MAIN, str(selected))],
+        }
+
     def test_online_reuse_after_revision_bump(self, hf_cache):
         """A new repo revision does not replace a complete cached model."""
         backend = LlamaCppBackend()

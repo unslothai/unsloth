@@ -115,7 +115,7 @@ assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 
 # No stray hardcoded default ranges outside the ceiling-composed assignments
 # (the curated ROCm >=2.11 floors are deliberately literal).
-_hardcoded=$(grep -c '"torch>=2.4,<2.11.0"\|"torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
+_hardcoded=$(grep -E -c '"torch>=2.4,<2.11.0"|"torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
 assert_eq "no hardcoded default torch range remains" "0" "$_hardcoded"
 
 # Companions must be bounded to torch's window everywhere, never bare: torchaudio

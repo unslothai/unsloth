@@ -190,7 +190,7 @@ function LocalGgufVariantList({
 
   return (
     <div className="ml-6 mt-1 rounded-lg bg-muted/25 p-1.5">
-      <div className="mb-1 px-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="mb-1 px-2 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground">
         Quantization
       </div>
       <div className="space-y-0.5">
@@ -210,12 +210,12 @@ function LocalGgufVariantList({
                 {variant.quant}
               </span>
               {variant.quant === defaultVariant ? (
-                <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">
                   recommended
                 </Badge>
               ) : null}
               {variant.downloaded ? (
-                <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+                <Badge variant="outline" className="h-4 px-1.5 text-ui-10">
                   ready
                 </Badge>
               ) : null}
@@ -276,7 +276,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
             {selected.label || "Choose a local model"}
           </span>
           {compact ? null : (
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-11 text-muted-foreground">
               <span className="truncate">
                 {selected.label
                   ? selected.source
@@ -292,7 +292,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
         {compact && ggufVariant ? (
           <Badge
             variant="secondary"
-            className="h-4 px-1.5 font-mono text-[10px]"
+            className="h-4 px-1.5 font-mono text-ui-10"
           >
             {ggufVariant}
           </Badge>
@@ -347,7 +347,7 @@ function LocalModelRow({
           <span className="block truncate font-medium">
             {getModelLabel(model)}
           </span>
-          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+          <span className="mt-0.5 block truncate text-ui-11 text-muted-foreground">
             {model.id}
           </span>
         </span>
@@ -356,11 +356,11 @@ function LocalModelRow({
             <Spinner className="size-3 text-muted-foreground" />
           ) : null}
           {expandable || directGguf ? (
-            <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+            <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">
               GGUF
             </Badge>
           ) : null}
-          <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+          <Badge variant="outline" className="h-4 px-1.5 text-ui-10">
             {sourceLabel(model)}
           </Badge>
         </span>
