@@ -838,12 +838,17 @@ function GgufVariantExpander({
   );
 
   const handleVariantClick = useCallback(
-    (quant: string, downloaded?: boolean, sizeBytes?: number) => {
+    // ``filename`` is required, not decorative: the diffusion pages load a quant with
+    // {kind: "gguf", filename} and gate that branch on meta.ggufFilename, so emitting the
+    // quant label alone made every Images/Video GGUF quant pick a dead click (the id is a
+    // repo id, so the single-file fallback rejects it and returns).
+    (quant: string, filename: string, downloaded?: boolean, sizeBytes?: number) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: quant,
+        ggufFilename: filename,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
         contextLength: isAvailable ? nativeContext : undefined,
@@ -1012,7 +1017,12 @@ function GgufVariantExpander({
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
               onClick={() =>
-                handleVariantClick(v.quant, v.downloaded, expectedBytes)
+                handleVariantClick(
+                  v.quant,
+                  v.filename,
+                  v.downloaded,
+                  expectedBytes,
+                )
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
