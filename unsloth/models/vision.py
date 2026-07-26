@@ -347,18 +347,20 @@ except:
 
 
 def _uses_flash_attention_for_generation(config):
+    language_config_names = (
+        "text_config",
+        "llm_config",
+        "decoder_config",
+        "language_config",
+        "decoder",
+    )
+
     def _mapping_uses_flash_attention(attn_implementation):
         if not isinstance(attn_implementation, dict):
             return _is_flash_attention_requested(attn_implementation)
         return any(
             _is_flash_attention_requested(attn_implementation.get(config_name))
-            for config_name in (
-                "text_config",
-                "llm_config",
-                "decoder_config",
-                "language_config",
-                "decoder",
-            )
+            for config_name in ("", *language_config_names)
         )
 
     configs = [config]
@@ -370,13 +372,7 @@ def _uses_flash_attention_for_generation(config):
             text_config = None
         if text_config is not None and text_config is not config:
             configs.append(text_config)
-    for config_name in (
-        "text_config",
-        "llm_config",
-        "decoder_config",
-        "language_config",
-        "decoder",
-    ):
+    for config_name in language_config_names:
         nested_config = _config_get(config, config_name, None)
         if nested_config is not None and nested_config is not config:
             configs.append(nested_config)

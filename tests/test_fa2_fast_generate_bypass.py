@@ -67,6 +67,16 @@ def test_per_backbone_llm_flash_attention_is_detected():
     assert uses_flash_attention(config)
 
 
+def test_default_backbone_flash_attention_is_detected():
+    config = SimpleNamespace(
+        _attn_implementation = {
+            "": "flash_attention_2",
+            "vision_config": "sdpa",
+        }
+    )
+    assert uses_flash_attention(config)
+
+
 def test_nested_text_and_decoder_configs_are_detected():
     nested_text = SimpleNamespace(attn_implementation = "flash_attention_2")
     assert uses_flash_attention(
@@ -103,7 +113,7 @@ def test_non_flash_attention_does_not_bypass_fast_generation():
     assert not uses_flash_attention(SimpleNamespace())
 
 
-def test_fallback_preserves_normalization_and_skips_static_cache():
+def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
     events = []
 
     class FakeTensor:
@@ -179,6 +189,25 @@ def test_fallback_preserves_normalization_and_skips_static_cache():
     assert "mm_token_type_ids" not in captured
     assert captured["pixel_values"] is pixel_values
     assert pixel_values.converted_to == "bfloat16"
+
+    class FastPathReached(Exception):
+        pass
+
+    class ExpectFastPath:
+        @staticmethod
+        def mark_static(*args, **kwargs):
+            raise FastPathReached
+
+    fake_torch._dynamo = ExpectFastPath()
+    Model.config.text_config._attn_implementation = "sdpa"
+    captured.clear()
+    try:
+        fast_generate(Model(), input_ids = FakeTensor())
+    except FastPathReached:
+        pass
+    else:
+        raise AssertionError("non-FlashAttention generation did not enter the fast path")
+    assert captured == {}
 
 
 if __name__ == "__main__":
