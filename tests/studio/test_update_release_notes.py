@@ -10,6 +10,9 @@ lookup must return nothing rather than the newest section it can find."""
 from __future__ import annotations
 
 import http.server
+import os
+import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -638,3 +641,69 @@ def test_hook_waits_for_the_desktop_auth_token():
     missing token must not be recorded as a failed lookup."""
     src = NOTES_HOOK.read_text(encoding = "utf-8")
     assert "hasAuthToken()" in src and "AUTH_POLL_LIMIT" in src
+
+
+def test_installed_layout_prefers_the_bundled_changelog(tmp_path):
+    """Installed, the levels above studio/ are site-packages. A stray
+    CHANGELOG.md left there by another package must not outrank the bundled
+    snapshot, so those levels are only searched in a source checkout."""
+    site_packages = tmp_path / "site-packages"
+    package = site_packages / "studio/backend/utils"
+    package.mkdir(parents = True)
+    for name in ("changelog.py", "update_status.py"):
+        shutil.copy(BACKEND / "utils" / name, package / name)
+    for parent in (site_packages / "studio", package.parent, package):
+        (parent / "__init__.py").write_text("", encoding = "utf-8")
+    (site_packages / CHANGELOG.name).write_text("## 2.0\n\n- stray\n", encoding = "utf-8")
+    bundled = site_packages / "studio" / CHANGELOG.name
+    bundled.write_text("## 2.0\n\n- bundled\n", encoding = "utf-8")
+
+    env = {**os.environ, "PYTHONPATH": str(site_packages)}
+    env.pop("UNSLOTH_CHANGELOG_PATH", None)
+
+    def served() -> str:
+        # cwd is outside the checkout, so this imports the installed copy.
+        return subprocess.run(
+            [sys.executable, "-c",
+             "from studio.backend.utils import changelog\n"
+             "print(changelog._read_local_changelog().text)"],
+            capture_output = True, text = True, env = env, cwd = tmp_path, check = True,
+        ).stdout
+
+    assert "bundled" in served() and "stray" not in served()
+
+    # A checkout marker there means it really is a repo root, so it wins again.
+    (site_packages / "pyproject.toml").write_text("", encoding = "utf-8")
+    assert "stray" in served()
+
+
+def test_a_section_staged_as_a_comment_reads_as_unpublished(
+    changelog_module, tmp_path, monkeypatch,
+):
+    """Notes staged inside <!-- --> render as nothing, so the popup must say
+    no notes were published rather than show an empty surface."""
+    monkeypatch.setenv(changelog_module.DISABLE_ENV_VAR, "1")
+    local = tmp_path / "CHANGELOG.md"
+    local.write_text("## 2.0\n\n<!-- not ready -->\n\n## 1.0\n\n- shipped\n", encoding = "utf-8")
+    monkeypatch.setenv(changelog_module.CHANGELOG_PATH_ENV_VAR, str(local))
+    changelog_module.reset_changelog_cache()
+    try:
+        staged = changelog_module.get_release_notes("2.0")
+        assert staged["matched"] is False and staged["markdown"] is None
+        assert changelog_module.get_release_notes("1.0")["matched"] is True
+    finally:
+        changelog_module.reset_changelog_cache()
+
+
+@pytest.mark.parametrize(
+    "body,visible",
+    [
+        ("- note", True),
+        ("<!-- staged -->", False),
+        ("```\n```", True),
+        ("<pre>\n</pre>", True),
+        ("  ", False),
+    ],
+)
+def test_visibility_check_only_hides_comments(changelog_module, body, visible):
+    assert changelog_module._renders_visibly(body) is visible

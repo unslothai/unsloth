@@ -63,6 +63,10 @@ _HTML_ATTRIBUTE = (
 _HTML_TAG_ONLY_LINE = re.compile(
     rf"^ {{0,3}}(?:<[a-zA-Z][a-zA-Z0-9-]*{_HTML_ATTRIBUTE}*\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\s*>)\s*$"
 )
+# Levels above studio/ are the repo root in a checkout and site-packages in an
+# install, so they are searched only when one of these markers is present.
+_CHECKOUT_ONLY_LEVELS = (3, 4)
+_CHECKOUT_MARKERS = ("pyproject.toml", ".git")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 _CODE_SPAN_PATTERN = re.compile(r"(`+)(?:.*?)\1")
@@ -316,6 +320,14 @@ def _read_local_changelog() -> ChangelogSource:
     return ChangelogSource(text = None, source = None)
 
 
+def _is_source_checkout(root: Path) -> bool:
+    """Whether `root` is this repository rather than an install directory."""
+    try:
+        return any((root / marker).exists() for marker in _CHECKOUT_MARKERS)
+    except OSError:
+        return False
+
+
 def _local_changelog_candidates() -> list[Path]:
     override = os.environ.get(CHANGELOG_PATH_ENV_VAR, "").strip()
     candidates: list[Path] = []
@@ -324,11 +336,16 @@ def _local_changelog_candidates() -> list[Path]:
 
     # changelog.py -> utils -> backend -> studio -> repo root. Repo root first:
     # in a source checkout the editable file must win over the build snapshot
-    # that packaging writes into studio/.
+    # that packaging writes into studio/. Installed, those outer levels are
+    # site-packages, so they are only used when a checkout marker is there.
     parents = Path(__file__).resolve().parents
     for index in (3, 2, 1, 4):
-        if index < len(parents):
-            candidates.append(parents[index] / CHANGELOG_FILENAME)
+        if index >= len(parents):
+            continue
+        root = parents[index]
+        if index in _CHECKOUT_ONLY_LEVELS and not _is_source_checkout(root):
+            continue
+        candidates.append(root / CHANGELOG_FILENAME)
 
     seen: set[Path] = set()
     unique: list[Path] = []
@@ -427,6 +444,19 @@ def _parse_version(version: str) -> Version | None:
         return None
 
 
+def _renders_visibly(markdown: str) -> bool:
+    """Whether a section body renders anything at all."""
+    in_comment = False
+    for line in markdown.splitlines():
+        if not in_comment and (_FENCE_PATTERN.match(line) or _RAW_HTML_OPEN.match(line)):
+            # A code block or raw HTML block renders even when it is empty.
+            return True
+        visible, in_comment = _strip_comments(line, in_comment)
+        if visible.strip():
+            return True
+    return False
+
+
 def _notes_response(
     *,
     version: str,
@@ -435,6 +465,12 @@ def _notes_response(
     source: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
+    # A section staged as only an HTML comment renders as nothing, so it counts
+    # as unpublished rather than as empty notes.
+    if markdown and not _renders_visibly(markdown):
+        markdown = None
+        source = None
+
     truncated = False
     if markdown and len(markdown) > RELEASE_NOTES_MAX_CHARS:
         markdown = markdown[:RELEASE_NOTES_MAX_CHARS].rstrip()
