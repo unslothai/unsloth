@@ -137,7 +137,9 @@ def _fake_cached_repo(root, rels):
     for rel in rels:
         path = snapshot / rel
         _write(path, 32)
-        files.append(types.SimpleNamespace(file_name = path.name, file_path = str(path), blob_path = None))
+        files.append(
+            types.SimpleNamespace(file_name = path.name, file_path = str(path), blob_path = None)
+        )
     return types.SimpleNamespace(
         repo_path = str(root / "models--org--repo"),
         revisions = [types.SimpleNamespace(files = files)],
