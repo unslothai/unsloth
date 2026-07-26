@@ -26,10 +26,7 @@ def _between(text: str, start: str, end: str) -> str:
 
 
 def test_outside_pointerdown_ignores_the_portaled_confirm_dialog():
-    # The delete confirmation is portaled to document.body, so its Cancel and
-    # Delete buttons are "outside" the list root. Clearing there would drop the
-    # batch the dialog is confirming and the rows a partial failure keeps for a
-    # retry.
+    # Clearing on the portaled dialog's buttons would drop the batch it confirms.
     block = _between(_hook(), "const onPointerDown = (event: PointerEvent)", "clearSelection();")
     assert "listRoot.contains(target)" in block
     assert '\'[role="dialog"], [role="alertdialog"]\'' in block
@@ -37,8 +34,7 @@ def test_outside_pointerdown_ignores_the_portaled_confirm_dialog():
 
 
 def test_pointerdown_keeps_the_previous_shift_click_anchor():
-    # pointerdown runs before click; reassigning the anchor there collapses a
-    # shift+click range down to the clicked row.
+    # pointerdown runs first, so reassigning the anchor there collapses the range.
     block = _between(_hook(), "const handleItemPointerDown", "const handleItemClick")
     assert "anchorIdRef.current =" not in block
     assert "anchorId: itemIds[index] ?? null" in block
@@ -55,8 +51,7 @@ def test_auto_scroll_updates_selection_and_follows_the_active_edge():
     block = _between(_hook(), "const startAutoScroll", "const updateDragSelection")
     # Rows revealed past the fold join the range without another pointermove.
     assert "updateDragSelectionRef.current(drag.lastClientY)" in block
-    # Flipping to the opposite edge restarts the interval instead of scrolling
-    # away from the pointer.
+    # Flipping edges restarts the interval instead of scrolling away.
     assert "autoScrollDirectionRef.current === direction" in block
     assert "autoScrollDirectionRef.current = direction" in block
 
@@ -70,8 +65,7 @@ def test_short_drag_is_not_undone_by_the_trailing_click():
 
 
 def test_stale_selection_prune_bails_out_before_setstate():
-    # itemIds is rebuilt on most renders; an unconditional update here re-arms
-    # the effect every commit and trips React's nested-update limit.
+    # itemIds is rebuilt on most renders, so an unconditional update would loop.
     block = _between(_hook(), "// Drop stale selections", "const applyRangeSelection")
     assert "if (selectedIds.size === 0) return;" in block
     assert "if (!hasStale) return;" in block
@@ -102,8 +96,7 @@ def test_selected_rows_expose_their_state_to_assistive_tech():
     sidebar = _sidebar()
     chat_row = _between(sidebar, "isActive={activeThreadId === item.id}", "className={cn(")
     run_row = _between(sidebar, "isActive={isActiveRun}", "className={cn(")
-    # aria-pressed only while a selection is live: a plain navigation row must
-    # not be announced as an unpressed toggle button.
+    # Only while a selection is live, else plain rows read as unpressed toggles.
     assert "aria-pressed=" in chat_row
     assert "chatRecentsSelection.isSelectionActive" in chat_row
     assert "aria-pressed=" in run_row

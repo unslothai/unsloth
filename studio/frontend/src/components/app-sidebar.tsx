@@ -582,10 +582,9 @@ export function AppSidebar() {
   // clears even if a run finishes while the user is on another tab.
   useTrainingCompletionWatch();
 
-  // Recompute bottom-fade on mount and whenever list height can change
-  // (items load, sections toggle, route switch, the bulk bar mounting or
-  // unmounting under the rows) - onScroll never fires for short, non-scrolling
-  // lists. Guarded setState below can't loop.
+  // Recompute bottom-fade on mount and whenever list height can change (items
+  // load, sections toggle, route switch, bulk bar mount/unmount) - onScroll
+  // never fires for short lists. Guarded setState below can't loop.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -877,8 +876,7 @@ export function AppSidebar() {
       return;
     }
     if (target.kind === "runs-bulk") {
-      // Re-check status against the live list: a run can start between opening
-      // the dialog and confirming it.
+      // Re-check status: a run can start between opening and confirming.
       const live = new Map(runItems.map((run) => [run.id, run]));
       const deletable = target.runs.filter(
         (run) => (live.get(run.id) ?? run).status !== "running",
@@ -1040,10 +1038,9 @@ export function AppSidebar() {
           data-thread-type={item.type}
           data-thread-id={item.id}
           isActive={activeThreadId === item.id}
-          // While a selection is live the row acts as a toggle, so expose the
-          // state: the tint alone tells a screen-reader user nothing about what
-          // the bulk Delete is about to remove. Left undefined otherwise so a
-          // plain navigation row is not announced as an unpressed toggle.
+          // Only while a selection is live, when the row acts as a toggle: the
+          // tint alone tells a screen reader nothing, but a plain navigation row
+          // must not be announced as an unpressed toggle either.
           aria-pressed={
             isSelectableRecent && chatRecentsSelection.isSelectionActive
               ? isSelected
@@ -1931,8 +1928,8 @@ export function AppSidebar() {
                     count={runRecentsSelection.selectedCount}
                     onClear={runRecentsSelection.clearSelection}
                     onDelete={() => {
-                      // Drop running runs here, not at delete time, so the
-                      // confirmation count is exactly what gets deleted.
+                      // Drop running runs here so the confirmation count is
+                      // exactly what gets deleted.
                       const selected = runItems.filter((run) =>
                         runRecentsSelection.isItemSelected(run.id),
                       );

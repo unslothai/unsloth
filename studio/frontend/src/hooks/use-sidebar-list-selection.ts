@@ -16,8 +16,7 @@ const AUTO_SCROLL_STEP_PX = 10;
 
 type DragState = {
   anchorIndex: number;
-  // The row the drag started on, by id: the list can reorder or reload
-  // mid-drag, which shifts every index.
+  // By id, since the list can reorder or reload mid-drag and shift every index.
   anchorId: string | null;
   pointerId: number;
   pointerType: string;
@@ -52,8 +51,7 @@ function indexFromPointerTarget(
   return parseSelectionIndex(row);
 }
 
-// Dragging past either end of the list should extend to that end rather than
-// collapse the range back to the anchor.
+// Dragging past an end extends to it instead of collapsing back to the anchor.
 function edgeRowIndex(listRoot: HTMLElement, clientY: number): number | null {
   const rows = listRoot.querySelectorAll<HTMLElement>("[data-selection-index]");
   if (rows.length === 0) return null;
@@ -77,9 +75,8 @@ export function useSidebarListSelection({
   const dragRef = useRef<DragState | null>(null);
   const autoScrollRef = useRef<number | null>(null);
   const autoScrollDirectionRef = useRef<-1 | 1 | null>(null);
-  // The anchor is held by id, not index: the list reorders (a chat bumped to
-  // the top) and grows/shrinks under a stored anchor, which would silently
-  // re-point a later shift+click at a different row.
+  // By id, not index: the list reorders and resizes, so a stored index would
+  // silently re-point a later shift+click at a different row.
   const anchorIdRef = useRef<string | null>(null);
   const suppressClickRef = useRef(false);
   const updateDragSelectionRef = useRef<(clientY: number) => void>(() => undefined);
@@ -94,10 +91,9 @@ export function useSidebarListSelection({
     anchorIdRef.current = null;
   }, []);
 
-  // Drop stale selections when the visible list changes. Bail out before
-  // setState unless something is genuinely stale: callers rebuild itemIds on
-  // most renders, and an unconditional update here re-arms this effect on
-  // every commit and trips React's nested-update limit.
+  // Drop stale selections when the list changes. Bail out unless something is
+  // genuinely stale: itemIds is rebuilt on most renders, so an unconditional
+  // setState re-arms this effect every commit and trips the nested-update limit.
   useEffect(() => {
     if (selectedIds.size === 0) return;
     const valid = new Set(itemIds);
@@ -225,9 +221,9 @@ export function useSidebarListSelection({
 
       drag.lastClientY = event.clientY;
       event.preventDefault();
-      // Read through the ref, not the closure: depending on the callback
-      // identity re-runs this effect on every render, and its cleanup would
-      // kill the edge auto-scroll interval one tick after it starts.
+      // Through the ref, not the closure: depending on the callback identity
+      // re-runs this effect every render, and its cleanup would kill the
+      // auto-scroll interval one tick after it starts.
       updateDragSelectionRef.current(event.clientY);
     };
 
@@ -269,10 +265,8 @@ export function useSidebarListSelection({
       if (!listRoot) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target && listRoot.contains(target)) return;
-      // The delete confirmation is portaled to document.body, so its Cancel and
-      // Delete buttons read as "outside" the list. Clearing there would drop the
-      // very batch the dialog is confirming, and would discard the rows a
-      // partially failed delete keeps selected for a retry.
+      // The confirm dialog is portaled to document.body, so its buttons read as
+      // "outside": clearing there would drop the batch it is confirming.
       if (target?.closest('[role="dialog"], [role="alertdialog"]')) return;
       clearSelection();
     };
@@ -282,8 +276,8 @@ export function useSidebarListSelection({
 
   const handleItemPointerDown = useCallback(
     (index: number, event: ReactPointerEvent) => {
-      // A drag released off the list never reaches an item click, so the flag
-      // set on pointer-up would otherwise swallow the next real click.
+      // A drag released off the list never reaches an item click, so a stale
+      // flag would otherwise swallow the next real one.
       suppressClickRef.current = false;
       if (event.button !== 0 || event.pointerType !== "mouse") return;
       dragRef.current = {
