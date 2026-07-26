@@ -1923,6 +1923,85 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
     assert completed["report"].startswith("# Resumed report")
 
 
+def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
+    research_home, monkeypatch
+):
+    """A knowledge-base hit that the source cap refuses to persist must not reach synthesis:
+    it has no document_source_catalog entry, so any citation of it is stripped from the
+    finished report and the claim it supports would be left unattributed."""
+    from core import research_runs as worker
+
+    _create(
+        rag_scope = {"kb_id": "kb-1", "default_top_k": 4},
+        budgets = {
+            "maxSteps": 3,
+            "maxSources": 1,
+            "modelTimeoutSeconds": 30,
+            "toolTimeoutSeconds": 10,
+        },
+    )
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    decisions = iter(
+        (
+            json.dumps({"action": "search", "title": "First", "query": "first query"}),
+            json.dumps({"action": "search", "title": "Second", "query": "second query"}),
+            json.dumps({"action": "finish", "title": "Enough evidence"}),
+        )
+    )
+    synthesis_prompts = []
+    report = "# Report\n\nA finding [Document: kept.pdf, p. 1]."
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        system = messages[0]["content"]
+        if "rigorous web research plan" in system:
+            return json.dumps(_plan()), "planned", "stop"
+        if "iterative research process" in system:
+            return next(decisions), "decided", "stop"
+        synthesis_prompts.append(messages[1]["content"])
+        research_db.set_report_progress(run["id"], report)
+        return report, "synthesized", "stop"
+
+    labels = iter(("kept", "capped"))
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        if name == "search_knowledge_base":
+            label = next(labels)
+            return (
+                f"UNCATALOGED_{label.upper()}_KB_TEXT"
+                + worker.RAG_SOURCES_SENTINEL
+                + json.dumps(
+                    [
+                        {
+                            "chunkId": f"doc-{label}:0",
+                            "documentId": f"doc-{label}",
+                            "filename": f"{label}.pdf",
+                            "page": 1,
+                            "text": f"{label} chunk body",
+                        }
+                    ]
+                )
+            )
+        return "Title: Alpha\nURL: https://a.example.com\nSnippet: alpha snippet."
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", fake_tool)
+
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+    planned = research_db.get_run("run-1")
+    research_db.approve("run-1", planned["planRevision"], planned["planHash"])
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    completed = research_db.get_run("run-1")
+    assert completed["status"] == "completed"
+    # The cap admitted the first chunk only, so only it may appear in the evidence.
+    assert [source["filename"] for source in completed["documentSources"]] == ["kept.pdf"]
+    assert synthesis_prompts, "synthesis must have run"
+    assert "kept chunk body" in synthesis_prompts[0]
+    assert "UNCATALOGED_KEPT_KB_TEXT" not in synthesis_prompts[0]
+    assert "capped chunk body" not in synthesis_prompts[0]
+    assert "UNCATALOGED_CAPPED_KB_TEXT" not in synthesis_prompts[0]
+
+
 def test_create_without_assistant_id_does_not_eagerly_create_message(research_home):
     from routes.research_runs import CreateResearchRun, create_research_run
 

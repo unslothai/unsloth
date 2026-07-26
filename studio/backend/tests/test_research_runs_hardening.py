@@ -6,6 +6,7 @@
 import pytest
 
 from core.research_runs import (
+    _citation_title,
     _escape_link_destination,
     _sanitize_public_query,
     _shield_untrusted,
@@ -119,6 +120,32 @@ def test_document_citation_strips_unknown_source_with_brackets():
     assert "invented" not in out
     assert ".pdf" not in out
     assert out == "Ghost cite  end."
+
+
+def test_document_citation_regex_does_not_backtrack_catastrophically():
+    # An unterminated "[Document:" with no later bare "]" is ordinary malformed model output,
+    # which is exactly what this sanitizer exists to handle. The old alternation took longer
+    # than the age of the universe on one line, and it runs on the event loop.
+    import time
+
+    report = "Revenue rose 12 percent [Document: q3_report.pdf, p. 12 and margins improved."
+    start = time.perf_counter()
+    _validate_report_document_sources(report, [{"filename": "q3_report.pdf", "page": 12}])
+    assert time.perf_counter() - start < 1.0
+    # And a long tail stays linear rather than exponential.
+    start = time.perf_counter()
+    _validate_report_document_sources("[Document: " + "a" * 20_000, [])
+    assert time.perf_counter() - start < 1.0
+
+
+def test_citation_title_strips_brackets_for_catalog_and_citation():
+    # Search titles routinely carry a bracketed prefix ("[PDF] ..."), and the report prompt tells
+    # the model to copy the catalog title verbatim into the link label, where a bracket makes the
+    # citation unmatchable. The catalog and the citation writer share this helper so they cannot
+    # offer a label the validator then fails to match.
+    assert _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a") == "PDF Annual Report 2024"
+    assert _citation_title({"title": "[]"}, "https://x/a") == "https://x/a"
+    assert _citation_title({}, "https://x/a") == "https://x/a"
 
 
 def _make_payload(**overrides) -> CreateResearchRun:

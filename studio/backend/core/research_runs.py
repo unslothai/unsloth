@@ -42,7 +42,10 @@ _SOURCES_HEADING = re.compile(
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
-_DOCUMENT_CITATION = re.compile(r"\[Document:(?:[^\[\]]+|\[[^\[\]]*\])*\]")
+# Unrolled rather than the equivalent (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks
+# catastrophically on an unterminated "[Document:" (ordinary malformed model output), and this
+# runs on the event loop, so one bad report would stall all of Studio.
+_DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 # Wrapper delimiters used in the decision/synthesis prompts. Any occurrence inside
 # untrusted evidence is escaped so gathered content cannot close a block early.
 _PROMPT_DELIMITER_TAGS = re.compile(
@@ -645,6 +648,18 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
+def _citation_title(source: dict, fallback: str) -> str:
+    """Title as it may appear in a markdown link label.
+
+    Brackets are stripped because the report prompt tells the model to copy titles verbatim
+    from the source catalog, and search titles routinely carry one ("[PDF] Annual Report").
+    A bracket inside the label makes the citation unmatchable, so the catalog and the
+    citation writer must agree on the same stripped form.
+    """
+    title = str(source.get("title") or fallback).replace("[", "").replace("]", "").strip()
+    return title or fallback
+
+
 def _trim_url_tail(raw: str) -> str:
     """Strip trailing prose punctuation that ``_RAW_URL`` swallowed.
 
@@ -688,9 +703,9 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
         source = source_by_url.get(url)
         if source is None:
             return None
-        title = str(source.get("title") or url).replace("[", "").replace("]", "").strip()
+        title = _citation_title(source, url)
         token = f"\x00research-citation-{len(placeholders)}\x00"
-        placeholders[token] = f"[{title or url}]({_escape_link_destination(url)})"
+        placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
         return token
 
     def replace_markdown_links(text: str) -> str:
@@ -1627,30 +1642,33 @@ class ResearchSupervisor:
                 )
                 for source in document_sources
             }
+            # Mirrors the live loop: evidence must hold only chunks that made it into the
+            # catalog, else the validator strips citations to the rest and synthesis is left
+            # building claims on uncataloged document text.
+            accepted_rag_sources = []
             for source in restored_rag_sources:
                 source_key = str(
                     source.get("chunkId")
                     or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
                 )
-                if (
-                    source_key in document_source_keys
-                    or len(sources) + len(document_sources) >= max_sources
-                ):
-                    continue
-                written = await asyncio.to_thread(
-                    db.upsert_document_source,
-                    run["id"],
-                    int(step["position"]),
-                    source,
-                    self.worker_id,
-                )
-                await self._check_worker_write(run["id"], written)
-                document_source_keys.add(source_key)
-                document_sources.append({**source, "stepPosition": step["position"]})
+                if source_key not in document_source_keys:
+                    if len(sources) + len(document_sources) >= max_sources:
+                        continue
+                    written = await asyncio.to_thread(
+                        db.upsert_document_source,
+                        run["id"],
+                        int(step["position"]),
+                        source,
+                        self.worker_id,
+                    )
+                    await self._check_worker_write(run["id"], written)
+                    document_source_keys.add(source_key)
+                    document_sources.append({**source, "stepPosition": step["position"]})
+                accepted_rag_sources.append(source)
             rag_evidence = "\n".join(
                 f"{item.get('filename') or 'Document'}: "
                 f"{item.get('text') or item.get('snippet') or ''}"
-                for item in restored_rag_sources
+                for item in accepted_rag_sources
             )
             title = str(step.get("title") or "Recovered research step")
             notes.append(
@@ -1671,7 +1689,7 @@ class ResearchSupervisor:
         for position in range(start_position, max_steps):
             await self._check_active(run["id"])
             source_catalog = "\n".join(
-                f"- {source.get('title') or source['url']} | {source['url']} | "
+                f"- {_citation_title(source, source['url'])} | {source['url']} | "
                 f"{source.get('snippet') or ''}"
                 for source in sources
             )
@@ -1837,6 +1855,12 @@ class ResearchSupervisor:
                     f"{source.get('text') or source.get('snippet') or ''}"
                     for source in accepted_rag_sources
                 )
+            elif rag_sources:
+                # Every chunk was refused by the source cap, so none has a catalog entry and the
+                # validator would strip any citation to it. Drop the evidence rather than let
+                # synthesis build claims on it. Gated on rag_sources so a text-only KB reply
+                # ("No documents are attached to this chat.") is still passed through.
+                rag_result = ""
             rag_sources = accepted_rag_sources
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
@@ -1943,7 +1967,7 @@ class ResearchSupervisor:
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
         source_catalog = "\n".join(
-            f"{index}. Title: {source.get('title') or source['url']}\n   URL: {source['url']}"
+            f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
         )
         document_source_catalog = "\n".join(
