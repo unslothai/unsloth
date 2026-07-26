@@ -367,6 +367,7 @@ def _loaded_llama_backend(extra_args):
         n_layers = None,
         n_moe_layers = 0,
         gpu_ids = None,
+        requested_gpu_ids = None,
         extra_args = extra_args,
         spec_fallback_reason = None,
     )

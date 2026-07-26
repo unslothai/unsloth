@@ -190,7 +190,10 @@ export interface LoadModelResponse {
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
 }
 
 export interface UnloadModelRequest {
@@ -242,10 +245,13 @@ export interface InferenceStatusResponse {
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
    * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
   requested_context_length?: number | null;
+  /** Effective GPU placement after fit-time narrowing. */
   gpu_ids?: number[] | null;
   /** Pass-through llama-server flags the active GGUF load ran with; re-seeds the
    * args field on hydration so it can be read and cleared. Null for non-GGUF. */
   llama_extra_args?: string[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

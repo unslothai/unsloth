@@ -185,6 +185,10 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import {
+  consumeProjectSourcesPending,
+  hasProjectSourcesPending,
+} from "@/features/rag/components/project-source-dropzone";
 
 
 const ProjectSourcesPanel = lazy(() =>
@@ -998,7 +1002,14 @@ function ProjectLanding({
   const active = useChatActive();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
+  // Land on Sources when the project was just created with dropped files.
+  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+    hasProjectSourcesPending(projectId) ? "sources" : "chats",
+  );
+  // Drop the marker once committed: React may replay the initializer above.
+  useEffect(() => {
+    consumeProjectSourcesPending(projectId);
+  }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );
@@ -2289,7 +2300,7 @@ export function ChatPage({
           } else if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
-                "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
+                "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
             });
           } else if (outcome === "busy") {
             toast.info("Download already in progress", {
@@ -2410,7 +2421,7 @@ export function ChatPage({
         // surface's onComplete auto-loads, mirroring the "started" branch.
         toast.info("Resume this download from Models", {
           description:
-            "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
+            "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
         });
         return;
       }
@@ -2676,7 +2687,7 @@ export function ChatPage({
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
-          forceReload: isSameLoadedModel || undefined,
+          forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
         };
         await stageOrLoad(selection);
       })();
