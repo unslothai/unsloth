@@ -140,6 +140,27 @@ function orderBySelectedBranch<T extends MessageRecord>(messages: T[]): T[] {
   return chain.reverse();
 }
 
+/**
+ * The runtime's message list is the branch actually on screen, so a post-load
+ * recount follows it instead of re-deriving one from storage: after the user
+ * steps back to an earlier retry sibling, the newest stored record belongs to a
+ * branch nobody is looking at. Only used after a model load -- the history
+ * adapter's own recount runs while assistant-ui is still importing, when the
+ * getter can still hold the outgoing thread. Message ids are unique, so
+ * requiring the displayed tail to be one of this thread's records also rejects
+ * a getter parked on another thread (compare pane, mid switch).
+ */
+function runtimeSelectedBranch(
+  records: MessageRecord[],
+): readonly ThreadMessage[] | null {
+  const runtimeMessages = runtimeMessagesGetter?.();
+  if (!runtimeMessages || runtimeMessages.length === 0) return null;
+  const tailId = runtimeMessages[runtimeMessages.length - 1].id;
+  return records.some((record) => record.id === tailId)
+    ? runtimeMessages
+    : null;
+}
+
 function zeroContextUsage(): SavedContextUsage {
   return {
     promptTokens: 0,
@@ -205,7 +226,9 @@ export async function refreshContextUsage(options?: {
     }
 
     if (records.length > 0) {
-      runMessages = orderBySelectedBranch(records).map(storedMessageToRunMessage);
+      runMessages =
+        (options?.afterModelLoad ? runtimeSelectedBranch(records) : null) ??
+        orderBySelectedBranch(records).map(storedMessageToRunMessage);
 
       const savedUsage = getSavedContextUsageFromMessages(
         records,

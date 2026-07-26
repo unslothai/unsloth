@@ -13,10 +13,29 @@ export async function unloadInferenceModel(
   if (!token) {
     throw new Error("E2E_ACCESS_TOKEN is required to unload models.");
   }
-  await request.post(`${backendUrl}/api/inference/unload`, {
-    headers: { Authorization: `Bearer ${token}` },
-    data: {},
+  const headers = { Authorization: `Bearer ${token}` };
+  // UnloadRequest.model_path is required, so an empty body is a 422 that leaves
+  // the model loaded. Ask the backend which model to name, and skip the call
+  // when nothing is loaded.
+  const statusResponse = await request.get(
+    `${backendUrl}/api/inference/status`,
+    { headers },
+  );
+  expect(statusResponse.ok()).toBeTruthy();
+  const status = (await statusResponse.json()) as {
+    model_identifier?: string | null;
+    active_model?: string | null;
+    loaded?: string[];
+  };
+  const modelPath =
+    status.model_identifier ?? status.active_model ?? status.loaded?.[0];
+  if (!modelPath) return;
+
+  const response = await request.post(`${backendUrl}/api/inference/unload`, {
+    headers,
+    data: { model_path: modelPath },
   });
+  expect(response.ok()).toBeTruthy();
 }
 
 function modelSelectorTrigger(page: Page) {
@@ -117,9 +136,12 @@ export async function ensureLocalModelLoaded(
 
   // Arm the waiter before the load: waitForResponse only sees responses that
   // arrive after it is called, and the recount fires as soon as the load ends.
+  // A brand-new chat has no thread, so the recount writes zero usage without
+  // ever calling count_tokens; race the bar so that case settles on the bar
+  // instead of waiting the response timeout out.
   const tokenCount = waitForContextTokenCount(page).catch(() => undefined);
   await selectLocalModelByName(page, displayName);
-  await tokenCount;
+  await Promise.race([tokenCount, waitForContextUsageBar(page)]);
   await waitForContextUsageBar(page);
 }
 
