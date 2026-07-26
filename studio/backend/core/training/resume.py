@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from utils.paths import outputs_root, resolve_output_dir
+from core.training.manifest import MANIFEST_FILENAME, ManifestError, parse_manifest
 
 
 def _is_under_outputs(path: Path) -> bool:
@@ -178,9 +179,7 @@ class CheckpointImportError(ValueError):
 
 
 def _detected_backend(path: Path) -> str:
-    if (path / "adapters.safetensors").exists() or (
-        path / "optimizer_state.safetensors"
-    ).exists():
+    if (path / "adapters.safetensors").exists() or (path / "optimizer_state.safetensors").exists():
         return "mlx"
     return "transformers"
 
@@ -241,7 +240,9 @@ def inspect_import_checkpoint(path_value: str, approved_roots: Sequence[Path]) -
         checkpoint = checkpoint.resolve(strict = True)
         checkpoint.relative_to(selected)
     except (OSError, ValueError) as exc:
-        raise CheckpointImportError(["Selected checkpoint resolves outside its directory."]) from exc
+        raise CheckpointImportError(
+            ["Selected checkpoint resolves outside its directory."]
+        ) from exc
 
     errors: list[str] = []
     step = _checkpoint_state(checkpoint)
@@ -262,16 +263,50 @@ def inspect_import_checkpoint(path_value: str, approved_roots: Sequence[Path]) -
             errors.append("scheduler.pt is missing or corrupt.")
     if errors:
         raise CheckpointImportError(errors)
+    manifest = None
+    manifest_path = checkpoint / MANIFEST_FILENAME
+    if not manifest_path.is_file() and checkpoint.name.startswith("checkpoint-"):
+        manifest_path = checkpoint.parent / MANIFEST_FILENAME
+    if manifest_path.is_file():
+        try:
+            manifest = parse_manifest(manifest_path)
+        except ManifestError as exc:
+            raise CheckpointImportError([str(exc)]) from exc
+        if manifest.get("expected_checkpoint_step") != step:
+            raise CheckpointImportError(
+                [
+                    "Training manifest expected checkpoint step does not match trainer_state.json and the checkpoint directory."
+                ]
+            )
+        if manifest.get("training_backend") != backend:
+            raise CheckpointImportError(
+                ["Training manifest backend does not match the checkpoint state format."]
+            )
+        adapter = _configuration_metadata(checkpoint).get("adapter_config.json", {})
+        adapter_model = (
+            adapter.get("base_model_name_or_path") if isinstance(adapter, dict) else None
+        )
+        manifest_model = manifest.get("base_model")
+        if adapter_model and isinstance(manifest_model, str) and adapter_model != manifest_model:
+            raise CheckpointImportError(
+                ["Training manifest base model does not match adapter_config.json."]
+            )
     return {
         "selected_checkpoint": str(checkpoint),
         "output_dir": str(selected if checkpoint == selected else checkpoint.parent),
         "global_step": step,
         "backend_type": backend,
         "configuration": _configuration_metadata(checkpoint),
+        "manifest": manifest,
+        "compatibility_warnings": []
+        if manifest
+        else ["No portable training manifest was found; compatibility checks are limited."],
     }
 
 
-def validate_import_compatibility(info: dict[str, Any], request: Any, backend_type: str) -> None:
+def validate_import_compatibility(
+    info: dict[str, Any], request: Any, backend_type: str
+) -> list[str]:
     errors: list[str] = []
     if info["backend_type"] != backend_type:
         errors.append(
@@ -281,13 +316,31 @@ def validate_import_compatibility(info: dict[str, Any], request: Any, backend_ty
     for value in info.get("configuration", {}).values():
         if isinstance(value, dict):
             merged.update(value)
-    for key in ("model_name", "training_type", "load_in_4bit", "max_seq_length"):
+    manifest = info.get("manifest") or {}
+    manifest_model = manifest.get("base_model")
+    requested_model = getattr(request, "model_name", None)
+    if isinstance(manifest_model, str) and requested_model and manifest_model != requested_model:
+        errors.append(
+            f"Checkpoint model {manifest_model!r} does not match requested {requested_model!r}."
+        )
+    warnings_list = list(info.get("compatibility_warnings") or [])
+    for key in ("training_type", "load_in_4bit", "max_seq_length"):
         expected = merged.get(key)
         actual = getattr(request, key, None)
         if expected is not None and actual is not None and expected != actual:
-            errors.append(f"Checkpoint {key}={expected!r} does not match requested {actual!r}.")
+            warnings_list.append(
+                f"Checkpoint {key}={expected!r} differs from requested {actual!r}."
+            )
     if errors:
         raise CheckpointImportError(errors)
+    if warnings_list and not bool(getattr(request, "confirm_import_differences", False)):
+        raise CheckpointImportError(
+            [
+                "Confirmation is required for noncritical checkpoint differences.",
+                *warnings_list,
+            ]
+        )
+    return warnings_list
 
 
 def get_resume_checkpoint_path(

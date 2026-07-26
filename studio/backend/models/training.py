@@ -86,13 +86,14 @@ def _parse_lr(v: Any) -> float:
         raise ValueError(f"learning_rate must be > 0 (got {lr!r}); typical range is 1e-6 .. 1e-3")
     if lr >= _MAX_LR_VALUE:
         raise ValueError(
-            f"learning_rate must be < 1.0 (got {lr!r}); "
-            "values that large always diverge training"
+            f"learning_rate must be < 1.0 (got {lr!r}); values that large always diverge training"
         )
     return lr
 
+
 class TrainingDatasetSelection(BaseModel):
     """One independently configured training source."""
+
     hf_dataset: Optional[str] = None
     local_path: Optional[str] = None
     subset: Optional[str] = None
@@ -104,7 +105,9 @@ class TrainingDatasetSelection(BaseModel):
     @model_validator(mode = "after")
     def _source(self):
         if sum(bool(x and x.strip()) for x in (self.hf_dataset, self.local_path)) != 1:
-            raise ValueError("each training dataset must identify exactly one of hf_dataset or local_path")
+            raise ValueError(
+                "each training dataset must identify exactly one of hf_dataset or local_path"
+            )
         if not self.split.strip():
             raise ValueError("each training dataset requires a split")
         if self.local_path and self.subset:
@@ -190,8 +193,24 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and not values.get("training_datasets"):
             entries = []
             if values.get("hf_dataset"):
-                entries.append({"hf_dataset": values["hf_dataset"], "subset": values.get("subset"), "split": values.get("train_split") or "train", "format_type": values.get("format_type"), "column_mapping": values.get("custom_format_mapping")})
-            entries.extend({"local_path": path, "split": "train", "format_type": values.get("format_type"), "column_mapping": values.get("custom_format_mapping")} for path in values.get("local_datasets") or [])
+                entries.append(
+                    {
+                        "hf_dataset": values["hf_dataset"],
+                        "subset": values.get("subset"),
+                        "split": values.get("train_split") or "train",
+                        "format_type": values.get("format_type"),
+                        "column_mapping": values.get("custom_format_mapping"),
+                    }
+                )
+            entries.extend(
+                {
+                    "local_path": path,
+                    "split": "train",
+                    "format_type": values.get("format_type"),
+                    "column_mapping": values.get("custom_format_mapping"),
+                }
+                for path in values.get("local_datasets") or []
+            )
             values["training_datasets"] = entries
         return values
 
@@ -287,7 +306,7 @@ class TrainingStartRequest(BaseModel):
             return 1
         if v < 1 or v > _MAX_GRAD_ACCUM:
             raise ValueError(
-                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] " f"(got {v!r})"
+                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] (got {v!r})"
             )
         return v
 
@@ -357,9 +376,7 @@ class TrainingStartRequest(BaseModel):
         if v is None:
             return v
         if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
-            raise ValueError(
-                f"warmup_steps must be a non-negative int <= {_MAX_STEPS} " f"(got {v!r})"
-            )
+            raise ValueError(f"warmup_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})")
         return v
 
     @field_validator("warmup_ratio")
@@ -447,7 +464,9 @@ class TrainingStartRequest(BaseModel):
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
     save_total_limit: Optional[int] = Field(
-        None, ge = 0, le = _MAX_STEPS,
+        None,
+        ge = 0,
+        le = _MAX_STEPS,
         description = "Maximum retained checkpoints; 0 or null means unlimited",
     )
     push_to_hub: bool = Field(False, description = "Upload checkpoints to the Hub")
@@ -536,6 +555,10 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "Checkpoint directory explicitly inspected with /resume/import/inspect",
     )
+    confirm_import_differences: bool = Field(
+        False,
+        description = "Explicitly accept safe noncritical manifest differences on external import",
+    )
 
     @model_validator(mode = "after")
     def _distinct_resume_flows(self) -> "TrainingStartRequest":
@@ -605,7 +628,9 @@ class TrainingStartRequest(BaseModel):
         if self.push_to_hub:
             repo_id = (self.hub_model_id or "").strip()
             if not re.fullmatch(r"[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*", repo_id):
-                raise ValueError("hub_model_id must be a valid non-empty owner/repository ID when push_to_hub is enabled")
+                raise ValueError(
+                    "hub_model_id must be a valid non-empty owner/repository ID when push_to_hub is enabled"
+                )
             self.hub_model_id = repo_id
         else:
             self.hub_model_id = None

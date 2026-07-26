@@ -45,6 +45,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
 from utils.training_runs import build_default_output_dir_name
+from core.training.manifest import atomic_write_manifest, write_checkpoint_manifests
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
@@ -328,8 +329,7 @@ def _install_package_wheel_first(
     if pypi_status_message is None:
         if is_hip:
             pypi_status_message = (
-                f"Compiling {display_name} from source for ROCm "
-                "(this may take several minutes)..."
+                f"Compiling {display_name} from source for ROCm (this may take several minutes)..."
             )
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
@@ -417,7 +417,7 @@ def _install_package_wheel_first(
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after " f"{_run_kwargs.get('timeout')}s",
+            f"{display_name} installation timed out after {_run_kwargs.get('timeout')}s",
         )
         return False
 
@@ -1387,8 +1387,7 @@ def _normalize_mlx_studio_scheduler(value):
     if raw not in _MLX_STUDIO_LR_SCHEDULERS:
         supported = ", ".join(sorted(_MLX_STUDIO_LR_SCHEDULERS))
         raise ValueError(
-            f"Unsupported LR scheduler for MLX training: {value!r}. "
-            f"Supported values: {supported}."
+            f"Unsupported LR scheduler for MLX training: {value!r}. Supported values: {supported}."
         )
     return raw
 
@@ -1937,6 +1936,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         {**config, "output_dir": resume_dir} if resume_dir else config, model_name
     )
     ensure_dir(Path(output_dir))
+    from core.training.training import _build_training_manifest
+
+    atomic_write_manifest(output_dir, _build_training_manifest(config))
     _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
@@ -2967,11 +2969,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         checkpoint_upload = getattr(progress, "checkpoint_upload", None)
         if checkpoint_upload != _last_checkpoint_upload:
             _last_checkpoint_upload = dict(checkpoint_upload or {})
-            event_queue.put({
-                "type": "checkpoint_upload",
-                "checkpoint_upload": _last_checkpoint_upload,
-                "ts": time.time(),
-            })
+            event_queue.put(
+                {
+                    "type": "checkpoint_upload",
+                    "checkpoint_upload": _last_checkpoint_upload,
+                    "ts": time.time(),
+                }
+            )
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
         if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
@@ -3295,6 +3299,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
+        # The manifest is independent of studio.db, so copied/imported runs remain
+        # reconstructable. Publish it before any checkpoint can be announced.
+        from core.training.training import _build_training_manifest
+
+        atomic_write_manifest(output_dir, _build_training_manifest(config))
         _emit_output_dir(event_queue, output_dir)
 
         tensorboard_dir = config.get("tensorboard_dir")
@@ -3326,7 +3335,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
             save_total_limit = config.get("save_total_limit") or None,
             push_to_hub = bool(save_steps and config.get("push_to_hub", False)),
-            hub_model_id = config.get("hub_model_id") if save_steps and config.get("push_to_hub", False) else None,
+            hub_model_id = config.get("hub_model_id")
+            if save_steps and config.get("push_to_hub", False)
+            else None,
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
@@ -3350,6 +3361,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         # Check final state
         progress = trainer.get_training_progress()
+        # Covers MLX, embedding, and any trainer variant without the shared HF
+        # callback. Only completed trainer_state/checkpoint pairs are published.
+        write_checkpoint_manifests(output_dir)
         if progress.error:
             event_queue.put(
                 {
@@ -3866,7 +3880,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "seed": config.get("random_seed", 3407),
         "save_total_limit": config.get("save_total_limit") or None,
         "push_to_hub": bool(save_steps_val and config.get("push_to_hub", False)),
-        "hub_model_id": config.get("hub_model_id") if save_steps_val and config.get("push_to_hub", False) else None,
+        "hub_model_id": config.get("hub_model_id")
+        if save_steps_val and config.get("push_to_hub", False)
+        else None,
     }
 
     # max_steps vs epochs
