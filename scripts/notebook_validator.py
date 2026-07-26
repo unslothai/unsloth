@@ -95,8 +95,8 @@ COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-i
 # Source: pytorch/torchcodec compatibility matrix on its README.
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.10": {"0.10"},
-    "2.9": {"0.7", "0.8", "0.9"},
-    "2.8": {"0.6"},
+    "2.9": {"0.8", "0.9"},
+    "2.8": {"0.6", "0.7"},
     "2.7": {"0.3", "0.4", "0.5"},
     "2.6": {"0.2", "0.3"},
     "2.5": {"0.1", "0.2"},

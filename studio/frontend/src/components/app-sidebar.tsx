@@ -105,7 +105,6 @@ import {
   archiveChatItem,
   ChatSearchDialog,
   clearNewChatDraft,
-  createChatProject,
   deleteChatProject,
   deleteChatItem,
   listStoredChatThreads,
@@ -123,6 +122,7 @@ import {
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
+import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
@@ -696,7 +696,6 @@ export function AppSidebar() {
     });
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
-  const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
     useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
@@ -849,28 +848,26 @@ export function AppSidebar() {
     }
   }
 
-  async function commitCreateProject() {
-    const name = projectNameDraft.trim();
-    if (!name) return;
+  // "New project" from a chat's menu moves that chat in and stays put;
+  // otherwise open the project, unless a slow upload outlasted the route the
+  // user was on when they hit create.
+  async function afterCreateProject(
+    project: ProjectRecord,
+    { stayedOnRoute }: { stayedOnRoute: boolean },
+  ) {
     const moveTarget = projectCreateMoveTarget;
+    setProjectCreateMoveTarget(null);
+    if (!moveTarget) {
+      if (stayedOnRoute) openProject(project.id);
+      return;
+    }
     try {
-      const project = await createChatProject(name);
-      if (moveTarget) {
-        await moveChatItemToProject(moveTarget, project.id);
-        if (activeThreadId === moveTarget.id) {
-          useChatRuntimeStore.getState().setActiveProjectId(project.id);
-        }
-      }
-      setCreatingProject(false);
-      setProjectNameDraft("");
-      setProjectCreateMoveTarget(null);
-      if (moveTarget) {
-        return;
-      } else {
-        openProject(project.id);
+      await moveChatItemToProject(moveTarget, project.id);
+      if (activeThreadId === moveTarget.id) {
+        useChatRuntimeStore.getState().setActiveProjectId(project.id);
       }
     } catch (err) {
-      toast.error(moveTarget ? "Failed to create and move chat" : "Failed to create project", {
+      toast.error("Failed to move chat to the new project", {
         description: err instanceof Error ? err.message : undefined,
       });
     }
@@ -901,8 +898,8 @@ export function AppSidebar() {
         : "group/recent-item relative";
     const actionClass =
       variant === "project"
-        ? "sidebar-row-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-        : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
+        ? "sidebar-row-action sidebar-touch-reveal group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+        : "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-ui-14p5 leading-ui-19 tracking-nav font-medium",
       // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
@@ -912,13 +909,14 @@ export function AppSidebar() {
       isPinned && variant !== "project" && "gap-[8.5px]",
       variant === "project"
         ? // Room for the hover pin quick-action plus the kebab.
-          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
+          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8 [@media(pointer:coarse)]:pr-14"
         : isPinned
           ? // Pinned rows show an extra unpin button on hover, so reserve more room
             // (pr-8 when the menu is open keeps the unpin button clear of the title).
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
           : // Hover room for the kebab only; title keeps one more character.
-            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
+            // Touch rows clear the full always-visible kebab hit area (pr-10).
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
     );
 
     const isRenamingThis =
@@ -987,7 +985,7 @@ export function AppSidebar() {
               togglePinnedChat(item.id);
             }}
             aria-label={isPinned ? "Unpin chat" : "Pin chat"}
-            className="sidebar-row-action is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
           >
             <span className="sidebar-row-action-glyph">
               <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
@@ -1002,7 +1000,7 @@ export function AppSidebar() {
               togglePinnedChat(item.id);
             }}
             aria-label="Unpin chat"
-            className="sidebar-row-action is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
           >
             <span className="sidebar-row-action-glyph">
               <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
@@ -1049,7 +1047,6 @@ export function AppSidebar() {
                 <DropdownMenuItem
                   onSelect={() => {
                     setProjectCreateMoveTarget(item);
-                    setProjectNameDraft("");
                     setCreatingProject(true);
                   }}
                 >
@@ -1392,7 +1389,6 @@ export function AppSidebar() {
                   onClick={(e) => {
                     e.stopPropagation();
                     setProjectCreateMoveTarget(null);
-                    setProjectNameDraft("");
                     setCreatingProject(true);
                   }}
                   className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
@@ -1854,6 +1850,18 @@ export function AppSidebar() {
               </button>
             </SidebarMenuItem>
           )}
+          {/* Collapsed rail has no room for the cog on the profile row, so it
+              sits above the avatar instead. */}
+          <NavItem
+            className="hidden group-data-[collapsible=icon]:block"
+            icon={Settings02Icon}
+            label={t("shell.navigation.settings")}
+            active={false}
+            onClick={() => {
+              useSettingsDialogStore.getState().openDialog();
+              closeMobileIfOpen();
+            }}
+          />
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -2159,58 +2167,18 @@ export function AppSidebar() {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-    <Dialog
+    <NewProjectDialog
       open={creatingProject}
       onOpenChange={(open) => {
         setCreatingProject(open);
-        if (!open) {
-          setProjectNameDraft("");
-          setProjectCreateMoveTarget(null);
-        }
+        if (!open) setProjectCreateMoveTarget(null);
       }}
-    >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>
-            {projectCreateMoveTarget ? "Move to new project" : "New project"}
-          </DialogTitle>
-        </DialogHeader>
-        <Input
-          value={projectNameDraft}
-          onChange={(event) => setProjectNameDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void commitCreateProject();
-            }
-          }}
-          autoFocus
-          maxLength={120}
-          placeholder="Project name"
-          aria-label="Project name"
-          className="focus-visible:border-input focus-visible:ring-0"
-        />
-        <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              setCreatingProject(false);
-              setProjectCreateMoveTarget(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            onClick={() => void commitCreateProject()}
-            disabled={!projectNameDraft.trim()}
-          >
-            Create
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      title={
+        projectCreateMoveTarget ? "Move to new project" : "Create project"
+      }
+      submitLabel={projectCreateMoveTarget ? "Create and move" : "Create project"}
+      onCreated={afterCreateProject}
+    />
     </>
   );
 }

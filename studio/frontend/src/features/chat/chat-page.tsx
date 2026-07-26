@@ -175,6 +175,7 @@ import {
 } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import {
@@ -184,6 +185,10 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import {
+  consumeProjectSourcesPending,
+  hasProjectSourcesPending,
+} from "@/features/rag/components/project-source-dropzone";
 
 
 const ProjectSourcesPanel = lazy(() =>
@@ -997,7 +1002,14 @@ function ProjectLanding({
   const active = useChatActive();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const initialActiveThreadRef = useRef<string | null>(null);
-  const [projectTab, setProjectTab] = useState<"chats" | "sources">("chats");
+  // Land on Sources when the project was just created with dropped files.
+  const [projectTab, setProjectTab] = useState<"chats" | "sources">(() =>
+    hasProjectSourcesPending(projectId) ? "sources" : "chats",
+  );
+  // Drop the marker once committed: React may replay the initializer above.
+  useEffect(() => {
+    consumeProjectSourcesPending(projectId);
+  }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
   );
@@ -1762,8 +1774,18 @@ export function ChatPage({
   const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
-    void hydratePersistedSettings();
-  }, [hydratePersistedSettings]);
+    void (async () => {
+      await hydratePersistedSettings();
+      try {
+        const synced = await syncExternalProvidersFromBackend(
+          useExternalProvidersStore.getState().providers,
+        );
+        setExternalProviders(synced);
+      } catch {
+        // Silent on startup; Connections settings still surfaces load errors.
+      }
+    })();
+  }, [hydratePersistedSettings, setExternalProviders]);
 
   useEffect(() => {
     // Skip while off-route: ChatPage stays mounted, and toast+navigate here would
@@ -2278,7 +2300,7 @@ export function ChatPage({
           } else if (outcome === "conflict") {
             toast.info("Resume this download from Models", {
               description:
-                "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
+                "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
             });
           } else if (outcome === "busy") {
             toast.info("Download already in progress", {
@@ -2399,7 +2421,7 @@ export function ChatPage({
         // surface's onComplete auto-loads, mirroring the "started" branch.
         toast.info("Resume this download from Models", {
           description:
-            "An earlier partial download used a different transport. Open the Models tab to resume or restart it.",
+            "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
         });
         return;
       }
@@ -2665,7 +2687,7 @@ export function ChatPage({
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
-          forceReload: isSameLoadedModel || undefined,
+          forceReload: meta?.forceReload ?? (isSameLoadedModel || undefined),
         };
         await stageOrLoad(selection);
       })();

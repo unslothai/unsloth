@@ -83,7 +83,7 @@ function CopyBtn({ text }: { text: string }) {
   );
 }
 
-/** Save the executed script as a .py file via a client-side Blob (no server file serving). */
+/** Save the script as a .py file via a client-side Blob. */
 function DownloadBtn({ code, name = "script.py" }: { code: string; name?: string }) {
   const download = useCallback(() => {
     if (typeof document === "undefined") {
@@ -229,8 +229,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const authToken = getAuthToken();
 
   return (
-    // Run status and output collapse from history, but the script source is
-    // rendered outside ToolFallbackContent so it stays visible on reopen (#7165).
+    // Status/output collapse from history; the script source renders outside
+    // ToolFallbackContent so it stays visible on reopen (#7165).
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
