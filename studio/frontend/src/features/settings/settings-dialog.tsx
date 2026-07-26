@@ -249,9 +249,10 @@ export function SettingsDialog() {
             }
           }}
           className={cn(
-            // Cap at 880px but shrink to the viewport so it doesn't clip on
-            // iPad-portrait widths where a fixed width overflows.
-            "settings-surface !max-w-[min(880px,calc(100vw-2rem))] h-[560px] w-[min(880px,calc(100vw-2rem))] p-0 overflow-hidden",
+            // Cap at 960px but shrink to the viewport so it doesn't clip on
+            // iPad-portrait widths where a fixed width overflows. Height caps
+            // the same way so short viewports don't get a clipped dialog.
+            "settings-surface !max-w-[min(960px,calc(100vw-2rem))] h-[min(680px,calc(100dvh-2rem))] w-[min(960px,calc(100vw-2rem))] p-0 overflow-hidden",
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
