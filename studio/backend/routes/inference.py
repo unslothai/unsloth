@@ -4372,16 +4372,11 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     """
     from core.inference.llama_keepwarm import other_inference_request_count
 
-    _raise_or_cancel_active_generations(
-        force = True, action = "Installing a new transformers version"
-    )
+    _raise_or_cancel_active_generations(force = True, action = "Installing a new transformers version")
     deadline = time.monotonic() + (
         _SIDECAR_SWAP_DRAIN_TIMEOUT_S if timeout_s is None else timeout_s
     )
-    while (
-        other_inference_request_count(current_request_counted = False, include_pending = False)
-        > 0
-    ):
+    while other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
         if time.monotonic() >= deadline:
             return
         await asyncio.sleep(0.02)
@@ -5706,9 +5701,7 @@ async def install_latest_transformers_route(
         # confirm (second tab, desktop app, curl) and unchanged in what it protects.
         if (
             not request.force_cancel_active
-            and other_inference_request_count(
-                current_request_counted = False, include_pending = False
-            )
+            and other_inference_request_count(current_request_counted = False, include_pending = False)
             > 0
         ):
             raise HTTPException(

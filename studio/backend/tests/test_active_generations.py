@@ -2116,7 +2116,9 @@ def _stub_install_route(monkeypatch, *, in_flight_events):
     import core.training as training_mod
 
     monkeypatch.setattr(
-        training_mod, "get_training_backend", lambda: SimpleNamespace(is_training_active = lambda: False)
+        training_mod,
+        "get_training_backend",
+        lambda: SimpleNamespace(is_training_active = lambda: False),
     )
     monkeypatch.setattr(
         export_mod,
