@@ -3001,6 +3001,11 @@ _HIGH_RISK_COMMANDS = frozenset(
         "rd",
         # accounts / persistence / system services
         "crontab",
+        # at/batch hand the payload to atd, which runs it later as this user and
+        # outside this invocation's blocklist, rlimits, timeout and cancellation.
+        "at",
+        "batch",
+        "atrm",
         "systemctl",
         "service",
         "useradd",
@@ -3008,6 +3013,14 @@ _HIGH_RISK_COMMANDS = frozenset(
         "usermod",
         "groupadd",
         "groupdel",
+        "groupmod",
+        "adduser",
+        "deluser",
+        "addgroup",
+        "delgroup",
+        "gpasswd",
+        "newusers",
+        "chgpasswd",
         "passwd",
         "chpasswd",
         "visudo",
@@ -3169,6 +3182,9 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # The same two subcommands, matched on the resolved command segment so the
 # wrapped forms (env openssl s_client, timeout 5 openssl s_client) are seen.
 _OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
+# `getent shadow` returns password hashes straight from NSS, so the read
+# never spells out /etc/shadow for the path check to find.
+_GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
 )
@@ -3302,6 +3318,15 @@ def _is_inline_code_interpreter(name: str) -> bool:
     return name in _INLINE_CODE_INTERPRETERS or bool(_VERSIONED_INTERPRETER_RE.match(name))
 
 
+def _short_flag_cluster(token: str) -> "list[str]":
+    """Split a combined short-option token into its individual flags
+    (`-qf` -> ['-q', '-f']). A long option, a `-x=value` form or a bare `-`
+    yields nothing, so only genuine clusters are expanded."""
+    if len(token) < 3 or not token.startswith("-") or token.startswith("--") or "=" in token:
+        return []
+    return ["-" + ch for ch in token[1:]]
+
+
 def _short_flag_arg(token: str, letters: str) -> "str | None":
     """For a short-flag cluster (``-lc``, ``-Bc``, ``-c``), if one of ``letters``
     appears as a flag in it, return the text glued after that letter -- ``""`` when
@@ -3347,7 +3372,7 @@ _HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-f", "--force", "--discard-changes"})
 # `git branch -D` force-deletes a branch, discarding unmerged commits; -M
 # force-renames over an existing branch. Plain -d/--delete refuses to drop
 # unmerged work, so it stays out.
-_HIGH_RISK_GIT_BRANCH_FLAGS = frozenset({"-D", "-M", "--force"})
+_HIGH_RISK_GIT_BRANCH_FLAGS = frozenset({"-D", "-M", "-f", "--force"})
 # `git stash clear` / `drop` destroy stashed work with no reflog to recover it.
 _HIGH_RISK_GIT_STASH_ACTIONS = frozenset({"clear", "drop"})
 # `git checkout -- <path>` / `git checkout .` / `git checkout -f` discard tracked
@@ -3388,6 +3413,12 @@ _HAS_COMMAND_SUBST_RE = re.compile(r"\$\((?!\()|`")
 # `$` expansion. Paired with _HAS_COMMAND_SUBST_RE, this flags the pattern
 # `x=`printf 'git clean -fd'`; bash -c "$x"` (or `; $x`) whose executed command
 # is assembled at runtime and so cannot be screened statically.
+# The same, but only when the expansion is the WHOLE command word. A variable
+# used as a path prefix (${VENV}/bin/python, $HOME/bin/tool) still leaves a
+# literal basename the scan can screen, so it is not unresolvable.
+_BARE_VAR_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w+\}?(?=\s|$)"
+)
 _VAR_EXECUTED_AS_COMMAND_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w"
     r"|\b(?:sh|bash|zsh|dash|ksh|ash)\b[^\n]*?\s-c\b[^\n]*\$"
@@ -3544,11 +3575,16 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     # A command substitution at command position generates the command Bash runs.
     if _COMMAND_SUBST_AT_CMD_RE.search(command):
         return True
-    # A substitution stashed in a variable and then executed dynamically
-    # (x=`printf 'git clean -fd'`; bash -c "$x") never appears as literal text,
-    # so the token scan below cannot see the real command. When a command
-    # substitution coincides with a variable executed as a command, fail closed.
+    # A variable executed at command position hides the name that actually
+    # runs. A plain assignment is resolved by the expansion above, so reaching
+    # here means the binding came from somewhere this scan cannot follow: a
+    # command substitution (x=`printf 'git clean -fd'`; bash -c "$x"), or an
+    # assignment bash makes without the NAME=value form (printf -v c rm; $c -rf
+    # x, read c <<< rm; $c -rf x). There is no command name left to screen, so
+    # fail closed.
     if _HAS_COMMAND_SUBST_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
+        return True
+    if _BARE_VAR_AS_COMMAND_RE.search(expanded):
         return True
     # An array expansion built from literal-but-unresolved elements and then run
     # as a command (x=(git clean -fd); bash -c "${x[*]}") carries no command
@@ -3719,21 +3755,33 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 if current_command == "git":
                     if git_subcommand == "reset" and flag in _HIGH_RISK_GIT_RESET_FLAGS:
                         return True
-                    if git_subcommand == "push" and flag in _HIGH_RISK_GIT_PUSH_FLAGS:
+                    if git_subcommand == "push" and (
+                        flag in _HIGH_RISK_GIT_PUSH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_PUSH_FLAGS for f in _short_flag_cluster(token))
+                    ):
                         return True
                     # git checkout -f / --force, or an explicit `--` path
                     # separator (git checkout -- file), discards tracked edits.
                     if git_subcommand == "checkout" and (
                         flag in _HIGH_RISK_GIT_CHECKOUT_FLAGS
+                        or any(
+                            f in _HIGH_RISK_GIT_CHECKOUT_FLAGS for f in _short_flag_cluster(token)
+                        )
                         or token == "--"
                         or flag == "--pathspec-from-file"
                     ):
                         return True
                     # git switch discards tracked edits with the same flags.
-                    if git_subcommand == "switch" and flag in _HIGH_RISK_GIT_SWITCH_FLAGS:
+                    if git_subcommand == "switch" and (
+                        flag in _HIGH_RISK_GIT_SWITCH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_SWITCH_FLAGS for f in _short_flag_cluster(token))
+                    ):
                         return True
                     # git branch -D / -M drops or overwrites unmerged commits.
-                    if git_subcommand == "branch" and flag in _HIGH_RISK_GIT_BRANCH_FLAGS:
+                    if git_subcommand == "branch" and (
+                        flag in _HIGH_RISK_GIT_BRANCH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_BRANCH_FLAGS for f in _short_flag_cluster(token))
+                    ):
                         return True
                     # A git global option that takes a separate value (git -C repo
                     # clean) precedes its value, not the subcommand.
@@ -3865,6 +3913,9 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_subcommand = base
                 if base in _HIGH_RISK_GIT_SUBCOMMANDS:
                     return True
+            elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
+                # The database name is the whole request; no path is mentioned.
+                return True
             elif current_command == "openssl" and base in _OPENSSL_NETWORK_SUBCOMMANDS:
                 # openssl s_client/s_server open a TLS socket. The regex above is
                 # anchored at command position, so it misses the wrapped forms.

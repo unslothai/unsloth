@@ -628,6 +628,34 @@ def test_terminal_classifier(command, unsafe):
         # --- git --config-env takes the alias body from the environment ---
         ("git --config-env=alias.n=PAYLOAD n", True),
         ("git --config-env=user.name=UNAME commit", False),
+        # --- git combines short options, so the token is not the flag ---
+        ("git push -qf origin main", True),
+        ("git checkout -qf main", True),
+        ("git branch -qD topic", True),
+        ("git branch -f topic HEAD~3", True),
+        ("git push -q origin main", False),
+        ("git checkout -q main", False),
+        # --- getent reads the shadow databases without naming a path ---
+        ("getent shadow", True),
+        ("getent gshadow root", True),
+        ("getent hosts example.com", False),
+        ("getent passwd", False),
+        # --- the account-management utilities beyond useradd/usermod ---
+        ("adduser bob", True),
+        ("deluser bob", True),
+        ("groupmod -n new old", True),
+        ("gpasswd -a user sudo", True),
+        ("newusers batch.txt", True),
+        # --- a delayed job runs later, outside this invocation's limits ---
+        ("echo 'rm -rf victim' | at now", True),
+        ("at -f payload.sh now", True),
+        ("batch < payload.sh", True),
+        # --- a command word bash builds where this scan cannot follow ---
+        ("printf -v c rm\n$c -rf victim", True),
+        ("read c <<< rm\n$c -rf victim", True),
+        # ...but a variable used as a path prefix still leaves a real basename
+        ("${VENV}/bin/python train.py", False),
+        ("$HOME/bin/tool --flag", False),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),
