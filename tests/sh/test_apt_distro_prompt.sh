@@ -163,6 +163,11 @@ run_smart() {
                     *) return 1 ;;
                 esac
             fi
+            # Sudoers refuses the command outright, with or without -n.
+            if [ "$_sudo_mode" = denied ]; then
+                echo "sudo: user is not allowed to execute that" >&2
+                return 1
+            fi
             echo "SUDO_RAN: $*"
         }
         # shellcheck disable=SC1090
@@ -198,6 +203,13 @@ assert_contains "no tty + passwordless sudo: says why it proceeded" \
 _out=$(run_smart tty needspasswd)
 assert_contains "tty present: still prompts" "$_out" "Accept? [Y/n]"
 assert_contains "tty present: accepts and installs" "$_out" "SUDO_RAN: apt-get install -y cmake"
+
+# Consent given at a real tty, but the elevated apt-get fails anyway (sudoers
+# denial, wrong password, apt error). The interactive branch must say what to
+# run by hand, like the headless branch does, not die on the bare sudo error.
+_out=$(run_smart tty denied)
+assert_contains "tty + denied sudo: gives the manual command" \
+    "$_out" "sudo apt-get update -y && sudo apt-get install -y cmake"
 
 # No sudo at all keeps its own message.
 _out=$(run_smart notty absent)
