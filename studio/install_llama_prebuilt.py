@@ -440,7 +440,6 @@ def is_cross_device_error(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and exc.errno == errno.EXDEV
 
 
-
 # Status logs default to stderr so resolver modes keep stdout machine-readable
 # (setup.sh json.load()s the whole stdout). main() flips this for the install
 # path, where PowerShell otherwise renders stderr as NativeCommandError noise.
