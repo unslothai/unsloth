@@ -913,6 +913,81 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     assert active_generations.count() == 0
 
 
+class _EmbeddingsRequest(_NeverDisconnectedRequest):
+    """Minimal stand-in for the Starlette Request /v1/embeddings reads."""
+
+    def __init__(self, body):
+        from types import SimpleNamespace
+
+        self._body = body
+        self.method = "POST"
+        self.url = SimpleNamespace(path = "/v1/embeddings")
+        self.state = SimpleNamespace(skip_api_monitor = True)
+
+    async def json(self):
+        return self._body
+
+
+def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
+    # /v1/embeddings occupies llama-server for its whole HTTP call, and /unload
+    # runs no idle drain: without its own registration a non-forced /unload
+    # counts zero generations and kills the server mid-request. Middleware
+    # in-flight counting does not help here, only /load waits on that.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    import httpx
+
+    import routes.inference as inf_mod
+
+    seen = {}
+
+    def handler(request):
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        seen["cancelled"] = active_generations.cancel_all()
+        return httpx.Response(200, json = {"data": [{"embedding": [0.1, 0.2]}]})
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    monkeypatch.setattr(
+        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            context_length = 4096,
+            base_url = "http://llama.test",
+            model_identifier = "org/M-GGUF",
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
+
+    async def _no_auto_switch(request, current_subject):
+        return await request.json()
+
+    monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
+
+    request = _EmbeddingsRequest({"input": "hi", "model": "org/M-GGUF"})
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(inf_mod.openai_embeddings(request, "tester"))
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    assert seen["cancelled"] == 1
+    # And it unregisters, or one embedding would 409 every later reload.
+    assert active_generations.count() == 0
+
+
 def _anthropic_stream_args(chunks):
     """(request, cancel_event, run_gen) for the local Anthropic stream helpers."""
     cancel_event = threading.Event()

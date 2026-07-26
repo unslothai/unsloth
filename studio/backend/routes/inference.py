@@ -11297,18 +11297,56 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             subject = current_subject,
         )
 
-    try:
-        resp = await nonstreaming_client().post(
-            target_url,
-            json = body,
-            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+    # Same gate registration as the completions proxy: /unload runs no idle
+    # drain, so an unregistered request lets a non-forced unload count zero
+    # generations and kill llama-server mid-embedding. A dedicated (unpooled)
+    # client so closing it on cancel interrupts this call only.
+    _cancel_event = threading.Event()
+    _client = _cancelable_nonstreaming_client()
+    _tracker = _TrackedCancel(
+        _cancel_event,
+        model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
+    )
+    _tracker.__enter__()
+    _cancel_watcher = asyncio.create_task(
+        _await_cancel_or_disconnect_then_close_client(
+            cancel_event = _cancel_event,
+            request = request,
+            client = _client,
         )
+    )
+    try:
+        try:
+            resp = await _client.post(
+                target_url,
+                json = body,
+                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            )
+        except httpx.RequestError:
+            # The watcher closed the client out from under the request: report
+            # the cancel, not a bare transport failure.
+            if _cancel_event.is_set():
+                raise asyncio.CancelledError()
+            raise
+        if _cancel_event.is_set():
+            raise asyncio.CancelledError()
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise
+    finally:
+        # Nested so a close-time failure can't skip the unregister and leave a
+        # phantom generation 409-ing every later swap.
+        try:
+            await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+            try:
+                await _client.aclose()
+            except Exception:
+                pass
+        finally:
+            _tracker.__exit__(None, None, None)
     if resp.status_code != 200:
         api_monitor.fail(monitor_id, resp.text[:500])
     else:

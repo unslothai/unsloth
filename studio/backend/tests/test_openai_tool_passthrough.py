@@ -4870,12 +4870,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"input": ["alpha", "beta"], "model": "embed"}
 
+                async def is_disconnected(self):
+                    return False
+
             class FakeAsyncClient:
                 async def __aenter__(self):
                     return self
 
                 async def __aexit__(self, *_args):
                     return False
+
+                async def aclose(self):
+                    return None
 
                 async def post(self, *_args, **_kwargs):
                     assert monitor.active_count() == 1
@@ -4889,9 +4895,11 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the
+            # pooled one is shared and must not be torn down.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeAsyncClient(),
             )
             monkeypatch.setattr(
