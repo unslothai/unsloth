@@ -30,11 +30,13 @@ from typing import Any, Optional
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
+AUTO_UNLOAD_KEEP_KV_SETTING_KEY = "openai_api_auto_unload_keep_kv"
 MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
 MODEL_IDLE_TTL_ENV_VAR = "UNSLOTH_MODEL_IDLE_TTL"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
+DEFAULT_AUTO_UNLOAD_KEEP_KV = True
 MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
@@ -158,29 +160,54 @@ def get_auto_unload_idle_seconds() -> int:
     return env if env is not None else 0
 
 
-def set_openai_auto_switch(enabled: Any, idle_seconds: Any) -> tuple[bool, int]:
-    """Set both auto-switch flags in one transaction so a settings PUT can't leave
-    one key updated and the other stale. Both values are coerced before any write,
-    so an invalid value raises without persisting either."""
+def get_auto_unload_keep_kv() -> bool:
+    """Whether the idle unload persists slot KV to disk for restore on reload."""
+    parsed = _coerce_bool(_cached_setting(AUTO_UNLOAD_KEEP_KV_SETTING_KEY, None))
+    return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_KEEP_KV
+
+
+def set_openai_auto_switch(
+    enabled: Any,
+    idle_seconds: Any,
+    keep_kv: Any = None,
+) -> tuple[bool, int, bool]:
+    """One-transaction write; ``None`` leaves a stored value untouched."""
     parsed_enabled = _coerce_bool(enabled)
     if parsed_enabled is None:
         raise ValueError("OpenAI auto-switch must be true or false.")
-    parsed_idle = _coerce_int(idle_seconds)
-    if parsed_idle is None:
-        raise ValueError("Auto-unload idle seconds must be a non-negative integer.")
-    if 0 < parsed_idle < MIN_AUTO_UNLOAD_IDLE_SECONDS:
-        raise ValueError(
-            f"Auto-unload idle seconds must be 0 (off) or at least "
-            f"{MIN_AUTO_UNLOAD_IDLE_SECONDS}."
-        )
+    parsed_idle = None
+    if idle_seconds is not None:
+        parsed_idle = _coerce_int(idle_seconds)
+        if parsed_idle is None:
+            raise ValueError("Auto-unload idle seconds must be a non-negative integer.")
+        if 0 < parsed_idle < MIN_AUTO_UNLOAD_IDLE_SECONDS:
+            raise ValueError(
+                f"Auto-unload idle seconds must be 0 (off) or at least "
+                f"{MIN_AUTO_UNLOAD_IDLE_SECONDS}."
+            )
+    parsed_keep_kv = None
+    if keep_kv is not None:
+        parsed_keep_kv = _coerce_bool(keep_kv)
+        if parsed_keep_kv is None:
+            raise ValueError("Keep KV on idle unload must be true or false.")
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings(
-        {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled, AUTO_UNLOAD_IDLE_SETTING_KEY: parsed_idle}
-    )
+    updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
+    if parsed_idle is not None:
+        updates[AUTO_UNLOAD_IDLE_SETTING_KEY] = parsed_idle
+    if parsed_keep_kv is not None:
+        updates[AUTO_UNLOAD_KEEP_KV_SETTING_KEY] = parsed_keep_kv
+    upsert_app_settings(updates)
     _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
-    _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
-    return parsed_enabled, parsed_idle
+    if parsed_idle is not None:
+        _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
+    if parsed_keep_kv is not None:
+        _invalidate(AUTO_UNLOAD_KEEP_KV_SETTING_KEY)
+    return (
+        parsed_enabled,
+        parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
+        parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv(),
+    )
 
 
 def get_model_overrides() -> dict[str, dict]:

@@ -235,7 +235,7 @@ def collect_stream(stream, show_thinking: bool) -> str:
 def raise_on_streamed_error(stream):
     # Match real backend errors by type (GenStreamError), not the "Error:" text
     # prefix, so a completion whose text opens with "Error:" is not misread as a
-    # failure that aborts a distributed run.
+    # backend failure.
     try:
         ensure_studio_backend_path()
         from core.inference.orchestrator import GenStreamError

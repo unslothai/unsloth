@@ -2652,6 +2652,12 @@ extra_eos_tokens = None,
                 "{{ '" + full_system + "' }}"\
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
+        elif "{SYSTEM}" in system_part:
+            # Only bind loop_messages when the template can render a caller system
+            # message. A static prefix with no {SYSTEM} must still raise, not drop it.
+            partial_system += "{% else %}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
         else:
             partial_system += "{% endif %}"
 

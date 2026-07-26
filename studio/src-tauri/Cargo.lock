@@ -5592,6 +5592,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "tokio",
  "windows 0.62.2",
  "windows-sys 0.61.2",

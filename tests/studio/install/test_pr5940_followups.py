@@ -784,7 +784,7 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
         assert re.search(
             r'"' + gfx + r'":\s*_ROCM_TORCH_PKG_SPECS\["rocm7\.2"\]', text
         ), f"{gfx} must pin to the rocm7.2 trio like install.ps1/setup.ps1"
-    i = text.find('f"ROCm torch (Windows, {gfx_arch})"')
+    i = text.find("f\"ROCm torch (Windows, {gfx_arch or 'pinned'})\"")
     assert i != -1, "Windows ROCm repair pip call not found"
     # The nearest preceding call must be the nonfatal pip_install_try, not pip_install.
     j = text.rfind("pip_install_try(", 0, i)

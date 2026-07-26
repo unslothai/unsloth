@@ -54,14 +54,14 @@ export function ModelLoadDescription({
         {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
-            <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
+            <div className="flex items-center justify-between gap-2 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80">
               <span className="min-w-0 truncate">{labelPrimary}</span>
               <span className="shrink-0 tabular-nums">
                 {Math.round(clampProgress(progressPercent))}%
               </span>
             </div>
             {labelSecondary ? (
-              <div className="truncate pt-0.5 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/60">
+              <div className="truncate pt-0.5 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/60">
                 {labelSecondary}
               </div>
             ) : null}
@@ -107,7 +107,7 @@ export function ModelLoadInlineStatus({
             <Progress value={clampProgress(progressPercent)} className="h-1 bg-foreground/[0.08]" />
           </div>
           <div
-            className="flex shrink-0 items-center gap-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80"
+            className="flex shrink-0 items-center gap-1 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"
             title={progressLabel ?? undefined}
           >
             {/* Tight inline layout: show only the primary (bytes) chunk;
@@ -124,7 +124,7 @@ export function ModelLoadInlineStatus({
           type="button"
           size="xs"
           variant="outline"
-          className="shrink-0 text-[11px]"
+          className="shrink-0 text-ui-11"
           onClick={onStop}
         >
           Stop

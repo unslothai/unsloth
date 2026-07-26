@@ -62,13 +62,18 @@ export function ModelAutoSwitchSection() {
 
   const persist = async (
     enabled: boolean,
-    idleSeconds: number,
+    idleSeconds: number | undefined,
     syncDraft = true,
+    keepKv?: boolean,
   ) => {
     setIsSaving(true);
     setError(null);
     try {
-      const saved = await updateOpenAIAutoSwitchSettings(enabled, idleSeconds);
+      const saved = await updateOpenAIAutoSwitchSettings(
+        enabled,
+        idleSeconds,
+        keepKv,
+      );
       setSettings(saved);
       if (syncDraft) {
         setDraftIdleSeconds(String(saved.autoUnloadIdleSeconds));
@@ -105,6 +110,11 @@ export function ModelAutoSwitchSection() {
       return;
     }
     void persist(true, idleSeconds);
+  };
+
+  const handleKeepKvToggle = (keepKv: boolean) => {
+    if (!settings) return;
+    void persist(settings.enabled, undefined, false, keepKv);
   };
 
   return (
@@ -166,6 +176,18 @@ export function ModelAutoSwitchSection() {
           ) : null}
         </div>
       </SettingsRow>
+      {settings?.idleUnloadActive ? (
+        <SettingsRow
+          label={t("settings.general.modelAutoSwitch.keepKv")}
+          description={t("settings.general.modelAutoSwitch.keepKvDescription")}
+        >
+          <Switch
+            checked={settings.autoUnloadKeepKv}
+            disabled={isSaving}
+            onCheckedChange={handleKeepKvToggle}
+          />
+        </SettingsRow>
+      ) : null}
     </SettingsSection>
   );
 }

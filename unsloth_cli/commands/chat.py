@@ -331,7 +331,7 @@ def chat(
             enable_thinking = show_thinking,
             use_adapter = use_adapter,
         )
-        return raise_on_streamed_error(stream) if is_mlx_distributed else stream
+        return raise_on_streamed_error(stream)
 
     if should_print:
         console.print()

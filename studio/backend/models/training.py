@@ -470,6 +470,7 @@ class TrainingStartRequest(BaseModel):
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
+    use_dora: bool = Field(False, description = "Use DoRA")
     train_on_completions: bool = Field(False, description = "Train on completions only")
 
     # Vision-specific LoRA parameters
@@ -496,7 +497,15 @@ class TrainingStartRequest(BaseModel):
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+        description = (
+            "Physical GPU indices to use, for example [0, 1]. Omit or pass "
+            "[] to use automatic selection. Explicit gpu_ids are unsupported "
+            "when the parent visibility mask uses non-numeric or subdevice "
+            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
+            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
+            "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
+            "Intel XPU."
+        ),
     )
 
     # S3 dataset source configuration
@@ -504,6 +513,13 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
+
+    @field_validator("target_modules", mode = "before")
+    @classmethod
+    def _normalize_target_modules(cls, value: Any) -> Any:
+        # Sanitized non-LoRA history stores the unused value as null; treat it as a
+        # fresh request's omitted/default empty list on resume.
+        return [] if value is None else value
 
     @model_validator(mode = "after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
@@ -528,6 +544,37 @@ class TrainingStartRequest(BaseModel):
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
+        # The frontend only ever sends one of these and never under Full
+        # Finetuning, but a direct API/YAML/CLI caller can bypass that. Nothing
+        # downstream breaks (full finetune ignores them, MLX rejects use_dora/
+        # use_loftq outright), but reject early here for a clear error instead
+        # of a silently-ignored flag.
+        active = [
+            name
+            for name, enabled in (
+                ("use_rslora", self.use_rslora),
+                ("use_loftq", self.use_loftq),
+                ("use_dora", self.use_dora),
+            )
+            if enabled
+        ]
+        if len(active) > 1:
+            raise ValueError(
+                f"Only one LoRA variant may be enabled at a time; got {active}. "
+                "use_rslora, use_loftq, and use_dora are mutually exclusive."
+            )
+        # getattr, not self.training_type: model_construct() (used by tests that
+        # validate a single field in isolation) leaves required fields unset, and
+        # this is a mode="after" validator so it still runs on that partial instance.
+        if getattr(self, "training_type", None) == "Full Finetuning" and active:
+            raise ValueError(
+                f"{active[0]} requires an adapter method (LoRA/QLoRA or "
+                "Continued Pretraining); it has no effect under Full Finetuning."
+            )
         return self
 
 
