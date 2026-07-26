@@ -2632,6 +2632,30 @@ class DiffusionResolvedControl(BaseModel):
     reason: str = Field("", description = "Short human-readable reason for the resolved value.")
 
 
+class DiffusionDownloadPlanEntry(BaseModel):
+    """One repo the pick needs, with the exact files to fetch from it."""
+
+    repo_id: str = Field(..., description = "Repo to download from")
+    files: List[str] = Field(
+        default_factory = list,
+        description = "Exact files the loader reads. Scoped on purpose: a full snapshot would "
+        "also pull the packaged root single, transformer/ shards and fp16 twins the loader "
+        "never opens (tens of GB on a FLUX repo).",
+    )
+    bytes: int = Field(0, description = "Declared size of those files, 0 when unknown")
+    gguf_filename: Optional[str] = Field(
+        None, description = "Set when this entry is the single-file GGUF checkpoint"
+    )
+
+
+class DiffusionDownloadPlanResponse(BaseModel):
+    """What to download before a load, so the Hub download manager can fetch it with the
+    same file scope the loader would. Empty entries mean nothing to download (local path)."""
+
+    entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
+    total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+
+
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
