@@ -128,8 +128,7 @@ def looks_like_quant(variant: Optional[str]) -> bool:
 
     if not variant:
         return False
-    # _extract_quant_label appends a bits-per-weight modifier when a repo ships
-    # several files at one base quant (IQ4_XS-3.53bpw); still a quant request.
+    # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
     return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
@@ -390,9 +389,8 @@ async def maybe_auto_download(
 
     if adopted is not None:
         if adopted.variant is None:
-            # Still probing, so it owns the slot and has no job to look up yet.
-            # Reading the whole-repo key here could find an older error and
-            # release a slot the probe is still using.
+            # Still probing: no job yet, and a stale whole-repo error would
+            # release the slot the probe is using.
             return _downloading_refusal(adopted.repo_id, None)
         state, error = await _job_state(adopted.repo_id, adopted.variant)
         if state in ("running", "cancelling", "unknown"):
@@ -558,9 +556,8 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         return lowered.get(wanted.strip().lower())
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames, so feed it "<label>.gguf". Its preference
-    # tokens are upper case and matched case-sensitively, so upper-case the keys
-    # and map the winner back, or a lower-case repo takes the first entry.
+    # _pick_best_gguf ranks filenames, so feed it "<label>.gguf". It matches its
+    # upper-case preference tokens case-sensitively, so upper-case and map back.
     synthetic: dict[str, str] = {}
     for name in variants:
         synthetic.setdefault(f"{name.upper()}.gguf", name)

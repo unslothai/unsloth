@@ -84,8 +84,7 @@ def spawn_worker(
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
-    # Not for a repo an API caller named: that would lend them the owner's Hub
-    # identity, so those dispatches opt out and stay anonymous.
+    # Not for a repo an API caller named: that would lend them the owner's identity.
     if not hf_token and allow_ambient_token:
         hf_token = os.environ.get("HF_TOKEN") or None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"

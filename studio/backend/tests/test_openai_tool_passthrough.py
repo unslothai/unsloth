@@ -6478,9 +6478,8 @@ class TestApiMonitorSafetensorsUsage:
                 *_args,
                 **_kwargs,
             ):
-                # Only the generation hop should cancel. Model resolution also
-                # runs off the loop, and it happens before the monitor row opens,
-                # so cancelling there would test nothing about finalization.
+                # Only the generation hop should cancel: resolution runs off the loop
+                # too, but before the monitor row opens, so it would test nothing.
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
                 raise asyncio.CancelledError()

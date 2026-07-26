@@ -946,16 +946,14 @@ def test_a_quant_cannot_be_satisfied_by_a_non_gguf_backend(monkeypatch):
 
 
 def test_the_worker_is_never_given_the_servers_own_token(hub):
-    # download_lifecycle substitutes the backend's HF_TOKEN for a falsy one, so
-    # passing None here would hand an API caller the owner's Hub identity.
+    # A falsy token would make the worker fall back to the server owner's HF_TOKEN.
     assert _run("unsloth/x-GGUF").code == "model_downloading"
     assert hub["started"][0][2] is None
     assert hub["allow_ambient"] is False
 
 
 def test_the_metadata_probe_is_explicitly_anonymous(hub):
-    # huggingface_hub treats token=None as "use a cached login"; only False is
-    # anonymous, and the cached login here would be the server owner's.
+    # token=None means "use the cached login" to huggingface_hub; only False is anonymous.
     _run("unsloth/x-GGUF")
     assert hub["token"] is False
     auto_dl.reset_for_tests()
@@ -964,8 +962,7 @@ def test_the_metadata_probe_is_explicitly_anonymous(hub):
 
 
 def test_an_ollama_tag_still_matches_the_resident_gguf(monkeypatch):
-    # looks_like_quant() calls these foreign tags, so the llama.cpp branch must
-    # not compare them against hf_variant and refuse the resident model.
+    # looks_like_quant() calls these foreign, so they must not be checked against hf_variant.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:latest") is True
@@ -975,8 +972,7 @@ def test_an_ollama_tag_still_matches_the_resident_gguf(monkeypatch):
 
 
 def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):
-    # A second request arriving while the first is still probing must not read
-    # the whole-repo job key: a stale error there would free the probe's slot.
+    # The whole-repo job key can hold a stale error that would free the probe's slot.
     hub["on_probe"] = lambda: _run_nested()
     seen = {}
 
@@ -994,25 +990,21 @@ def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):
 
 
 def test_a_bpw_qualified_quant_is_a_quant_request():
-    # _extract_quant_label emits these for repos shipping several files at one
-    # base quant, and the resolver and downloader both accept them.
+    # _extract_quant_label emits these for repos shipping several files at one base quant.
     assert auto_dl.looks_like_quant("IQ4_XS-3.53bpw")
     assert auto_dl.looks_like_quant("UD-Q4_K_XL-4.19BPW")
     assert not auto_dl.looks_like_quant("3.53bpw")
 
 
 def test_the_default_pick_survives_lowercase_quant_labels():
-    # _pick_best_gguf matches its upper-case preference tokens case-sensitively,
-    # so a lower-case repo would otherwise take the first entry, often F16.
+    # Preference tokens match case-sensitively, so a lower-case repo would take F16.
     lowered = {"f16": 20, "ud-q4_k_xl": 4, "q8_0": 9}
     assert auto_dl._match_variant(None, lowered) == "ud-q4_k_xl"
-    # The upper-case case must be unchanged.
     assert auto_dl._match_variant(None, {"F16": 20, "UD-Q4_K_XL": 4}) == "UD-Q4_K_XL"
 
 
 def test_a_slashless_local_model_is_still_a_concrete_reference(monkeypatch):
-    # Standalone and custom-folder GGUFs are advertised by /v1/models without a
-    # namespace, so a namespace cannot be what decides intent.
+    # /v1/models advertises these without a namespace, so a namespace decides nothing.
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
     monkeypatch.setattr(

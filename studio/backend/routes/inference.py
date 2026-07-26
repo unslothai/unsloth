@@ -3784,8 +3784,7 @@ def _loaded_satisfies(requested: str) -> bool:
         if base not in keys:
             return False
         if not looks_like_quant(variant):
-            # A non-quant tag (Ollama style ":latest", ":8b") is not a claim
-            # about which file is loaded, so the repo match is enough.
+            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
             return True
         return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
     active = getattr(get_inference_backend(), "active_model_name", None)

@@ -398,8 +398,7 @@ function useExampleModelName(): string | null {
           if (cancelled) return true;
           setCatalog(models);
           setAutoSwitch(enabled);
-          // Keep retrying until a snippet would actually run, so turning
-          // switching on in the row above is picked up here too.
+          // Retry until a snippet would actually run, so switching turned on above lands.
           return models.some((m) => m.loaded) || (enabled && models.length > 0);
         })
         .then((resolved) => {
@@ -423,8 +422,7 @@ function useExampleModelName(): string | null {
       return checkpoint;
     }
     // No usable checkpoint: name something this server holds, quant included so the
-    // request pins the file on disk rather than letting the server pick. An
-    // unloaded one only answers when switching is on, which is off by default.
+    // request pins the file on disk. An unloaded one only answers if switching is on.
     const pick =
       catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
     if (!pick) {
