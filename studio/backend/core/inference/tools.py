@@ -122,6 +122,7 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "netcat",
         "socat",
         "ssh",
+        "slogin",
         "scp",
         "sftp",
         "rsync",
@@ -214,6 +215,9 @@ def _env_assignment_is_unsafe(name: str) -> bool:
     )
 
 
+# Windows `if exist FILE cmd` / `if defined VAR cmd` put an operand between
+# the keyword and the command, so the command word is two tokens along.
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 # `[` and `[[` are the test builtins, not patterns.
@@ -275,7 +279,19 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
+    skip_operand = False  # consume a wrapper/conditional operand, not the command
     for token in tokens:
+        if skip_operand:
+            # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
+            # where the command word would otherwise be.
+            skip_operand = False
+            continue
+        if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+            skip_operand = token.lower() != "not"
+            continue
+        if prefix_pending and token == "-a":
+            skip_operand = True
+            continue
         # A keyword only separates where a COMMAND may start (see below).
         if token in _SHELL_SEPARATORS or (token in _SHELL_KEYWORDS_AS_SEP and expect_command):
             expect_command = True
@@ -288,6 +304,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 expect_command = False
             continue
         if not expect_command:
+            continue
+        # A redirection may precede the command word (`</dev/null rm -rf x`).
+        if _REDIR_PREFIX_RE.match(token):
             continue
         # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
@@ -635,6 +654,27 @@ _CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 # a terminal call and is forwarded straight to the server, outside the terminal
 # sandbox, so auto gates it. Matches an execution verb or code-exec noun as a
 # whole name segment; read/list names (get_command, list_shells) do not match.
+# A name that reads (get_release, search_code, list_invoices) names its
+# SUBJECT, not the action: the impact and runtime-noun patterns below must
+# not fire on it, or the everyday read tools of every server would prompt.
+_AUTO_READ_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:get|list|read|search|find|fetch|query|describe|show|view|"
+    r"inspect|status|info|count|exists|lookup|browse|preview|download|export|"
+    r"history|log|logs|diff|compare|summarize|summarise)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# The runtime nouns alone (python, code, script, notebook) name a subject as
+# often as an action, so they only count when nothing reads.
+_AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
+    r"(?:^|[_\-])(?:exec|execute|run|eval|spawn|invoke|launch|shell|bash|zsh|"
+    r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
+    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
 _AUTO_EXEC_MCP_TOOL_RE = re.compile(
     r"(?:^|[_\-])(?:"
     r"exec|execute|run|eval|spawn|invoke|launch|"
@@ -935,12 +975,14 @@ _AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
 # operator, so it asks even though it is not "destructive" in the fs sense.
 _AUTO_HIGH_IMPACT_MCP_RE = re.compile(
     r"(?:^|[_\-])(?:transfer|payout|payment|pay|charge|refund|wire|remit|"
-    r"withdraw|deposit|invoice|publish|deploy|release)(?:[_\-]|$)",
+    r"withdraw|deposit|invoice|subscription|subscriptions|billing|"
+    r"publish|deploy|release)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 _AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
     r"(?:^|[_\-])(?:role|roles|permission|permissions|privilege|privileges|acl|acls|"
-    r"policy|policies|scope|scopes|grant|grants|membership|admin|owner)(?:[_\-]|$)",
+    r"policy|policies|scope|scopes|grant|grants|membership|member|members|"
+    r"collaborator|collaborators|admin|owner)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE = re.compile(
@@ -1187,6 +1229,9 @@ _PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
 # name imported bare (from shutil import rmtree; rmtree(x)) is caught via its
 # import binding.
 _PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"})
+# psutil ends a process exactly as os.kill does, which is already gated.
+_PY_PROCESS_KILL_ATTRS = frozenset({"kill", "terminate", "send_signal", "suspend"})
+_PY_PROCESS_MODULES = frozenset({"psutil"})
 # Gated only on the os module (or an alias) so a benign list.remove()/
 # file.truncate-like method on another receiver stays out. os.truncate and
 # os.ftruncate zero a file just like the gated terminal `truncate`; os.kill and
@@ -2696,22 +2741,48 @@ _MCP_METADATA_HOST_RE = re.compile(
 )
 
 
+# Argument names that carry a credential outward regardless of their value.
+_MCP_CREDENTIAL_KEY_RE = re.compile(
+    r"^(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-api-key|api[-_]?key|apikey|x-auth-token|auth[-_]?token|access[-_]?token|"
+    r"refresh[-_]?token|id[-_]?token|bearer|private[-_]?key|secret[-_]?key|"
+    r"client[-_]?secret|password|passwd|session[-_]?token)$",
+    re.IGNORECASE,
+)
+
+
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
     """True if any string in an MCP call's arguments names a credential path, a
     credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"}),
     or a cloud-metadata host (fetch_url {"url": "http://169.254.169.254/..."})."""
 
-    def walk(value) -> bool:
+    def key_is_credential(key) -> bool:
+        # An MCP call that sets an Authorization / API-key / Cookie header sends
+        # a credential outward, whatever the value happens to look like.
+        return isinstance(key, str) and bool(_MCP_CREDENTIAL_KEY_RE.match(key.strip()))
+
+    def walk(value, is_prose: bool = False) -> bool:
         if isinstance(value, str):
+            # A path can be carried under any argument name, so the prose keys
+            # are skipped rather than the path keys allowlisted: an issue body
+            # or a chat message that merely mentions a credential file is text
+            # this tool will store or display, not a file it will open.
+            if is_prose:
+                return False
             return (
                 _references_sensitive_path(value)
                 or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
                 or bool(_MCP_METADATA_HOST_RE.search(value))
             )
         if isinstance(value, dict):
-            return any(walk(v) for v in value.values())
+            if any(key_is_credential(k) for k in value):
+                return True
+            return any(
+                walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
+                for k, v in value.items()
+            )
         if isinstance(value, (list, tuple)):
-            return any(walk(v) for v in value)
+            return any(walk(v, is_prose) for v in value)
         return False
 
     return walk(arguments)
@@ -2819,14 +2890,69 @@ _MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _HTTP_METHOD_KEYS = frozenset({"method", "http_method", "httpmethod", "verb", "http_verb"})
 
 
+# Argument names that carry free text the tool stores or displays rather than
+# acts on, so a path or a statement mentioned inside them is a mention.
+_MCP_PROSE_KEYS = frozenset(
+    {
+        "text",
+        "body",
+        "message",
+        "msg",
+        "description",
+        "comment",
+        "content",
+        "title",
+        "summary",
+        "note",
+        "notes",
+        "prompt",
+        "caption",
+        "reason",
+        "markdown",
+        "blocks",
+        "detail",
+        "details",
+        "context",
+    }
+)
+# Argument names that carry a statement the tool will execute, as opposed to
+# free text the tool will merely store or display.
+_MCP_QUERY_KEYS = frozenset(
+    {
+        "query",
+        "sql",
+        "statement",
+        "stmt",
+        "command",
+        "cmd",
+        "script",
+        "expression",
+        "expr",
+        "filter",
+        "pipeline",
+        "aggregate",
+        "mutation",
+        "operation",
+        "graphql",
+        "queries",
+        "statements",
+        "commands",
+    }
+)
+
+
 def _mcp_arguments_mutate(arguments) -> bool:
     """True if an MCP call's arguments carry a mutating command, so a read-named
     but write-capable tool (query_database {"query": "DELETE FROM runs"},
     query_graphql {"query": "mutation { deleteIssue(id: 1) }"}, or an HTTP tool
     {"method": "DELETE"}) asks."""
 
-    def walk(value) -> bool:
+    def walk(value, in_query: bool = False) -> bool:
         if isinstance(value, str):
+            # Prose that merely mentions DELETE FROM (a chat message, an issue
+            # body) is not a statement this call will run.
+            if not in_query:
+                return False
             _sql = _SQL_COMMENT_RE.sub(" ", value)
             return (
                 bool(_MCP_ARG_MUTATION_RE.search(_sql))
@@ -2843,9 +2969,12 @@ def _mcp_arguments_mutate(arguments) -> bool:
                     and v.strip().upper() in _MUTATING_HTTP_METHODS
                 ):
                     return True
-            return any(walk(v) for v in value.values())
+            return any(
+                walk(v, in_query or (isinstance(k, str) and k.lower() in _MCP_QUERY_KEYS))
+                for k, v in value.items()
+            )
         if isinstance(value, (list, tuple)):
-            return any(walk(v) for v in value)
+            return any(walk(v, in_query) for v in value)
         return False
 
     return walk(arguments)
@@ -2999,6 +3128,19 @@ _HIGH_RISK_COMMANDS = frozenset(
         "del",
         "erase",
         "rd",
+        # Ending a process kills work in progress (a training run, the server
+        # itself); a power command ends every process at once.
+        "kill",
+        "pkill",
+        "killall",
+        "taskkill",
+        "tskill",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        # setcap grants file capabilities, a privilege change without sudo.
+        "setcap",
         # accounts / persistence / system services
         "crontab",
         # at/batch hand the payload to atd, which runs it later as this user and
@@ -3034,6 +3176,7 @@ _HIGH_RISK_COMMANDS = frozenset(
         "umount",
         # remote exec / raw network transfer
         "ssh",
+        "slogin",
         "scp",
         "sftp",
         "telnet",
@@ -3089,8 +3232,25 @@ _HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
 # Commands that forward command position to a following command name
 # (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
 # command is checked against the high-risk sets too.
-_HIGH_RISK_FORWARDING_COMMANDS = frozenset({"find", "fd", "xargs", "parallel", "watch"})
+_HIGH_RISK_FORWARDING_COMMANDS = frozenset(
+    {
+        "find",
+        "fd",
+        "xargs",
+        "parallel",
+        "watch",
+        "strace",
+        "ltrace",
+        "ktrace",
+        "dtruss",
+        "perf",
+        "valgrind",
+    }
+)
 # Of those, find/fd only execute a child after an explicit -exec-style flag.
+# A tracer or profiler runs the rest of the line as a child process, so the
+# real command sits in argument position behind it.
+_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
 _EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
 _EXEC_FORWARD_FLAGS = frozenset(
     {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
@@ -3119,7 +3279,8 @@ _LISTENER_PY_MODULES = (
     r"twisted|websockets|aiohttp\.web"
 )
 _LISTENER_PY_MODULE_RE = re.compile(
-    r"\b(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
+    r"(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
     re.IGNORECASE,
 )
 _LISTENER_BINARIES = frozenset({"uvicorn", "gunicorn", "waitress-serve", "hypercorn", "daphne"})
@@ -3145,6 +3306,8 @@ _CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
 # curl's explicit-method flags and the methods that mutate/delete a remote
 # resource (a plain GET download stays out). POST is omitted: it is the ordinary
 # upload verb and is already caught by the body/upload flags above.
+# wget spells the request method --method=DELETE.
+_WGET_METHOD_FLAGS = frozenset({"--method"})
 _CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
 _CURL_DESTRUCTIVE_METHODS = frozenset({"delete", "put", "patch"})
 # wget upload/POST flags. Kept separate from curl's so a benign wget short option
@@ -3174,7 +3337,7 @@ _PROC_SUBST_EXEC_RE = re.compile(
 # filename argument (scp ./ssh_notes.txt) is not misread as the command.
 _NETWORK_CLIENT_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
-    r"(?:nc|ncat|netcat|telnet|socat|ssh|scp|sftp)\b"
+    r"(?:nc|ncat|netcat|telnet|socat|ssh|slogin|scp|sftp)\b"
 )
 # openssl's s_client/s_server open a TLS socket, the classic no-curl exfil
 # channel (tar czf - . | openssl s_client -connect host:443). Plain openssl
@@ -3212,6 +3375,8 @@ _WRAPPER_VALUE_FLAGS_BY_CMD = {
         {"-I", "-L", "-P", "-d", "--delimiter", "-a", "--arg-file", "-n", "-s", "-E"}
     ),
     "chroot": frozenset({"--userspec", "--groups"}),
+    # exec -a NAME runs cmd under NAME, so NAME is a value, not the command.
+    "exec": frozenset({"-a"}),
     "setsid": frozenset(),
     "nohup": frozenset(),
 }
@@ -3368,7 +3533,7 @@ _HIGH_RISK_GIT_PUSH_FLAGS = frozenset(
 # uncommitted work or is locked. An unforced remove refuses on a dirty
 # worktree, so it stays out.
 _HIGH_RISK_GIT_WORKTREE_FLAGS = frozenset({"-f", "--force"})
-_HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-f", "--force", "--discard-changes"})
+_HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-C", "-f", "--force", "--discard-changes"})
 # `git branch -D` force-deletes a branch, discarding unmerged commits; -M
 # force-renames over an existing branch. Plain -d/--delete refuses to drop
 # unmerged work, so it stays out.
@@ -3377,7 +3542,11 @@ _HIGH_RISK_GIT_BRANCH_FLAGS = frozenset({"-D", "-M", "-f", "--force"})
 _HIGH_RISK_GIT_STASH_ACTIONS = frozenset({"clear", "drop"})
 # `git checkout -- <path>` / `git checkout .` / `git checkout -f` discard tracked
 # working-tree changes; a bare `git checkout <branch>` (switching) does not.
-_HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force"})
+_HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force", "-B"})
+# `git checkout-index -f` overwrites working-tree files from the index.
+_HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS = frozenset({"-f", "--force"})
+# `git tag -d` deletes a ref; `git tag -f` replaces one that already exists.
+_HIGH_RISK_GIT_TAG_FLAGS = frozenset({"-d", "--delete", "-f", "--force"})
 # git global options that take a separate value token (git -C repo clean, git
 # --git-dir d clean); the value must be consumed so it is not mistaken for the
 # subcommand. Attached forms (-C=..., --git-dir=...) carry their own value.
@@ -3429,6 +3598,29 @@ _VAR_EXECUTED_AS_COMMAND_RE = re.compile(
 _SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
 
 
+# Wrappers that may sit in front of a network client without changing what it
+# does, so the client is still at command position behind them.
+_CLIENT_WRAPPERS = frozenset(
+    {"env", "command", "timeout", "nohup", "nice", "ionice", "stdbuf", "setsid", "exec"}
+)
+_CLIENT_WRAPPER_PREFIX = (
+    r"(?:(?:env|command|timeout|nohup|nice|ionice|stdbuf|setsid|exec)\s+"
+    r"(?:-\S+\s+|\d+(?:\.\d+)?[smhd]?\s+)*)*"
+)
+_CURL_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    + _CLIENT_WRAPPER_PREFIX
+    + r"(?:\S*/)?curl\b",
+    re.IGNORECASE,
+)
+_WGET_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    + _CLIENT_WRAPPER_PREFIX
+    + r"(?:\S*/)?wget\b",
+    re.IGNORECASE,
+)
+
+
 def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
     """Tokens of the segments whose command is curl/wget, or None if there is no
     such segment. Keeps an unrelated command's option letters out of the upload
@@ -3450,6 +3642,16 @@ def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
             i += 1
         if i >= len(seg):
             continue
+        # Step past a wrapper (env curl, timeout 5 curl) to the real client.
+        while i < len(seg):
+            base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
+            if base not in _CLIENT_WRAPPERS:
+                break
+            i += 1
+            while i < len(seg) and (seg[i].startswith("-") or _WRAPPER_DURATION_RE.match(seg[i])):
+                i += 1
+        if i >= len(seg):
+            continue
         base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
         if (has_curl and base == "curl") or (has_wget and base == "wget"):
             kept.extend(seg[i:])
@@ -3466,8 +3668,11 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
     # before the curl/wget-specific upload-flag logic below.
     if _NETWORK_CLIENT_AT_CMD_RE.search(command) or _OPENSSL_NETWORK_RE.search(low):
         return True
-    has_curl = "curl" in low
-    has_wget = "wget" in low
+    # A mention in argument position (`grep curl notes.txt && wget -T 5`) is not
+    # a client invocation, and treating it as one lends the other command's
+    # option letters to the upload scan.
+    has_curl = bool(_CURL_AT_CMD_RE.search(command))
+    has_wget = bool(_WGET_AT_CMD_RE.search(command))
     if not has_curl and not has_wget:
         return False
     if _PIPE_TO_INTERPRETER_RE.search(low):
@@ -3502,6 +3707,17 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
                 continue
             if t.startswith("-X") and t[2:].lower() in _CURL_DESTRUCTIVE_METHODS:
                 return True
+        if has_wget:
+            # wget --method=DELETE / --method DELETE is the same remote mutation.
+            if method_pending:
+                method_pending = False
+                if t.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+            if name in _WGET_METHOD_FLAGS:
+                if "=" in t and t.split("=", 1)[1].lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = True
+                continue
         if has_curl and (
             name in _CURL_UPLOAD_LONG_FLAGS
             # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
@@ -3510,6 +3726,29 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
             return True
         if has_wget and name in _WGET_UPLOAD_FLAGS:
             return True
+    return False
+
+
+# `git clean -n` / `--dry-run` only lists what would be removed.
+_GIT_CLEAN_DRY_RUN_FLAGS = frozenset({"-n", "--dry-run"})
+
+
+def _segment_has_flag(
+    tokens: list,
+    start: int,
+    exact: frozenset,
+    letters: str = "",
+) -> bool:
+    """Whether a flag appears in the same command segment as ``start``, so a
+    later command's options are not read as this command's."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t in exact:
+            return True
+        if letters and t[:1] == "-" and t[:2] != "--" and "=" not in t:
+            if any(ch in letters for ch in t[1:]):
+                return True
     return False
 
 
@@ -3631,6 +3870,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         exec_flag_pending = False  # inside find/fd, waiting for -exec
         git_checkout_positionals = 0  # positionals seen after `git checkout`
         git_worktree_action = ""  # the action after `git worktree`
+        win_operand_pending = False  # operand of a Windows `if exist`/`if defined`
         git_config_alias_pending = False  # `git config alias.x` precedes its body
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
@@ -3649,9 +3889,22 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 current_command = ""
                 git_subcommand = ""
                 git_worktree_action = ""
+                win_operand_pending = False
                 shell_c_pending = False
                 git_glob_pending = False
                 chdir_pending = False
+                continue
+            if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+                # `if exist FILE del FILE`: the operand sits where the command
+                # word would be, so the real command is still ahead.
+                win_operand_pending = token.lower() != "not"
+                continue
+            if win_operand_pending:
+                win_operand_pending = False
+                continue
+            if expect_command and _REDIR_PREFIX_RE.match(token):
+                # Bash accepts a redirection before the command word
+                # (`</dev/null rm -rf build`); the command is still to come.
                 continue
             if token.startswith("-"):
                 flag = token.split("=", 1)[0]
@@ -3772,6 +4025,19 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     ):
                         return True
                     # git switch discards tracked edits with the same flags.
+                    if git_subcommand == "checkout-index" and (
+                        flag in _HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS
+                        or any(
+                            f in _HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS
+                            for f in _short_flag_cluster(token)
+                        )
+                    ):
+                        return True
+                    if git_subcommand == "tag" and (
+                        flag in _HIGH_RISK_GIT_TAG_FLAGS
+                        or any(f in _HIGH_RISK_GIT_TAG_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
                     if git_subcommand == "switch" and (
                         flag in _HIGH_RISK_GIT_SWITCH_FLAGS
                         or any(f in _HIGH_RISK_GIT_SWITCH_FLAGS for f in _short_flag_cluster(token))
@@ -3911,6 +4177,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
             elif current_command == "git" and not git_subcommand:
                 # The first positional after `git` is its subcommand.
                 git_subcommand = base
+                if base == "clean" and _segment_has_flag(
+                    tokens, _tok_idx, _GIT_CLEAN_DRY_RUN_FLAGS, "n"
+                ):
+                    # A dry run lists what would go and removes nothing.
+                    expect_command = False
+                    prefix_pending = False
+                    continue
                 if base in _HIGH_RISK_GIT_SUBCOMMANDS:
                     return True
             elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
@@ -4019,19 +4292,40 @@ def _python_is_high_risk(code: str) -> bool:
     # Path.unlink/rmdir, ...) deletes a file or tree, so ask (parity with the
     # terminal `rm` gate). Collect bare aliases (from shutil import rmtree) first.
     destructive_fs_aliases: "set[str]" = set()
+    # Modules whose handles end processes; tracked so an unrelated .kill() on a
+    # user-defined object is not mistaken for one.
+    psutil_names: "set[str]" = set()
+    for _node in ast.walk(tree):
+        if isinstance(_node, ast.Import):
+            for _a in _node.names:
+                if _a.name.split(".")[0] in _PY_PROCESS_MODULES:
+                    psutil_names.add("psutil")
+        elif (
+            isinstance(_node, ast.ImportFrom)
+            and (_node.module or "").split(".")[0] in _PY_PROCESS_MODULES
+        ):
+            psutil_names.add("psutil")
     # `import os as filesystem` rebinds the module, so os.remove reached through
     # the alias (filesystem.remove) must resolve too; posix is os's low-level twin.
     os_module_aliases: "set[str]" = {"os", "posix", "nt"}
 
     def _is_os_module_ref(value) -> bool:
-        # A Name bound to os/posix/nt, or a literal __import__("os") call whose
-        # result is used directly (m = __import__("os"); m.remove(...)).
+        # A Name bound to os/posix/nt, a walrus binding one, or a literal
+        # __import__("os") call whose result is used directly
+        # (m = __import__("os"); m.remove(...)). builtins.__import__ is the same
+        # callable reached through the module, so both spellings resolve.
         if isinstance(value, ast.Name):
             return value.id in os_module_aliases
+        if isinstance(value, ast.NamedExpr):
+            return _is_os_module_ref(value.value)
+        if not isinstance(value, ast.Call):
+            return False
+        func = value.func
+        is_import = (isinstance(func, ast.Name) and func.id == "__import__") or (
+            isinstance(func, ast.Attribute) and func.attr == "__import__"
+        )
         return (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "__import__"
+            is_import
             and bool(value.args)
             and isinstance(value.args[0], ast.Constant)
             and value.args[0].value in ("os", "posix", "nt")
@@ -4051,12 +4345,24 @@ def _python_is_high_risk(code: str) -> bool:
             for tgt in node.targets:
                 if isinstance(tgt, ast.Name):
                     os_module_aliases.add(tgt.id)
+        elif isinstance(node, ast.NamedExpr) and _is_os_module_ref(node.value):
+            # (fs := os).remove(...) binds it in an expression instead.
+            if isinstance(node.target, ast.Name):
+                os_module_aliases.add(node.target.id)
 
     def _is_fs_module_ref(value) -> bool:
         # os/posix/nt (including aliases), or a literal shutil/pathlib name.
         if _is_os_module_ref(value):
             return True
         return isinstance(value, ast.Name) and value.id in _PY_DESTRUCTIVE_FS_MODULES
+
+    def _is_process_kill(node) -> bool:
+        # psutil.Process(pid).kill() / .terminate(), including a handle bound to
+        # a name first. Keyed on the psutil import so an unrelated .kill() on a
+        # user object does not prompt.
+        if "psutil" not in psutil_names:
+            return False
+        return isinstance(node, ast.Attribute) and node.attr in _PY_PROCESS_KILL_ATTRS
 
     def _is_destructive_attr(attr: str, value) -> bool:
         # A destructive-name attribute (unlink/rmtree/...) on any receiver, or
@@ -4147,8 +4453,17 @@ def _python_is_high_risk(code: str) -> bool:
         if isinstance(func, ast.Attribute):
             if _is_destructive_attr(func.attr, func.value):
                 return True
+            if _is_process_kill(func):
+                return True
         elif isinstance(func, ast.Name) and func.id in destructive_fs_aliases:
             return True
+        elif isinstance(func, ast.NamedExpr):
+            # (f := os.remove)(...) binds and calls in one expression.
+            inner = func.value
+            if isinstance(inner, ast.Attribute) and _is_destructive_attr(inner.attr, inner.value):
+                return True
+            if isinstance(inner, ast.Name) and inner.id in destructive_fs_aliases:
+                return True
         # getattr(os, "remove")(x) resolves the attribute at runtime; screen the
         # attribute name against the same destructive test. The name is folded
         # first ("un" + "link"), and a name that cannot be folded at all on a
@@ -4281,13 +4596,18 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         # list_tokens) discloses secrets, and a read/write pointed at a sensitive
         # path is a sensitive access; all prompt. Ordinary create/update/delete
         # MCP calls run in auto.
-        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) or _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+        _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+            return True
+        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
+            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+        ):
             return True
         if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
             return True
         if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
             return True
-        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name):
+        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
             return True
         if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
             tool_name
