@@ -315,11 +315,13 @@ async function syncInferenceStatusToStore(options?: {
         syncModelCapabilities(checkpointId, statusRes);
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      // specFallbackReason survives here, so clearing activeModelIsLocal
+      // alone would flip a local model's warning to "download failed". Every
+      // load path and clearCheckpoint set it, so leave it consistent.
       useChatRuntimeStore.setState({
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
         loadedIsDiffusion: false,
-        activeModelIsLocal: false,
       });
     }
   } catch (error) {

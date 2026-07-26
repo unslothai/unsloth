@@ -1441,7 +1441,11 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+def detect_mtp_file(
+    path: str,
+    search_root: Optional[str] = None,
+    skip_root: bool = False,
+) -> Optional[str]:
     """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
 
     The drafter that pairs with the main weights sits at the repo/snapshot
@@ -1457,15 +1461,22 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
     ``mtp-gemma-4-12B-it.gguf`` next to ``gemma-4-12B-it-qat-Q4_0.gguf``).
     If the root drafter is absent, also accept its precision copy under the
     repository's ``MTP/`` directory. An unmatched drafter is skipped.
+
+    ``skip_root`` scans only ``MTP/``, for callers that must discard an
+    out-of-bounds root drafter and still want the subdir copy (native loads).
     """
 
     def _pairing_stem(name: str) -> str:
         stem = Path(name).stem.lower()
         if stem.startswith("mtp-"):
             stem = stem[len("mtp-") :]
+        # Shard suffix sits outside the quant token, so strip it first or the
+        # anchored strip below cannot match.
+        stem = re.sub(r"-[0-9]+-of-[0-9]+$", "", stem)
         if stem.endswith("-mtp"):
             stem = stem[: -len("-mtp")]
-        return re.sub(r"-(?:q[0-9]+_[0-9]+|bf16|f16)$", "", stem)
+        # Full quant vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too.
+        return re.sub(rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})$", "", stem, flags = re.IGNORECASE)
 
     def _matches_weight(candidate: Path) -> bool:
         if weight_name is None:
@@ -1477,17 +1488,24 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             and (len(weight_name) == len(stem) or not weight_name[len(stem)].isalnum())
         )
 
-    def _precision_rank(candidate: Path) -> tuple[int, str]:
+    def _smallest_first(candidate: Path) -> tuple[int, int, str]:
+        # Cheapest compatible copy wins. Size first: a fixed precision list
+        # ranked unknown quants behind BF16, so a small K-quant lost to a far
+        # larger BF16. Precision breaks size ties, name keeps it stable.
         name = candidate.name.lower()
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            size = sys.maxsize
         if "-q4_0" in name:
-            rank = 0
+            precision = 0
         elif "-q8_0" in name:
-            rank = 1
+            precision = 1
         elif "-bf16" in name or "-f16" in name:
-            rank = 2
+            precision = 2
         else:
-            rank = 3
-        return rank, name
+            precision = 3
+        return size, precision, name
 
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
@@ -1495,22 +1513,23 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
     dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))
-    for d in dirs:
-        try:
-            entries = sorted(d.iterdir())
-        except OSError:
-            continue
-        for f in entries:
-            name = f.name.lower()
-            if not (name.startswith("mtp-") and name.endswith(".gguf")):
-                continue
-            if not _matches_weight(f):
-                continue
+    if not skip_root:
+        for d in dirs:
             try:
-                if f.is_file():
-                    return str(f.resolve())
+                entries = sorted(d.iterdir())
             except OSError:
                 continue
+            for f in entries:
+                name = f.name.lower()
+                if not (name.startswith("mtp-") and name.endswith(".gguf")):
+                    continue
+                if not _matches_weight(f):
+                    continue
+                try:
+                    if f.is_file():
+                        return str(f.resolve())
+                except OSError:
+                    continue
 
     subdir_candidates: list[Path] = []
     for d in dirs:
@@ -1533,8 +1552,16 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             except OSError:
                 continue
             for f in entries:
-                rel = f"MTP/{f.name}"
-                if not _is_mtp_drafter(rel) or not _matches_weight(f):
+                # _is_mtp_drafter accepts everything under MTP/ by design (it
+                # excludes them from variant menus). Too broad to include on:
+                # a weight copy here would launch as --model-draft. Require a
+                # published drafter name: mtp-<model> or <model>-MTP.
+                lower = f.name.lower()
+                if not lower.endswith(".gguf"):
+                    continue
+                if not (lower.startswith("mtp-") or Path(lower).stem.endswith("-mtp")):
+                    continue
+                if not _matches_weight(f):
                     continue
                 try:
                     if f.is_file():
@@ -1542,7 +1569,7 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
                 except OSError:
                     continue
 
-    for candidate in sorted(subdir_candidates, key = _precision_rank):
+    for candidate in sorted(subdir_candidates, key = _smallest_first):
         try:
             resolved = candidate.resolve()
         except OSError:

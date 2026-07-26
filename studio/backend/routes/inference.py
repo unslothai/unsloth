@@ -4669,20 +4669,43 @@ async def _load_model_impl(
                     if config.gguf_mtp_file:
                         # The drafter is optional (unlike mmproj for a vision
                         # model): drop it rather than fail the load.
-                        try:
-                            mtp_search_root = _local_gguf_companion_search_root(
-                                config.gguf_file, config.gguf_file
-                            )
-                            _validate_native_gguf_companion(
-                                config.gguf_mtp_file,
+                        mtp_search_root = _local_gguf_companion_search_root(
+                            config.gguf_file, config.gguf_file
+                        )
+
+                        def _mtp_allowed(candidate: str) -> bool:
+                            try:
+                                _validate_native_gguf_companion(
+                                    candidate,
+                                    config.gguf_file,
+                                    "MTP drafter",
+                                    allow_mtp_subdir = True,
+                                    mtp_search_root = mtp_search_root,
+                                )
+                                return True
+                            except HTTPException as exc:
+                                logger.warning(
+                                    "Dropping MTP drafter for native load: %s", exc.detail
+                                )
+                                return False
+
+                        if not _mtp_allowed(config.gguf_mtp_file):
+                            # The preferred root drafter is out of bounds for a
+                            # grant on a quant subdir, but its MTP/ copy may
+                            # not be. Use that before dropping MTP entirely.
+                            fallback = detect_mtp_file(
                                 config.gguf_file,
-                                "MTP drafter",
-                                allow_mtp_subdir = True,
-                                mtp_search_root = mtp_search_root,
+                                search_root = mtp_search_root,
+                                skip_root = True,
                             )
-                        except HTTPException as exc:
-                            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
-                            config.gguf_mtp_file = None
+                            if fallback and _mtp_allowed(fallback):
+                                logger.info(
+                                    "Using MTP subdirectory drafter for native load: %s",
+                                    fallback,
+                                )
+                                config.gguf_mtp_file = fallback
+                            else:
+                                config.gguf_mtp_file = None
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
