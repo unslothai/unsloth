@@ -81,11 +81,13 @@ import {
   type ControlNetSpecInput,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
+  type DiffusionGenerateResponse,
   type DiffusionLoadProgress,
   type DiffusionLoraInfo,
   type DiffusionStatus,
   type GalleryImage,
   type LoraSpecInput,
+  GenerateResponseLostError,
   deleteGalleryImage,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
@@ -379,6 +381,32 @@ function genStepLabel(p: DiffusionGenerateProgress): string {
   const base = `Step ${p.step}/${p.total_steps}`;
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
+}
+
+// Settling a generation whose POST response was lost (a tunnel timeout, say): the backend
+// keeps denoising, so poll until it goes idle rather than failing the run.
+const SETTLE_POLL_MS = 1000;
+const SETTLE_MAX_MS = 6 * 60 * 60 * 1000; // hard cap; a native-CPU batch can run for hours
+const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the backend gone
+
+/** Wait for the generation that outlived its POST to finish. Resolves once progress reports
+ *  idle (the images are on disk by then: the backend keeps it active through persistence);
+ *  throws if the backend stays unreachable, so a real outage still surfaces. */
+async function settleLostGeneration(isCurrent: () => boolean): Promise<void> {
+  const start = Date.now();
+  let fails = 0;
+  while (Date.now() - start < SETTLE_MAX_MS) {
+    await new Promise((r) => setTimeout(r, SETTLE_POLL_MS));
+    if (!isCurrent()) return;
+    try {
+      const p = await getGenerateProgress();
+      fails = 0;
+      if (!p.active) return;
+    } catch {
+      fails += 1;
+      if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
+    }
+  }
 }
 
 // The chat tab's model-load toast styling, reused verbatim so the diffusion
@@ -2233,51 +2261,65 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // The page truly unmounted mid-run (app close / chat-only eject): stop
         // issuing more GPU generations. A plain tab switch keeps it mounted.
         if (!isMounted.current) break;
-        const res = await generateDiffusionImage({
-          prompt: prompt.trim(),
-          // Only send a negative prompt when guidance uses it, so the recipe
-          // doesn't record one the model ignored.
-          negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
-          width: w,
-          height: h,
-          steps,
-          guidance,
-          // Offset runs by the batch size: the native engine seeds image j of a
-          // run at seed+j, so a +1 run offset would regenerate the previous run's
-          // batch-mates. Unique per image on both engines, reproducible via recipes.
-          seed: baseSeed + i * batchSize,
-          batch_size: batchSize,
-          // Transform/Inpaint/Extend send the source image (+ mask for inpaint/extend) and
-          // a denoise strength, resolved above. The backend derives output size from the
-          // image, so width/height are advisory here.
-          init_image: condInit,
-          mask_image: condMask,
-          strength: condStrength,
-          upscale: condUpscale,
-          reference_images: condRefImages,
-          // Drop empty (no id yet) and zero-weight rows, and trim hand-typed repo ids, so the
-          // recipe records only adapters that applied. Gate on loraCapable: a restore can leave
-          // adapters in state while the loaded model doesn't support LoRA (picker hidden), and
-          // sending them would fail generation with no visible row to remove.
-          loras: (() => {
-            if (!loraCapable) return undefined;
-            const active = loras
-              .map((l) => ({ id: l.id.trim(), weight: l.weight }))
-              .filter((l) => l.id && l.weight > 0);
-            return active.length ? active : undefined;
-          })(),
-          // ControlNet: sent only when a model + control image are chosen; v1 conditions plain
-          // text-to-image only, so skip it for image-conditioned workflows.
-          controlnet:
-            controlnetCapable && controlnetId && controlImage && workflow === "create"
-              ? {
-                  id: controlnetId,
-                  image: controlImage,
-                  control_type: controlType,
-                  strength: controlStrength,
-                }
-              : undefined,
-        });
+        let res: DiffusionGenerateResponse;
+        try {
+          res = await generateDiffusionImage({
+            prompt: prompt.trim(),
+            // Only send a negative prompt when guidance uses it, so the recipe
+            // doesn't record one the model ignored.
+            negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+            width: w,
+            height: h,
+            steps,
+            guidance,
+            // Offset runs by the batch size: the native engine seeds image j of a
+            // run at seed+j, so a +1 run offset would regenerate the previous run's
+            // batch-mates. Unique per image on both engines, reproducible via recipes.
+            seed: baseSeed + i * batchSize,
+            batch_size: batchSize,
+            // Transform/Inpaint/Extend send the source image (+ mask for inpaint/extend) and
+            // a denoise strength, resolved above. The backend derives output size from the
+            // image, so width/height are advisory here.
+            init_image: condInit,
+            mask_image: condMask,
+            strength: condStrength,
+            upscale: condUpscale,
+            reference_images: condRefImages,
+            // Drop empty (no id yet) and zero-weight rows, and trim hand-typed repo ids, so the
+            // recipe records only adapters that applied. Gate on loraCapable: a restore can leave
+            // adapters in state while the loaded model doesn't support LoRA (picker hidden), and
+            // sending them would fail generation with no visible row to remove.
+            loras: (() => {
+              if (!loraCapable) return undefined;
+              const active = loras
+                .map((l) => ({ id: l.id.trim(), weight: l.weight }))
+                .filter((l) => l.id && l.weight > 0);
+              return active.length ? active : undefined;
+            })(),
+            // ControlNet: sent only when a model + control image are chosen; v1 conditions plain
+            // text-to-image only, so skip it for image-conditioned workflows.
+            controlnet:
+              controlnetCapable && controlnetId && controlImage && workflow === "create"
+                ? {
+                    id: controlnetId,
+                    image: controlImage,
+                    control_type: controlType,
+                    strength: controlStrength,
+                  }
+                : undefined,
+          });
+        } catch (err) {
+          // The POST's response was lost while the backend kept generating (secure mode's
+          // tunnel caps the origin response near 100s, which a native-CPU or high-step run
+          // exceeds). Retrying would duplicate the work, so wait the run out and read its
+          // images off the gallery, which is where they are persisted anyway.
+          if (!(err instanceof GenerateResponseLostError)) throw err;
+          await settleLostGeneration(() => isMounted.current);
+          if (!isMounted.current) break;
+          await loadGallery();
+          setGenDone(i + 1);
+          continue;
+        }
         if (!isMounted.current) break;
         // Prepend this run's records (newest first) and load their blobs.
         setImages((prev) => [...res.images, ...prev]);
@@ -2303,7 +2345,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       setGenDone(null);
       setGenStep(null);
     }
-  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, refreshStatus]);
+  }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus]);
 
   // Keep the active workflow valid for the loaded model: an edit-only model (Qwen-Image-
   // Edit) has no Create/Transform tabs, a base model has no Edit tab. Snap to the first

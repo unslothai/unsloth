@@ -256,16 +256,43 @@ export async function getDiffusionDownloadPlan(
   );
 }
 
+/** The generate POST's response was lost in transit (proxy/tunnel timeout, or a dropped
+ *  connection) rather than refused by the backend, so the generation is still running. */
+export class GenerateResponseLostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GenerateResponseLostError";
+  }
+}
+
+// Gateway statuses that mean the origin never got to answer: 524 is Cloudflare's ~100s
+// origin-response cap, which a native-CPU or high-step run routinely exceeds in secure mode.
+const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
+
+/** Generate synchronously: the response carries the finished images. A run longer than the
+ *  proxy's response window throws GenerateResponseLostError with the generation still in
+ *  flight, so the caller settles it via getGenerateProgress + the gallery instead of retrying
+ *  (which would duplicate the work). */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
 ): Promise<DiffusionGenerateResponse> {
-  return parseJson(
-    await authFetch("/api/inference/images/generate", {
+  let response: Response;
+  try {
+    response = await authFetch("/api/inference/images/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }),
-  );
+    });
+  } catch (err) {
+    // fetch itself rejected: the connection dropped, not a backend refusal.
+    throw new GenerateResponseLostError(
+      err instanceof Error ? err.message : "Lost connection during image generation",
+    );
+  }
+  if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
+    throw new GenerateResponseLostError(await readFastApiError(response));
+  }
+  return parseJson(response);
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
@@ -392,6 +419,8 @@ export interface DiffusionTrainingStatus {
   in_model_load: boolean;
   output_dir: string | null;
   lora_path: string | null;
+  // The second, EMA-averaged adapter, present only when the run enabled ema_decay.
+  ema_path?: string | null;
   started_at: number | null;
   updated_at: number | null;
   // Where the trained adapter was mirrored into the Studio LoRA catalog, and the family /
@@ -455,6 +484,7 @@ export interface DiffusionTrainingRunDetail extends DiffusionTrainingRunSummary 
   peak_memory_gb?: number | null;
   num_images?: number | null;
   lora_path?: string | null;
+  ema_path?: string | null;
   config?: Record<string, unknown> | null;
   metric_history?: DiffusionMetricHistory | null;
 }

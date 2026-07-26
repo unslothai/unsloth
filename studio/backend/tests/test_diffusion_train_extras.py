@@ -61,7 +61,7 @@ def test_ema_fixed_decay_math():
 def test_ema_warmup_ramp_is_responsive_early_and_capped_late():
     m = _TinyLoRAish()
     ema = LoRAEMA(m, decay = 0.99, warmup = True)
-    # First update: decay = min(0.99, 1/11) -- the shadow mostly adopts the new value.
+    # First update: decay = min(0.99, 1/11), so the shadow mostly adopts the new value.
     assert ema.effective_decay() == pytest.approx(1 / 11)
     with torch.no_grad():
         m.lora_A.fill_(2.0)
@@ -269,8 +269,8 @@ def test_config_blank_cond_cache_dir_means_off():
 
 
 def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
-    # The trainer namespaces its conditioning cache on this, so an in-place checkpoint
-    # update must change the marker or a warm run trains on the old encoder's embeddings.
+    # The trainer namespaces its conditioning cache on this, so an in-place checkpoint update must
+    # change the marker or a warm run trains on the old encoder's embeddings.
     from core.training.diffusion_train_extras import source_revision
 
     d = tmp_path / "ckpt"
@@ -280,6 +280,15 @@ def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
     first = source_revision(str(d))
     assert first == source_revision(str(d))  # stable while untouched
     w.write_bytes(b"v2-longer")
-    assert source_revision(str(d)) != first
+    second = source_revision(str(d))
+    assert second != first
+    # The VAE produces the cached latents, so an in-place VAE swap must invalidate them too.
+    (d / "vae").mkdir()
+    v = d / "vae" / "diffusion_pytorch_model.safetensors"
+    v.write_bytes(b"vae-v1")
+    third = source_revision(str(d))
+    assert third != second
+    v.write_bytes(b"vae-v2-longer")
+    assert source_revision(str(d)) != third
     for ref in (None, "", "no/such/repo-xyz", "/does/not/exist", 7):
         assert isinstance(source_revision(ref), str)

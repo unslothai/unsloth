@@ -747,23 +747,22 @@ class DiffusionTrainingStartRequest(BaseModel):
             "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
         ),
     )
-    # Upper bound as well as positive, matching the LLM schema's _parse_lr: JSON accepts
-    # 1e309, which floats to inf and satisfies a gt-only constraint, and the route then
-    # evicts the resident models and starts AdamW with an infinite rate -- the first step
-    # destroys the adapter while the run reports normal progress and saves the result.
-    # (NaN already fails gt.) Values at or above 1.0 always diverge anyway.
+    # Upper bound as well as positive, matching the LLM schema's _parse_lr: JSON accepts 1e309, which
+    # floats to inf and satisfies a gt-only constraint, and the route would then evict the resident
+    # models and start AdamW with an infinite rate, destroying the adapter on the first step while
+    # reporting normal progress. (NaN already fails gt.) Values at or above 1.0 always diverge.
     learning_rate: float = Field(1e-4, gt = 0, lt = 1.0)
     train_batch_size: int = Field(1, ge = 1, le = 64)
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
     lora_rank: int = Field(16, ge = 1, le = 320)
     lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
-    # Strictly below 1: PEFT turns lora_dropout into nn.Dropout(p=...), so 1.0 zeroes every input
-    # to the LoRA branch -- lora_A/lora_B receive no gradient and the run saves an untrained
-    # adapter while reporting normal progress. Matches TrainingStartRequest's [0, 1) validator.
+    # Strictly below 1: PEFT turns lora_dropout into nn.Dropout(p=...), so 1.0 zeroes every input to
+    # the LoRA branch and the run saves an untrained adapter while reporting normal progress. Matches
+    # TrainingStartRequest's [0, 1) validator.
     lora_dropout: float = Field(0.0, ge = 0.0, lt = 1.0)
-    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets
-    # them isn't silently trained with defaults. Default targets to the SDXL attention
-    # projections (the trainer's DEFAULT_LORA_TARGETS) so it is never None.
+    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets them
+    # isn't silently trained with defaults. Default targets to the SDXL attention projections (the
+    # trainer's DEFAULT_LORA_TARGETS) so it is never None.
     lora_target_modules: List[str] = Field(
         default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
         description = "U-Net modules to attach LoRA to",
@@ -811,8 +810,8 @@ class DiffusionTrainingStartRequest(BaseModel):
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
         ),
     )
-    # DiT-only levers the trainer implements. Undeclared, they were silently dropped by
-    # model_dump(); the defaults match DiffusionLoraConfig so an existing caller is unaffected.
+    # DiT-only levers the trainer implements. Undeclared, they were silently dropped by model_dump();
+    # the defaults match DiffusionLoraConfig so an existing caller is unaffected.
     ema_decay: float = Field(
         0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"
     )
@@ -820,7 +819,11 @@ class DiffusionTrainingStartRequest(BaseModel):
         0.0, ge = 0.0, le = 1.0, description = "Chance of dropping the caption to an empty prompt"
     )
     weighting_scheme: Literal["none", "bell"] = Field(
-        "none", description = "Flow-matching timestep sampling: uniform, or logit-normal (bell)"
+        "none",
+        description = (
+            "Per-sample loss weighting over the drawn timestep: none (unweighted MSE) or bell "
+            "(Gaussian bell centered mid-schedule). Timesteps are always logit-normal sampled."
+        ),
     )
     flow_shift: Optional[float | Literal["auto"]] = Field(
         None,
@@ -869,15 +872,16 @@ class DiffusionTrainingStatusResponse(BaseModel):
     loss: Optional[float] = None
     avg_loss: Optional[float] = None
     learning_rate: Optional[float] = None
-    # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts
-    # alongside the loss).
+    # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts).
     grad_norm: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
+    # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
+    ema_path: Optional[str] = None
     # Where the adapter was mirrored into the Studio LoRA catalog, and what family / base it was
-    # trained from -- lets the UI deploy it onto the right base.
+    # trained from, so the UI can deploy it onto the right base.
     catalog_path: Optional[str] = None
     family: Optional[str] = None
     base_model: Optional[str] = None
@@ -919,6 +923,7 @@ class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
     peak_memory_gb: Optional[float] = None
     num_images: Optional[int] = None
     lora_path: Optional[str] = None
+    ema_path: Optional[str] = None
     config: Optional[dict] = None
     metric_history: Optional[DiffusionMetricHistory] = None
 
@@ -945,9 +950,9 @@ class DiffusionTrainableFamily(BaseModel):
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
     vram_note: str = ""
-    # base_precision modes this machine supports for the family (empty = no precision selector,
-    # e.g. SDXL), plus the recommended pick and whether regional torch.compile applies. Defaults
-    # keep older backends' payloads valid.
+    # base_precision modes this machine supports for the family (empty = no precision selector, e.g.
+    # SDXL), plus the recommended pick and whether regional torch.compile applies. Defaults keep
+    # older backends' payloads valid.
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False

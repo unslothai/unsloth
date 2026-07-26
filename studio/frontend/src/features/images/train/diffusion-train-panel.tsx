@@ -1540,6 +1540,9 @@ export function DiffusionTrainPanel({
                   {status?.lora_path && (
                     <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
                   )}
+                  {status?.ema_path && (
+                    <span className="mt-1 block break-all">EMA adapter: {status.ema_path}</span>
+                  )}
                 </p>
                 <div className="mt-1 flex gap-2">
                   <Button type="button" size="sm" onClick={onDeployClick}>

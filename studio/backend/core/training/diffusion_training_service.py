@@ -56,22 +56,23 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # First thing in the child (before torch): self-bind to parent death and scrub the native
-    # path secret, like the other workers (multiprocessing children can't be given a preexec_fn).
+    # First thing in the child (before torch): self-bind to parent death and scrub the native path
+    # secret, like the other workers (multiprocessing children can't be given a preexec_fn).
     from utils.native_path_leases import run_without_native_path_secret
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )
 
 
-# Cap on retained metric points; over it, arrays are decimated (every other point) so a
-# long run stays bounded while the loss chart keeps its shape.
+# Cap on retained metric points; over it, arrays are decimated (every other point) so a long run
+# stays bounded while the loss chart keeps its shape.
 _METRIC_CAP = 4000
 
 
 # ── persisted run history ──────────────────────────────────────────────────────
-# Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs)
-# so the Train tab can show history. JSON (not LLM sqlite) keeps diffusion runs off the LLM Runs page.
+# Every terminal run is recorded as one JSON file (summary + scrubbed config + metric logs) so
+# the Train tab can show history. JSON, not the LLM sqlite, so diffusion runs stay off the LLM
+# Runs page.
 def _runs_dir() -> Path:
     from utils.paths.storage_roots import studio_root
 
@@ -93,8 +94,8 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             rec = json.loads(p.read_text(encoding = "utf-8"))
         except Exception:  # noqa: BLE001 -- a corrupt record never breaks the listing
             continue
-        # Skip a wrong-shape record (not a dict, or missing string job_id/status) so one bad
-        # file can't blow up the route's DiffusionTrainingRunSummary(**r) or the whole panel.
+        # Skip a wrong-shape record (not a dict, or missing string job_id/status) so one bad file can't
+        # blow up the route's DiffusionTrainingRunSummary(**r) or the whole panel.
         if not isinstance(rec, dict):
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
@@ -133,6 +134,8 @@ def _idle_state() -> dict[str, Any]:
         "in_model_load": False,
         "output_dir": None,
         "lora_path": None,
+        # The optional second (EMA-averaged) adapter, when ema_decay was enabled.
+        "ema_path": None,
         "catalog_path": None,
         "family": None,
         "base_model": None,
@@ -172,7 +175,8 @@ def _append_metric(
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
-    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay index-aligned.
+    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay
+    # index-aligned.
     flr = _finite_or_none(lr)
     fgn = _finite_or_none(grad_norm)
     steps = state["metric_steps"]
@@ -208,8 +212,8 @@ class DiffusionTrainingService:
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
         self._lock = threading.Lock()
-        # Set by reserve() while a start is in flight (before the route frees GPU models) so the
-        # load guards refuse a concurrent load during the free-then-spawn window. Cleared by unreserve().
+        # Set by reserve() while a start is in flight (before the route frees GPU models) so the load
+        # guards refuse a concurrent load during the free-then-spawn window. Cleared by unreserve().
         self._reserved = False
         self._proc: Any = None
         self._stop_queue: Any = None
@@ -258,8 +262,8 @@ class DiffusionTrainingService:
 
         _config_from_dict(config).normalized()
 
-        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so
-        # joining under it would stall the start and let the stale pump overwrite the new state.
+        # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining
+        # under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 raise RuntimeError("A diffusion training job is already running.")
@@ -403,6 +407,7 @@ class DiffusionTrainingService:
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("updated_at"),
                 "lora_path": s.get("lora_path"),
+                "ema_path": s.get("ema_path"),
                 "catalog_path": s.get("catalog_path"),
                 "saved": bool(s.get("lora_path")),
                 "config": cfg,
@@ -440,8 +445,8 @@ class DiffusionTrainingService:
             elif etype == "model_load_completed":
                 s.update(in_model_load = False, message = "Training...")
             elif etype == "preparing":
-                # A long precompute phase (e.g. VAE latent cache) before the first step; surfaced
-                # so the UI shows progress instead of a silent "Loading base model..." stall.
+                # A long precompute phase (e.g. VAE latent cache) before the first step; surfaced so the UI shows
+                # progress instead of a silent "Loading base model..." stall.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
                 s.update(
@@ -457,8 +462,8 @@ class DiffusionTrainingService:
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
             elif etype == "progress":
-                # Null any non-finite float so the JSON stays strict-parseable; a missing key
-                # keeps the last value, a present-but-non-finite one becomes None.
+                # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last
+                # value, a present-but-non-finite one becomes None.
                 loss = _finite_or_none(ev["loss"]) if "loss" in ev else s["loss"]
                 avg_loss = _finite_or_none(ev["avg_loss"]) if "avg_loss" in ev else s["avg_loss"]
                 learning_rate = (
@@ -501,6 +506,7 @@ class DiffusionTrainingService:
                     status = "stopped" if ev.get("stopped") else "completed",
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
+                    ema_path = ev.get("ema_path"),
                     message = (
                         "Stopped (partial adapter saved)."
                         if ev.get("lora_path")
