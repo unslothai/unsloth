@@ -1032,6 +1032,41 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("C:\\models\\snap\\m-Q4_K_M.gguf") == "Q4_K_M"
 
 
+class TestCompanionSearchRootSuffixedQuantDir:
+    """A suffixed quant dir is still a quant dir, so companions live one level up.
+
+    Without this the mmproj/MTP scan stays inside ``Q6_K-MTP/`` and the model
+    loads with no projector and no separate drafter.
+    """
+
+    @staticmethod
+    def _root(path):
+        from utils.models.model_config import _local_gguf_companion_search_root
+
+        return _local_gguf_companion_search_root(path, path)
+
+    @pytest.mark.parametrize(
+        "quant_dir",
+        ["Q6_K", "Q4_K_M", "UD-Q4_K_XL", "IQ4_XS", "BF16", "MXFP4_MOE", "TQ1_0", "Q8_0"],
+    )
+    def test_plain_quant_dirs_still_climb(self, quant_dir):
+        assert self._root(f"snap/{quant_dir}/model.gguf") == "snap"
+
+    @pytest.mark.parametrize(
+        "quant_dir",
+        ["Q6_K-MTP", "Q6_K-PT-MTP", "IQ4_XS-3.53bpw", "UD-Q4_K_XL-MTP", "BF16-4bpw"],
+    )
+    def test_suffixed_quant_dirs_climb_too(self, quant_dir):
+        assert self._root(f"snap/{quant_dir}/model.gguf") == "snap"
+
+    @pytest.mark.parametrize(
+        "other_dir",
+        ["Q6_K-MTPX", "Q6_K-MTP-v2", "Q6_K-junk", "Q6_K-bpw", "MTP", "my-model"],
+    )
+    def test_near_miss_dirs_do_not_climb(self, other_dir):
+        assert self._root(f"snap/{other_dir}/model.gguf") == f"snap/{other_dir}"
+
+
 def test_pick_best_gguf_prefers_real_quant_over_precision_infix():
     assert _pick_best_gguf(["Foo-BF16-Q4_K_M.gguf", "Foo-Q8_0.gguf"]) == "Foo-BF16-Q4_K_M.gguf"
 

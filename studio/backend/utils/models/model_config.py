@@ -1578,10 +1578,8 @@ _GGUF_QUANT_PREFERENCE = [
 ]
 
 # Mirror of hub/utils/gguf.py. Anchored, so ``-MTPX`` / ``-MTP-v2`` are not MTP flavors.
-_POST_QUANT_VARIANT_SUFFIX_RE = re.compile(
-    r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
-    re.IGNORECASE,
-)
+_POST_QUANT_VARIANT_SUFFIX = r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)"
+_POST_QUANT_VARIANT_SUFFIX_RE = re.compile(_POST_QUANT_VARIANT_SUFFIX + r"$", re.IGNORECASE)
 
 
 def _pick_best_gguf(filenames: list[str]) -> Optional[str]:
@@ -1746,7 +1744,7 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
         r"|Q[0-9]+_[0-9]+"
         r"|Q[0-9]+_K"
         r"|BF16|F16|F32"
-        r")"
+        r")(?:" + _POST_QUANT_VARIANT_SUFFIX + r")?"  # Q6_K-MTP / IQ4_XS-3.53bpw dirs too
     )
     if re.fullmatch(quant_dir_re, gguf_dir.name, re.IGNORECASE):
         return str(gguf_dir.parent)
