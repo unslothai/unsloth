@@ -628,6 +628,24 @@ class TestLoadHubDownloadExclusion:
         with gguf_load_in_flight(None):
             assert not hf_gguf_load_in_flight("")
 
+    def test_chat_load_marker_is_repo_agnostic_and_nests(self):
+        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for
+        # local paths and safetensors too, so this marker carries no repo key.
+        from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
+
+        assert not chat_load_active()
+        with chat_load_in_flight():
+            assert chat_load_active()
+            with chat_load_in_flight():
+                assert chat_load_active()
+            assert chat_load_active()
+        assert not chat_load_active()
+
+        with pytest.raises(RuntimeError):
+            with chat_load_in_flight():
+                raise RuntimeError("boom")
+        assert not chat_load_active()
+
     def test_marker_cleared_on_exception(self):
         with pytest.raises(RuntimeError):
             with gguf_load_in_flight(REPO):
@@ -808,27 +826,26 @@ class TestLoadHubDownloadExclusion:
 
         asyncio.run(scenario())
 
-    def test_load_marker_precedes_hub_guard_and_unload(self):
+    def test_load_marker_precedes_hub_guard_which_precedes_the_gpu_handoff(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
-        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
-        # the branch that actually owns the load marker rather than the first
-        # one in the file, which belongs to an earlier check.
-        marker = source.index("enter_context(gguf_load_in_flight")
-        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
-        gguf_branch = source[gguf_branch_start:]
+        impl = source[source.index("async def _load_model_impl") :]
 
-        # The gguf_load_in_flight marker must be entered before the hub-download
-        # guard and the unload so a concurrent load can't race the download
-        # manager. The llama_extra_args inheritance moved out of the branch into
-        # _resolve_inherited_extra_args, which must still run BEFORE it: the
-        # inherited value (e.g. a carried --no-mmproj) shapes the guard's
-        # require_mmproj. Anchor on the call form so the assertion pins the
-        # endpoint's call site, not the function definition.
-        assert source.index("= _resolve_inherited_extra_args(") < gguf_branch_start
+        # One chain, in this order:
+        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried
+        #   --no-mmproj) shapes the guard's require_mmproj.
+        # - the gguf_load_in_flight marker before the hub-download guard: that pair is the
+        #   handshake that keeps a load and the download manager off the same files.
+        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it after
+        #   the handoff destroyed a resident Images/Video pipeline for a load that could never
+        #   start. The handoff registers its own marker under the arbiter lock.
+        # - the resident unload last.
+        # Anchored on call forms so each assertion pins a call site, not a definition.
         assert (
-            gguf_branch.index("enter_context(gguf_load_in_flight")
-            < gguf_branch.index("_hub_download_blocks_gguf_load")
-            < gguf_branch.index("unsloth_backend.unload_model")
+            impl.index("= _resolve_inherited_extra_args(")
+            < impl.index("enter_context(gguf_load_in_flight")
+            < impl.index("_hub_download_blocks_gguf_load")
+            < impl.index("enter_context(chat_load_in_flight")
+            < impl.index("unsloth_backend.unload_model")
         )
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"

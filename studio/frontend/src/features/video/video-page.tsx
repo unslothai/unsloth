@@ -1170,10 +1170,15 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     // load an image checkpoint as a video model.
     if (!active) return;
     const wanted = routeSearch.model;
-    // Model AND quant, as on the Images page: this page stays mounted, so a model-only
-    // marker turned every later pick of the same repo into a silent no-op.
-    const key = wanted ? `${wanted} ${routeSearch.quant ?? ""}` : null;
-    if (!wanted || !key || handledRouteModel.current === key) return;
+    // Model AND quant, released once the query is gone, as on the Images page: this page
+    // stays mounted, so a marker that outlived the query turned re-picking the same
+    // checkpoint into a click that neither loaded nor cleared the URL.
+    if (!wanted) {
+      handledRouteModel.current = null;
+      return;
+    }
+    const key = `${wanted}|${routeSearch.quant ?? ""}`;
+    if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/video", search: {}, replace: true });
     void loadOrStage(

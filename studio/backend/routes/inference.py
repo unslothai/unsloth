@@ -4395,7 +4395,7 @@ async def _load_model_impl(
         # validation so a doomed load (bad id, unsupported gpu_ids on GGUF, training 409) can't
         # evict a working image/video model and then error. Mirrors the image/video loaders,
         # which validate before acquire_for.
-        from core.inference.gpu_arbiter import acquire_for, CHAT
+        from core.inference.gpu_arbiter import acquire_for, current_owner, CHAT
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
@@ -4606,43 +4606,55 @@ async def _load_model_impl(
             gpu_memory_mode = request.gpu_memory_mode,
         )
 
+        # Mark the load and refuse one the download manager already owns, BEFORE the eviction
+        # below: this 409 leaves nothing loaded, so checking it afterwards destroyed a working
+        # Images/Video pipeline for a load that could never start. The marker/check order is the
+        # handshake with the download manager, so both move together. It also has to run after
+        # pass-through argument inheritance, since a carried --no-mmproj changes the companion
+        # requirement exactly as it does for the load.
+        if config.is_gguf and config.gguf_hf_repo:
+            from core.inference.llama_cpp import gguf_load_in_flight
+            gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
+
+            from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+            if await asyncio.to_thread(
+                _hub_download_blocks_gguf_load,
+                config.gguf_hf_repo,
+                config.gguf_variant,
+                require_mmproj = bool(
+                    config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                ),
+                hf_token = request.hf_token,
+            ):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"'{model_log_label}' is currently being downloaded "
+                        "by the download manager. Wait for the download to "
+                        "finish (or cancel it), then load the model."
+                    ),
+                )
+
         # Load now known viable (valid identifier, gpu_ids ok, fits alongside any active
         # training): reclaim the GPU for chat, evicting a resident Images/Video pipeline. Doing
         # this only here -- not before the validation above -- keeps a doomed load from evicting
         # a working image/video model and then erroring. No-op when chat already owns the GPU.
-        await asyncio.to_thread(acquire_for, CHAT)
+        # The in-flight marker is entered UNDER the arbiter lock (the `register` hook), as the
+        # image and video loads do: a chat load holds no llama-server process until its GGUF has
+        # downloaded, so a competing Images/Video acquire in that window found nothing to evict
+        # and both then allocated VRAM at once. With the marker, that evictor cancels this load.
+        from core.inference.llama_cpp import chat_load_in_flight
+
+        await asyncio.to_thread(
+            acquire_for,
+            CHAT,
+            lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
+        )
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
-
-            if config.gguf_hf_repo:
-                from core.inference.llama_cpp import gguf_load_in_flight
-                gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
-
-            # Block cache writes that would race the download manager. This runs
-            # after pass-through argument inheritance so a carried --no-mmproj
-            # changes the companion requirement exactly as it does for the load.
-            if config.gguf_hf_repo:
-                from core.inference.llama_cpp import _hub_download_blocks_gguf_load
-                if await asyncio.to_thread(
-                    _hub_download_blocks_gguf_load,
-                    config.gguf_hf_repo,
-                    config.gguf_variant,
-                    require_mmproj = bool(
-                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
-                    ),
-                    hf_token = request.hf_token,
-                ):
-                    raise HTTPException(
-                        status_code = 409,
-                        detail = (
-                            f"'{model_log_label}' is currently being downloaded "
-                            "by the download manager. Wait for the download to "
-                            "finish (or cancel it), then load the model."
-                        ),
-                    )
 
             # Keep the resident model alive until every active generation finishes;
             # the caller's lifecycle gate blocks new starts.
@@ -4797,6 +4809,20 @@ async def _load_model_impl(
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
+                )
+
+            # An Images/Video acquire can land in the gap between the acquire above and
+            # load_model clearing the cancel event, so its cancellation is lost and this load
+            # spawns anyway. Ownership survives that gap: whoever took the GPU keeps it, and this
+            # load undoes itself rather than leaving two models resident on one device.
+            if current_owner() != CHAT:
+                await asyncio.to_thread(llama_backend.unload_model)
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "An image or video model took the GPU while this model was loading, "
+                        "so the load was cancelled. Unload that model, then try again."
+                    ),
                 )
 
             logger.info(
@@ -16028,6 +16054,7 @@ async def load_diffusion_model(
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_engine_router import (
         annotate_status,
+        begin_load_on,
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
@@ -16077,7 +16104,7 @@ async def load_diffusion_model(
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
 
-        def _begin_load():
+        def _start_engine_load():
             # Kicks the (slow) load onto a background thread and returns at once (client polls
             # images/load-progress); begin_load itself validates network-free.
             return engine.begin_load(
@@ -16099,6 +16126,12 @@ async def load_diffusion_model(
                 model_kind = kind,
                 loras = [(s.id, s.weight) for s in request.loras] if request.loras else None,
             )
+
+        def _begin_load():
+            # Under the router's transition lock, refusing if a competing load switched engines
+            # since select_and_activate_engine above: begin_load on a deactivated engine leaves a
+            # resident model that generate / status / unload and the evictor can no longer reach.
+            return begin_load_on(engine, _start_engine_load)
 
         if needs_gpu:
             # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns):

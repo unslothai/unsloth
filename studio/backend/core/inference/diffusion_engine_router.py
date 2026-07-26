@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from core.inference.diffusion_device import resolve_diffusion_device_target
 from core.inference.diffusion_families import DiffusionFamily, family_sd_cpp_supported
@@ -122,6 +122,24 @@ def _activate(name: str, reason: Optional[str]) -> Any:
         else:
             logger.info("diffusion engine: diffusers (%s)", reason or "selected")
         return get_active_diffusion_engine()
+
+
+def begin_load_on(expected_engine: Any, start: Callable[[], Any]) -> Any:
+    """Run ``start`` under the transition lock, refusing if the engine changed since selection.
+
+    A load route selects its engine, then yields (device probe, arbiter acquire) before it
+    registers the load. A second /images/load picking the OTHER engine can transition in that
+    gap and unload the still-idle engine this request captured, which would then load a model
+    nothing can reach: generate / status / unload and the arbiter's evictor all resolve through
+    get_active_diffusion_engine(). Re-checking under the same lock the switch takes makes
+    selection and registration one operation.
+    """
+    with _transition_lock:
+        if expected_engine is not get_active_diffusion_engine():
+            raise RuntimeError(
+                "The diffusion engine changed while this load was starting. Retry the load."
+            )
+        return start()
 
 
 def select_and_activate_engine(

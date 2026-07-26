@@ -356,15 +356,49 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     return None
 
 
+def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
+    """Reason a DiT family cannot train on this host at all, else None. Never raises.
+
+    nf4 is not a CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes
+    quantizer, whose validate_environment raises "No GPU found. A GPU is needed for
+    quantization." unless CUDA, XPU or MPS is present. Without this gate a GPU-less host
+    accepts the default nf4 start, evicts the resident Images pipeline, downloads the text
+    encoders, and only then dies in the child. SDXL keeps its own fp32-on-CPU path.
+    """
+    if (resolved_family or "").strip().lower() not in _DIT_TRAIN_FAMILIES:
+        return None
+    try:
+        import torch
+        xpu = getattr(torch, "xpu", None)
+        mps = getattr(torch, "mps", None)
+        if (
+            torch.cuda.is_available()
+            or bool(xpu is not None and xpu.is_available())
+            or bool(mps is not None and mps.is_available())
+        ):
+            return None
+    except Exception:  # noqa: BLE001 -- probe failure must not block a start
+        return None
+    return (
+        "Training the DiT families needs a GPU: even the 4-bit (nf4) base load requires "
+        "CUDA, XPU or MPS, and this host has none. Train SDXL here, or use a GPU machine."
+    )
+
+
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
     """Reason the requested DiT precision cannot run on this host, else None -- checked by the
     start route BEFORE evicting resident GPU workloads (the trainer's own checks fire only in the
     child, after eviction). Four gates, all mirroring _resolve_base_precision so a doomed run is
-    rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); the dense
+    rejected before teardown: the bf16-GPU requirement (bf16_unsupported_reason); a host with no
+    accelerator at all (dit_accelerator_missing_reason, which covers nf4 too); the dense
     precisions (bf16/int8/fp8/mxfp8) requiring a CUDA GPU; an explicit int8 needing a FUNCTIONAL
     torchao (its _int8_quantize_base has no fallback); and an explicit mxfp8 needing a Blackwell
     (sm100+) GPU (its MX GEMM has no kernel below sm100). Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
+    if reason:
+        return reason
+    # No accelerator at all: every DiT precision is out, nf4 included.
+    reason = dit_accelerator_missing_reason(resolved_family)
     if reason:
         return reason
     fam = (resolved_family or "").strip().lower()
@@ -430,7 +464,11 @@ def family_train_infos() -> list[dict[str, Any]]:
         # DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts (fp8 on
         # Qwen-Image: activation outliers exceed fp8's range; the inference path denies the same
         # set), so the UI never offers a mode normalized() would reject.
-        dit_block = bf16_unsupported_reason(name) if is_dit else None
+        dit_block = (
+            bf16_unsupported_reason(name) or dit_accelerator_missing_reason(name)
+            if is_dit
+            else None
+        )
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:

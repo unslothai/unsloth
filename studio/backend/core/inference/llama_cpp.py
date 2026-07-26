@@ -1382,6 +1382,36 @@ def gguf_load_in_flight(hf_repo: Optional[str]):
                 _LOADS_IN_FLIGHT[key] = remaining
 
 
+# Chat loads in flight, repo-agnostic (local paths and safetensors included). The repo-keyed
+# counter above answers the download manager; this one answers the GPU arbiter, which has to know
+# a chat load exists before llama-server is spawned.
+_CHAT_LOADS_IN_FLIGHT = 0
+
+
+@contextlib.contextmanager
+def chat_load_in_flight():
+    """Track a chat load from before its download until the load call returns."""
+    global _CHAT_LOADS_IN_FLIGHT
+    with _LOADS_IN_FLIGHT_LOCK:
+        _CHAT_LOADS_IN_FLIGHT += 1
+    try:
+        yield
+    finally:
+        with _LOADS_IN_FLIGHT_LOCK:
+            _CHAT_LOADS_IN_FLIGHT = max(0, _CHAT_LOADS_IN_FLIGHT - 1)
+
+
+def chat_load_active() -> bool:
+    """Whether a chat load is in flight, spawned or not.
+
+    ``is_active`` only covers a live llama-server process, which an HF load does not have
+    until its GGUF finished downloading -- minutes during which the arbiter's evictor would
+    find nothing to cancel and grant the GPU to a second workload.
+    """
+    with _LOADS_IN_FLIGHT_LOCK:
+        return _CHAT_LOADS_IN_FLIGHT > 0
+
+
 def hf_gguf_load_in_flight(hf_repo: str) -> bool:
     """Return whether a GGUF load is active for hf_repo."""
     key = (hf_repo or "").strip().lower()

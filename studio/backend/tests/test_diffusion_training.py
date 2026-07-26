@@ -1583,6 +1583,34 @@ def test_start_gated_base_without_access_is_400_and_keeps_gpu(client, monkeypatc
     assert client._fake.started_with is None
 
 
+def test_route_start_refuses_a_dit_family_without_a_gpu_before_freeing(client, monkeypatch):
+    # nf4 is not a CPU fallback: the 4-bit base load needs CUDA/XPU/MPS. Without a pre-teardown
+    # gate the default Train pick on a GPU-less host unloaded the working Images pipeline, pulled
+    # the text encoders, and only then failed in the child.
+    import torch
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "black-forest-labs/FLUX.1-dev"},
+    )
+    assert r.status_code == 400
+    assert "GPU" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.started_with is None
+
+    # SDXL trains fp32 on CPU (that is its documented fallback), so it is not gated.
+    r2 = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r2.status_code == 200, r2.text
+
+
 def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     # A reachable base (HEAD 200) proceeds to start normally.
     import urllib.request
@@ -1590,6 +1618,12 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     import routes.training as tr
 
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: None)
+    # This asserts the gated-repo probe is a no-op, not device support: pin the precision
+    # preflight so a GPU-less test host does not 400 for an unrelated reason.
+    monkeypatch.setattr(
+        "core.training.diffusion_train_common.training_precision_preflight_error",
+        lambda fam, prec: None,
+    )
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
     r = client.post(
         "/api/train/diffusion/start",

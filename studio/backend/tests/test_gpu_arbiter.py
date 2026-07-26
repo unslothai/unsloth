@@ -203,3 +203,49 @@ def test_competing_acquire_blocks_until_register_completes(monkeypatch):
     assert competitor_done.wait(2.0)
     assert evicted == ["evict-diffusion"]
     assert arb.current_owner() == arb.VIDEO
+
+
+def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
+    # An HF chat load has no llama-server process until its GGUF finished downloading, which is
+    # minutes. Gating only on is_active let the evictor find nothing to cancel, grant the GPU to
+    # the image/video load, and the chat load then spawned onto the same device: two big models
+    # allocating at once. The in-flight marker is what makes that load cancellable.
+    import core.inference as core_inference
+    import routes.inference as routes_inference
+    from core.inference.llama_cpp import chat_load_in_flight
+
+    unloaded: list[bool] = []
+
+    class _FakeLlama:
+        is_active = False  # nothing spawned yet: the download is still running
+        is_loaded = False
+
+        def unload_model(self):
+            unloaded.append(True)
+
+        def _wait_for_vram_settle(self, *, since_kill):
+            pass
+
+    class _FakeOrchestrator:
+        active_model_name = None
+
+        def unload_model(self, name):
+            pass
+
+        def _shutdown_subprocess(self, timeout = 5.0):
+            pass
+
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _FakeOrchestrator())
+
+    # No load in flight: nothing to cancel.
+    arb._evict_chat()
+    assert unloaded == []
+
+    with chat_load_in_flight():
+        arb._evict_chat()
+    assert unloaded == [True]
+
+    # The marker is released with the load, so a later eviction is a no-op again.
+    arb._evict_chat()
+    assert unloaded == [True]

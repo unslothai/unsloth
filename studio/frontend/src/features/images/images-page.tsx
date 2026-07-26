@@ -1838,12 +1838,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // to load the other page's checkpoint as its own kind of model.
     if (!active) return;
     const wanted = routeSearch.model;
-    // Key on the model AND the quant: this page stays mounted across navigation, so a
-    // model-only marker made every later pick of the same repo a no-op -- including a
-    // different quant, or the same one after chat evicted it -- without even clearing
-    // the query string, so the click did nothing at all.
-    const key = wanted ? `${wanted} ${routeSearch.quant ?? ""}` : null;
-    if (!wanted || !key || handledRouteModel.current === key) return;
+    // Key on the model AND the quant, and release the marker once the query is gone. This
+    // page stays mounted, so a marker that outlived the query made re-picking the same
+    // checkpoint (after chat evicted it) a click that neither loaded nor cleared the URL.
+    // It only has to survive the re-renders between consuming a pick and the clear landing.
+    if (!wanted) {
+      handledRouteModel.current = null;
+      return;
+    }
+    const key = `${wanted}|${routeSearch.quant ?? ""}`;
+    if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
     void loadOrStage(

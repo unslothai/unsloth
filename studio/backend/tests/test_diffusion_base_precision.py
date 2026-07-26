@@ -219,17 +219,28 @@ def test_training_precision_preflight_error(monkeypatch):
     assert training_precision_preflight_error("sdxl", "int8") is None
     assert training_precision_preflight_error("", "int8") is None
 
-    # On a CUDA-ABSENT host, bf16_unsupported_reason exempts CPU-only, but the DiT trainer's dense
-    # precisions still require CUDA (mirroring _resolve_base_precision), so bf16/int8/fp8/mxfp8 for
-    # a DiT family are rejected UP FRONT rather than after eviction. nf4/auto (and SDXL) still pass.
+    # On a host with NO accelerator every DiT precision is rejected up front rather than after
+    # eviction -- nf4 included, since its 4-bit load goes through bitsandbytes, which needs a GPU.
+    # SDXL (its own fp32-on-CPU path) still passes.
     monkeypatch.setattr(common, "has_functional_torchao", lambda: True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
     for dense in ("bf16", "int8", "fp8", "mxfp8"):
         reason = training_precision_preflight_error("flux.1", dense)
         assert reason is not None and "CUDA" in reason
+    for mode in ("nf4", "auto"):
+        reason = training_precision_preflight_error("flux.1", mode)
+        assert reason is not None and "GPU" in reason
+    assert training_precision_preflight_error("sdxl", "bf16") is None
+
+    # An accelerator that is not CUDA (XPU here) satisfies the 4-bit load, so nf4/auto pass again
+    # while the dense CUDA-only precisions stay rejected.
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: True)
     assert training_precision_preflight_error("flux.1", "nf4") is None
     assert training_precision_preflight_error("flux.1", "auto") is None
-    assert training_precision_preflight_error("sdxl", "bf16") is None
+    assert training_precision_preflight_error("flux.1", "bf16") is not None
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
 
     # mxfp8 needs a Blackwell (sm100+) GPU: its MX GEMM has no kernel below sm100 and would raise at
     # the first training step, AFTER a full dense-transformer load. On a CUDA GPU that is older than
@@ -609,3 +620,36 @@ def test_assert_trusted_base_model_rejects_local_non_pipeline(tmp_path):
     # An untrusted remote base is still rejected by the trust gate.
     with pytest.raises(ValueError, match = "untrusted"):
         common._assert_trusted_base_model("evil/base")
+
+def test_dit_accelerator_missing_reason_and_info_hide_train_without_a_gpu(monkeypatch):
+    # Clicking Start on a GPU-less host evicted the resident Images pipeline, downloaded the text
+    # encoders, and only then died in the child: diffusers' bitsandbytes quantizer refuses 4-bit
+    # without CUDA/XPU/MPS. Reject it up front, and stop /info advertising a mode that always 400s.
+    import torch
+
+    from core.training.diffusion_train_common import (
+        _DIT_TRAIN_FAMILIES,
+        dit_accelerator_missing_reason,
+        family_train_infos,
+    )
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.xpu, "is_available", lambda: False)
+    monkeypatch.setattr(torch.mps, "is_available", lambda: False)
+    assert "GPU" in (dit_accelerator_missing_reason("flux.1") or "")
+    # SDXL and unknown families keep their own paths.
+    assert dit_accelerator_missing_reason("sdxl") is None
+    assert dit_accelerator_missing_reason("") is None
+
+    infos = {info["name"]: info for info in family_train_infos()}
+    for name, info in infos.items():
+        if name in _DIT_TRAIN_FAMILIES:
+            assert info["precision_modes"] == []
+            assert "GPU" in info["vram_note"]
+            assert info["supports_compile"] is False
+        else:
+            assert info["precision_modes"] != [] or name not in _DIT_TRAIN_FAMILIES
+
+    # Any accelerator clears it (MPS here, which bitsandbytes accepts).
+    monkeypatch.setattr(torch.mps, "is_available", lambda: True)
+    assert dit_accelerator_missing_reason("flux.1") is None

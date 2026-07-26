@@ -283,3 +283,48 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
     t.join(2.0)
     q.join(2.0)
     assert switch_done.is_set() and query_done.is_set()
+
+
+def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
+    # A load selects its engine, then yields (device probe, arbiter acquire) before registering.
+    # A second load choosing the OTHER engine transitions in that gap and unloads the still-idle
+    # engine this one captured, so registering there would leave a model that generate / status /
+    # unload and the arbiter's evictor can no longer reach (they all resolve the ACTIVE engine).
+    diffusers = SimpleNamespace(name = "diffusers")
+    sd_cpp = SimpleNamespace(name = "sd_cpp")
+    active = {"engine": diffusers}
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: active["engine"])
+
+    started: list[str] = []
+    assert r.begin_load_on(diffusers, lambda: started.append("ok") or "status") == "status"
+    assert started == ["ok"]
+
+    # A competing request switched the active engine after this one captured `diffusers`.
+    active["engine"] = sd_cpp
+    with pytest.raises(RuntimeError, match = "engine changed"):
+        r.begin_load_on(diffusers, lambda: started.append("leaked"))
+    assert started == ["ok"]
+
+
+def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
+    # The check and the registration must be one operation: taken under the same lock a switch
+    # takes, so no _activate can slip between them.
+    import threading
+
+    engine = SimpleNamespace(name = "diffusers")
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: engine)
+
+    inside = threading.Event()
+    release = threading.Event()
+
+    def _slow_start():
+        inside.set()
+        release.wait(2.0)
+        return "status"
+
+    t = threading.Thread(target = lambda: r.begin_load_on(engine, _slow_start))
+    t.start()
+    assert inside.wait(2.0)
+    assert r._transition_lock.locked()
+    release.set()
+    t.join(2.0)

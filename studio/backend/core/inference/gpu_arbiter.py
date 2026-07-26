@@ -32,10 +32,15 @@ def _evict_chat() -> None:
     from core.inference import get_inference_backend
     from routes.inference import get_llama_cpp_backend
 
+    from core.inference.llama_cpp import chat_load_active
+
     llama = get_llama_cpp_backend()
     # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting
     # up holds VRAM but isn't healthy, so is_loaded would skip it and let the load race diffusion.
-    if llama.is_active:
+    # chat_load_active too: an HF load has no process until its GGUF downloaded, so is_active
+    # alone found nothing to cancel and let that load spawn onto the GPU we just granted away.
+    # unload_model sets the cancel event the download loop polls, so the pending load aborts.
+    if llama.is_active or chat_load_active():
         llama.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
