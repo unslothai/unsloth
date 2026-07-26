@@ -215,10 +215,9 @@ def test_validate_lora_clean_when_neither_needs_trc(monkeypatch):
 
 @pytest.mark.parametrize("is_gguf", [True, False])
 def test_validate_rejects_denied_llama_extra_args(monkeypatch, is_gguf):
-    # /load validates extras unconditionally, before it resolves the model. If
-    # /validate skipped the check whenever it classified the target as non-GGUF,
-    # the preflight would pass and /load would 400 after unloading the active
-    # model -- the failure this preflight exists to prevent.
+    # /load validates extras unconditionally. If /validate skipped the check for
+    # a target it classified as non-GGUF, the preflight would pass and /load
+    # would 400 after unloading the active model.
     from types import SimpleNamespace
 
     import utils.models.model_config as mc
@@ -303,9 +302,9 @@ def _drive_validate_guard(monkeypatch, *, request_extra_args, backend_extra_args
 
 
 def test_validate_guard_sizes_with_the_requests_own_extra_args(monkeypatch):
-    # The guard's KV estimate reads -c/--ctx-size out of the extras. Dropping the
-    # caller's own extras lets /validate pass an estimate smaller than the /load
-    # that follows, so /load 409s after the UI already unloaded the live model.
+    # The guard's KV estimate reads -c/--ctx-size out of the extras, so dropping
+    # the caller's own lets /validate pass a smaller estimate than the /load that
+    # follows, which then 409s after the UI already unloaded the live model.
     seen = _drive_validate_guard(
         monkeypatch,
         request_extra_args = ["-c", "65536"],
@@ -376,11 +375,9 @@ def _loaded_llama_backend(extra_args):
 def test_status_exposes_the_active_llama_extra_args(monkeypatch, extra_args):
     """/status must report the extras the running llama-server was launched with.
 
-    They are the same list ``_resolve_inherited_extra_args`` treats as
-    authoritative, so without them the UI shows an empty args field after a
-    refresh while the server still runs them -- and a Reload then omits the
-    field, which /load reads as "inherit", silently keeping args the user can
-    neither see nor clear.
+    Without them the UI shows an empty args field after a refresh while the
+    server still runs them, and Reload then omits the field, which /load reads
+    as "inherit" -- keeping args the user can neither see nor clear.
     """
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _loaded_llama_backend(extra_args))
     monkeypatch.setattr(inf, "load_inference_config", lambda *_a, **_k: None)
@@ -395,9 +392,9 @@ def test_load_response_reports_the_effective_llama_extra_args():
     """The GGUF /load response must echo what the server launched with.
 
     Manual GPU memory owns the offload group, so /load strips --cpu-moe /
-    --gpu-layers / --fit from EXPLICIT extras before launching. Echoing the
-    request instead would make the settings panel advertise a flag that was
-    dropped, and leave dirty tracking baselined on a launch that never happened.
+    --gpu-layers / --fit from explicit extras first. Echoing the request would
+    advertise a dropped flag and baseline dirty tracking on a launch that never
+    happened.
     """
     import inspect
 
@@ -428,8 +425,8 @@ def test_load_response_reports_the_effective_llama_extra_args():
     )
     assert echoed.llama_extra_args == effective
 
-    # Both GGUF response sites (fresh load and the already-loaded dedupe) source
-    # it from the backend's effective list, never from the request.
+    # Both GGUF response sites (fresh load, already-loaded dedupe) source it from
+    # the backend's effective list, never from the request.
     src = inspect.getsource(inf._load_model_impl)
     assert src.count("llama_extra_args = llama_backend.extra_args,") == 2
     assert "llama_extra_args = request.llama_extra_args," not in src

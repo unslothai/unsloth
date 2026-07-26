@@ -5099,9 +5099,8 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # Unconditional, like /load: gating on is_gguf here would let a preflight
-        # pass extras that /load then 400s on, after it already unloaded the
-        # active model -- the exact case this preflight exists to prevent.
+        # Unconditional, like /load: gating on is_gguf would pass a preflight
+        # that /load then 400s on, after it already unloaded the active model.
         if request.llama_extra_args is not None:
             from core.inference.llama_server_args import validate_extra_args
             try:
@@ -5181,10 +5180,9 @@ async def validate_model(
         # training guard must not refuse it. Real loads omit include_context_length /
         # include_chat_template, and /load applies the guard again.
         if not (request.include_context_length or request.include_chat_template):
-            # Match /load's llama.cpp extras and parallel slot count so validation
-            # cannot pass a smaller estimate than the subsequent load: the request's
-            # own extras when it sent them (their -c raises the KV estimate), else
-            # the previous same-model load's inherited ones.
+            # Match /load's extras and parallel slots so validation cannot pass a
+            # smaller estimate than the load: the request's own extras when sent
+            # (their -c raises the KV estimate), else the inherited ones.
             effective_extra_args = _resolve_inherited_extra_args(
                 request, config, model_identifier, request.llama_extra_args
             )

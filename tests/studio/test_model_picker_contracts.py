@@ -609,9 +609,8 @@ def test_model_config_page_exposes_custom_llama_server_args():
 def test_llama_extra_args_formatter_quotes_quote_chars():
     """formatLlamaExtraArgs must re-quote tokens holding quote characters.
 
-    The field re-parses whatever formatLlamaExtraArgs rendered, so a token like
-    {"enable_thinking":false} that is emitted bare comes back as
-    {enable_thinking:false} on the next blur, silently corrupting the flag.
+    The field re-parses whatever was rendered, so a bare {"enable_thinking":false}
+    comes back as {enable_thinking:false} on the next blur, corrupting the flag.
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
     assert "/[\\s\"']/.test(token)" in src
@@ -620,10 +619,9 @@ def test_llama_extra_args_formatter_quotes_quote_chars():
 def test_autoload_preflight_validates_the_args_it_loads():
     """The cached-autoload /validate must send the extras its /load sends.
 
-    /validate sizes the training-guard VRAM estimate from the extras (a -c in
-    there raises the KV budget) and rejects managed flags. Omitting them makes
-    the preflight validate a different command than the load, so it can pass and
-    the load then fail.
+    /validate sizes the training-guard VRAM estimate from the extras (a -c
+    raises the KV budget) and rejects managed flags, so omitting them lets the
+    preflight pass a different command than the load that then fails.
     """
     src = _read("features/chat/api/chat-adapter.ts")
     start = src.index("await canAutoLoad({")
@@ -635,8 +633,7 @@ def test_status_hydration_reseeds_llama_extra_args():
     """A page refresh must recover the running server's args.
 
     Without the reseed the field reads empty while the server still runs them,
-    and Reload omits llama_extra_args -- which /load treats as "inherit", so the
-    invisible args survive.
+    and Reload omits llama_extra_args, which /load treats as "inherit".
     """
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     assert "llamaExtraArgs: status.llama_extra_args" in src
@@ -648,10 +645,9 @@ def test_status_hydration_reseeds_llama_extra_args():
 def test_llama_extra_args_parser_keeps_non_escape_backslashes():
     """A quoted Windows path must survive the field.
 
-    Treating every backslash in a quoted token as an escape turns
-    "C:\\Program Files\\t.jinja" into "C:Program Filest.jinja", which is exactly
-    the platform issue #7022 was reported on. Only a quote or another backslash
-    escapes, as in a shell.
+    Only a quote or another backslash escapes, as in a shell: treating every
+    backslash as one turns "C:\\Program Files\\t.jinja" into
+    "C:Program Filest.jinja", on the very platform #7022 was reported from.
     """
     src = _read("features/model-picker/model-config/llama-extra-args.ts")
     assert 'ch === "\\\\" && (next === quote || next === "\\\\")' in src
@@ -660,24 +656,20 @@ def test_llama_extra_args_parser_keeps_non_escape_backslashes():
 def test_same_click_commit_covers_the_custom_llama_args_field():
     """The Custom llama-server Args field needs the same blur bridge.
 
-    It stages its draft only on blur, and NumericValueInput's own comment records
-    why that is not enough: the blur commits via the parent update() before the
-    button's onClick runs, while handleRun's closure still holds the pre-blur
-    config. Without an imperative commit, typing flags and clicking Load in one
-    gesture validates and launches the previous args while the panel then shows
-    the new ones as though they had applied.
+    It stages its draft only on blur, which commits via the parent update()
+    before the button's onClick runs, while handleRun's closure still holds the
+    pre-blur config. Without an imperative commit, typing flags and clicking Load
+    in one gesture launches the previous args while the panel shows the new ones.
     """
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert "const llamaExtraArgsInputRef = useRef<LlamaExtraArgsInputHandle>(null);" in page
     assert "llamaExtraArgsInputRef.current?.commit()" in page
     assert "ref={llamaExtraArgsInputRef}" in page
     assert "llamaExtraArgsInputRef?: Ref<LlamaExtraArgsInputHandle>;" in page
-    # Folded into the staged config, gated on non-null like the numeric drafts so
-    # an untouched field never fabricates an override.
+    # Gated on non-null like the numeric drafts, so an untouched field is a no-op.
     assert "committedLlamaExtraArgs != null" in page
     assert "pendingPatch.llamaExtraArgs = committedLlamaExtraArgs;" in page
-    # The handle mirrors NumericValueInputHandle, including the one-shot blur
-    # cache that a settled render clears.
+    # The handle mirrors NumericValueInputHandle, one-shot blur cache included.
     assert "commit: () => string[] | null;" in page
     assert "lastBlurCommittedRef" in page
 
@@ -687,9 +679,8 @@ def test_load_paths_baseline_on_the_servers_effective_args():
 
     /load strips the offload group from explicit extras when gpu_memory_mode is
     manual, so seeding from the request advertises a dropped --cpu-moe as active
-    and leaves dirty tracking measuring against a baseline that never ran. Every
-    sibling in these same setState calls (KV dtype, tensor parallel, speculative
-    type) already reads the load response back; the extras must too.
+    and baselines dirty tracking on a launch that never ran. Every sibling in
+    these setState calls (KV dtype, TP, spec type) already reads the response.
     """
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "loadResponse.llama_extra_args !== undefined" in runtime
@@ -701,8 +692,7 @@ def test_load_paths_baseline_on_the_servers_effective_args():
         src = _read(rel)
         assert f"llamaExtraArgs: {var}.llama_extra_args ??" in src, rel
         assert f"{var}.llama_extra_args ??" in src, rel
-    # The response type carries it, so an older backend (undefined) still falls
-    # back to the request rather than blanking a field that is running.
+    # An older backend (undefined) falls back to the request, not a blank field.
     types_src = _read("features/chat/types/api.ts")
     load_response = types_src.split("export interface LoadModelResponse")[1].split(
         "export interface"

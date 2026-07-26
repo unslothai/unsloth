@@ -2156,13 +2156,11 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
 
 # ── Underscore aliases: llama.cpp folds `_` to `-` on every `--` arg ──
 #
-# common/arg.cpp runs std::replace(arg, '_', '-') before matching, verified
-# against llama-server b10107: `--spec_type BOGUS` reports
-# `error while handling argument "--spec-type"`, while a genuinely unknown
-# flag reports `invalid argument`. llama_server_args._flag_name already folds
-# on the validation boundary, so these spellings reach the launch; the runtime
-# parsers must resolve them the same way or Studio budgets VRAM, picks a
-# drafter and reports a launch mode the child does not run.
+# common/arg.cpp runs std::replace(arg, '_', '-') before matching, verified on
+# llama-server b10107: `--spec_type BOGUS` reports `error while handling
+# argument "--spec-type"`, an unknown flag reports `invalid argument`. These
+# spellings pass validation, so the runtime parsers must resolve them the same
+# way or Studio budgets VRAM and reports a mode the child does not run.
 
 
 @pytest.mark.parametrize(
@@ -2195,8 +2193,7 @@ def test_mtp_reserve_sees_underscore_spec_type(extra_args):
 
     assert _effective_spec_type(extra_args, {}) == "draft-mtp"
     assert _extra_args_requests_mtp(extra_args, {}) is True
-    # A CLI flag beats the env in llama.cpp, so a stale MTP env must not survive
-    # an underscore-spelled override that turns MTP off.
+    # A CLI flag beats the env, so an underscore override still turns MTP off.
     assert (
         _extra_args_requests_mtp(["--spec_type", "ngram"], {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
         is False
@@ -2245,9 +2242,8 @@ def test_flash_attn_off_recovery_sees_underscore_aliases():
     """The FA-off crash-recovery rung must beat an appended underscore alias.
 
     Unsloth emits its own `--flash-attn on` and appends user extras after it, so
-    llama.cpp's last-wins parse lets a pass-through `--flash_attn=on` decide the
-    effective value. Matching raw text left it untouched, so the retry launched
-    with flash attention still on and hard-crashed exactly like the first try.
+    last-wins lets a pass-through `--flash_attn=on` decide the effective value.
+    Matching raw text left it untouched and the retry crashed like the first try.
     """
     studio = ["llama-server", "-m", "/m.gguf", "--flash-attn", "on", "--no-context-shift"]
     for extra, expected_tail in (
@@ -2259,12 +2255,12 @@ def test_flash_attn_off_recovery_sees_underscore_aliases():
         cmd = studio + extra
         retry = LlamaCppBackend._with_flash_attn_off(cmd)
         assert retry is not None, extra
-        # Length is preserved for the downstream slices, Unsloth's own flag is
-        # flipped, and the user's alias is neutralised in its own spelling.
+        # Length preserved for downstream slices, Unsloth's flag flipped, the
+        # user's alias neutralised in its own spelling.
         assert len(retry) == len(cmd), extra
         assert retry[3:5] == ["--flash-attn", "off"], extra
         assert retry[len(studio) :] == expected_tail, extra
 
-    # An effective value that is already off still means there is nothing to retry.
+    # An effective value that is already off means there is nothing to retry.
     assert LlamaCppBackend._with_flash_attn_off(studio + ["--flash_attn=off"]) is None
     assert LlamaCppBackend._with_flash_attn_off(["llama-server", "-m", "/m.gguf"]) is None

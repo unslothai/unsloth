@@ -70,9 +70,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),
-    # --agent is a shorthand for both flags above: it sets server_tools={"all"}
-    # (exec_shell_command, write_file, ...) and ui_mcp_proxy=true, so denying only
-    # --tools / --ui-mcp-proxy leaves the same switch one alias away.
+    # --agent sets server_tools={"all"} (exec_shell_command, write_file, ...) and
+    # ui_mcp_proxy=true: denying only --tools / --ui-mcp-proxy leaves the same
+    # switch one alias away.
     frozenset({"-ag", "--agent", "-no-ag", "--no-agent"}),
     # Slot-state dir: Studio owns it for KV persistence across idle unload.
     frozenset({"--slot-save-path"}),
@@ -88,10 +88,10 @@ def _flag_name(token: str) -> Optional[str]:
     always start with a letter), and normalises attached `-np8` / `-np-1` /
     `-np8x` to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
 
-    Long flags also get `_` folded to `-`, matching llama.cpp's own
+    Long flags also fold `_` to `-`, like llama.cpp's own
     `std::replace(arg, '_', '-')` on `--` args (common/arg.cpp): `--api_key`
-    reaches the same option as `--api-key`, so a hyphen-only denylist would
-    be one underscore away from a bypass. Shorts are left alone, as upstream.
+    reaches `--api-key`, so a hyphen-only denylist would be one underscore
+    from a bypass. Shorts are left alone, as upstream.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:

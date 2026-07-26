@@ -1579,15 +1579,12 @@ _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 def _canonical_long_flag_name(name: str) -> str:
     """``name`` with llama.cpp's long-option underscore folding applied.
 
-    llama.cpp runs ``std::replace(arg, '_', '-')`` on every argv token starting
-    with ``--`` before matching it (common/arg.cpp), so ``--spec_type`` reaches
-    the same option as ``--spec-type``. Every parser that reads pass-through
-    extras must match the same way, or Studio budgets VRAM, picks a drafter and
-    reports a launch mode for flags the child resolves differently. Shorts never
-    carry underscores upstream and keep their exact spelling.
-
-    Single source of truth for the module; ``llama_server_args._flag_name``
-    applies the same rule on the validation boundary.
+    common/arg.cpp runs ``std::replace(arg, '_', '-')`` on every ``--`` token
+    before matching, so ``--spec_type`` reaches ``--spec-type``. Every parser
+    reading pass-through extras must match the same way or Studio budgets VRAM,
+    picks a drafter and reports a launch mode the child resolves differently.
+    Shorts keep their exact spelling. Single source of truth for the module;
+    ``llama_server_args._flag_name`` mirrors it on the validation boundary.
     """
     return name.replace("_", "-") if name.startswith("--") else name
 
@@ -6190,15 +6187,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _canonical_long_flag(name: str) -> str:
-        """Return ``name`` with llama.cpp's long-option underscore normalization.
-
-        llama.cpp runs ``std::replace(arg.begin(), arg.end(), '_', '-')`` on any
-        argv token that starts with ``--`` before looking it up, so a legal
-        pass-through spelling like ``--cache_type_v`` parses as
-        ``--cache-type-v``. Mirror that here so managed-flag matching sees the
-        same canonical name. Short flags (``-ctv``) never carry underscores and
-        keep their exact spelling; pass only the flag name (no attached value).
-        """
+        """``name`` with llama.cpp's underscore folding (``--cache_type_v`` ->
+        ``--cache-type-v``); see ``_canonical_long_flag_name``. Pass only the
+        flag name, no attached value."""
         return _canonical_long_flag_name(name)
 
     @staticmethod
@@ -6218,11 +6209,9 @@ class LlamaCppBackend:
         def flash_attn_parts(tok: str):
             """(canonical flag, inline value or None), or (None, None).
 
-            User extras are appended after Unsloth's own ``--flash-attn on``, so
-            llama.cpp's last-wins parse lets them decide the effective value --
-            and it folds `_` to `-` on `--` args. Matching raw text here left an
-            appended ``--flash_attn=on`` untouched, so the retry re-enabled the
-            very kernels this rung disables and crashed again.
+            Extras are appended after Unsloth's own ``--flash-attn on``, so
+            last-wins lets ``--flash_attn=on`` decide the effective value;
+            matching raw text left it untouched and the retry crashed again.
             """
             name, eq, inline = tok.partition("=")
             canonical = _canonical_long_flag_name(name)
@@ -6244,8 +6233,7 @@ class LlamaCppBackend:
                 continue
             if inline is not None:
                 if inline in ("on", "auto"):
-                    # Rewrite in place keeping the user's own spelling; llama.cpp
-                    # accepts either and the list length must not change.
+                    # In place, in the user's spelling: length must not change.
                     out[i] = f"{tok.partition('=')[0]}=off"
             elif explicit(i) in ("on", "auto"):
                 out[i + 1] = "off"

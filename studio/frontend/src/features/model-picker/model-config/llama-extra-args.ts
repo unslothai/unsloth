@@ -9,18 +9,16 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
   }
   const tokens: string[] = [];
   let current = "";
-  // A token exists once one is opened, whatever it ends up holding. Keying on
-  // `current` instead would swallow a deliberate empty argument (`--flag ""`),
-  // and dropping it shifts the argv: llama-server then reads the NEXT token as
-  // the flag's value and silently ignores it.
+  // A token exists once one is opened, whatever it holds: keying on `current`
+  // would swallow a deliberate empty argument (`--flag ""`), and dropping it
+  // shifts the argv so llama-server reads the next token as the flag's value.
   let started = false;
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < trimmed.length; i += 1) {
     const ch = trimmed[i];
     if (quote) {
-      // Only a quote or another backslash escapes, as in a shell. Anything
-      // else keeps its backslash, so a quoted Windows path survives
-      // ("C:\Program Files\t.jinja", not "C:Program Filest.jinja").
+      // Only a quote or another backslash escapes, as in a shell: a quoted
+      // "C:\Program Files\t.jinja" survives as itself, not "C:Program Filest.jinja".
       const next = i + 1 < trimmed.length ? trimmed[i + 1] : "";
       if (ch === "\\" && (next === quote || next === "\\")) {
         current += next;
@@ -89,9 +87,8 @@ export function normalizeLlamaExtraArgs(
     if (typeof raw !== "string") {
       continue;
     }
-    // Store every string token verbatim. The parser only emits a blank or
-    // edge-padded token when the user quoted one, so rewriting or dropping it
-    // here would persist a different argv than the same config just loaded with.
+    // Verbatim: the parser only emits a blank or edge-padded token when the user
+    // quoted one, so rewriting it would persist a different argv than loaded.
     out.push(raw);
   }
   return out;

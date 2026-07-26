@@ -322,9 +322,9 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    // Without this the args field reads empty after a refresh while the server
-    // still runs them, and a Reload omits the field -- which the backend reads
-    // as "inherit", silently keeping args the user can no longer see or clear.
+    // Else the args field reads empty after a refresh while the server still
+    // runs them, and Reload omits the field -- read as "inherit", so they
+    // survive where the user can neither see nor clear them.
     ...(seedLoadParams &&
       status.llama_extra_args !== undefined &&
       (prevState.loadedLlamaExtraArgs === null || hydratingExistingModel) && {

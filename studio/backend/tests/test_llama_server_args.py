@@ -269,9 +269,8 @@ def test_denylist_rejects_np_with_digit_prefix_and_junk(attached):
 
 def test_agent_alias_is_managed_like_tools_and_mcp_proxy():
     # common/arg.cpp: -ag/--agent sets server_tools={"all"} (exec_shell_command,
-    # write_file, edit_file, ...) and ui_mcp_proxy=true -- the exact two options
-    # --tools and --ui-mcp-proxy are denied for. Denying only those leaves the
-    # same switch one alias away.
+    # write_file, ...) and ui_mcp_proxy=true -- the exact two options --tools and
+    # --ui-mcp-proxy are denied for, so denying only those is one alias away.
     for flag in ("-ag", "--agent", "-no-ag", "--no-agent", "--agent=1", "--no_agent"):
         assert is_managed_flag(flag) is True
         with pytest.raises(ValueError):
@@ -928,8 +927,8 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
 )
 def test_denylist_rejects_underscore_aliases(denied):
     # common/arg.cpp runs std::replace(arg, '_', '-') on every `--` arg, so
-    # `--api_key` reaches --api-key. A hyphen-only denylist would be one
-    # underscore away from handing over auth, model identity and the port.
+    # `--api_key` reaches --api-key: a hyphen-only denylist would be one
+    # underscore from handing over auth, model identity and the port.
     with pytest.raises(ValueError):
         validate_extra_args([denied, "value"])
     with pytest.raises(ValueError):
@@ -938,8 +937,7 @@ def test_denylist_rejects_underscore_aliases(denied):
 
 
 def test_underscore_normalisation_is_long_flags_only():
-    # Upstream leaves shorts alone, so `-m` stays managed but no short gains
-    # an underscore spelling.
+    # Upstream leaves shorts alone: `-m` stays managed, no short gains an alias.
     assert is_managed_flag("-m") is True
     assert is_managed_flag("--no_mmap") is False
     assert is_managed_flag("--cpu_moe") is False
@@ -947,8 +945,8 @@ def test_underscore_normalisation_is_long_flags_only():
 
 
 def test_shadow_parsers_see_underscore_spellings():
-    # The child honours `--ctx_size`; if Unsloth's parsers miss it, the KV
-    # budget is sized for a different context than the server allocates.
+    # The child honours `--ctx_size`; missing it sizes the KV budget for a
+    # different context than the server allocates.
     assert parse_ctx_override(["--ctx_size", "8192"]) == 8192
     assert parse_cache_override(["--cache_type_k", "q8_0"]) == "q8_0"
     assert parse_split_mode_override(["--split_mode", "tensor"]) == "tensor"
