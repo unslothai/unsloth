@@ -764,8 +764,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     - ``gcn_arch``: canonical arch string (e.g. ``"gfx1151"``) when a known
       attribute is present, else ``""``.
     - ``is_unified``: ``True`` for AMD APUs with a shared GPU/system-RAM pool
-      (gfx1150 Strix Point, gfx1151 Strix Halo) — these need a lower
-      ``set_per_process_memory_fraction`` cap to leave OS headroom.
+      (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan Point) — these
+      need a lower ``set_per_process_memory_fraction`` cap to leave OS headroom.
 
     Classification priority:
     1. ``props.is_integrated`` truthy (hipDeviceProp_t.integrated -- the
@@ -778,6 +778,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
          - gfx1151 Strix Halo / Gorgon Halo:  ``Radeon 8065S`` (Ryzen AI
                                 Max+ 495), ``Radeon 8060S`` (Ryzen AI MAX+
                                 395), ``Radeon 8050S`` (cut-down SKU)
+         - gfx1152 Krackan Point: ``Radeon 860M``, ``Radeon 840M``
     """
     gcn_arch = ""
     for _attr in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
@@ -797,9 +798,13 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         return gcn_arch, True
 
     if gcn_arch:
-        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151"}
+        # gfx1152 is Krackan Point, the third RDNA 3.5 APU: same shared
+        # GPU/system-RAM pool as Strix Point (gfx1150) and Strix Halo (gfx1151).
+        return gcn_arch, gcn_arch in {"gfx1150", "gfx1151", "gfx1152"}
 
-    # Arch attrs absent — fall back to device-name matching.
+    # Arch attrs absent — fall back to device-name matching. Only reached under
+    # _hw.IS_ROCM, so the NVIDIA GeForce 840M cannot collide with the Krackan
+    # markers here.
     dev_lower = (getattr(props, "name", "") or "").lower()
     is_unified = (
         "890m" in dev_lower
@@ -807,6 +812,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "8065s" in dev_lower
         or "8060s" in dev_lower
         or "8050s" in dev_lower
+        or "860m" in dev_lower
+        or "840m" in dev_lower
     )
     return gcn_arch, is_unified
 
@@ -2828,7 +2835,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises
     # OutOfMemoryError first (NVIDIA already has a graceful OOM path).
-    # Unified-memory APUs (gfx1150/gfx1151) share GPU+system RAM, so use 0.80
+    # Unified-memory APUs (gfx1150/gfx1151/gfx1152) share GPU+system RAM, so use 0.80
     # vs 0.90 for discrete. Classify via gcnArchName, else device-name markers.
     # Non-fatal: skipped if torch is not importable.
     if _hw.IS_ROCM:

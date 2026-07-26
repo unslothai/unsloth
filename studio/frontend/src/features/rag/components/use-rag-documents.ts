@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  CHAT_RAG_CAPTION_KEY,
-  CHAT_RAG_OCR_KEY,
-  useChatRuntimeStore,
-} from "@/features/chat";
 import { toast } from "@/lib/toast";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteDocument,
   getJob,
@@ -17,6 +12,7 @@ import {
   uploadThreadDocument,
 } from "../api/rag-api";
 import type { DocumentStatus, RagDocument } from "../types/rag";
+import { resolveVisionOverrides } from "./vision-overrides";
 
 export interface TrackedDocument extends RagDocument {
   progress?: number | null;
@@ -263,18 +259,7 @@ export function useRagDocuments(
       tempId: string,
     ) => {
       try {
-        // Send vision-pass overrides only after the user has explicitly set them;
-        // otherwise backend env defaults own the ingest policy.
-        const state = useChatRuntimeStore.getState();
-        const hasLocal = (key: string) =>
-          typeof window !== "undefined" &&
-          window.localStorage.getItem(key) !== null;
-        const ocr = hasLocal(CHAT_RAG_OCR_KEY)
-          ? state.ragOcrScanned
-          : undefined;
-        const caption = hasLocal(CHAT_RAG_CAPTION_KEY)
-          ? state.ragCaptionFigures
-          : undefined;
+        const { ocr, caption } = resolveVisionOverrides();
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(

@@ -63,6 +63,7 @@ EXIT_SUCCESS = 0
 EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
+EXIT_NO_SPACE = 4
 
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
 # elevation (its manifest is asInvoker), so this is just harmless belt-and-
@@ -3674,7 +3675,8 @@ def hydrate_source_tree(
                 break
             except Exception as exc:
                 last_exc = exc
-                if index == len(source_urls) - 1:
+                # A full disk fails every mirror; stop so a later 404 cannot mask it.
+                if _environment_fatal_reason(exc) or index == len(source_urls) - 1:
                     raise
                 log(f"source tree download failed from {source_url}: {exc}")
         if not downloaded:
@@ -6000,6 +6002,14 @@ def validate_prebuilt_attempts(
             )
             raise ExistingInstallSatisfied(attempt, tried_fallback)
 
+        # Advisory: a few GB free usually fits, and rejecting here would also skip
+        # the source-build fallback.
+        if index == 0:
+            low_disk = _low_disk_warning(install_dir)
+            if low_disk is not None:
+                log(low_disk)
+                _log_disk_space_help()
+
         staging_dir = create_install_staging_dir(install_dir)
         quantized_path = work_dir / f"stories260K-q4-{index}.gguf"
         if quantized_path.exists():
@@ -6028,7 +6038,9 @@ def validate_prebuilt_attempts(
                 attempt_error = PrebuiltFallback(
                     f"candidate attempt failed before activation for {attempt.name}: {exc}"
                 )
-            if index == len(attempt_list) - 1:
+            if _environment_fatal_reason(exc) or index == len(attempt_list) - 1:
+                if attempt_error is exc:
+                    raise
                 raise attempt_error from exc
             log(
                 "selected CUDA bundle failed before activation; trying next prebuilt fallback "
@@ -6149,6 +6161,132 @@ def diffusion_visual_server_backfill_needed(
     return True
 
 
+def _causal_chain(exc: BaseException) -> Iterable[BaseException]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        # `raise X from None` sets __suppress_context__: the earlier exception is
+        # unrelated, so following __context__ anyway would misreport the cause.
+        if current.__cause__ is not None:
+            current = current.__cause__
+        elif current.__suppress_context__:
+            current = None
+        else:
+            current = current.__context__
+
+
+# ERROR_HANDLE_DISK_FULL / ERROR_DISK_FULL. CPython's PC/errmap.h maps 112 to
+# ENOSPC but has no case for 39, which arrives as EINVAL, so check winerror too.
+_WINDOWS_DISK_FULL = (39, 112)
+# A quota (NFS/XFS/container) leaves blocks this user cannot have, so the bigger
+# source build is just as doomed; named apart from ENOSPC so df does not mislead.
+# Guarded: the MSVC CRT has no EDQUOT, so on Windows CPython aliases it to the
+# Winsock WSAEDQUOT (10069), which no file write raises.
+_DISK_FULL_ERRNOS = {errno.ENOSPC: "no space left on device"}
+if hasattr(errno, "EDQUOT"):
+    _DISK_FULL_ERRNOS[errno.EDQUOT] = "disk quota exceeded"
+
+
+def _winerror_of(exc: OSError) -> Any:
+    """exc.winerror, defensively. Not getattr(exc, ..., None): urllib's HTTPError
+    is an OSError that proxies unknown attributes to a wrapped file object and
+    raises KeyError (not AttributeError) on 3.9, which getattr will not swallow.
+    A 404 from a mirror must not crash the classifier."""
+    try:
+        return exc.winerror
+    except Exception:
+        return None
+
+
+def _out_of_space_reason(exc: BaseException) -> str | None:
+    """Why `exc` means the install cannot fit, or None if it means something else."""
+    if isinstance(exc, OSError):
+        reason = _DISK_FULL_ERRNOS.get(exc.errno)
+        if reason is not None:
+            return reason
+        if _winerror_of(exc) in _WINDOWS_DISK_FULL:
+            return "no space left on device"
+    # shutil.copytree stringifies each per-file OSError and raises Error(errors)
+    # outside the except block, so errno and the chain are gone and only text
+    # survives. OSError.__str__ returns early on winerror, so Windows reads
+    # "[WinError 112]" and never "[Errno 28]": match both, brackets included so
+    # WinError 112 does not match WinError 1120.
+    if isinstance(exc, shutil.Error):
+        text = str(exc)
+        for code, reason in _DISK_FULL_ERRNOS.items():
+            if f"[Errno {code}]" in text:
+                return reason
+        if any(f"[WinError {code}]" in text for code in _WINDOWS_DISK_FULL):
+            return "no space left on device"
+    return None
+
+
+def _environment_fatal_reason(exc: BaseException) -> str | None:
+    for cause in _causal_chain(exc):
+        reason = _out_of_space_reason(cause)
+        if reason is not None:
+            return reason
+    return None
+
+
+def _log_disk_space_help() -> None:
+    log(
+        "free up space or point TMPDIR and UNSLOTH_STUDIO_HOME at a larger "
+        "volume (e.g. /workspace), then re-run"
+    )
+
+
+@contextmanager
+def scratch_dir(prefix: str) -> Iterator[Path]:
+    """Temp dir whose cleanup never raises: an rmtree failure on the way out would
+    replace the in-flight exception and lose EXIT_NO_SPACE. Not
+    TemporaryDirectory(ignore_cleanup_errors = True), which is 3.10+ (setup.sh
+    still runs this helper under the host python, and we support 3.9)."""
+    path = Path(tempfile.mkdtemp(prefix = prefix))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors = True)
+
+
+def _first_existing_ancestor(path: Path) -> Path:
+    current = path
+    while current != current.parent and not current.exists():
+        current = current.parent
+    return current
+
+
+def _low_disk_warning(install_dir: Path, *, advised_gb: float = 5.0) -> str | None:
+    """Advisory only, never fatal. A prebuilt install peaks well under 1 GB (the
+    largest published bundle is 0.77 GB, macOS is 0.01 GB), so a fixed threshold
+    cannot decide whether this host has room -- a real ENOSPC decides that. The
+    number here is the headroom a source-build fallback would want."""
+    advised = int(advised_gb * (1024**3))
+    targets = {
+        "build/download scratch (TMPDIR)": Path(tempfile.gettempdir()),
+        "llama.cpp install dir": _first_existing_ancestor(install_dir),
+    }
+    for label, path in targets.items():
+        try:
+            free = shutil.disk_usage(path).free
+        except OSError:
+            continue
+        if free < advised:
+            return (
+                f"low disk space for llama.cpp: {label} at {path} has "
+                f"{free / (1024**3):.1f} GB free (~{advised_gb:.0f} GB recommended)"
+            )
+    return None
+
+
+def _fail_no_space(reason: str) -> None:
+    log(reason)
+    _log_disk_space_help()
+    raise SystemExit(EXIT_NO_SPACE)
+
+
 def install_prebuilt(
     install_dir: Path,
     llama_tag: str,
@@ -6217,8 +6355,7 @@ def install_prebuilt(
                     # recorded so the updater re-asserts it (#7213).
                     sync_marker_force_cpu(install_dir, persist_force_cpu)
                     return
-            with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
-                work_dir = Path(tmp)
+            with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
                 probe_path = work_dir / "stories260K.gguf"
                 download_validation_model(probe_path, validation_model_cache_path(install_dir))
                 release_count = len(release_plans)
@@ -6263,6 +6400,8 @@ def install_prebuilt(
                     except ExistingInstallSatisfied:
                         return
                     except PrebuiltFallback as exc:
+                        if _environment_fatal_reason(exc):
+                            raise
                         if release_index == release_count - 1:
                             raise
                         log(
@@ -6296,6 +6435,11 @@ def install_prebuilt(
         log(f"prebuilt busy reason: {exc}")
         raise SystemExit(EXIT_BUSY) from exc
     except PrebuiltFallback as exc:
+        fatal = _environment_fatal_reason(exc)
+        if fatal:
+            log(f"prebuilt install failed: {fatal}")
+            _log_disk_space_help()
+            raise SystemExit(EXIT_NO_SPACE) from exc
         log("prebuilt install path failed; falling back to source build")
         log(f"prebuilt fallback reason: {exc}")
         report = collect_system_report(host, choice, install_dir)
@@ -6466,6 +6610,10 @@ def main() -> int:
                 install_kind = args.install_kind,
             )
         except PrebuiltFallback as exc:
+            # A full disk is not a bad build: the CPU source rebuild needs more space.
+            fatal = _environment_fatal_reason(exc)
+            if fatal:
+                _fail_no_space(f"install validation failed: {fatal}")
             print(str(exc), file = sys.stderr)
             raise SystemExit(EXIT_FALLBACK) from exc
         return EXIT_SUCCESS
@@ -6595,9 +6743,15 @@ if __name__ == "__main__":
         # Expected when the published repo (e.g. ggml-org/llama.cpp) has no
         # prebuilt manifest.  Exit quietly with EXIT_FALLBACK so the caller
         # falls back to source build without a noisy "fatal helper error".
+        fatal = _environment_fatal_reason(exc)
+        if fatal:
+            _fail_no_space(f"prebuilt install failed: {fatal}")
         log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
+        fatal = _environment_fatal_reason(exc)
+        if fatal:
+            _fail_no_space(f"prebuilt install failed: {fatal}")
         message = textwrap.shorten(str(exc), width = 400, placeholder = "...")
         log(f"fatal helper error: {message}")
         raise SystemExit(EXIT_ERROR)

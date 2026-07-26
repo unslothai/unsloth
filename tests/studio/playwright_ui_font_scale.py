@@ -16,6 +16,7 @@ import os
 import sys
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,6 +46,18 @@ def near(
 ):
     return a is not None and b is not None and abs(a - b) <= tol
 
+
+_VP = 'document.querySelector("[data-radix-select-viewport]")'
+SCROLL_TOP_JS = f"() => {_VP}.scrollTop"
+SCROLLABLE_JS = f"() => {{ const vp = {_VP}; return !!vp && vp.scrollHeight > vp.clientHeight; }}"
+VIEWPORT_STATE_JS = f"""
+() => {{
+  const vp = {_VP};
+  return vp
+    ? {{ scrollHeight: vp.scrollHeight, clientHeight: vp.clientHeight, top: vp.scrollTop }}
+    : null;
+}}
+"""
 
 MEASURE_JS = """
 () => {
@@ -83,15 +96,22 @@ def set_input(page, label, value):
 
 
 def open_appearance(page):
-    page.keyboard.press("Control+,")
-    page.wait_for_timeout(700)
-    if page.get_by_role("dialog").count() == 0:
-        page.keyboard.press("Meta+,")
-        page.wait_for_timeout(700)
-    if page.get_by_role("dialog").count() == 0:
-        fail("settings dialog did not open")
-    page.get_by_role("dialog").get_by_role("button").filter(has_text = "Appearance").first.click()
-    page.wait_for_timeout(600)
+    # The shortcut can fire before the app has wired its key handler, so press
+    # each chord once behind a fixed sleep and a slow boot loses the dialog.
+    # Alternate them on a bounded retry, waiting on the dialog itself.
+    dialog = page.get_by_role("dialog")
+    for attempt in range(10):
+        page.keyboard.press("Meta+," if attempt % 2 else "Control+,")
+        try:
+            dialog.first.wait_for(state = "visible", timeout = 2_000)
+            break
+        except PWTimeout:
+            continue
+    if dialog.count() == 0:
+        fail("settings dialog did not open after 10 attempts")
+    dialog.get_by_role("button").filter(has_text = "Appearance").first.click()
+    # Wait for the control the caller is about to drive, not a fixed interval.
+    page.locator("input[aria-label='UI font size']").wait_for(state = "visible", timeout = 15_000)
 
 
 def main():
@@ -155,39 +175,46 @@ def main():
         page.wait_for_timeout(400)
 
         step("overflowing select scrolls its Radix viewport")
-        page.get_by_role("dialog").get_by_role("button").filter(has_text = "Voice").first.click()
-        page.wait_for_timeout(600)
+        voice = page.get_by_role("dialog").get_by_role("button").filter(has_text = "Voice").first
+        voice.click()
         page.set_viewport_size({"width": 1440, "height": 480})
-        page.locator("[aria-label='Dictation language']").click()
-        page.wait_for_timeout(700)
-        state = page.evaluate(
-            """
-            () => {
-              const vp = document.querySelector("[data-radix-select-viewport]");
-              return vp
-                ? { scrollable: vp.scrollHeight > vp.clientHeight, top: vp.scrollTop }
-                : null;
-            }
-            """
-        )
-        if not state or not state["scrollable"]:
-            fail(f"select viewport not scrollable: {state}")
-        for _ in range(6):
+        trigger = page.locator("[aria-label='Dictation language']")
+        trigger.wait_for(state = "visible")
+        trigger.click()
+
+        viewport = page.locator("[data-radix-select-viewport]")
+        viewport.wait_for(state = "visible")
+        # Wait for the overflow itself rather than a fixed sleep: the list is
+        # populated asynchronously, so measuring too early reads it as short.
+        try:
+            page.wait_for_function(SCROLLABLE_JS, timeout = 10_000)
+        except PWTimeout:
+            fail(f"select viewport not scrollable: {page.evaluate(VIEWPORT_STATE_JS)}")
+
+        # Radix moves focus into the listbox after the content opens, so a fixed
+        # burst of presses can land on the trigger and scroll nothing. Press until
+        # it moves instead; a real regression still fails, just after more tries.
+        kb_top = 0
+        for _ in range(40):
             page.keyboard.press("ArrowDown")
-            page.wait_for_timeout(100)
-        kb_top = page.evaluate(
-            "() => document.querySelector('[data-radix-select-viewport]').scrollTop"
-        )
+            kb_top = page.evaluate(SCROLL_TOP_JS)
+            if kb_top > 0:
+                break
+            page.wait_for_timeout(50)
         if not kb_top > 0:
-            fail(f"keyboard did not scroll the select viewport: {kb_top}")
-        vp_box = page.locator("[data-radix-select-viewport]").bounding_box()
+            fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
+
+        vp_box = viewport.bounding_box()
         page.mouse.move(vp_box["x"] + vp_box["width"] / 2, vp_box["y"] + 40)
         page.mouse.wheel(0, -400)
-        page.wait_for_timeout(300)
-        wheel_top = page.evaluate(
-            "() => document.querySelector('[data-radix-select-viewport]').scrollTop"
-        )
-        if not wheel_top < kb_top:
+        try:
+            page.wait_for_function(
+                "top => document.querySelector('[data-radix-select-viewport]').scrollTop < top",
+                arg = kb_top,
+                timeout = 10_000,
+            )
+        except PWTimeout:
+            wheel_top = page.evaluate(SCROLL_TOP_JS)
             fail(f"wheel did not scroll the select viewport: {kb_top} -> {wheel_top}")
         page.keyboard.press("Escape")
         page.set_viewport_size({"width": 1440, "height": 900})
