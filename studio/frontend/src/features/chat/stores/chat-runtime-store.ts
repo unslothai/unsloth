@@ -210,6 +210,12 @@ export type ReasoningStyle =
 /** One live DiffusionGemma denoising snapshot: the current canvas text at a
  *  given step of a given block (block/step are 0-based; total = steps in block). */
 export type DiffusionCanvasFrame = {
+  /**
+   * Conversation that produced this frame, or null when the run started before
+   * its thread id was known. Chats run in parallel, so an untagged global frame
+   * would render one chat's denoising preview inside every other chat's bubble.
+   */
+  threadId: string | null;
   block: number;
   step: number;
   total: number;
@@ -727,6 +733,16 @@ type ChatRuntimeStore = {
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
+  /**
+   * The subset of `runningByThreadId` decoding on the local llama-server.
+   *
+   * An external-provider chat streams from that provider instead, so swapping
+   * the local model neither interrupts it nor needs its consent -- the backend
+   * drops those requests from its own in-flight tracking for the same reason
+   * (`untrack_current_request` before proxying), which is why they never appear
+   * in `active_generations` or trigger the 409.
+   */
+  localRunByThreadId: Record<string, boolean>;
   cancelByThreadId: Record<string, () => void>;
   /**
    * Backend cancel for a thread generating in the background.
@@ -980,7 +996,15 @@ type ChatRuntimeStore = {
   setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
-  setThreadRunning: (threadId: string, running: boolean) => void;
+  /**
+   * `local` defaults to true: an unqualified caller is a llama-server run, so
+   * the model-swap gate keeps counting it.
+   */
+  setThreadRunning: (
+    threadId: string,
+    running: boolean,
+    options?: { local?: boolean },
+  ) => void;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
   clearThreadCancel: (threadId: string) => void;
   registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
@@ -1046,6 +1070,11 @@ type ChatRuntimeStore = {
   clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
+  /**
+   * Drop the live canvas only when it belongs to `threadId`. A run ending in a
+   * background chat must not wipe the frame another chat is still painting.
+   */
+  clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
@@ -1280,6 +1309,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   models: [],
   loras: [],
   runningByThreadId: {},
+  localRunByThreadId: {},
   cancelByThreadId: {},
   serverCancelByThreadId: {},
   autoTitle: false,
@@ -1487,15 +1517,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
-  setThreadRunning: (threadId, running) =>
+  setThreadRunning: (threadId, running, options) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
+      const nextLocal = { ...state.localRunByThreadId };
       if (running) {
         next[threadId] = true;
+        if (options?.local === false) {
+          delete nextLocal[threadId];
+        } else {
+          nextLocal[threadId] = true;
+        }
       } else {
         delete next[threadId];
+        delete nextLocal[threadId];
       }
-      return { runningByThreadId: next };
+      return { runningByThreadId: next, localRunByThreadId: nextLocal };
     }),
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {
@@ -1916,6 +1953,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
+  clearActiveDiffusionCanvasForThread: (threadId) =>
+    set((state) => {
+      const current = state.activeDiffusionCanvas;
+      if (!current) return state;
+      // An untagged frame has no owner to defend, so any run may clear it.
+      if (current.threadId !== null && current.threadId !== threadId) {
+        return state;
+      }
+      return { activeDiffusionCanvas: null };
+    }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {

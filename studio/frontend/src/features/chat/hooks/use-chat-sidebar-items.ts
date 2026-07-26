@@ -26,6 +26,12 @@ import {
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
+  /**
+   * Compare rows only: the pane threads behind this pair id. `runningByThreadId`
+   * is keyed per pane thread, never by the pair id, so row-level activity has to
+   * aggregate these instead of looking the row's own id up.
+   */
+  threadIds?: string[];
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -57,11 +63,13 @@ export function groupThreads(
       const existing = pairItems.get(t.pairId);
       if (existing) {
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
+        existing.threadIds?.push(t.id);
         continue;
       }
       const item: SidebarItem = {
         type: "compare",
         id: t.pairId,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),

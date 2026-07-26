@@ -247,6 +247,282 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
         tracker.__exit__(None, None, None)
 
 
+def _stub_load_route(monkeypatch, *, active_model_name):
+    """Point POST /load at an in-memory safetensors backend.
+
+    active_model_name == the requested path makes the request idempotent, so
+    _load_model_impl takes its already_loaded fast return.
+    """
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+
+    monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    monkeypatch.setattr(inf_mod, "validate_extra_args", lambda args: [])
+    monkeypatch.setattr(
+        inf_mod,
+        "resolve_effective_chat_template_override",
+        lambda model_identifier = None, user_override = None: None,
+    )
+    monkeypatch.setattr(inf_mod, "load_inference_config", lambda name: {})
+    monkeypatch.setattr(
+        inf_mod,
+        "_detect_safetensors_features",
+        lambda backend, template, tools = None: {
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_effort_levels": [],
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+            "supports_tools": False,
+        },
+    )
+    monkeypatch.setattr(inf_mod, "_resolve_loaded_trust_remote_code", lambda *a, **k: False)
+    monkeypatch.setattr(
+        inf_mod,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = active_model_name, models = {}),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = False, hf_variant = None, model_identifier = None),
+    )
+    return inf_mod
+
+
+def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
+    # Re-Applying the model that is already loaded returns already_loaded without
+    # touching llama-server, so it must not 409 (nor, on the retry the 409 tells
+    # the caller to send, stop every chat for a no-op).
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/A")
+
+    for force in (False, True):
+        ev = threading.Event()
+        with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+            response = asyncio.run(
+                inf_mod.load_model(
+                    LoadRequest(model_path = "org/A", force_cancel_active = force),
+                    object(),
+                    "tester",
+                )
+            )
+        assert response.status == "already_loaded"
+        assert not ev.is_set()
+
+
+def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
+    # The gate itself is intact: a load that would actually replace the running
+    # model still 409s, and still names the chats it would stop.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(inf_mod.load_model(LoadRequest(model_path = "org/A"), object(), "tester"))
+    assert exc.value.status_code == 409
+    assert exc.value.detail["thread_ids"] == ["t1"]
+    assert not ev.is_set()
+
+
+def _stub_unload_backends(monkeypatch, *, llama, backend):
+    """Point the /unload route at in-memory backends."""
+    import routes.inference as inf_mod
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inf_mod, "is_registered_native_path_label", lambda *a: False)
+    monkeypatch.setattr(kw, "note_model_unloaded", lambda: None)
+    return inf_mod, kw
+
+
+def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch):
+    # /load repeats the check under the gate; /unload has to as well, or a chat
+    # that starts while this request queues on the gate is torn down mid-stream.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from models.inference import UnloadRequest
+
+    torn_down: list[str] = []
+    inf_mod, kw = _stub_unload_backends(
+        monkeypatch,
+        llama = SimpleNamespace(
+            is_active = True,
+            is_loaded = True,
+            model_identifier = "org/A-GGUF",
+            unload_model = lambda: torn_down.append("gguf"),
+        ),
+        backend = SimpleNamespace(
+            get_loading_model = lambda: None,
+            unload_model = lambda path: torn_down.append("unsloth"),
+        ),
+    )
+
+    ev = threading.Event()
+    started = active_generations.ActiveGeneration(ev, thread_id = "t1")
+
+    async def drive():
+        # A load holds the lifecycle gate, so the unload queues behind it.
+        kw._lifecycle_lock.acquire()
+        task = asyncio.create_task(
+            inf_mod.unload_model(UnloadRequest(model_path = "org/A-GGUF"), "tester")
+        )
+        entered = False
+        try:
+            await asyncio.sleep(0.1)  # the route is polling the gate
+            started.__enter__()  # a chat starts in the meantime
+            entered = True
+        finally:
+            kw._lifecycle_lock.release()
+        try:
+            return await asyncio.wait_for(task, timeout = 5)
+        finally:
+            if entered:
+                started.__exit__(None, None, None)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(drive())
+
+    # 409, not the catch-all 500 the route wraps unexpected failures in.
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"] == "active_generations"
+    assert torn_down == []
+    assert not ev.is_set()
+
+
+def _install_responses_stream_mock(monkeypatch, chunks):
+    """Point the direct /v1/responses GGUF pass-through at an in-process
+    llama-server. Mirrors the harness in test_responses_tool_passthrough.py."""
+    import json
+    from types import SimpleNamespace
+
+    import httpx
+
+    import routes.inference as inf_mod
+
+    def handler(request):
+        content = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+        content += "data: [DONE]\n\n"
+        return httpx.Response(
+            200,
+            content = content.encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            context_length = 4096,
+            base_url = "http://llama.test",
+            supports_reasoning = True,
+            reasoning_always_on = False,
+            _request_reasoning_kwargs = (
+                lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+            ),
+        ),
+    )
+    return inf_mod
+
+
+class _NeverDisconnectedRequest:
+    async def is_disconnected(self):
+        return False
+
+
+def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # /v1/responses streams straight to llama-server (no chat pass-through), so
+    # without its own registration a non-forced /unload saw zero generations and
+    # tore the server down mid-response.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": "33"}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+    seen = {}
+
+    async def run():
+        response = await inf_mod._responses_stream(payload, messages, _NeverDisconnectedRequest())
+        iterator = response.body_iterator
+        await iterator.__anext__()
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        async for _ in iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    # And it unregisters, or one Codex call would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
+    # The registered event has to be the one the stream actually watches, or
+    # force_cancel_active would unload the server while it keeps decoding.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {"choices": [{"delta": {"content": "3"}}]},
+            {"choices": [{"delta": {"content": "3"}}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await inf_mod._responses_stream(payload, messages, _NeverDisconnectedRequest())
+        iterator = response.body_iterator
+        chunks = [await iterator.__anext__()]
+        assert active_generations.cancel_all() == 1
+        async for chunk in iterator:
+            chunks.append(chunk)
+        return "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+
+    body = asyncio.run(run())
+
+    # Cancelled mid-stream: the run ends without a completed envelope.
+    assert "response.completed" not in body
+    assert active_generations.count() == 0
+
+
 def test_load_and_unload_requests_default_to_not_cancelling():
     pytest.importorskip("pydantic", reason = "pydantic not installed")
     from models.inference import LoadRequest, UnloadRequest
@@ -296,3 +572,67 @@ def test_cli_and_backend_parallel_defaults_agree():
     cli = _parallel_constants(cli_path)
 
     assert cli["_PARALLEL_DEFAULT_PLAIN"] == backend["_PARALLEL_DEFAULT_PLAIN"]
+
+
+def _run_server_parallel_default(path: str, consts: dict):
+    """Resolve run_server()'s llama_parallel_slots default from run.py's source."""
+    import ast
+
+    with open(path, encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "run_server":
+            continue
+        args = node.args.args
+        defaults = node.args.defaults
+        # defaults align with the tail of the positional arg list.
+        for arg, default in zip(args[len(args) - len(defaults) :], defaults):
+            if arg.arg != "llama_parallel_slots":
+                continue
+            if isinstance(default, ast.Constant):
+                return default.value
+            if isinstance(default, ast.Name):
+                return consts.get(default.id)
+            return None
+    return None
+
+
+def test_run_server_default_matches_the_cli_parallel_default():
+    # colab.py calls run_server() without llama_parallel_slots, so the
+    # signature default is what Colab actually runs with. At 1 the admission
+    # queue serialises every chat there despite the parallel-chat UI.
+    run_path = os.path.join(_backend, "run.py")
+    consts = _parallel_constants(run_path)
+
+    default = _run_server_parallel_default(run_path, consts)
+
+    assert default is not None, "run_server() must keep a llama_parallel_slots default"
+    assert default == consts["_PARALLEL_DEFAULT_PLAIN"]
+    assert default > 1
+
+
+def test_colab_launcher_inherits_the_parallel_default():
+    # Guard the inheritance itself: an explicit 1 here would resurrect the bug.
+    import ast
+
+    colab_path = os.path.join(_backend, "colab.py")
+    with open(colab_path, encoding = "utf-8") as f:
+        tree = ast.parse(f.read())
+    consts = _parallel_constants(os.path.join(_backend, "run.py"))
+
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "run_server"
+    ]
+    assert calls, "colab.py must still launch the backend through run_server()"
+    for call in calls:
+        for kw in call.keywords:
+            if kw.arg != "llama_parallel_slots":
+                continue
+            value = kw.value.value if isinstance(kw.value, ast.Constant) else None
+            assert (
+                value is None or value > 1
+            ), "colab.py pins llama_parallel_slots to 1; Colab chats would serialise"
+    # Whether pinned or inherited, Colab must end up with more than one slot.
+    assert consts["_PARALLEL_DEFAULT_PLAIN"] > 1

@@ -3615,7 +3615,20 @@ const DiffusionCanvas: FC = () => {
   // A non-null canvas is set only by diffusion_frame events (diffusion models only),
   // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
   const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
-  if (!isRunning || !canvas) {
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
+  const threadListItemRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+  // Chats run in parallel, so only this conversation's own frames may render
+  // here. An untagged frame (run started before its thread id was known) still
+  // renders, so a first turn keeps its live preview.
+  const ownsCanvas =
+    canvas?.threadId == null ||
+    canvas.threadId === threadListItemId ||
+    canvas.threadId === threadListItemRemoteId;
+  if (!isRunning || !canvas || !ownsCanvas) {
     return null;
   }
   const stepLabel =

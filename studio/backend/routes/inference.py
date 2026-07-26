@@ -4372,17 +4372,26 @@ async def load_model(
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
     _raise_if_sidecar_swap_in_progress()
-    _raise_or_cancel_active_generations(force = request.force_cancel_active, action = "Loading a model")
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
     async with inference_lifecycle_gate():
         _raise_if_sidecar_swap_in_progress()
-        # Rechecked under the gate: a chat can start while this request queues.
-        _raise_or_cancel_active_generations(
-            force = request.force_cancel_active, action = "Loading a model"
+        # The active-generation gate runs from inside _load_model_impl, once it has
+        # decided this is a real reload. An Apply on the already-loaded model
+        # (settings sheet, a Compare pane, a recipe run's model) returns
+        # already_loaded without touching llama-server, so refusing it -- or, on
+        # the retry the 409 asks for, cancelling every chat and then returning
+        # already_loaded -- would stop chats nothing was going to interrupt. Still
+        # inside the gate, so the check stays atomic with the teardown it guards.
+        return await _load_model_impl(
+            request,
+            fastapi_request,
+            current_subject,
+            on_reload_confirmed = lambda: _raise_or_cancel_active_generations(
+                force = request.force_cancel_active, action = "Loading a model"
+            ),
         )
-        return await _load_model_impl(request, fastapi_request, current_subject)
 
 
 async def _load_model_impl(
@@ -4391,6 +4400,7 @@ async def _load_model_impl(
     current_subject: str,
     *,
     current_request_counted: bool = False,
+    on_reload_confirmed = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
@@ -4584,6 +4594,13 @@ async def _load_model_impl(
                     context_length = _positive_int_or_none(_model_info.get("context_length")),
                     chat_template = _chat_template,
                 )
+
+        # Past every already_loaded fast return: this request really will replace
+        # the running model, so now let the caller gate it on the chats that would
+        # stop (the /load route refuses with 409, or cancels them when the user
+        # opted in). Auto-switch passes no hook and keeps its current behaviour.
+        if on_reload_confirmed is not None:
+            on_reload_confirmed()
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
@@ -5709,6 +5726,13 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         # swap in a fresh subprocess mid-unload and the unload command would land on the
         # new worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
+            # Rechecked under the gate, like /load: the middleware takes and
+            # releases this same gate before a request starts inference, so a chat
+            # can register while this request queues here. Checking only before the
+            # wait would tear llama-server down mid-stream.
+            _raise_or_cancel_active_generations(
+                force = request.force_cancel_active, action = "Unloading the model"
+            )
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
@@ -5734,6 +5758,11 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
+    except HTTPException:
+        # The active-generation gate's 409 (and any other typed refusal raised
+        # inside the block) must reach the client as itself: HTTPException is a
+        # plain Exception, so the catch-all below would rewrite it as a 500.
+        raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to unload model")
@@ -11843,6 +11872,14 @@ async def _responses_stream(
     )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
+    # Same per-run event the stream already watches for a client disconnect, now
+    # shared with the cancel/active-generation registries: this direct GGUF path
+    # decodes on llama-server like the chat and Anthropic pass-throughs, so a
+    # non-forced /unload must see it and refuse instead of tearing the server
+    # down mid-response. Entered inside the body generator (below) so a response
+    # whose body never starts can't leave an entry behind and 409 every reload.
+    cancel_event = threading.Event()
+    _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
     try:
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
@@ -12296,7 +12333,9 @@ async def _responses_stream(
         resp = None
         lines_iter = None
         disconnect_watcher = None
-        disconnect_event = threading.Event()
+        # The tracked per-run event: a client disconnect and a forced reload
+        # (active_generations.cancel_all) both land on the same flag.
+        disconnect_event = cancel_event
         try:
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -12699,6 +12738,11 @@ async def _responses_stream(
         yield _sse("response.completed", completed_response)
 
     async def admitted_event_generator():
+        # Register for the body's whole lifetime, admission wait included: the
+        # run holds a decode slot from here on, so /load and /unload must count
+        # it. __exit__ runs from the finally below on every exit (exhausted,
+        # aclose, or the athrow _SameTaskStreamingResponse sends on disconnect).
+        _tracker.__enter__()
         lease = reservation.lease_nowait()
         admission_wait_started_at = None
         stream_started = False
@@ -12789,6 +12833,7 @@ async def _responses_stream(
             if not stream_started:
                 api_monitor.finish(monitor_id, "cancelled")
                 reservation.cancel()
+            _tracker.__exit__(None, None, None)
 
     async def _responses_admission_unstarted_cleanup() -> None:
         api_monitor.finish(monitor_id, "cancelled")

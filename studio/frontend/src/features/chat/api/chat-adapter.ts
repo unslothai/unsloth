@@ -2503,12 +2503,37 @@ export function createOpenAIStreamAdapter(
       }
       const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
+      const threadKey = resolvedThreadId || "__default";
+
+      // Per-run cancellation token so a delayed stop POST can't match
+      // the next run on the same thread.
+      const cancelId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only
+      // holds the visible thread's cancelRun(), so this controller is the only
+      // way to end a backgrounded chat's request: the cancel POST below reaches
+      // llama-server runs only, never an external provider's stream (the
+      // backend proxies those without registering a cancel) and never the audio
+      // route (it answers before the cancel registry is entered).
+      const runAbort = new AbortController();
+      const runSignal = runAbort.signal;
+      const forwardAbort = () => runAbort.abort(abortSignal.reason);
+      if (abortSignal.aborted) {
+        forwardAbort();
+      } else {
+        abortSignal.addEventListener("abort", forwardAbort, { once: true });
+      }
+
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = resolvedThreadId || "__default";
+        const audioCancel = () => runAbort.abort();
+        runtime.registerThreadServerCancel(threadKey, audioCancel);
         runtime.setThreadRunning(threadKey, true);
         try {
           yield {
@@ -2529,7 +2554,7 @@ export function createOpenAIStreamAdapter(
               presence_penalty: params.presencePenalty,
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
-            abortSignal,
+            runSignal,
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
@@ -2542,19 +2567,20 @@ export function createOpenAIStreamAdapter(
             ],
           };
         } catch (err) {
-          if (!abortSignal.aborted) {
+          if (!runSignal.aborted) {
             toast.error("Audio generation failed", {
               description: err instanceof Error ? err.message : "Unknown error",
             });
           }
           throw err;
         } finally {
+          abortSignal.removeEventListener("abort", forwardAbort);
           runtime.setThreadRunning(threadKey, false);
+          runtime.clearThreadServerCancel(threadKey, audioCancel);
         }
         return;
       }
 
-      const threadKey = resolvedThreadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
@@ -2585,10 +2611,14 @@ export function createOpenAIStreamAdapter(
       const warmupDelayMs = 450;
       const warmupTimer = setTimeout(() => {
         if (!waitingFirstChunk) return;
-        if (abortSignal.aborted) return;
+        if (runSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      runtime.setThreadRunning(threadKey, true);
+      // Flagged local/external so the model-swap gate only counts the chats a
+      // reload actually ends: an external-provider run never touches
+      // llama-server, which is why the backend leaves it out of
+      // active_generations too.
+      runtime.setThreadRunning(threadKey, true, { local: !isExternalRequest });
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
       let reasoningDuration = 0;
@@ -2754,21 +2784,15 @@ export function createOpenAIStreamAdapter(
         timings?: ServerTimings;
       } | null = null;
 
-      // Per-run cancellation token so a delayed stop POST can't match
-      // the next run on the same thread.
-      const cancelId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
         // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
         // unmounts (navigation / background thread switch) and detach=false for an
         // explicit Stop. Only a real Stop cancels the backend run; a detach must
-        // leave a backgrounded generation streaming.
-        if ((abortSignal.reason as { detach?: boolean } | undefined)?.detach) {
+        // leave a backgrounded generation streaming. runSignal forwards that
+        // reason, so a detach still reads as one here.
+        if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
         const body: Record<string, string> = { cancel_id: cancelId };
@@ -2793,27 +2817,17 @@ export function createOpenAIStreamAdapter(
       // Stop handle that works when this conversation is not the visible one.
       // cancelByThreadId only holds the main thread's cancelRun(), yet a
       // background chat still has to be stoppable (deleting it, a forced
-      // reload). Posting this run's own cancel_id closes just its stream.
-      const serverCancel = () => {
-        const body: Record<string, string> = { cancel_id: cancelId };
-        if (sandboxSessionId) body.session_id = sandboxSessionId;
-        const token = getAuthToken();
-        void fetch(apiUrl("/api/inference/cancel"), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify(body),
-          keepalive: true,
-        }).catch(() => {});
-      };
+      // reload). Aborting this run's own controller closes just its request,
+      // and the abort listener above posts this run's cancel_id so a local
+      // llama-server stops decoding too. The abort is what ends an external
+      // provider stream: its cancel_id is never registered backend-side.
+      const serverCancel = () => runAbort.abort();
       runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
-        if (abortSignal.aborted) {
+        if (runSignal.aborted) {
           onAbortCancel();
         } else {
-          abortSignal.addEventListener("abort", onAbortCancel, { once: true });
+          runSignal.addEventListener("abort", onAbortCancel, { once: true });
         }
 
         const {
@@ -3282,7 +3296,7 @@ export function createOpenAIStreamAdapter(
             }
             clearSelectedImageEditReference();
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            const stream = streamChatCompletions(requestPayload, abortSignal);
+            const stream = streamChatCompletions(requestPayload, runSignal);
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -3325,6 +3339,9 @@ export function createOpenAIStreamAdapter(
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
                 runtime.setActiveDiffusionCanvas({
+                  // Tagged so a background run's frames can't render inside the
+                  // chat the user is actually looking at.
+                  threadId: resolvedThreadKey,
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
                   total: diffusionFrame.total ?? 0,
@@ -4057,12 +4074,21 @@ export function createOpenAIStreamAdapter(
 
         // Gate on the captured checkpoint still being active so a late
         // completion from provider A doesn't populate the bar after a
-        // mid-stream switch to provider B.
+        // mid-stream switch to provider B. Gate on the thread too: the bar shows
+        // the visible conversation, and chats now keep running in the
+        // background, so a run finishing after New Chat / a thread switch would
+        // otherwise repaint another chat's (or an empty chat's) usage.
+        // resolvedThreadKey is null only when the run started before its id was
+        // known, which is left alone rather than dropped.
+        const usageThreadIsVisible =
+          resolvedThreadKey === null ||
+          useChatRuntimeStore.getState().activeThreadId === resolvedThreadKey;
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
           typeof meta.usage.total_tokens === "number" &&
+          usageThreadIsVisible &&
           useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
         ) {
           useChatRuntimeStore.getState().setContextUsage({
@@ -4124,7 +4150,7 @@ export function createOpenAIStreamAdapter(
         settleFirstTokenErr(
           err instanceof Error ? err : new Error("Generation failed"),
         );
-        if (!abortSignal.aborted) {
+        if (!runSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
@@ -4162,7 +4188,8 @@ export function createOpenAIStreamAdapter(
         }
         throw err;
       } finally {
-        abortSignal.removeEventListener("abort", onAbortCancel);
+        runSignal.removeEventListener("abort", onAbortCancel);
+        abortSignal.removeEventListener("abort", forwardAbort);
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
@@ -4185,13 +4212,15 @@ export function createOpenAIStreamAdapter(
         }
         runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only
-        // the committed markdown answer (cancellation/error included).
-        runtime.setActiveDiffusionCanvas(null);
+        // the committed markdown answer (cancellation/error included). Scoped:
+        // clearing globally used to wipe the live frame of another chat that was
+        // still denoising.
+        runtime.clearActiveDiffusionCanvasForThread(resolvedThreadKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {
             settleFirstTokenOk();
-          } else if (abortSignal.aborted) {
+          } else if (runSignal.aborted) {
             settleFirstTokenErr(new Error("Cancelled"));
           } else {
             settleFirstTokenErr(new Error("No tokens received"));

@@ -900,8 +900,13 @@ export function AppSidebar() {
   ) {
     const isPinned = pinnedIdSet.has(item.id);
     // A row can be generating while you look at another one, so mirror the
-    // Train / Export nav spinners instead of running silently.
-    const isGenerating = Boolean(runningThreadIds[item.id]);
+    // Train / Export nav spinners instead of running silently. A compare row's
+    // id is the pair id, while runningByThreadId is keyed per pane thread, so
+    // aggregate the pair's member threads rather than looking the row id up.
+    const isGenerating =
+      item.type === "compare"
+        ? (item.threadIds ?? []).some((id) => Boolean(runningThreadIds[id]))
+        : Boolean(runningThreadIds[item.id]);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"

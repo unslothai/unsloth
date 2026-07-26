@@ -1357,13 +1357,23 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. The Chat tab streams
+# several conversations at once and the admission queue caps decodes at the slot
+# count, so a direct launch matches the CLI. VRAM fit may still cut it back.
+# Defined above run_server() so it can be the programmatic default too: embedders
+# that omit the argument (colab.py) would otherwise serialise every chat.
+_PARALLEL_MIN = 1
+_PARALLEL_MAX = 64
+_PARALLEL_DEFAULT_PLAIN = 4
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = _DEFAULT_FRONTEND_PATH,
     silent: bool = False,
     api_only: bool = False,
-    llama_parallel_slots: int = 1,
+    llama_parallel_slots: int = _PARALLEL_DEFAULT_PLAIN,
     cloudflare: "Optional[bool]" = None,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
@@ -1379,7 +1389,8 @@ def run_server(
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
-        llama_parallel_slots: parallel slots for llama-server
+        llama_parallel_slots: parallel slots for llama-server (default
+            _PARALLEL_DEFAULT_PLAIN, matching the CLI entry points)
         cloudflare: opt in to the public Cloudflare HTTPS tunnel for a wildcard
             bind. Tri-state: None (unset) and False both mean off; True enables it.
             --secure implies it (True) and rejects an explicit False.
@@ -1795,14 +1806,6 @@ def run_server(
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
 
     return app
-
-
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. The Chat tab streams
-# several conversations at once and the admission queue caps decodes at the slot
-# count, so a direct launch matches the CLI. VRAM fit may still cut it back.
-_PARALLEL_MIN = 1
-_PARALLEL_MAX = 64
-_PARALLEL_DEFAULT_PLAIN = 4
 
 
 def _build_arg_parser():

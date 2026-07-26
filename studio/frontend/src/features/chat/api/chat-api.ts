@@ -129,6 +129,27 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+export interface ActiveGenerationsResponse {
+  count: number;
+  /** Conversations with a generation in flight. Shorter than `count` when a
+   *  first turn started before its thread id was persisted. */
+  thread_ids: string[];
+  parallel_slots: number;
+}
+
+/**
+ * Chats generating on the backend right now.
+ *
+ * Authoritative where `runningByThreadId` is not: that map is per-tab in-memory
+ * state, so it is empty after a reload and blind to a second tab. /load and
+ * /unload 409 on these unless the caller confirms, so the model-swap gate has to
+ * consult the backend rather than only the local map.
+ */
+export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
+  const response = await authFetch("/api/inference/active-generations");
+  return parseJsonOrThrow<ActiveGenerationsResponse>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
