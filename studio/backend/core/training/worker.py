@@ -3003,6 +3003,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "ts": time.time(),
                 }
             )
+            # Hub's uploader owns a tqdm bar, which the generic monitor below
+            # temporarily surfaces as the training status.  Once the upload is
+            # terminal, restore the normal status immediately rather than
+            # leaving a 100% filename in the header until another checkpoint
+            # happens to produce a new bar.
+            if _last_checkpoint_upload.get("state") in {"completed", "skipped", "error"}:
+                _send_status(event_queue, "Training...")
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
         if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
@@ -3185,7 +3192,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     try:
                         n, total = bar.n or 0, bar.total or 0
                         desc = getattr(bar, "desc", "") or ""
-                        if total > 0 and n > 0 and desc:
+                        # Completed tqdm instances can remain in tqdm's weak set
+                        # after an uploader closes them.  Re-emitting those bars
+                        # would overwrite the restored training status forever.
+                        if total > 0 and 0 < n < total and desc:
                             pct = min(int(n * 100 / total), 100)
                             _send_status(event_queue, f"{desc.strip()} {pct}% ({n:,}/{total:,})")
                     except (AttributeError, ReferenceError):

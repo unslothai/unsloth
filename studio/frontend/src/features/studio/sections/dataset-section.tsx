@@ -359,22 +359,19 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "huggingface";
     if (!id) {
-      setIsAddingDataset(false);
       setSearchQuery("");
       return;
     }
-    if (isAddingDataset || trainingDatasets.length > 0) {
+    if (trainingDatasets.length > 0) {
       if (
         trainingDatasets.some(
           (entry) => entry.source === "huggingface" && entry.path === id,
         )
       ) {
         toast.info("Dataset already added");
-        setIsAddingDataset(false);
         return;
       }
       addTrainingDataset({ source: "huggingface", path: id });
-      setIsAddingDataset(false);
       setSearchQuery("");
       return;
     }
@@ -384,18 +381,16 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
   function handleLocalDatasetSelect(path: string) {
     selectingRef.current = true;
     pendingSourceTabRef.current = "local";
-    if (isAddingDataset || trainingDatasets.length > 0) {
+    if (trainingDatasets.length > 0) {
       if (
         trainingDatasets.some(
           (entry) => entry.source === "upload" && entry.path === path,
         )
       ) {
         toast.info("Dataset already added");
-        setIsAddingDataset(false);
         return;
       }
       addTrainingDataset({ source: "upload", path });
-      setIsAddingDataset(false);
       setSearchQuery("");
       return;
     }
@@ -404,8 +399,7 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
 
   function clearSelectionForTab(tab: "huggingface" | "local") {
     pendingSourceTabRef.current = tab;
-    if (trainingDatasets.length > 0 || isAddingDataset) {
-      setIsAddingDataset(false);
+    if (trainingDatasets.length > 0) {
       setSearchQuery("");
       return;
     }
@@ -567,7 +561,6 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
   );
 
   const [isUploading, setIsUploading] = useState(false);
-  const [isAddingDataset, setIsAddingDataset] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
   const [uploadLimitBytes, setUploadLimitBytes] = useState(
     getCachedUploadLimitBytes,
@@ -838,9 +831,7 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
           {datasetSource !== "s3" && (
             <div className="flex min-w-0 flex-col gap-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                {isAddingDataset
-                  ? "Choose another dataset"
-                  : t("studio.dataset.chooseDataset")}
+                {t("studio.dataset.chooseDataset")}
                 <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-ui-10 font-medium text-foreground/80">
                   {datasetSource === "upload"
                     ? t("studio.dataset.localTab")
@@ -1444,22 +1435,9 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
             <div className="flex flex-col gap-3">
               {trainingDatasets.length > 0 ? (
                 <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Training datasets ({trainingDatasets.length})
-                    </p>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 cursor-pointer text-xs"
-                      onClick={() => {
-                        setIsAddingDataset((value) => !value);
-                        setSearchQuery("");
-                      }}
-                    >
-                      {isAddingDataset ? "Cancel" : "Add dataset"}
-                    </Button>
-                  </div>
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Training datasets ({trainingDatasets.length})
+                  </p>
                   {trainingDatasets.map((entry, index) => (
                     <Collapsible
                       key={`${entry.source}:${entry.path}:${index}`}
@@ -1531,12 +1509,6 @@ export function DatasetSection({ disabled = false }: { disabled?: boolean }) {
                       )}
                     </Collapsible>
                   ))}
-                  {isAddingDataset && (
-                    <p className="rounded-md border border-dashed border-indigo-500/50 bg-indigo-500/5 px-3 py-2 text-xs text-muted-foreground">
-                      Select a Hugging Face or local dataset above to add it to
-                      this list.
-                    </p>
-                  )}
                 </div>
               ) : (
                 <button
