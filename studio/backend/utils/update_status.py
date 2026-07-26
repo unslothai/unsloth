@@ -108,12 +108,24 @@ def get_studio_install_source_status(current_version: str) -> dict[str, Any]:
     )
 
 
+def _is_version(value: str) -> bool:
+    try:
+        Version(value)
+    except InvalidVersion:
+        return False
+    return True
+
+
 def get_studio_update_status(current_version: str) -> dict[str, Any]:
     """Return public, read-only update status for the web UI."""
+    install_source = detect_install_source()
+    disabled = os.environ.get(DISABLE_ENV_VAR) == "1"
+
     # Dev-only: the popup is PyPI-install-only, so a source checkout never
     # sees it. Set UNSLOTH_STUDIO_FAKE_UPDATE=<version> to review it locally.
+    # The documented opt-out still wins, and the value has to be a version.
     forced_version = os.environ.get(FAKE_UPDATE_ENV_VAR, "").strip()
-    if forced_version:
+    if forced_version and not disabled and _is_version(forced_version):
         return _status_response(
             current_version = current_version,
             latest_version = forced_version,
@@ -122,9 +134,7 @@ def get_studio_update_status(current_version: str) -> dict[str, Any]:
             can_show_web_notification = True,
         )
 
-    install_source = detect_install_source()
-
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
+    if disabled:
         return _status_response(
             current_version = current_version,
             latest_version = None,

@@ -89,7 +89,7 @@ export function WebUpdateBanner({
           )}
           data-testid="web-update-banner"
         >
-          <div className="relative max-h-[calc(100dvh_-_2rem)] overflow-y-auto rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={dismiss}
@@ -136,6 +136,7 @@ export function WebUpdateBanner({
               version={status.latestVersion}
               open={notesOpen}
               releaseNotesUrl={RELEASE_NOTES_URL}
+              className="min-h-0 flex-1"
             />
 
             {/* one row at one type size; wraps only on narrow viewports */}

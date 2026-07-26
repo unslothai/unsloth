@@ -110,14 +110,14 @@ export function ReleaseNotesPanel({
 
   return (
     <div
-      className={cn("mt-3", className)}
+      className={cn("mt-3 flex min-h-0 flex-col", className)}
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}
       data-notes-open={open}
     >
       {/* borderless fill, lighter than the card in dark mode */}
-      <div className="rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-white/[0.06]">
+      <div className="flex min-h-0 flex-col rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-white/[0.06]">
         {markdown ? (
           open ? (
             <section
@@ -127,14 +127,16 @@ export function ReleaseNotesPanel({
               aria-label={`Release notes for version ${version}`}
               // Long notes scroll here instead of pushing the buttons off
               // screen; hover-scrollbar hides the thumb at rest.
-              className="hover-scrollbar max-h-[min(16rem,45dvh)] overflow-y-auto overscroll-contain py-3 pr-1"
+              className="hover-scrollbar max-h-64 min-h-0 flex-1 overflow-y-auto overscroll-contain py-3 pr-1"
               data-testid="update-release-notes-scroll"
             >
               <MarkdownPreview
                 markdown={markdown}
                 // Streamdown ships headings at mt-6 (first one clips against
                 // the scroller edge) and code at text-sm. Scale both to fit.
-                className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em]"
+                // It also clears max-width on every descendant, which lets a
+                // wide image and the link dialog escape the card.
+                className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em]"
               />
               {notes?.truncated ? (
                 <p className="mt-2 text-ui-10 text-muted-foreground/80">

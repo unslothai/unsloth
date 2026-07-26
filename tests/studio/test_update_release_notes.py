@@ -760,7 +760,9 @@ def test_expanded_popup_fits_a_short_viewport(banner):
     """A window under roughly 430px high used to push the card's title and
     dismiss control above the top of the screen."""
     panel = PANEL.read_text(encoding = "utf-8")
-    assert "max-h-[min(16rem,45dvh)]" in panel, "notes height must follow the viewport"
+    # The notes region shrinks inside a card capped to the viewport, so the
+    # header and the actions stay on screen at any height.
+    assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
     src = banner.read_text(encoding = "utf-8")
     assert "max-h-[calc(100dvh_-_2rem)]" in src, "card is the backstop on tiny viewports"
 
@@ -886,3 +888,112 @@ def test_in_flight_requests_are_identified_not_just_versioned():
     """Two requests for the same version could resolve out of order and leave
     the panel showing the older result."""
     assert "requestIdRef" in NOTES_HOOK.read_text(encoding = "utf-8")
+
+
+def test_notes_repair_the_shared_previews_width_reset():
+    """MarkdownPreview clears max-width on every descendant, so a wide image
+    and the renderer's own link dialog escape the card."""
+    src = PANEL.read_text(encoding = "utf-8")
+    assert "[&_img]:max-w-full" in src
+    assert "[&_[data-streamdown=link-safety-modal]>*]:max-w-md" in src
+
+
+@pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
+def test_only_the_notes_region_scrolls(banner):
+    """The dismiss control sits inside the card, so scrolling the card itself
+    carried it off screen on a short viewport."""
+    src = banner.read_text(encoding = "utf-8")
+    assert "flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden" in src
+    assert 'className="min-h-0 flex-1"' in src
+    panel = PANEL.read_text(encoding = "utf-8")
+    assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in panel
+
+
+def test_a_comment_marker_in_prose_cannot_swallow_later_releases(changelog_module):
+    """A note that mentions `<!--` used to put the parser into comment state
+    for the rest of the file: the releases below it disappeared and their
+    notes were served under the newer version's heading."""
+    text = (
+        "## 2026.8.0\n\n- Studio strips <!-- markers from pasted prompts.\n\n"
+        "## 2026.7.5\n\n- SECRET: an older release\n"
+    )
+    assert [e.version for e in changelog_module.parse_changelog(text)] == [
+        "2026.8.0",
+        "2026.7.5",
+    ]
+    assert "SECRET" not in changelog_module.find_release_notes(text, "2026.8.0").body
+    assert changelog_module.find_release_notes(text, "2026.7.5") is not None
+    # A comment that starts a line is still a block and still hides its body.
+    hidden = "## 2.0\n\n<!--\n## 9.9.9\n-->\n\n- note\n"
+    assert [e.version for e in changelog_module.parse_changelog(hidden)] == ["2.0"]
+
+
+def test_a_closing_delimiter_takes_its_whole_line(changelog_module):
+    """CommonMark keeps the closing line inside the block, so a heading glued
+    after `-->` or `</pre>` is not a release."""
+    for text in (
+        "## 1.0\n\n<!-- hidden -->## 9.9.9\n\n- note\n",
+        "## 1.0\n\n<pre>\nx\n</pre>## 9.9.9\n\n- note\n",
+    ):
+        assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+
+
+def test_an_exact_heading_is_never_shadowed(changelog_module):
+    """PEP 440 says 1.0 == 1.0.0, so the normalised match used to win even
+    when the file had a section spelled exactly as asked."""
+    text = "## 1.0.0\n\n- padded\n\n## 1.0\n\n- exact\n"
+    assert changelog_module.find_release_notes(text, "1.0").body == "- exact"
+    assert changelog_module.find_release_notes(text, "1.0.0").body == "- padded"
+    # Normalised matching still applies when there is no exact heading.
+    assert changelog_module.find_release_notes("## 2026.7.6\n\n- x\n", "2026.07.6") is not None
+
+
+def test_setext_headings_are_release_boundaries(changelog_module):
+    """A version over a line of dashes is the same heading in setext form."""
+    text = "2.0\n---\n\n- new\n\n1.0\n---\n\n- old\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+    assert changelog_module.find_release_notes(text, "2.0").body == "- new"
+    # A rule between sections is still a rule, and a setext h1 is not a release.
+    assert [
+        e.version
+        for e in changelog_module.parse_changelog("## 2.0\n\n- a\n\n---\n\n## 1.0\n\n- b\n")
+    ] == ["2.0", "1.0"]
+
+
+def test_a_long_backtick_run_does_not_stall_the_parser(changelog_module):
+    """The code-span guard used to backtrack: 20k backticks took over a minute
+    and every request re-parsed the file."""
+    import time
+
+    text = "## 1.0\n\n- " + "`" * 20_000 + " <!--\n"
+    started = time.perf_counter()
+    changelog_module.parse_changelog(text)
+    assert time.perf_counter() - started < 1.0
+
+
+def test_the_remote_fetch_has_a_total_deadline(changelog_module):
+    """The socket timeout resets on every read, so a trickling server could
+    hold a worker for minutes and still be treated as a success."""
+    source = (BACKEND / "utils/changelog.py").read_text(encoding = "utf-8")
+    assert "deadline = time.monotonic() + CHANGELOG_TIMEOUT_SECONDS" in source
+    # read1 returns after one socket read, so the deadline is actually checked.
+    assert "response.read1(" in source
+    # Waiters give up rather than queue behind a stalled fetch.
+    assert "Release notes are still loading." in source
+
+
+def test_truncated_notes_close_their_fence(changelog_module):
+    """A blind slice could end inside a code block and break the rendering."""
+    body = "```\n" + "x\n" * 20_000 + "```\n"
+    payload = changelog_module._notes_response(
+        version = "1.0", markdown = body, source = "local"
+    )
+    assert payload["truncated"] is True
+    assert payload["markdown"].rstrip().endswith("```")
+
+
+def test_the_opt_out_beats_the_developer_override():
+    """UNSLOTH_STUDIO_FAKE_UPDATE is a dev switch; the documented kill switch
+    still wins, and the value has to parse as a version."""
+    source = (BACKEND / "utils/update_status.py").read_text(encoding = "utf-8")
+    assert "forced_version and not disabled and _is_version(forced_version)" in source

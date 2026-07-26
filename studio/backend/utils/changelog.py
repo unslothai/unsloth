@@ -33,6 +33,7 @@ CHANGELOG_URL_ENV_VAR = "UNSLOTH_CHANGELOG_URL"
 CHANGELOG_PATH_ENV_VAR = "UNSLOTH_CHANGELOG_PATH"
 CHANGELOG_TIMEOUT_SECONDS = 3
 CHANGELOG_MAX_BYTES = 2 * 1024 * 1024
+_CHANGELOG_CHUNK_BYTES = 64 * 1024
 CHANGELOG_SUCCESS_TTL_SECONDS = 30 * 60
 CHANGELOG_FAILURE_TTL_SECONDS = 5 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
@@ -57,6 +58,14 @@ _RAW_BLOCKS = (
 # Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
 # once a blank line has closed the block. Open and close tags both start one.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
+# Lines that are blocks in their own right, so no paragraph is open after them.
+_NOT_PARAGRAPH = re.compile(
+    r"^ {0,3}(?:#{1,6}([ \t]|$)"
+    r"|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$"
+    r"|\[(?:[^\[\]\\]|\\.)+\]:)"
+)
+# A line of = or - under a paragraph line makes that line a heading.
+_SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 _HTML_BLOCK_TAGS = frozenset(
     """
 address article aside base basefont blockquote body caption center col colgroup
@@ -78,9 +87,9 @@ _HTML_TAG_ONLY_LINE = re.compile(
 # install, so they are searched only when one of these markers is present.
 _CHECKOUT_ONLY_LEVELS = (3, 4)
 _CHECKOUT_MARKERS = ("pyproject.toml", ".git")
+_COMMENT_BLOCK_OPEN = re.compile(r"^ {0,3}<!--")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
-_CODE_SPAN_PATTERN = re.compile(r"(`+)(?:.*?)\1")
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
@@ -149,6 +158,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     in_raw_html: int | None = None
     in_html_block = False
     after_paragraph = False
+    previous_visible = ""
 
     def flush() -> None:
         if version is not None and heading is not None:
@@ -184,10 +194,36 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
                 visible = ""
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
+        # `1.0` over a line of dashes is the same heading written setext style.
+        setext = (
+            after_paragraph
+            and match is None
+            and previous_visible != ""
+            and _SETEXT_UNDERLINE.match(visible) is not None
+            and (visible.strip()[:1] == "-")
+        )
+        if setext:
+            if version is not None and body:
+                # The heading text was read as body a line ago.
+                body.pop()
+            flush()
+            heading = previous_visible
+            version = _version_from_heading(heading)
+            body = []
+            previous_visible = ""
+            after_paragraph = False
+            continue
         # Only ordinary text continues a paragraph. A heading, a block or an
         # indented code line (four spaces, outside a paragraph) ends one.
         indented_code = not after_paragraph and line[:4] == "    "
-        after_paragraph = bool(visible.strip()) and match is None and not indented_code
+        after_paragraph = (
+            bool(visible.strip())
+            and match is None
+            and not indented_code
+            and _NOT_PARAGRAPH.match(visible) is None
+            and _SETEXT_UNDERLINE.match(visible) is None
+        )
+        previous_visible = visible.strip() if after_paragraph else ""
         if match is None:
             if version is not None:
                 body.append(line)
@@ -208,10 +244,15 @@ def find_release_notes(text: str, version: str) -> ChangelogEntry | None:
     Equality is version-aware (`2026.07.5` matches `2026.7.5`) but never fuzzy:
     a near-miss returns None so the caller shows no notes, not the wrong ones.
     """
-    wanted = _parse_version(version)
-    for entry in parse_changelog(text):
+    entries = parse_changelog(text)
+    for entry in entries:
+        # An exact heading wins wherever it sits, so `## 1.0` is never shadowed
+        # by an earlier `## 1.0.0`.
         if entry.version == version:
             return entry
+
+    wanted = _parse_version(version)
+    for entry in entries:
         if wanted is not None:
             candidate = _parse_version(entry.version)
             if candidate is not None and candidate == wanted:
@@ -264,6 +305,10 @@ def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
             if _remote_cache and _remote_cache.source.text is None:
                 _remote_cache = None
 
+    # A caller waits for an in-flight fetch only as long as that fetch may
+    # take. Past that the request is answered from the local copy instead of
+    # holding a worker behind a stalled upstream.
+    deadline = time.monotonic() + CHANGELOG_TIMEOUT_SECONDS + 1
     while True:
         now = time.monotonic()
         with _cache_condition:
@@ -272,7 +317,13 @@ def get_remote_changelog(refresh: bool = False) -> ChangelogSource:
             if not _remote_fetching:
                 _remote_fetching = True
                 break
-            _cache_condition.wait(timeout = CHANGELOG_TIMEOUT_SECONDS + 1)
+            if now >= deadline:
+                return ChangelogSource(
+                    text = None,
+                    source = None,
+                    error = "Release notes are still loading.",
+                )
+            _cache_condition.wait(timeout = deadline - now)
 
     try:
         source = _fetch_remote_changelog()
@@ -298,11 +349,31 @@ def _fetch_remote_changelog() -> ChangelogSource:
 
     request = urllib.request.Request(
         url,
-        headers = {"User-Agent": "unsloth-studio-update-check"},
+        headers = {
+            "User-Agent": "unsloth-studio-update-check",
+            # A compressing proxy would otherwise hand back bytes we decode as
+            # text and serve as notes.
+            "Accept-Encoding": "identity",
+        },
     )
+    deadline = time.monotonic() + CHANGELOG_TIMEOUT_SECONDS
     try:
         with urllib.request.urlopen(request, timeout = CHANGELOG_TIMEOUT_SECONDS) as response:
-            body = response.read(CHANGELOG_MAX_BYTES + 1)
+            chunks: list[bytes] = []
+            received = 0
+            while received <= CHANGELOG_MAX_BYTES:
+                if time.monotonic() >= deadline:
+                    return ChangelogSource(
+                        text = None,
+                        source = None,
+                        error = "Release notes took too long to load.",
+                    )
+                chunk = response.read1(_CHANGELOG_CHUNK_BYTES)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+            body = b"".join(chunks)
         if len(body) > CHANGELOG_MAX_BYTES:
             return ChangelogSource(
                 text = None,
@@ -389,38 +460,87 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
     return open_fence
 
 
+def _code_span_ranges(line: str) -> list[tuple[int, int]]:
+    """Code span bounds. A run of backticks closes only on a run of its length."""
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(line):
+        if line[index] != "`" or _is_escaped(line, index):
+            index += 1
+            continue
+        ticks = _run_length(line, index)
+        cursor = index + ticks
+        while cursor < len(line):
+            if line[cursor] != "`" or _is_escaped(line, cursor):
+                cursor += 1
+                continue
+            candidate = _run_length(line, cursor)
+            if candidate == ticks:
+                spans.append((index, cursor + ticks))
+                break
+            cursor += candidate
+        else:
+            # Nothing closes this run, so it is literal text.
+            index += ticks
+            continue
+        index = spans[-1][1]
+    return spans
+
+
+def _run_length(line: str, index: int) -> int:
+    end = index
+    while end < len(line) and line[end] == "`":
+        end += 1
+    return end - index
+
+
+def _is_escaped(line: str, index: int) -> bool:
+    slashes = 0
+    while index - 1 - slashes >= 0 and line[index - 1 - slashes] == "\\":
+        slashes += 1
+    return slashes % 2 == 1
+
+
 def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
     """Return the line with HTML-comment spans removed, and the trailing state.
 
-    Delimiters inside inline code are literal, so a note documenting `<!--`
-    does not put the parser into comment state.
+    Only a comment that starts a line opens a block and hides the lines below
+    it. One written mid-sentence is inline HTML: it hides the rest of its own
+    line at most, so a note mentioning `<!--` cannot swallow later releases.
+    Delimiters inside inline code are literal and hide nothing.
     """
+    if in_comment:
+        close = line.find(_COMMENT_CLOSE)
+        # The closing line belongs to the block, tail included.
+        return ("", False) if close != -1 else ("", True)
+
+    if _COMMENT_BLOCK_OPEN.match(line):
+        close = line.find(_COMMENT_CLOSE, line.find(_COMMENT_OPEN) + len(_COMMENT_OPEN))
+        return ("", False) if close != -1 else ("", True)
+
     visible: list[str] = []
     index = 0
+    spans = _code_span_ranges(line)
     while index < len(line):
-        if in_comment:
-            close = line.find(_COMMENT_CLOSE, index)
-            if close == -1:
-                return "".join(visible), True
-            index = close + len(_COMMENT_CLOSE)
-            in_comment = False
-            continue
-
         opening = line.find(_COMMENT_OPEN, index)
         if opening == -1:
             visible.append(line[index:])
             break
 
-        span = _CODE_SPAN_PATTERN.search(line, index)
-        if span and span.start() <= opening < span.end():
-            visible.append(line[index : span.end()])
-            index = span.end()
+        span = next((s for s in spans if s[0] <= opening < s[1]), None)
+        if span is not None:
+            visible.append(line[index : span[1]])
+            index = span[1]
             continue
 
         visible.append(line[index:opening])
-        index = opening + len(_COMMENT_OPEN)
-        in_comment = True
-    return "".join(visible), in_comment
+        close = line.find(_COMMENT_CLOSE, opening + len(_COMMENT_OPEN))
+        if close == -1:
+            # Unterminated inline comment: a heading or a blank line below
+            # ends the paragraph, so nothing beyond this line is hidden.
+            break
+        index = close + len(_COMMENT_CLOSE)
+    return "".join(visible), False
 
 
 def _opens_html_block(line: str, after_paragraph: bool) -> bool:
@@ -437,7 +557,7 @@ def _strip_raw_html(line: str, open_block: int | None) -> tuple[str, int | None]
     The state is the index of the open block in `_RAW_BLOCKS`, or None."""
     if open_block is not None:
         close = _RAW_BLOCKS[open_block][1].search(line)
-        return (line[close.end() :], None) if close else ("", open_block)
+        return ("", None) if close else ("", open_block)
 
     # A block only opens at the start of a line; mid-line tags are inline HTML.
     for index, (opener, closer) in enumerate(_RAW_BLOCKS):
@@ -446,7 +566,7 @@ def _strip_raw_html(line: str, open_block: int | None) -> tuple[str, int | None]
             continue
         rest = line[opening.end() :]
         close = closer.search(rest)
-        return (rest[close.end() :], None) if close else ("", index)
+        return ("", None) if close else ("", index)
     return line, None
 
 
@@ -464,6 +584,16 @@ def _parse_version(version: str) -> Version | None:
         return Version(version)
     except InvalidVersion:
         return None
+
+
+def _close_open_fence(markdown: str) -> str:
+    """Close a fence the truncation cut in half, so the rest still renders."""
+    open_fence: str | None = None
+    for line in markdown.splitlines():
+        fence = _FENCE_PATTERN.match(line)
+        if fence:
+            open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
+    return f"{markdown}\n{open_fence}" if open_fence else markdown
 
 
 def _renders_visibly(markdown: str) -> bool:
@@ -496,7 +626,7 @@ def _notes_response(
 
     truncated = False
     if markdown and len(markdown) > RELEASE_NOTES_MAX_CHARS:
-        markdown = markdown[:RELEASE_NOTES_MAX_CHARS].rstrip()
+        markdown = _close_open_fence(markdown[:RELEASE_NOTES_MAX_CHARS].rstrip())
         truncated = True
 
     return {

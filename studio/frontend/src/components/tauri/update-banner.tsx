@@ -113,7 +113,7 @@ export function UpdateBanner({
           )}
           data-testid="tauri-update-banner"
         >
-          <div className="relative max-h-[calc(100dvh_-_2rem)] overflow-y-auto rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -180,6 +180,7 @@ export function UpdateBanner({
                 // Updater's release body, used only if CHANGELOG.md has no
                 // section for this version.
                 fallbackMarkdown={info?.body ?? null}
+                className="min-h-0 flex-1"
                 releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
               />
             ) : null}
