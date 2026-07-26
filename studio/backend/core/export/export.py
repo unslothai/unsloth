@@ -112,6 +112,26 @@ def _multi_gpu_device_map_kwargs() -> dict:
     return {}
 
 
+def _is_oom_error(exc: BaseException) -> bool:
+    """True for an accelerator OOM, however it is spelled.
+
+    accelerate and transformers re-raise it as a plain ``RuntimeError`` on several
+    paths and the ROCm/XPU backends use their own classes, so match the message too.
+    """
+    if torch is not None:
+        oom_types = tuple(
+            t for t in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None),
+                getattr(getattr(torch, "xpu", None), "OutOfMemoryError", None),
+            )
+            if isinstance(t, type)
+        )
+        if oom_types and isinstance(exc, oom_types):
+            return True
+    return "out of memory" in f"{type(exc).__name__}: {exc}".lower()
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -302,6 +322,7 @@ class ExportBackend:
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
         hf_token: Optional[str] = None,
+        _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
@@ -336,7 +357,12 @@ class ExportBackend:
 
             # Shard across every visible GPU on a multi-GPU host instead of
             # stacking the checkpoint on GPU0 (#7053); {} on single-GPU/CPU/MLX.
-            _device_map_kw = _multi_gpu_device_map_kwargs()
+            # _device_map_override is the single-device retry below.
+            _device_map_kw = (
+                _multi_gpu_device_map_kwargs()
+                if _device_map_override is None
+                else _device_map_override
+            )
 
             # Run the type-detection probes in the forced-offline window (else a gated
             # base 404s); it covers is_vision_model's Hub reads + the transformers-5
@@ -471,11 +497,39 @@ class ExportBackend:
             return True, f"Loaded {model_type} model{peft_info} successfully"
 
         except Exception as e:
-            logger.error(f"Error loading checkpoint: {e}")
-            import traceback
+            # Sharding is an optimisation, never a requirement. "balanced" budgets from
+            # the free memory read BEFORE this process opens its own CUDA context on each
+            # GPU, so when a training or chat job already owns the others (which
+            # routes/export.py deliberately allows) the shard can OOM where the pre-#7053
+            # single-device load succeeded. Fall back once before giving up.
+            if (
+                _device_map_override is None
+                and _is_oom_error(e)
+                and _multi_gpu_device_map_kwargs()
+            ):
+                # Retry outside this block: the live traceback pins the half-built
+                # model's frames, so an in-block retry inherits the exhausted device.
+                oom_retry_reason = str(e)
+            else:
+                logger.error(f"Error loading checkpoint: {e}")
+                import traceback
 
-            logger.error(traceback.format_exc())
-            return False, f"Failed to load checkpoint: {str(e)}"
+                logger.error(traceback.format_exc())
+                return False, f"Failed to load checkpoint: {str(e)}"
+
+        logger.warning(
+            f"Multi-GPU export load ran out of memory ({oom_retry_reason}); retrying on "
+            f"the single-device loader default."
+        )
+        self.cleanup_memory()
+        return self.load_checkpoint(
+            checkpoint_path,
+            max_seq_length = max_seq_length,
+            load_in_4bit = load_in_4bit,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            _device_map_override = {},
+        )
 
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""

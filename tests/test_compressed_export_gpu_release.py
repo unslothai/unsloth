@@ -22,9 +22,14 @@ import pytest
 
 _SAVE_PY = Path(__file__).resolve().parent.parent / "unsloth" / "save.py"
 _WANTED = {
+    "_accelerate_dispatch_root",
+    "_snapshot_dispatch_state",
+    "_drop_accelerator_tied_param_cache",
+    "_restore_dispatch_state",
     "_offload_model_for_quantize_subprocess",
     "_restore_model_after_quantize_subprocess",
 }
+_WANTED_ASSIGNS = {"_DISPATCH_SNAPSHOT_ATTR"}  # module constants the helpers close over
 
 
 class _FakeLogger:
@@ -38,9 +43,17 @@ class _FakeLogger:
 def _load_helpers(fake_torch, fake_logger):
     tree = ast.parse(_SAVE_PY.read_text(encoding = "utf-8"))
     keep = [
-        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in _WANTED
+        node for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in _WANTED)
+        or (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id in _WANTED_ASSIGNS for t in node.targets
+            )
+        )
     ]
-    assert len(keep) == len(_WANTED), "release helpers missing from save.py"
+    n_fns = sum(1 for node in keep if isinstance(node, ast.FunctionDef))
+    assert n_fns == len(_WANTED), "release helpers missing from save.py"
     namespace = {"torch": fake_torch, "logger": fake_logger}
     exec(  # noqa: S102 - loading trusted repo source
         compile(ast.Module(body = keep, type_ignores = []), str(_SAVE_PY), "exec"),
@@ -78,13 +91,19 @@ class _FakeModel:
 
 @pytest.fixture
 def _fake_accelerate(monkeypatch):
-    calls = {"removed": [], "dispatched": []}
+    calls = {"removed": [], "dispatched": [], "dispatch_kwargs": [], "hooks_added": []}
     accel = types.ModuleType("accelerate")
-    accel.dispatch_model = lambda model, device_map: calls["dispatched"].append(
-        (model, dict(device_map))
-    )
+
+    def _dispatch(model, device_map, **kwargs):
+        calls["dispatched"].append((model, dict(device_map)))
+        calls["dispatch_kwargs"].append(kwargs)
+
+    accel.dispatch_model = _dispatch
     hooks = types.ModuleType("accelerate.hooks")
     hooks.remove_hook_from_submodules = lambda model: calls["removed"].append(model)
+    hooks.add_hook_to_module = lambda module, hook: calls["hooks_added"].append(
+        (module, hook)
+    )
     accel.hooks = hooks
     monkeypatch.setitem(sys.modules, "accelerate", accel)
     monkeypatch.setitem(sys.modules, "accelerate.hooks", hooks)
@@ -312,3 +331,138 @@ def test_torchao_export_uses_the_shared_release():
     assert "_restore_model_after_quantize_subprocess(model" in torchao
     # No hand-rolled single-device gate left behind.
     assert "len(_devs) == 1" not in torchao
+
+
+# --------------------------------------------------------------------------- #
+# Regressions for the multi-GPU dispatch branch this PR newly makes reachable.
+# --------------------------------------------------------------------------- #
+
+
+class _Child:
+    """Minimal stand-in for an nn.Module leaf, enough for the dispatch walk."""
+
+    def __init__(self, name = "inner", device_map = None):
+        self._modules = {}
+        self.__dict__["_name"] = name
+        if device_map is not None:
+            self.hf_device_map = device_map
+
+    def named_modules(self):
+        yield "", self
+        for key, child in self._modules.items():
+            for sub_name, sub in child.named_modules():
+                yield (f"{key}.{sub_name}" if sub_name else key), sub
+
+    def get_submodule(self, target):
+        node = self
+        for part in target.split("."):
+            node = node._modules[part]
+        return node
+
+    def named_parameters(self):
+        return iter(())
+
+    def named_buffers(self):
+        return iter(())
+
+
+class _PeftLikeWrapper(_Child):
+    """A wrapper that proxies unknown attributes to the model it wraps, the way
+    ``PeftModelForCausalLM`` does. ``hasattr(wrapper, "_hf_hook")`` is then True
+    while ``delattr`` fails, which is what made the offload a silent no-op."""
+
+    def __init__(self, inner):
+        super().__init__(name = "wrapper")
+        self._modules["base_model"] = inner
+        self.moved_to = []
+
+    def __getattr__(self, item):
+        return getattr(self._modules["base_model"], item)
+
+    def to(self, target):
+        self.moved_to.append(str(target))
+        return self
+
+    def parameters(self):
+        return iter(self._modules["base_model"]._devices)
+
+
+def test_dispatch_root_is_the_inner_model_for_a_peft_style_wrapper(_fake_accelerate):
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    device_map = {"model.embed": 0, "model.layers.0": 1}
+    inner = _Child(device_map = device_map)
+    inner._devices = [types.SimpleNamespace(device = "cuda:0")]
+    wrapper = _PeftLikeWrapper(inner)
+
+    assert ns["_accelerate_dispatch_root"](wrapper) is inner
+
+    token = ns["_offload_model_for_quantize_subprocess"](wrapper)
+    # hooks must come off the INNER module, not the proxying wrapper
+    assert _fake_accelerate["removed"] == [inner]
+    assert wrapper.moved_to == ["cpu"]
+    assert token == ("dispatch", device_map)
+
+
+def test_dispatch_root_falls_back_to_the_model_it_was_given():
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    model = _FakeModel(device_map = {"model.embed": 0})
+    assert ns["_accelerate_dispatch_root"](model) is model
+
+
+def test_offload_failure_is_logged_not_swallowed():
+    # A bare `return None` is indistinguishable from "nothing to move", which is
+    # how a broken offload survived several review rounds.
+    fake_logger = _FakeLogger()
+    ns = _load_helpers(_fake_torch(), fake_logger)
+
+    class _Explodes(_FakeModel):
+        @property
+        def hf_device_map(self):
+            raise RuntimeError("boom")
+
+    assert ns["_offload_model_for_quantize_subprocess"](_Explodes()) is None
+    assert any("boom" in w for w in fake_logger.warnings)
+
+
+def test_restore_without_a_snapshot_forwards_skip_keys(_fake_accelerate):
+    # dispatch_model() defaults skip_keys to None, which would move every forward
+    # kwarg to the executing device -- wrong for the cache/position tensors
+    # transformers marks device-invariant.
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    device_map = {"model.embed": 0, "model.layers.0": 1}
+    model = _FakeModel(device_map = device_map, devices = ("cuda:0", "cuda:1"))
+    model._skip_keys_device_placement = ["past_key_values"]
+
+    ns["_restore_model_after_quantize_subprocess"](model, ("dispatch", device_map))
+
+    assert _fake_accelerate["dispatched"] == [(model, device_map)]
+    assert _fake_accelerate["dispatch_kwargs"] == [{"skip_keys": ["past_key_values"]}]
+
+
+def test_snapshot_restores_a_forward_patched_after_the_dispatch(_fake_accelerate):
+    """accelerate restores ``module.forward = module._old_forward`` on removal, and
+    ``_old_forward`` is whatever the forward was when the hook was FIRST attached.
+    unsloth patches module forwards after transformers dispatches, so a naive
+    remove/re-add throws every fused kernel away for good."""
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    root = _Child(device_map = {"model.embed": 0, "mlp": 1})
+    mlp = _Child(name = "mlp")
+    root._modules["mlp"] = mlp
+
+    stock_forward = lambda *a, **k: "stock"          # noqa: E731
+    fused_forward = lambda *a, **k: "unsloth-fused"  # noqa: E731
+    mlp._hf_hook = object()
+    mlp._old_forward = stock_forward   # captured by accelerate at dispatch time
+    mlp.forward = fused_forward        # installed by unsloth afterwards
+
+    snapshot = ns["_snapshot_dispatch_state"](root)
+
+    # what accelerate's removal does
+    del mlp.__dict__["_hf_hook"]
+    mlp.forward = mlp._old_forward
+    del mlp.__dict__["_old_forward"]
+    assert mlp.forward() == "stock"
+
+    ns["_restore_dispatch_state"](root, snapshot)
+    assert mlp.forward() == "unsloth-fused"
+    assert mlp.__dict__["_old_forward"] is stock_forward

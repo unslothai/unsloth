@@ -4545,13 +4545,26 @@ def _unsloth_save_torchao_with_given_config(
     else:
         kwargs = {"dtype": torch.bfloat16}
 
-    # Reload with quantization applied
-    quantized_model = auto_model.from_pretrained(
-        save_directory,
-        device_map = "auto",
-        quantization_config = quantization_config,
-        **kwargs,
-    )
+    # Same guard as the sibling quantized-export paths: without it the original
+    # stays resident on every GPU while device_map="auto" loads a second copy.
+    model_restore = _offload_model_for_quantize_subprocess(model)
+    for _ in range(3):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+
+    try:
+        # Reload with quantization applied
+        quantized_model = auto_model.from_pretrained(
+            save_directory,
+            device_map = "auto",
+            quantization_config = quantization_config,
+            **kwargs,
+        )
+    finally:
+        _restore_model_after_quantize_subprocess(model, model_restore)
 
     torchao_save_directory = save_directory + "-torchao"
 
@@ -4606,6 +4619,122 @@ def _print_compressed_hw_note(scheme, out_dir):
     )
 
 
+_DISPATCH_SNAPSHOT_ATTR = "_unsloth_dispatch_snapshot"
+
+
+def _accelerate_dispatch_root(model):
+    """The module that really owns the accelerate dispatch.
+
+    A PEFT wrapper proxies unknown attributes to the model it wraps, so
+    ``hasattr(wrapper, "_hf_hook")`` is True but ``delattr`` fails and
+    ``remove_hook_from_submodules`` raises before removing anything. ``hf_device_map``
+    keys are relative to the inner root too. Walks real children, never ``__getattr__``.
+    """
+    node, seen = model, set()
+    while id(node) not in seen:
+        seen.add(id(node))
+        if "hf_device_map" in getattr(node, "__dict__", {}):
+            return node
+        children = getattr(node, "__dict__", {}).get("_modules") or {}
+        nxt = next(
+            (
+                children[a] for a in ("base_model", "model")
+                if hasattr(children.get(a), "named_modules")
+            ),
+            None,
+        )
+        if nxt is None:
+            return model
+        node = nxt
+    return model
+
+
+def _snapshot_dispatch_state(root):
+    """Hooks, tensor placements and instance forwards, so the dispatch can be replayed.
+
+    Re-deriving it with ``dispatch_model`` is not equivalent: PEFT reparents each
+    targeted ``Linear`` after transformers dispatched, so accelerate hooks modules that
+    never had any (measured: 395 -> 1379) and the logits shift enough to reorder top-5.
+    """
+    hooks = [
+        (name, mod.__dict__["_hf_hook"])
+        for name, mod in root.named_modules()
+        if "_hf_hook" in mod.__dict__
+    ]
+    places = {
+        name: tensor.device
+        for name, tensor in list(root.named_parameters()) + list(root.named_buffers())
+    }
+    # Removing a hook restores `forward = _old_forward`, captured before unsloth
+    # patched the module, so a remove/re-add drops every fused kernel installed
+    # after the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs) for good.
+    forwards = {
+        name: (mod.__dict__.get("forward"), mod.__dict__.get("_old_forward"))
+        for name, mod in root.named_modules()
+        if "forward" in mod.__dict__ or "_old_forward" in mod.__dict__
+    }
+    return hooks, places, forwards
+
+
+def _drop_accelerator_tied_param_cache(snapshot) -> None:
+    """Drop the GPU tensors accelerate caches in each hook's ``tied_params_map``.
+
+    Holding the hooks across the offload pins a GPU copy of the tied embedding
+    (0.31 GB of 1.24 GB here). The entries are keyed by the pre-move ``data_ptr``,
+    so they are stale anyway and re-attaching repopulates them.
+    """
+    for _name, hook in snapshot[0]:
+        cache = getattr(hook, "tied_params_map", None)
+        if not cache:
+            continue
+        for ptr in list(cache):
+            entry = cache[ptr]
+            for device in list(entry):
+                if str(device) != "cpu":
+                    del entry[device]
+            if not entry:
+                del cache[ptr]
+
+
+def _restore_dispatch_state(root, snapshot) -> None:
+    """Replay ``_snapshot_dispatch_state``."""
+    from accelerate.hooks import add_hook_to_module
+
+    hooks, places, forwards = snapshot
+    for name, hook in hooks:
+        add_hook_to_module(root.get_submodule(name) if name else root, hook)
+
+    # Re-adding a hook rewraps whatever `_old_forward` now holds, so put the exact
+    # callables back.
+    for name, (fwd, old_fwd) in forwards.items():
+        mod = root.get_submodule(name) if name else root
+        for attr, value in (("_old_forward", old_fwd), ("forward", fwd)):
+            if value is None:
+                mod.__dict__.pop(attr, None)
+            else:
+                mod.__dict__[attr] = value
+
+    # init_hook only re-places tensors the hooked module owns, so anything added to
+    # the tree after the dispatch (the LoRA adapters) is still on CPU.
+    for mod_name, mod in root.named_modules():
+        for attr in ("_parameters", "_buffers"):
+            store = getattr(mod, attr, None)
+            if not store:
+                continue
+            for tensor_name, tensor in list(store.items()):
+                if tensor is None:
+                    continue
+                full = f"{mod_name}.{tensor_name}" if mod_name else tensor_name
+                want = places.get(full)
+                if want is None or tensor.device == want:
+                    continue
+                if getattr(tensor, "quant_state", None) is not None:
+                    # Only bitsandbytes' own .to() moves absmax/code/state2 with the data.
+                    mod.to(want)
+                else:
+                    tensor.data = tensor.data.to(want)
+
+
 def _offload_model_for_quantize_subprocess(model):
     """Best-effort: move the merged model's weights off the GPU before the
     llm-compressor subprocess loads its own copy from disk, so the GPUs need not
@@ -4651,7 +4780,17 @@ def _offload_model_for_quantize_subprocess(model):
                 return None  # nothing on an accelerator: no GPU memory to reclaim
             from accelerate.hooks import remove_hook_from_submodules
 
-            remove_hook_from_submodules(model)
+            # A PEFT wrapper only proxies the hooks; they live on the inner root.
+            root = _accelerate_dispatch_root(model)
+            try:
+                setattr(root, _DISPATCH_SNAPSHOT_ATTR, _snapshot_dispatch_state(root))
+            except Exception as snap_exc:
+                # Restore will fall back to re-deriving from the device_map.
+                logger.warning_once(
+                    f"Unsloth: could not snapshot the accelerate dispatch "
+                    f"({type(snap_exc).__name__}: {snap_exc}); re-dispatching on restore."
+                )
+            remove_hook_from_submodules(root)
             try:
                 model.to("cpu")
             except Exception:
@@ -4660,6 +4799,9 @@ def _offload_model_for_quantize_subprocess(model):
                 # usable rather than hookless and half-moved across CPU/GPUs.
                 _restore_model_after_quantize_subprocess(model, ("dispatch", dict(device_map)))
                 return None
+            snapshot = getattr(root, _DISPATCH_SNAPSHOT_ATTR, None)
+            if snapshot is not None:
+                _drop_accelerator_tied_param_cache(snapshot)
             return ("dispatch", dict(device_map))
         devices = {str(p.device) for p in model.parameters()}
         if len(devices) == 1 and next(iter(devices)).startswith(("cuda", "xpu")):
@@ -4670,7 +4812,13 @@ def _offload_model_for_quantize_subprocess(model):
                 _restore_model_after_quantize_subprocess(model, ("device", device))
                 return None
             return ("device", device)
-    except Exception:
+    except Exception as exc:
+        # A silent `return None` here is indistinguishable from "nothing to move",
+        # which hides a real bug behind a merely slower export.
+        logger.warning_once(
+            f"Unsloth: could not free the model's accelerator memory before the quantized "
+            f"export ({type(exc).__name__}: {exc}); continuing with the model resident."
+        )
         return None
     return None
 
@@ -4682,8 +4830,19 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
     kind, value = restore_token
     try:
         if kind == "dispatch":
-            from accelerate import dispatch_model
-            dispatch_model(model, device_map = value)
+            root = _accelerate_dispatch_root(model)
+            snapshot = root.__dict__.pop(_DISPATCH_SNAPSHOT_ATTR, None)
+            if snapshot is not None:
+                _restore_dispatch_state(root, snapshot)
+            else:
+                from accelerate import dispatch_model
+                # skip_keys matters: without it accelerate moves every forward kwarg
+                # to the executing device, wrong for device-invariant cache tensors.
+                dispatch_model(
+                    root,
+                    device_map = value,
+                    skip_keys = getattr(root, "_skip_keys_device_placement", None),
+                )
         else:
             model.to(value)  # restore the model to its original device
     except Exception:
