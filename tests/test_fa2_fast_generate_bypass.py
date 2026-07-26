@@ -33,6 +33,7 @@ uses_flash_attention = _load_function(
         ),
     },
 )
+clear_generation_caches = _load_function("_clear_generation_caches", {})
 
 
 def test_top_level_flash_attention_is_detected():
@@ -94,6 +95,15 @@ def test_nested_language_backend_overrides_normalized_default_backend():
     )
     assert not uses_flash_attention(config)
 
+    nested_text = SimpleNamespace(_attn_implementation = "sdpa")
+    thinker_config = SimpleNamespace(
+        _attn_implementation = "flash_attention_2",
+        sub_configs = {"text_config": object},
+        text_config = nested_text,
+        get_text_config = lambda: nested_text,
+    )
+    assert not uses_flash_attention(SimpleNamespace(thinker_config = thinker_config))
+
 
 def test_nested_text_and_decoder_configs_are_detected():
     nested_text = SimpleNamespace(attn_implementation = "flash_attention_2")
@@ -114,6 +124,27 @@ def test_get_text_config_is_detected():
     nested_text = SimpleNamespace(_attn_implementation = "flash_attention_2")
     config = SimpleNamespace(get_text_config = lambda: nested_text)
     assert uses_flash_attention(config)
+
+
+def test_declared_custom_generation_subconfig_is_detected():
+    nested_text = SimpleNamespace(_attn_implementation = "flash_attention_2")
+    custom_generation = SimpleNamespace(
+        sub_configs = {"text_config": object},
+        text_config = nested_text,
+    )
+    config = SimpleNamespace(
+        sub_configs = {"custom_generation_config": object},
+        custom_generation_config = custom_generation,
+    )
+    assert uses_flash_attention(config)
+    assert uses_flash_attention(
+        SimpleNamespace(
+            _attn_implementation = {
+                "thinker_config": "flash_attention_2",
+                "vision_config": "sdpa",
+            }
+        )
+    )
 
 
 def test_vision_only_flash_attention_does_not_bypass_text_generation():
@@ -174,10 +205,12 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         "NUM_LOGITS_TO_KEEP": {architecture: None},
         "DEVICE_TYPE_TORCH": "cuda",
         "_uses_flash_attention_for_generation": uses_flash_attention,
+        "_clear_generation_caches": clear_generation_caches,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
 
     captured = {}
+    cache_module = SimpleNamespace(_flex_attention_cache = object())
 
     class Model:
         config = SimpleNamespace(
@@ -189,8 +222,13 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
         def forward(self, input_ids = None):
             return input_ids
 
+        def named_modules(self):
+            return [("cache", cache_module)]
+
         def _old_generate(self, *args, **kwargs):
+            assert not hasattr(cache_module, "_flex_attention_cache")
             captured.update(kwargs)
+            cache_module._flex_attention_cache = object()
             return "fallback-result"
 
     input_ids = FakeTensor()
@@ -207,6 +245,7 @@ def test_wrapper_dispatch_preserves_normalization_and_selects_expected_path():
     assert "mm_token_type_ids" not in captured
     assert captured["pixel_values"] is pixel_values
     assert pixel_values.converted_to == "bfloat16"
+    assert not hasattr(cache_module, "_flex_attention_cache")
 
     class FastPathReached(Exception):
         pass

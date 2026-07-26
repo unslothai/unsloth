@@ -352,38 +352,78 @@ def _uses_flash_attention_for_generation(config):
         "llm_config",
         "decoder_config",
         "language_config",
+        "thinker_config",
+        "talker_config",
         "decoder",
+        "generator",
+    )
+    non_language_config_names = (
+        "vision_config",
+        "audio_config",
+        "vision_encoder_config",
+        "audio_encoder_config",
+        "encoder_config",
+        "text_encoder",
     )
 
     def _mapping_uses_flash_attention(attn_implementation):
         if not isinstance(attn_implementation, dict):
             return _is_flash_attention_requested(attn_implementation)
         language_implementations = [
-            attn_implementation[config_name]
-            for config_name in language_config_names
-            if attn_implementation.get(config_name) is not None
+            implementation
+            for config_name, implementation in attn_implementation.items()
+            if config_name not in ("", *non_language_config_names) and implementation is not None
         ]
         if language_implementations:
             return any(map(_is_flash_attention_requested, language_implementations))
         return _is_flash_attention_requested(attn_implementation.get(""))
 
-    language_configs = []
-    get_text_config = _config_get(config, "get_text_config", None)
-    if callable(get_text_config):
+    def _get_text_config(current_config):
+        get_text_config = _config_get(current_config, "get_text_config", None)
+        if not callable(get_text_config):
+            return None
         try:
-            text_config = get_text_config()
+            return get_text_config()
         except Exception:
-            text_config = None
-        if text_config is not None and text_config is not config:
-            language_configs.append(text_config)
-    for config_name in language_config_names:
-        nested_config = _config_get(config, config_name, None)
+            return None
+
+    language_configs = []
+    pending_configs = [config]
+    visited_config_ids = set()
+    while pending_configs:
+        current_config = pending_configs.pop()
+        if id(current_config) in visited_config_ids:
+            continue
+        visited_config_ids.add(id(current_config))
+
+        text_config = _get_text_config(current_config)
         if (
-            nested_config is not None
-            and nested_config is not config
-            and all(nested_config is not item for item in language_configs)
+            text_config is not None
+            and text_config is not current_config
+            and all(text_config is not item for item in language_configs)
         ):
-            language_configs.append(nested_config)
+            language_configs.append(text_config)
+
+        nested_config_names = list(language_config_names)
+        declared_sub_configs = _config_get(current_config, "sub_configs", None)
+        if isinstance(declared_sub_configs, dict):
+            nested_config_names.extend(
+                config_name
+                for config_name in declared_sub_configs
+                if config_name not in nested_config_names
+            )
+        for config_name in nested_config_names:
+            nested_config = _config_get(current_config, config_name, None)
+            if nested_config is None or nested_config is current_config:
+                continue
+            pending_configs.append(nested_config)
+            nested_text_config = _get_text_config(nested_config)
+            if (
+                config_name in language_config_names
+                and (nested_text_config is None or nested_text_config is nested_config)
+                and all(nested_config is not item for item in language_configs)
+            ):
+                language_configs.append(nested_config)
 
     language_implementations = [
         _config_get(language_config, config_field, None)
@@ -400,6 +440,21 @@ def _uses_flash_attention_for_generation(config):
         _mapping_uses_flash_attention(_config_get(config, config_field, None))
         for config_field in ("_attn_implementation", "attn_implementation")
     )
+
+
+def _clear_generation_caches(model):
+    for name, module in model.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            try:
+                del module._flex_attention_cache
+            except:
+                pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try:
+                del module._cache
+            except:
+                pass
 
 
 def unsloth_base_fast_generate(self, *args, **kwargs):
@@ -504,9 +559,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     # FlashAttention cannot use the forced static-cache path below: unfilled cache
     # slots are not masked during decoding. Preserve inference setup and processor
     # normalization above, then delegate before static-cache and compile handling.
+    _clear_generation_caches(self)
     if _uses_flash_attention_for_generation(self.config):
-        with torch.inference_mode(), autocaster:
-            return self._old_generate(*args, **kwargs)
+        try:
+            with torch.inference_mode(), autocaster:
+                return self._old_generate(*args, **kwargs)
+        finally:
+            _clear_generation_caches(self)
 
     # Set compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
@@ -555,36 +614,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
 
-    # Delete cached Flex Attention masks to reset inference
-    for name, module in self.named_modules():
-        if hasattr(module, "_flex_attention_cache"):
-            try:
-                del module._flex_attention_cache
-            except:
-                pass
-        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
-        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
-            try:
-                del module._cache
-            except:
-                pass
-
-    with torch.inference_mode(), autocaster:
-        output = self._old_generate(*args, **kwargs)
-
-    # Delete cached Flex Attention masks to reset inference
-    for name, module in self.named_modules():
-        if hasattr(module, "_flex_attention_cache"):
-            try:
-                del module._flex_attention_cache
-            except:
-                pass
-        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
-        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
-            try:
-                del module._cache
-            except:
-                pass
+    try:
+        with torch.inference_mode(), autocaster:
+            output = self._old_generate(*args, **kwargs)
+    finally:
+        _clear_generation_caches(self)
 
     # FastBaseModel.for_training(self)
     return output
