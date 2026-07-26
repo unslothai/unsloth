@@ -544,8 +544,7 @@ def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):
 
 
 def test_gradients_survive_the_offload_round_trip():
-    """Re-adding a hook runs init_hook -> set_module_tensor_to_device, which builds a
-    fresh Parameter and drops .grad. Exporting mid-training must not lose gradients."""
+    """init_hook rebuilds the Parameter and drops .grad, so the snapshot has to carry it."""
     import torch
 
     root = _Child(device_map = {"": 0})
@@ -558,7 +557,7 @@ def test_gradients_survive_the_offload_round_trip():
     snapshot = ns["_snapshot_dispatch_state"](root)
     assert torch.equal(snapshot[4]["weight"], torch.full((4, 4), 3.0))
 
-    # What init_hook does: same name, brand new Parameter, grad gone.
+    # What init_hook does: same name, fresh Parameter, no grad.
     replacement = torch.nn.Parameter(torch.zeros(4, 4))
     assert replacement.grad is None
     root._parameters = {"weight": replacement}
@@ -569,8 +568,7 @@ def test_gradients_survive_the_offload_round_trip():
 
 
 def test_the_other_torchao_path_also_clears_the_failed_copy():
-    """Both torchao exports restore the original in a finally, so both have to drop the
-    quantized copy and the traceback that pins it first."""
+    """Both torchao paths must drop the copy and the traceback pinning it before restoring."""
     src = _SAVE_PY.read_text(encoding = "utf-8")
     body = src.split("\ndef _unsloth_save_torchao(", 1)[1].split("\ndef ", 1)[0]
     finally_block = body.split("    finally:", 1)[1]
