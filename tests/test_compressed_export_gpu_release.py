@@ -25,6 +25,7 @@ _WANTED = {
     "_accelerate_dispatch_root",
     "_snapshot_dispatch_state",
     "_drop_accelerator_tied_param_cache",
+    "_accelerate_move_guards",
     "_split_tensor_path",
     "_lookup_tensor",
     "_share_tensor",
@@ -32,7 +33,7 @@ _WANTED = {
     "_offload_model_for_quantize_subprocess",
     "_restore_model_after_quantize_subprocess",
 }
-_WANTED_ASSIGNS = {"_DISPATCH_SNAPSHOT_ATTR"}  # module constants the helpers close over
+_WANTED_ASSIGNS = {"_DISPATCH_SNAPSHOT_ATTR", "_ACCELERATE_MOVE_GUARDS"}  # module constants the helpers close over
 
 
 class _FakeLogger:
@@ -512,4 +513,91 @@ def test_snapshot_reties_shared_parameters(_fake_accelerate):
     assert (
         root._modules["embed"]._parameters["weight"].data_ptr()
         == root._modules["head"]._parameters["weight"].data_ptr()
+    )
+
+
+def test_meta_tensors_never_form_tie_groups(_fake_accelerate):
+    """Accelerate parks every CPU/disk-offloaded parameter on meta, and meta tensors
+    all report storage pointer 0. Grouping by pointer alone would collapse them into
+    one huge fake tie of differently shaped tensors and overwrite them all."""
+    import torch
+
+    root = _Child(device_map = {"a": 0, "b": "cpu", "c": "cpu"})
+    live = torch.nn.Parameter(torch.zeros(4, 4))
+    offloaded = [torch.nn.Parameter(torch.empty(4, 4, device = "meta")),
+                 torch.nn.Parameter(torch.empty(8, 2, device = "meta"))]
+
+    def named(remove_duplicate = True):
+        return iter(
+            [("a.weight", live), ("b.weight", offloaded[0]), ("c.weight", offloaded[1])]
+        )
+
+    root.named_parameters = named
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    _hooks, places, _attrs, ties = ns["_snapshot_dispatch_state"](root)
+
+    assert ties == []                       # nothing is tied here
+    assert "b.weight" in places             # still tracked for placement
+
+
+def test_accelerate_move_guards_survive_the_replay(_fake_accelerate):
+    """remove_hook_from_module also deletes the to/cuda/... wrappers dispatch_model
+    installs to stop a caller moving an offloaded model."""
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    root = _Child(device_map = {"": 0})
+    guard = lambda *a, **k: "blocked"       # noqa: E731
+    root._hf_hook = object()
+    root.to = guard
+    root.cuda = guard
+
+    snapshot = ns["_snapshot_dispatch_state"](root)
+    del root.__dict__["_hf_hook"], root.__dict__["to"], root.__dict__["cuda"]
+
+    ns["_restore_dispatch_state"](root, snapshot)
+    assert root.__dict__["to"] is guard
+    assert root.__dict__["cuda"] is guard
+
+
+def test_cpu_spill_rejection_is_retryable():
+    """bitsandbytes rejects a CPU-spilled map with a ValueError that says nothing
+    about memory, so the single-device retry has to match it explicitly."""
+    import importlib.util
+    from pathlib import Path
+
+    export_py = (
+        Path(__file__).resolve().parent.parent
+        / "studio" / "backend" / "core" / "export" / "export.py"
+    )
+    src = ast.parse(export_py.read_text(encoding = "utf-8"))
+    keep = [
+        n for n in src.body
+        if isinstance(n, ast.FunctionDef) and n.name in {"_is_oom_error", "_is_cpu_spill_rejection"}
+    ]
+    assert len(keep) == 2
+    namespace = {"torch": None}
+    exec(  # noqa: S102 - loading trusted repo source
+        compile(ast.Module(body = keep, type_ignores = []), str(export_py), "exec"), namespace
+    )
+
+    bnb = ValueError(
+        "Some modules are dispatched on the CPU or the disk. Make sure you have enough "
+        "GPU RAM to fit the quantized model."
+    )
+    assert not namespace["_is_oom_error"](bnb)
+    assert namespace["_is_cpu_spill_rejection"](bnb)
+    assert namespace["_is_oom_error"](RuntimeError("CUDA out of memory. Tried to allocate 1 GiB"))
+    assert not namespace["_is_cpu_spill_rejection"](RuntimeError("some other failure"))
+
+
+def test_torchao_releases_the_quantized_copy_in_finally():
+    """If save_pretrained raises, the quantized copy must still be dropped before the
+    original is restored, or both are resident at once."""
+    src = _SAVE_PY.read_text(encoding = "utf-8")
+    body = src.split("def _unsloth_save_torchao_with_given_config(", 1)[1].split("\ndef ", 1)[0]
+    finally_block = body.split("    finally:", 1)[1]
+    assert "del quantized_model" in finally_block
+    assert "_restore_model_after_quantize_subprocess(model, model_restore)" in finally_block
+    # and the restore must come after the copy is dropped
+    assert finally_block.index("del quantized_model") < finally_block.index(
+        "_restore_model_after_quantize_subprocess"
     )

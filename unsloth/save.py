@@ -4584,8 +4584,11 @@ def _unsloth_save_torchao_with_given_config(
             )
             tokenizer.save_pretrained(torchao_save_directory, token = token)
 
-        del quantized_model
     finally:
+        # del here, not at the end of the try: if save_pretrained raises, the copy
+        # would otherwise still be resident while the original is restored.
+        quantized_model = None
+        del quantized_model
         for _ in range(3):
             gc.collect()
             if torch.cuda.is_available():
@@ -4631,6 +4634,17 @@ def _print_compressed_hw_note(scheme, out_dir):
 
 
 _DISPATCH_SNAPSHOT_ATTR = "_unsloth_dispatch_snapshot"
+
+def _accelerate_move_guards():
+    """The instance methods dispatch_model wraps to block moving an offloaded model."""
+    try:
+        from accelerate.hooks import _accelerate_added_attributes
+        return tuple(_accelerate_added_attributes)
+    except Exception:
+        return ("to", "cuda", "npu", "xpu", "mlu", "sdaa", "musa")
+
+
+_ACCELERATE_MOVE_GUARDS = _accelerate_move_guards()
 
 
 def _accelerate_dispatch_root(model):
@@ -4683,19 +4697,29 @@ def _snapshot_dispatch_state(root):
     # accelerate's tied_params_map is keyed on the old pointer, so replaying the
     # hooks alone materialises independent copies: double VRAM, and later updates
     # to one no longer reach the other.
+    # Skip meta tensors: accelerate parks every CPU/disk-offloaded parameter on
+    # meta, and they all report pointer 0, which would otherwise collapse into one
+    # enormous fake "tied" group of differently shaped tensors.
     groups = {}
     for name, tensor in named:
-        groups.setdefault(tensor.untyped_storage().data_ptr(), []).append(name)
+        if tensor.device.type == "meta":
+            continue
+        ptr = tensor.untyped_storage().data_ptr()
+        if ptr:
+            groups.setdefault(ptr, []).append(name)
     ties = [names for names in groups.values() if len(names) > 1]
     # Removing a hook restores `forward = _old_forward`, captured before unsloth
     # patched the module, so a remove/re-add drops every fused kernel installed
     # after the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs) for good.
-    forwards = {
-        name: (mod.__dict__.get("forward"), mod.__dict__.get("_old_forward"))
+    # It also deletes the `to`/`cuda`/`xpu`/... wrappers dispatch_model installs to
+    # stop a caller moving an offloaded model, so those are recorded as well.
+    attrs = ("forward", "_old_forward") + tuple(_ACCELERATE_MOVE_GUARDS)
+    saved_attrs = {
+        name: {a: mod.__dict__[a] for a in attrs if a in mod.__dict__}
         for name, mod in root.named_modules()
-        if "forward" in mod.__dict__ or "_old_forward" in mod.__dict__
+        if any(a in mod.__dict__ for a in attrs)
     }
-    return hooks, places, forwards, ties
+    return hooks, places, saved_attrs, ties
 
 
 def _drop_accelerator_tied_param_cache(snapshot) -> None:
@@ -4748,8 +4772,8 @@ def _share_tensor(root, full_name, leader) -> None:
         if target is None or attr not in target:
             continue
         current = target[attr]
-        if current is None or current.device != leader.device:
-            return  # accelerate split the tie across devices; leave it alone
+        if current is None or current.device != leader.device or current.shape != leader.shape:
+            return  # not actually the same tensor; leave it alone
         target[attr] = leader
         return
 
@@ -4758,19 +4782,17 @@ def _restore_dispatch_state(root, snapshot) -> None:
     """Replay ``_snapshot_dispatch_state``."""
     from accelerate.hooks import add_hook_to_module
 
-    hooks, places, forwards, ties = snapshot
+    hooks, places, saved_attrs, ties = snapshot
     for name, hook in hooks:
         add_hook_to_module(root.get_submodule(name) if name else root, hook)
 
     # Re-adding a hook rewraps whatever `_old_forward` now holds, so put the exact
-    # callables back.
-    for name, (fwd, old_fwd) in forwards.items():
+    # callables back. `_old_forward` first, then `forward`.
+    for name, values in saved_attrs.items():
         mod = root.get_submodule(name) if name else root
-        for attr, value in (("_old_forward", old_fwd), ("forward", fwd)):
-            if value is None:
-                mod.__dict__.pop(attr, None)
-            else:
-                mod.__dict__[attr] = value
+        for attr in ("_old_forward", "forward", *_ACCELERATE_MOVE_GUARDS):
+            if attr in values:
+                mod.__dict__[attr] = values[attr]
 
     # init_hook only re-places tensors the hooked module owns, so anything added to
     # the tree after the dispatch (the LoRA adapters) is still on CPU.

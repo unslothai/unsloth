@@ -133,6 +133,17 @@ def _is_oom_error(exc: BaseException) -> bool:
     return "out of memory" in f"{type(exc).__name__}: {exc}".lower()
 
 
+def _is_cpu_spill_rejection(exc: BaseException) -> bool:
+    """bitsandbytes refuses a map that spills to CPU/disk with a plain ``ValueError``.
+
+    Busy secondary GPUs can make ``balanced`` place modules on CPU even when GPU0
+    alone would have held the old sequential load, and that message carries no
+    "out of memory", so the retry has to match it explicitly. See transformers
+    ``quantizers/quantizer_bnb_4bit.py``.
+    """
+    return "dispatched on the cpu or the disk" in str(exc).lower()
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -501,12 +512,17 @@ class ExportBackend:
             # Sharding is an optimisation, never a requirement. "balanced" budgets from
             # the free memory read BEFORE this process opens its own CUDA context on each
             # GPU, so when a training or chat job already owns the others (which
-            # routes/export.py deliberately allows) the shard can OOM where the pre-#7053
-            # single-device load succeeded. Fall back once before giving up.
-            if _device_map_override is None and _is_oom_error(e) and _multi_gpu_device_map_kwargs():
+            # routes/export.py deliberately allows) the shard can OOM, or spill to CPU and
+            # be refused by bitsandbytes, where the pre-#7053 single-device load succeeded.
+            # Fall back once before giving up.
+            if (
+                _device_map_override is None
+                and (_is_oom_error(e) or _is_cpu_spill_rejection(e))
+                and _multi_gpu_device_map_kwargs()
+            ):
                 # Retry outside this block: the live traceback pins the half-built
                 # model's frames, so an in-block retry inherits the exhausted device.
-                oom_retry_reason = str(e)
+                retry_reason = str(e)
             else:
                 logger.error(f"Error loading checkpoint: {e}")
                 import traceback
@@ -515,7 +531,7 @@ class ExportBackend:
                 return False, f"Failed to load checkpoint: {str(e)}"
 
         logger.warning(
-            f"Multi-GPU export load ran out of memory ({oom_retry_reason}); retrying on "
+            f"Multi-GPU export load failed ({retry_reason}); retrying on "
             f"the single-device loader default."
         )
         self.cleanup_memory()
