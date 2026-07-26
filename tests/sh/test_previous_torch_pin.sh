@@ -98,7 +98,7 @@ assert_eq "probe before venv replacement" "yes" "$([ -n "$_probe_line" ] && [ -n
 # The pin must be evaluated AFTER the last index/constraint decision (the Strix
 # reroute raises the floor), so a raised floor rejects an older kept release.
 _pin_line=$(grep -n '_prev_pin=\$(_previous_torch_pin' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_strix_line=$(grep -n 'Strix Halo / Strix Point: force rocm7.2 wheels' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_strix_line=$(grep -n 'Strix Halo / Strix Point:' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "pin evaluated after the Strix reroute" "yes" "$([ -n "$_pin_line" ] && [ -n "$_strix_line" ] && [ "$_pin_line" -gt "$_strix_line" ] && echo yes)"
 # A kept release that vanished from the index must fall back to the supported range.
 assert_eq "resolve-failure fallback wired" "yes" "$(grep -q 'TORCH_CONSTRAINT="\$_PREV_FALLBACK_CONSTRAINT"' "$INSTALL_SH" && echo yes)"

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from loggers import get_logger
+from utils.hf_cache_settings import active_hf_hub_cache
 
 logger = get_logger(__name__)
 
@@ -455,7 +456,12 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         refs = set()
         for cfg_name in REMOTE_CODE_CONFIG_FILES:
             try:
-                cfg_path = hf_hub_download(model_name, cfg_name, token = hf_token)
+                cfg_path = hf_hub_download(
+                    model_name,
+                    cfg_name,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue
             except Exception as exc:
@@ -499,7 +505,12 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         wanted = present_py | (own_refs & repo_file_set)
         for fn in sorted(wanted):
             try:
-                fp = hf_hub_download(model_name, fn, token = hf_token)
+                fp = hf_hub_download(
+                    model_name,
+                    fn,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except Exception as exc:
                 # A .py CONFIRMED PRESENT could not be fetched. A partial set would
                 # fingerprint "clean" while transformers later runs this file, so fail
@@ -602,7 +613,12 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
 
         for cfg_name in REMOTE_CODE_CONFIG_FILES:
             try:
-                cfg_path = hf_hub_download(model_name, cfg_name, token = hf_token)
+                cfg_path = hf_hub_download(
+                    model_name,
+                    cfg_name,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except EntryNotFoundError:
                 continue
             except Exception:
@@ -670,7 +686,12 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
             wanted = present_py | set(entry_files)
         for fn in sorted(wanted):
             try:
-                fp = hf_hub_download(repo, fn, token = hf_token)
+                fp = hf_hub_download(
+                    repo,
+                    fn,
+                    token = hf_token,
+                    cache_dir = active_hf_hub_cache(),
+                )
             except Exception as exc:
                 logger.warning(
                     "repo_remote_code_files(%s): external %s:%s unscannable (%s)",

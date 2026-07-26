@@ -126,7 +126,7 @@ function SelectContent({
         data-slot="select-content"
         data-align-trigger={position === "item-aligned"}
         className={cn(
-          "bg-popover text-popover-foreground font-heading data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 min-w-36 rounded-xl p-1 corner-squircle duration-100 relative z-50 max-h-(--radix-select-content-available-height) origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto ",
+          "bg-popover text-popover-foreground font-heading data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 min-w-36 rounded-xl p-1 corner-squircle duration-100 relative z-50 max-h-(--radix-select-content-available-height) origin-(--radix-select-content-transform-origin) flex flex-col overflow-hidden",
           // No popper translate offset: the menu sits flush against the trigger.
           className,
         )}
@@ -135,10 +135,18 @@ function SelectContent({
         {...props}
       >
         <SelectScrollUpButton />
+        {/* The Radix viewport is the scroller (not the rounded surface, whose
+            scrollbar would square its corners in WebKit; not a wrapper, which
+            would blind Radix's scroll handling). The surface padding insets
+            the scrollbar clear of the curve. */}
         <SelectPrimitive.Viewport
           data-position={position}
+          // Inline: Radix injects a scrollbar-width:none stylesheet rule that
+          // Firefox lets win over author !important.
+          style={{ scrollbarWidth: "thin" }}
           className={cn(
-            "data-[position=popper]:h-[var(--radix-select-trigger-height)] data-[position=popper]:w-full data-[position=popper]:min-w-[var(--radix-select-trigger-width)]",
+            "min-h-0 flex-1 overflow-x-hidden overflow-y-auto",
+            "data-[position=popper]:w-full data-[position=popper]:min-w-[var(--radix-select-trigger-width)]",
             position === "popper" && "",
           )}
         >

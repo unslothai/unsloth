@@ -10,7 +10,14 @@ from pathlib import Path
 
 WORKDIR = Path(__file__).resolve().parents[2]
 MODEL_SELECTOR = (
-    WORKDIR / "studio" / "frontend" / "src" / "components" / "assistant-ui" / "model-selector.tsx"
+    WORKDIR
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "model-picker"
+    / "components"
+    / "model-selector.tsx"
 )
 APP_SIDEBAR = WORKDIR / "studio" / "frontend" / "src" / "components" / "app-sidebar.tsx"
 
@@ -23,7 +30,7 @@ def _read(path: Path) -> str:
 def test_model_selector_trigger_label_uses_leading_tight():
     src = _read(MODEL_SELECTOR)
     pattern = re.compile(
-        r'<span\s+className="[^"]*\bmin-w-0\b[^"]*\bflex-1\b[^"]*\btruncate\b[^"]*\bfont-heading\b[^"]*\btext-\[16px\][^"]*"',
+        r'<span\s+className="[^"]*\bmin-w-0\b[^"]*\bflex-1\b[^"]*\btruncate\b[^"]*\bfont-heading\b[^"]*\btext-ui-16[^"]*"',
     )
     matches = pattern.findall(src)
     assert matches, "could not find ModelSelectorTrigger model-name span"

@@ -75,6 +75,31 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert 'className="min-w-0 flex-1"' in reasoning_src
 
 
+def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
+    src = REASONING_TSX.read_text()
+
+    assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
+    assert "setRetainStreamingHeight(false)" in src
+    assert "setRetainStreamingHeight(isReasoningStreaming)" in src
+    assert "isReasoningStreaming ? 0 : ANIMATION_DURATION" in src
+    assert "streaming={isReasoningStreaming || retainStreamingHeight}" in src
+
+
+def test_reasoning_clears_manual_open_on_a_new_stream():
+    """A hand-opened block must not stay pinned open when the stream restarts.
+
+    isOpen is `(streaming && !dismissed) || manualOpen` and manualOpen is only
+    settable while idle, so the new-stream reset has to clear it too.
+    """
+    src = REASONING_TSX.read_text()
+
+    marker = "setDismissedWhileStreaming(false)"
+    start = src.find(marker)
+    assert start != -1, "new-stream reset effect is missing"
+    effect = src[src.rfind("useEffect(() => {", 0, start) : src.find("});", start)]
+    assert "setManualOpen(false)" in effect
+
+
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
     src = ADAPTER_TS.read_text()
     assert "interface ResponseDetailsMetadata" in src

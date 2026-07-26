@@ -60,7 +60,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
           <div className="truncate text-xs font-medium text-foreground">
             {title}
           </div>
-          <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+          <div className="mt-0.5 truncate text-ui-11 leading-4 text-muted-foreground">
             {description}
           </div>
         </div>

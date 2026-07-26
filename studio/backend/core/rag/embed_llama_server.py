@@ -188,7 +188,14 @@ class LlamaServerBackend:
         match = [f for f in files if variant in f.lower()] or files
         filename = sorted(match, key = len)[0]
         logger.info("resolving GGUF embedder %s/%s", repo, filename)
-        self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        self._model_path = hf_hub_download(
+            repo_id = repo,
+            filename = filename,
+            token = token,
+            cache_dir = active_hf_hub_cache(),
+        )
         self._model_repo = desired
         self._dim = None
         return self._model_path

@@ -1,0 +1,876 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""whisper.cpp (GGML/GGUF) speech-to-text sidecar for Studio dictation.
+
+Runs the same curated Whisper checkpoints as the Transformers sidecar
+(stt_sidecar.py) through whisper.cpp's `whisper-server`, ~2.5x faster at
+identical quality on Apple Silicon and CPU because its Metal/CPU kernels run
+the weights in f16 where PyTorch MPS requires fp32.
+
+Owns a single `whisper-server` subprocess bound to 127.0.0.1 on an ephemeral
+port; the model loads on demand, stays warm between dictations, and unloads
+after the same keep-alive as the Transformers sidecar. Curated GGML checkpoints
+are single files from `unslothai/whisper-*-GGUF`, downloaded directly rather
+than through the Model Hub (whose variant planner only handles `.gguf` chat
+layouts).
+
+Binary discovery mirrors `_find_llama_server_binary`: env override, then managed
+Studio home, then PATH. With no binary the engine is unavailable and dictation
+falls back to the Transformers sidecar; `scripts/build_whisper_cpp.sh` installs
+the binary.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import uuid
+import wave
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator, Optional
+
+from loggers import get_logger
+
+from core.inference.stt_sidecar import (
+    STT_KEEP_ALIVE_SECONDS,
+    SttAudioDecodeError,
+    SttLanguageError,
+    SttLoadCancelledError,
+    SttModelIdError,
+    SttModelNotDownloadedError,
+    SttUnavailableError,
+    _decode_audio_bounded,
+    _known_whisper_languages,
+    _TARGET_SAMPLE_RATE,
+    _training_active,
+    normalize_whisper_language,
+)
+from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
+from utils.prebuilt.runtime_libs import dedupe_existing_dirs
+from utils.prebuilt.whisper_layout import lookup_marker
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+
+logger = get_logger(__name__)
+
+# Curated GGML checkpoints, one repo per model. Keys match the Transformers
+# sidecar's ids so the frontend reuses one picker; values are the single file
+# inside each repo.
+GGML_STT_REPOS: dict[str, str] = {
+    "tiny": "unslothai/whisper-tiny-GGUF",
+    "base": "unslothai/whisper-base-GGUF",
+    "small": "unslothai/whisper-small-GGUF",
+    "large-v3-turbo": "unslothai/whisper-large-v3-turbo-GGUF",
+    "large-v3": "unslothai/whisper-large-v3-GGUF",
+}
+GGML_STT_MODELS: dict[str, str] = {
+    "tiny": "whisper-tiny.bin",
+    "base": "whisper-base.bin",
+    "small": "whisper-small.bin",
+    "large-v3-turbo": "whisper-large-v3-turbo.bin",
+    "large-v3": "whisper-large-v3.bin",
+}
+DEFAULT_GGML_STT_MODEL = "small"
+
+_SERVER_START_TIMEOUT_SECONDS = 120.0
+_TRANSCRIBE_TIMEOUT_SECONDS = 600.0
+
+
+class SttEngineUnavailableError(SttUnavailableError):
+    """whisper-server is not installed; the GGUF dictation engine is off."""
+
+
+def resolve_ggml_model_id(model: Optional[str]) -> str:
+    """Validate a curated GGML model id. Custom repos are not supported here."""
+    if model is None or not str(model).strip():
+        return DEFAULT_GGML_STT_MODEL
+    normalized = str(model).strip()
+    if normalized in GGML_STT_MODELS:
+        return normalized
+    raise SttModelIdError(
+        f"STT model '{model}' is not a curated GGUF dictation model. "
+        f"Choose one of: {', '.join(GGML_STT_MODELS)}."
+    )
+
+
+def _managed_whisper_cpp_dir() -> Path:
+    """`<STUDIO_HOME>/whisper.cpp` in custom mode, else `~/.unsloth/whisper.cpp`.
+
+    Mirrors `managed_node_dir` / `_find_llama_server_binary` so managed runtimes
+    share one parent directory.
+    """
+    legacy = Path.home() / ".unsloth" / "whisper.cpp"
+    try:
+        from utils.paths.storage_roots import studio_root
+
+        resolved = studio_root()
+        legacy_studio = Path.home() / ".unsloth" / "studio"
+        try:
+            is_legacy = resolved.resolve() == legacy_studio.resolve()
+        except (OSError, ValueError):
+            is_legacy = resolved == legacy_studio
+        return legacy if is_legacy else (resolved / "whisper.cpp")
+    except (ImportError, OSError, ValueError):
+        override = (
+            os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+        ).strip()
+        if override:
+            try:
+                return Path(override).expanduser().resolve() / "whisper.cpp"
+            except (OSError, ValueError):
+                return Path(override).expanduser() / "whisper.cpp"
+        return legacy
+
+
+def find_whisper_server_binary() -> Optional[str]:
+    """Locate the whisper-server binary.
+
+    Search order:
+    1. WHISPER_SERVER_PATH environment variable (direct path to binary)
+    2. UNSLOTH_WHISPER_CPP_PATH env var (custom whisper.cpp install dir)
+    3. managed dir: <STUDIO_HOME or ~/.unsloth>/whisper.cpp/{,build/bin/}whisper-server
+    4. whisper-server on PATH
+    """
+    binary_name = "whisper-server.exe" if sys.platform == "win32" else "whisper-server"
+
+    def _layout_candidates(d: Path) -> list[Path]:
+        cands = [d / binary_name, d / "build" / "bin" / binary_name]
+        if sys.platform == "win32":
+            cands.append(d / "build" / "bin" / "Release" / binary_name)
+        return cands
+
+    env_path = os.environ.get("WHISPER_SERVER_PATH")
+    if env_path:
+        p = Path(env_path)
+        if _is_runnable(p):
+            return str(p)
+
+    custom_dir = os.environ.get("UNSLOTH_WHISPER_CPP_PATH")
+    if custom_dir:
+        for p in _layout_candidates(Path(custom_dir)):
+            if _is_runnable(p):
+                return str(p)
+
+    for p in _layout_candidates(_managed_whisper_cpp_dir()):
+        if _is_runnable(p):
+            return str(p)
+
+    return shutil.which(binary_name)
+
+
+def _is_runnable(p: Path) -> bool:
+    """A real whisper-server is an executable file. On Windows os.access(X_OK) is
+    effectively an existence check; on Unix it rejects a non-executable stub so a
+    half-written or wrong-mode file isn't mistaken for the server."""
+    return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+
+
+def _whisper_install_marker(binary: str) -> Optional[dict]:
+    """The prebuilt install marker above ``binary``, or None (source/custom builds)."""
+    return lookup_marker(binary).marker
+
+
+def slim_runtime_intact(binary: str) -> bool:
+    """True unless the marker says slim and the linked ggml runtime is missing
+    beside the server. New markers record the exact wired filenames
+    (linked_libraries), all of which must be present; legacy markers without the
+    field fall back to the per-OS core ggml name globs. A broken slim install
+    reads as engine-unavailable (reinstall via `unsloth studio update`), never a
+    crash at load."""
+    lookup = lookup_marker(binary)
+    marker = lookup.marker
+    if lookup.invalid or marker is None:
+        return not lookup.slim_collision
+    if not marker or marker.get("install_kind") != "slim":
+        return True
+    if lookup.authoritative:
+        valid = marker.get("component") == "whisper.cpp"
+        valid = valid and isinstance(marker.get("schema_version"), int)
+        valid = valid and all(
+            isinstance(marker.get(key), str) and marker[key]
+            for key in ("release_tag", "backend", "paired_llama_tag")
+        )
+        valid = valid and isinstance(marker.get("linked_libraries"), list)
+        valid = valid and bool(marker.get("linked_libraries"))
+        valid = valid and all(
+            isinstance(name, str) and name and Path(name).name == name
+            for name in marker["linked_libraries"]
+        )
+        if not valid:
+            return False
+    bin_dir = Path(binary).parent
+    linked = marker.get("linked_libraries")
+    if isinstance(linked, list) and linked and all(isinstance(name, str) for name in linked):
+        intact = all((bin_dir / name).is_file() for name in linked)
+    else:
+        if sys.platform == "win32":
+            required = ("ggml.dll", "ggml-base.dll")
+        elif sys.platform == "darwin":
+            required = ("libggml*.dylib", "libggml-base*.dylib")
+        else:
+            required = ("libggml.so*", "libggml-base.so*")
+        intact = all(any(p.is_file() for p in bin_dir.glob(pattern)) for pattern in required)
+    runtime_dirs = marker.get("linked_runtime_directories")
+    if intact and isinstance(runtime_dirs, list) and runtime_dirs:
+        intact = all(
+            isinstance(name, str)
+            and name
+            and (bin_dir / name).is_dir()
+            and any(path.is_file() for path in (bin_dir / name).rglob("*"))
+            for name in runtime_dirs
+        )
+    if intact and marker.get("backend") == "rocm":
+        expected_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        intact = (
+            marker.get("runtime_wiring_version") == 2
+            and isinstance(runtime_dirs, list)
+            and set(runtime_dirs) == expected_runtime_dirs
+        )
+    if not intact:
+        logger.warning(
+            "slim whisper install is missing its linked ggml runtime at "
+            f"{bin_dir}; run `unsloth studio update` to reinstall it"
+        )
+    return intact
+
+
+def is_available() -> bool:
+    binary = find_whisper_server_binary()
+    if binary is None:
+        return False
+    if not slim_runtime_intact(binary):
+        return False
+    try:
+        import av  # noqa: F401
+    except Exception:
+        # No PyAV means every transcription 501s on decode.
+        return False
+    return True
+
+
+def ensure_engine_available() -> str:
+    binary = find_whisper_server_binary()
+    if binary is None:
+        raise SttEngineUnavailableError(
+            "The local transcription runtime is not installed. Run "
+            "`unsloth studio update` to install it."
+        )
+    if not slim_runtime_intact(binary):
+        raise SttEngineUnavailableError(
+            "The local transcription runtime is missing its paired ggml "
+            "libraries. Run `unsloth studio update` to reinstall it."
+        )
+    return binary
+
+
+# ---------------------------------------------------------------------------
+# whisper-server child-process environment
+# ---------------------------------------------------------------------------
+# Build the whisper-server env: prepend the binary dir (co-located libs win, and
+# a backstop where the loader ignores the rpath) and scrub secret-bearing vars the
+# binary never needs. On WSL2 ROCm the system HIP libs go first, since a bundle's
+# bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships libggml-cuda.so but not
+# libcudart/libcublas (paired with the user's PyTorch), so add the
+# CUDA-from-PyTorch runtime dirs the selection gated on, else the backend cannot
+# resolve a runtime that lives only in wheels. Mirrors llama's binary_env(); the
+# scrub/WSL/dedupe helpers live in utils.prebuilt.
+
+# Module-level aliases keep the historical patch points for tests and callers.
+_wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
+_dedupe_existing_dirs = dedupe_existing_dirs
+
+
+def _whisper_server_child_env(binary: str) -> dict[str, str]:
+    """Env for the whisper-server subprocess: secrets scrubbed, home/profile vars
+    repointed at a managed scratch dir (a downloaded binary must not see the real
+    home's token caches), co-located libs on the loader path, WSL system HIP first
+    on WSL2 ROCm."""
+    env = scrub_env(os.environ)
+    isolate_home(env, str(_managed_whisper_cpp_dir() / ".child_home"))
+    bin_dir = str(Path(binary).parent)
+    # A CUDA bundle needs the CUDA-from-PyTorch wheel dirs so libcudart/libcublas
+    # resolve at launch when they live only in site-packages/nvidia/*/lib. Placed
+    # after bin_dir so co-located libs still win; empty for other bundles.
+    cuda_runtime_dirs: list[str] = []
+    bundle_dir = Path(bin_dir)
+    has_cuda_module = any(
+        path.is_file()
+        for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
+        for path in bundle_dir.glob(pattern)
+    )
+    if has_cuda_module:
+        try:
+            from utils.prebuilt.runtime_libs import python_runtime_dirs
+            cuda_runtime_dirs = python_runtime_dirs()
+        except Exception:
+            cuda_runtime_dirs = []
+    if sys.platform == "win32":
+        var, lead = "PATH", [bin_dir, *cuda_runtime_dirs]
+    elif sys.platform == "darwin":
+        var, lead = "DYLD_LIBRARY_PATH", [bin_dir]
+    else:
+        var, lead = "LD_LIBRARY_PATH", [bin_dir, *cuda_runtime_dirs]
+        wsl_rocm = _wsl_system_rocm_lib_dirs()
+        if wsl_rocm:
+            lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
+            env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+    existing = [p for p in env.get(var, "").split(os.pathsep) if p]
+    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Model file download (single files; deliberately outside the Model Hub flow)
+# ---------------------------------------------------------------------------
+
+
+def _cached_model_path(model_id: str) -> Optional[str]:
+    """Path of a fully downloaded GGML file in the shared HF cache, else None."""
+    from huggingface_hub import hf_hub_download
+    try:
+        return hf_hub_download(
+            repo_id = GGML_STT_REPOS[model_id],
+            filename = GGML_STT_MODELS[model_id],
+            local_files_only = True,
+        )
+    except Exception:
+        return None
+
+
+class _GgmlDownloadState:
+    """Tracks one background hf_hub_download of a curated GGML file."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._model_id: Optional[str] = None
+        self._error: Optional[str] = None
+        self._total_bytes: Optional[int] = None
+        self._etag: Optional[str] = None
+
+    def status(self) -> dict:
+        with self._lock:
+            downloading = self._thread is not None and self._thread.is_alive()
+            return {
+                "downloading": downloading,
+                "model": self._model_id if downloading else None,
+                "error": self._error,
+                "bytes_total": self._total_bytes if downloading else None,
+                "bytes_done": self._incomplete_bytes() if downloading else None,
+            }
+
+    def _incomplete_bytes(self) -> Optional[int]:
+        """Best-effort progress: size of the in-flight blob in the HF cache.
+
+        hf_hub_download writes ``blobs/<etag>.incomplete``; prefer this file's
+        etag, else the largest in-flight blob.
+        """
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            # Caller may hold the non-reentrant self._lock; bare reads are safe.
+            model_id = self._model_id
+            if not model_id:
+                return None
+            repo_dir = (
+                Path(HF_HUB_CACHE)
+                / f"models--{GGML_STT_REPOS[model_id].replace('/', '--')}"
+                / "blobs"
+            )
+            if not repo_dir.is_dir():
+                return None
+            etag = self._etag
+            if etag:
+                target = repo_dir / f"{etag}.incomplete"
+                if target.is_file():
+                    return target.stat().st_size
+            sizes = [p.stat().st_size for p in repo_dir.glob("*.incomplete") if p.is_file()]
+            return max(sizes) if sizes else None
+        except Exception:
+            return None
+
+    def start(
+        self,
+        model_id: str,
+        hf_token: Optional[str] = None,
+    ) -> None:
+        model_id = resolve_ggml_model_id(model_id)
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._model_id == model_id:
+                    return
+                raise SttModelIdError(
+                    f"Another GGUF dictation model ('{self._model_id}') is still "
+                    "downloading; wait for it to finish."
+                )
+            self._model_id = model_id
+            self._error = None
+            self._total_bytes = None
+            self._etag = None
+            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
+            self._thread = thread
+            thread.start()
+
+    def _run(self, model_id: str, hf_token: Optional[str]) -> None:
+        repo_id = GGML_STT_REPOS[model_id]
+        filename = GGML_STT_MODELS[model_id]
+        try:
+            from huggingface_hub import (
+                get_hf_file_metadata,
+                hf_hub_download,
+                hf_hub_url,
+            )
+            try:
+                # One HEAD request for the total and etag.
+                meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
+                with self._lock:
+                    self._total_bytes = meta.size
+                    self._etag = meta.etag
+            except Exception:
+                pass
+            hf_hub_download(
+                repo_id = repo_id,
+                filename = filename,
+                token = hf_token or None,
+            )
+        except Exception as exc:
+            logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
+            with self._lock:
+                self._error = f"Download failed for '{model_id}'."
+
+
+_download_state = _GgmlDownloadState()
+
+
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
+    _download_state.start(resolve_ggml_model_id(model), hf_token)
+
+
+def download_status() -> dict:
+    return _download_state.status()
+
+
+# ---------------------------------------------------------------------------
+# WAV packaging
+# ---------------------------------------------------------------------------
+
+
+def _pcm_to_wav_bytes(decoded_audio) -> bytes:
+    """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
+    import numpy as np
+
+    clipped = np.clip(decoded_audio, -1.0, 1.0)
+    pcm16 = (clipped * 32767.0).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(_TARGET_SAMPLE_RATE)
+        w.writeframes(pcm16.tobytes())
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Sidecar
+# ---------------------------------------------------------------------------
+
+
+class GgmlSttSidecar:
+    """Owns one whisper-server subprocess and proxies dictation to it."""
+
+    def __init__(self, keep_alive_seconds: float = STT_KEEP_ALIVE_SECONDS) -> None:
+        self._lock = threading.RLock()
+        self._process: Optional[subprocess.Popen] = None
+        self._port: Optional[int] = None
+        self._model_id: Optional[str] = None
+        self._idle_timer: Optional[threading.Timer] = None
+        self._idle_generation = 0
+        self._keep_alive_seconds = keep_alive_seconds
+        # Set while whisper-server starts so training admission can account for
+        # the accelerator memory it is about to bind. Read without the lock.
+        self._loading = False
+        # A still-starting whisper-server is cancellable so training can preempt
+        # it before it binds accelerator memory. Assigned inside self._lock but
+        # acted on without it: cancel_pending_load() runs while load() holds the
+        # lock, so the event is the source of truth and terminating the process
+        # is a best-effort fast path.
+        self._load_cancel_event: Optional[threading.Event] = None
+        self._starting_process: Optional[subprocess.Popen] = None
+        # Set before the updater waits for _lock, then kept set while it owns
+        # the lock and atomically replaces the managed install tree. New loads
+        # fail fast instead of starting a process from files being swapped.
+        self._update_in_progress = False
+
+    @property
+    def loaded_model(self) -> Optional[str]:
+        # Lock-free status read (like stt_sidecar.py): transcribe() holds
+        # self._lock for the whole inference call (up to
+        # _TRANSCRIBE_TIMEOUT_SECONDS), and status polls plus training admission
+        # must not block behind it. _process_alive() snapshots self._process
+        # before poll(), which subprocess guards with _waitpid_lock, so a
+        # concurrent unload is safe.
+        return self._model_id if self._process_alive() else None
+
+    @property
+    def device(self) -> Optional[str]:
+        return "whisper.cpp" if self._process_alive() else None
+
+    def is_loading(self) -> bool:
+        # True only while whisper-server is starting (seconds to bind its GPU
+        # backend); load() sets and clears the flag around that window.
+        return self._loading
+
+    @property
+    def keep_alive_seconds(self) -> float:
+        return self._keep_alive_seconds
+
+    def _process_alive(self) -> bool:
+        # Snapshot self._process once: a concurrent unload() nulls it under the
+        # lock, so lock-free readers would otherwise re-read None between the
+        # truthiness check and .poll().
+        process = self._process
+        return process is not None and process.poll() is None
+
+    # -- idle unload ------------------------------------------------------
+
+    def _cancel_idle_unload_locked(self) -> None:
+        self._idle_generation += 1
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+
+    def _schedule_idle_unload_locked(self) -> None:
+        self._cancel_idle_unload_locked()
+        if not self._process_alive():
+            return
+        generation = self._idle_generation
+        timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args = (generation,))
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _idle_unload(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._idle_generation:
+                return
+            logger.info("Unloading idle GGUF STT model %s", self._model_id)
+            self._release_locked()
+
+    # -- process lifecycle -------------------------------------------------
+
+    def _release_locked(self) -> None:
+        self._cancel_idle_unload_locked()
+        process = self._process
+        self._process = None
+        self._port = None
+        self._model_id = None
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout = 10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout = 10)
+        if process is not None:
+            forget_pid(process.pid)
+
+    def unload(self) -> None:
+        with self._lock:
+            self._release_locked()
+
+    def _raise_if_update_in_progress(self) -> None:
+        if self._update_in_progress:
+            raise SttEngineUnavailableError(
+                "The local transcription runtime is being updated. Try dictation again shortly."
+            )
+
+    @contextmanager
+    def update_maintenance(self) -> Iterator[bool]:
+        """Block new loads while the managed whisper.cpp tree is replaced.
+
+        The flag is published before waiting for an existing transcription to
+        release ``_lock``. Holding that lock across the yielded installer phase
+        prevents Windows from relocking the executable and prevents every host
+        from starting a process against a partially swapped tree. The yielded
+        value records whether a warm model had to be unloaded.
+        """
+        self._update_in_progress = True
+        try:
+            with self._lock:
+                model_was_active = self._process_alive()
+                self._release_locked()
+                yield model_was_active
+        finally:
+            self._update_in_progress = False
+
+    def cancel_pending_load(self) -> bool:
+        # Preempt a starting whisper-server so training does not launch while it
+        # binds accelerator memory. load() holds self._lock for the whole startup,
+        # so act without the lock: signal abort and terminate the starting
+        # process. _wait_for_server observes the event and raises, then load()
+        # reaps the process and releases the lock.
+        if not self._loading:
+            return False
+        event = self._load_cancel_event
+        if event is None:
+            return False
+        event.set()
+        process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
+    def wait_for_load_to_settle(self) -> None:
+        # load() holds self._lock across startup and cancel cleanup, so acquiring
+        # it blocks until a cancelled server is killed, reaped, and its
+        # accelerator memory released.
+        with self._lock:
+            pass
+
+    @staticmethod
+    def _reserve_free_port() -> tuple[socket.socket, int]:
+        """Bind an ephemeral port and keep the socket held.
+
+        The caller closes the reservation immediately before spawning
+        whisper-server, shrinking the window in which another local process
+        could bind the port. SO_REUSEADDR lets the child rebind right after.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", 0))
+        return s, s.getsockname()[1]
+
+    def _ensure_model_downloaded(self, model_id: str) -> str:
+        path = _cached_model_path(model_id)
+        if path is None:
+            raise SttModelNotDownloadedError(
+                f"STT model '{model_id}' (GGUF) is not downloaded. "
+                "Download it in Settings, then Voice, before loading it."
+            )
+        return path
+
+    def load(self, model: Optional[str] = None) -> None:
+        """Start (or switch) whisper-server for the requested curated model."""
+        self._raise_if_update_in_progress()
+        model_id = resolve_ggml_model_id(model)
+        with self._lock:
+            self._raise_if_update_in_progress()
+            binary = ensure_engine_available()
+            if self._process_alive() and self._model_id == model_id:
+                self._schedule_idle_unload_locked()
+                return
+            model_path = self._ensure_model_downloaded(model_id)
+            self._release_locked()
+            reservation, port = self._reserve_free_port()
+            command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
+            marker = _whisper_install_marker(binary)
+            if _training_active():
+                # Keep whisper.cpp off the accelerator during training (like the
+                # Transformers sidecar's CPU choice) so a mid-training dictation
+                # cannot reclaim the VRAM training just freed.
+                command.append("--no-gpu")
+            elif marker is not None and marker.get("backend") == "cpu":
+                # A deliberate CPU install must stay CPU: the slim wiring links
+                # every llama ggml backend (including CUDA/ROCm), so without
+                # this flag a cpu-selected install would still grab the GPU.
+                command.append("--no-gpu")
+            logger.info(
+                "Starting whisper-server for STT model %s on 127.0.0.1:%s",
+                model_id,
+                port,
+            )
+            cancel_event = threading.Event()
+            self._load_cancel_event = cancel_event
+            self._loading = True
+            try:
+                # Release the reservation as late as possible: whisper-server
+                # binds the port moments after this close.
+                reservation.close()
+                process = subprocess.Popen(
+                    command,
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    stdin = subprocess.DEVNULL,
+                    # Co-located GPU libs on the loader path (WSL system HIP first),
+                    # secrets scrubbed from the downloaded binary's env.
+                    env = _whisper_server_child_env(binary),
+                    # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
+                    # never orphans a server holding the model.
+                    **child_popen_kwargs(),
+                )
+                self._starting_process = process
+                adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+                try:
+                    self._wait_for_server(process, port, cancel_event)
+                except Exception:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout = 10)
+                    forget_pid(process.pid)
+                    raise
+                self._process = process
+                self._port = port
+                self._model_id = model_id
+                self._schedule_idle_unload_locked()
+            finally:
+                reservation.close()  # no-op when already released before spawn
+                self._loading = False
+                self._load_cancel_event = None
+                self._starting_process = None
+
+    @staticmethod
+    def _wait_for_server(
+        process: subprocess.Popen,
+        port: int,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttLoadCancelledError(
+                    "GGUF STT model loading was cancelled so training could start."
+                )
+            if process.poll() is not None:
+                raise SttEngineUnavailableError(
+                    "The local transcription runtime exited before becoming "
+                    "ready; the model file may be corrupt or unsupported."
+                )
+            # Require a whisper-server-specific response twice, with the managed
+            # child alive around each probe. An arbitrary local process that won
+            # the bind race would otherwise be mistaken for the sidecar and
+            # receive the user's microphone audio.
+            if GgmlSttSidecar._probe_is_whisper_server(process, port) and (
+                GgmlSttSidecar._probe_is_whisper_server(process, port)
+            ):
+                return
+            time.sleep(0.2)
+        raise SttEngineUnavailableError("The local transcription runtime did not start in time.")
+
+    @staticmethod
+    def _probe_is_whisper_server(process: subprocess.Popen, port: int) -> bool:
+        """One readiness probe: our child is alive and the responder looks like
+        whisper.cpp's server (its index page and errors identify whisper)."""
+        if process.poll() is not None:
+            return False
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/", method = "GET")
+            with urllib.request.urlopen(req, timeout = 2) as response:
+                body = response.read(65536)
+        except Exception:
+            return False
+        if process.poll() is not None:
+            return False
+        return b"whisper" in body.lower()
+
+    # -- transcription ------------------------------------------------------
+
+    def transcribe(
+        self,
+        audio: bytes,
+        model: Optional[str] = None,
+        language: Optional[str] = None,
+        fast: bool = False,
+    ) -> dict:
+        """Transcribe encoded audio bytes via whisper-server.
+
+        Accepts any container PyAV can decode (same validation and caps as the
+        Transformers sidecar). Returns {text, language, duration, model}.
+        """
+        self._raise_if_update_in_progress()
+        ensure_engine_available()
+        model_id = resolve_ggml_model_id(model)
+        lang = normalize_whisper_language(language)
+        known_languages = _known_whisper_languages()
+        if lang is not None and known_languages is not None and lang not in known_languages:
+            raise SttLanguageError(
+                f"Language '{language}' is not supported by STT model '{model_id}'."
+            )
+        # Reject a missing model before decoding so a long clip does not burn CPU
+        # only to 409 (matches the Transformers sidecar's preflight).
+        self._ensure_model_downloaded(model_id)
+        decoded_audio = _decode_audio_bounded(audio)
+        wav_bytes = _pcm_to_wav_bytes(decoded_audio)
+        with self._lock:
+            try:
+                self.load(model_id)
+                text = self._post_inference(wav_bytes, lang, fast)
+            finally:
+                self._schedule_idle_unload_locked()
+        duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
+        return {
+            "text": text,
+            "language": lang,
+            "duration": duration,
+            "model": model_id,
+        }
+
+    def _post_inference(self, wav_bytes: bytes, lang: Optional[str], fast: bool) -> str:
+        boundary = uuid.uuid4().hex
+        fields = {
+            "temperature": "0.0",
+            "response_format": "json",
+            # Match the Transformers sidecar: 5-way beam search, greedy for fast.
+            "beam_size": "1" if fast else "5",
+            "language": lang or "auto",
+        }
+        parts: list[bytes] = []
+        for name, value in fields.items():
+            parts.append(
+                (
+                    f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="{name}"\r\n\r\n{value}\r\n'
+                ).encode()
+            )
+        parts.append(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; "
+                'name="file"; filename="dictation.wav"\r\n'
+                "Content-Type: audio/wav\r\n\r\n"
+            ).encode()
+            + wav_bytes
+            + b"\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(parts)
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self._port}/inference",
+            data = body,
+            headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout = _TRANSCRIBE_TIMEOUT_SECONDS) as resp:
+                payload = json.load(resp)
+        except SttAudioDecodeError:
+            raise
+        except Exception as exc:
+            raise SttEngineUnavailableError(
+                "The local transcription runtime did not answer the request."
+            ) from exc
+        text = payload.get("text")
+        if not isinstance(text, str):
+            raise SttAudioDecodeError("Could not decode the audio.")
+        # whisper.cpp joins segments with newlines; dictation wants one line.
+        return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+
+
+_sidecar: Optional[GgmlSttSidecar] = None
+
+
+def get_ggml_stt_sidecar() -> GgmlSttSidecar:
+    global _sidecar
+    if _sidecar is None:
+        _sidecar = GgmlSttSidecar()
+    return _sidecar

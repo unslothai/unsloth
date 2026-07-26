@@ -27,7 +27,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
-from utils.hardware import prepare_gpu_selection
+from utils.hardware import get_device, prepare_gpu_selection
 
 # Re-exported from the shared helper so GGUF, training, and inference share one
 # type; kept importable here for backwards compatibility.
@@ -217,10 +217,14 @@ class InferenceOrchestrator:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
+        from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
 
-        from .worker import run_inference_process
+        cache_env = get_hf_cache_paths().child_env({})
 
-        with native_path_secret_removed_for_child_start():
+        with (
+            child_environment_for_spawn(cache_env),
+            native_path_secret_removed_for_child_start(),
+        ):
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
             self._cancel_event = _CTX.Event()
@@ -228,7 +232,7 @@ class InferenceOrchestrator:
 
             self._proc = _CTX.Process(
                 target = run_without_native_path_secret,
-                args = (run_inference_process,),
+                args = ("core.inference.worker", "run_inference_process", cache_env),
                 kwargs = {
                     "cmd_queue": self._cmd_queue,
                     "resp_queue": self._resp_queue,
@@ -1008,6 +1012,8 @@ class InferenceOrchestrator:
             )
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
+            # Parent-detected backend for the worker's apply_gpu_ids().
+            sub_config["device_backend"] = get_device().value
 
             # Recheck the sidecar reservation BEFORE tearing the old worker down,
             # for REPAIRS only: an install holds this same lifecycle gate, so it
