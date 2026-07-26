@@ -815,7 +815,12 @@ def discover_image_caption_pairs(
             sidecar = img.with_suffix(ext)
             if sidecar.is_file():
                 sidecar_present = True
-                caption = sidecar.read_text(encoding = "utf-8").strip()
+                try:
+                    caption = sidecar.read_text(encoding = "utf-8").strip()
+                except (OSError, UnicodeError):
+                    # Unreadable sidecar reads as the empty tombstone, so the
+                    # instance_prompt fallback applies instead of a 500 preflight.
+                    caption = ""
                 break
         # 2. metadata row keyed by file name (basename or relative path; as_posix so a Windows
         #    backslash path matches the jsonl's forward-slash keys). A sidecar, even empty, wins.

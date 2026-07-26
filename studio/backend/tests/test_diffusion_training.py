@@ -555,6 +555,39 @@ def test_route_start_forwards_num_epochs(client):
     assert client._fake.started_with["num_epochs"] == 8
 
 
+def test_route_start_forwards_dit_loss_knobs(client):
+    # The trainer implements these, but the request schema did not declare them, so
+    # model_dump() dropped them and the run silently used the defaults.
+    body = {
+        **_BODY,
+        "ema_decay": 0.99,
+        "cfg_dropout": 0.1,
+        "weighting_scheme": "bell",
+        "flow_shift": 3.0,
+    }
+    r = client.post("/api/train/diffusion/start", json = body)
+    assert r.status_code == 200, r.text
+    started = client._fake.started_with
+    assert started["ema_decay"] == 0.99 and started["cfg_dropout"] == 0.1
+    assert started["weighting_scheme"] == "bell" and started["flow_shift"] == 3.0
+
+
+def test_request_model_dit_loss_knob_bounds():
+    # Bounds mirror DiffusionLoraConfig.normalized(); flow_shift also accepts "auto".
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest
+
+    base = {"base_model": "b", "data_dir": "d", "output_dir": "o"}
+    defaults = DiffusionTrainingStartRequest(**base)
+    assert (defaults.ema_decay, defaults.cfg_dropout) == (0.0, 0.0)
+    assert defaults.weighting_scheme == "none" and defaults.flow_shift is None
+    assert DiffusionTrainingStartRequest(**base, flow_shift = "auto").flow_shift == "auto"
+    for bad in ({"ema_decay": 1.0}, {"cfg_dropout": 1.5}, {"weighting_scheme": "bogus"}):
+        with pytest.raises(ValidationError):
+            DiffusionTrainingStartRequest(**base, **bad)
+
+
 def test_request_model_num_epochs_bounds():
     # The request schema mirrors DiffusionLoraConfig's 0..1000 num_epochs range.
     from pydantic import ValidationError
@@ -1133,6 +1166,20 @@ def test_diffusion_info_tolerates_invalid_utf8_jsonl(client, dataset_roots):
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
     summary = next(d for d in r.json()["datasets"] if d["name"] == "bad-utf8-meta")
+    assert summary["caption_count"] == 0
+
+
+def test_diffusion_info_tolerates_invalid_utf8_sidecar(client, dataset_roots):
+    # Same for a per-image .txt sidecar: read_text raises UnicodeDecodeError, which is not an
+    # OSError, so an unguarded read 500s the info endpoint after the upload already committed.
+    ds_root, _ = dataset_roots
+    folder = ds_root / "bad-utf8-sidecar"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "a.txt").write_bytes(b"\xff\xfe not valid utf-8")
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "bad-utf8-sidecar")
     assert summary["caption_count"] == 0
 
 

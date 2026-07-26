@@ -87,6 +87,26 @@ def test_discover_empty_sidecar_without_instance_prompt_skips_image(tmp_path):
     assert pairs == {str(tmp_path / "cap.png"): "kept"}
 
 
+def test_discover_reads_invalid_utf8_sidecar_as_tombstone(tmp_path):
+    # A sidecar with invalid UTF-8 raised UnicodeDecodeError out of the preflight (a 500 on
+    # /diffusion/start). It now reads as empty, so the instance prompt still applies.
+    _touch(tmp_path / "cat.png")
+    (tmp_path / "cat.txt").write_bytes(b"\xff\xfe not utf-8")
+    pairs = discover_image_caption_pairs(tmp_path, instance_prompt = "a photo of sks cat")
+    assert pairs == [(str(tmp_path / "cat.png"), "a photo of sks cat")]
+
+
+def test_discover_null_metadata_caption_is_not_the_string_none(tmp_path):
+    # str(None) stored "None" as a real caption; a null row must fall through to the
+    # instance prompt instead.
+    _touch(tmp_path / "cat.png")
+    (tmp_path / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "cat.png", "text": None}) + "\n", encoding = "utf-8"
+    )
+    pairs = discover_image_caption_pairs(tmp_path, instance_prompt = "a photo of sks cat")
+    assert pairs == [(str(tmp_path / "cat.png"), "a photo of sks cat")]
+
+
 def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):
     _touch(tmp_path / "cap.png")
     _touch(tmp_path / "nocap.png")

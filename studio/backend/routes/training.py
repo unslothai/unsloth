@@ -1557,7 +1557,8 @@ def _resolve_dataset_caption(
         if sidecar.is_file():
             try:
                 caption = sidecar.read_text(encoding = "utf-8").strip()
-            except OSError:
+            except (OSError, UnicodeError):
+                # Unreadable/invalid UTF-8 sidecar: no caption, not a 500.
                 caption = None
             break
     if caption is None:

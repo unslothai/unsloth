@@ -146,10 +146,14 @@ def test_preprocess_control_passthrough_and_canny():
     img = Image.new("RGB", (32, 24), (10, 20, 30))
     # passthrough returns the same object.
     assert dc.preprocess_control(img, "passthrough") is img
-    # a flat image has no edges -> canny falls back to passthrough (no black map).
-    assert dc.preprocess_control(img, "canny") is img
-    # an image with structure yields an edge map: RGB, same size, some white pixels.
+    # a flat image has no edges, so the map is all black -- passing the source through would
+    # condition the ControlNet on its raw luminance, which is not an edge map at all.
     import numpy as np
+
+    flat = dc.preprocess_control(img, "canny")
+    assert flat.mode == "RGB" and flat.size == (32, 24)
+    assert np.asarray(flat).max() == 0
+    # an image with structure yields an edge map: RGB, same size, some white pixels.
 
     arr = np.zeros((24, 32, 3), np.uint8)
     arr[:, 16:, :] = 255  # a hard vertical edge

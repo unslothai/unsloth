@@ -250,7 +250,9 @@ def preprocess_control(image: Any, control_type: str) -> Any:
     mag = np.hypot(gx, gy)
     peak = float(mag.max())
     if peak <= 1e-6:
-        return image  # flat image -> nothing to trace
+        # Flat image -> no edges, which is an all-black map. Returning the source would
+        # instead condition the ControlNet on its raw luminance.
+        return Image.new("RGB", image.size, (0, 0, 0))
     mag = mag / peak * 255.0
     edges = (mag > 40.0).astype(np.uint8) * 255  # white edges on black (ControlNet convention)
     return Image.fromarray(edges).convert("RGB")

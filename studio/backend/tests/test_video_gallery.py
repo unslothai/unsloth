@@ -244,6 +244,16 @@ def test_list_skips_corrupt_sidecar():
     assert [r["prompt"] for r in listed] == ["ours"]
 
 
+def test_list_skips_invalid_utf8_sidecar():
+    # Invalid UTF-8 raises UnicodeDecodeError, which is not an OSError: one corrupt sidecar must
+    # be skipped like any other, not 500 the whole gallery listing.
+    directory = gallery.gallery_dir()
+    (directory / "badbytes.mp4").write_bytes(_mp4())
+    (directory / "badbytes.json").write_bytes(b"\xff\xfe{}")
+    gallery.save(_mp4(), _meta(prompt = "ours"))
+    assert [r["prompt"] for r in gallery.list_videos()] == ["ours"]
+
+
 def test_clear_preserves_mp4_with_present_but_invalid_sidecar():
     # A hand-dropped MP4 whose sidecar parses but lacks the required recipe keys (e.g. "{}") is
     # hidden by list_videos, so clear must not destroy it while removing the owned pair.

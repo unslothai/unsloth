@@ -803,6 +803,24 @@ class DiffusionTrainingStartRequest(BaseModel):
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
         ),
     )
+    # DiT-only levers the trainer implements. Undeclared, they were silently dropped by
+    # model_dump(); the defaults match DiffusionLoraConfig so an existing caller is unaffected.
+    ema_decay: float = Field(
+        0.0, ge = 0.0, lt = 1.0, description = "EMA of the LoRA weights; 0 disables it"
+    )
+    cfg_dropout: float = Field(
+        0.0, ge = 0.0, le = 1.0, description = "Chance of dropping the caption to an empty prompt"
+    )
+    weighting_scheme: Literal["none", "bell"] = Field(
+        "none", description = "Flow-matching timestep sampling: uniform, or logit-normal (bell)"
+    )
+    flow_shift: Optional[float | Literal["auto"]] = Field(
+        None,
+        description = (
+            "Flow-matching timestep shift. null uses the family default "
+            "(auto for qwen-image, 1.0 otherwise)."
+        ),
+    )
 
 
 class DiffusionTrainingStopRequest(BaseModel):

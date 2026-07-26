@@ -195,7 +195,8 @@ _REQUIRED_META = (
 def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
     try:
         raw = sidecar.read_text(encoding = "utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
+        # Invalid UTF-8 is a corrupt sidecar, not a listing failure.
         return None
     try:
         meta = json.loads(raw)
