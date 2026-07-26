@@ -249,22 +249,42 @@ class TestTorchIndexOverrideParity:
 
 
 class TestGfx211AllowlistParity:
-    """The gfx per-arch 2.11-floor leaves (gfx120X-all / gfx1151 / gfx1150) must be the
-    SAME set in every installer and its stale/mismatch check. When they diverged, a
-    pinned gfx110X-all / gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update."""
+    """The gfx per-arch 2.11-floor leaves must be the SAME set in every installer
+    and its stale/mismatch check. When they diverged, a pinned gfx110X-all /
+    gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update.
 
-    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150"}
+    Each test extracts the set each installer actually holds and compares it
+    against EXPECTED, rather than matching one hardcoded ordering. Order and
+    spacing are free; membership is not. The earlier literal-string form had to
+    be edited in four places whenever a leaf was added, which is how adding
+    gfx1152 (Krackan Point) turned this class red without any installer
+    actually disagreeing with another."""
+
+    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+
+    @staticmethod
+    def _leaves(blob: str) -> set[str]:
+        """The gfx leaves named in an allowlist literal, quoting-agnostic."""
+        return set(re.findall(r"gfx[0-9a-z-]+", blob.lower()))
 
     def test_install_sh_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8").lower()
-        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx120x-all|gfx1151|gfx1150).
-        m = re.search(r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150", text)
+        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx...|gfx...).
+        m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.sh gfx-2.11 allowlist is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_install_ps1_allowlist(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8").lower()
-        m = re.search(r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text)
+        m = re.search(r"\$_pingfx211\s*=\s*@\(([^)]*)\)", text)
         assert m, "install.ps1 $_pinGfx211 allowlist not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.ps1 $_pinGfx211 is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
         # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
@@ -273,9 +293,12 @@ class TestGfx211AllowlistParity:
         assert (
             "function Test-RocmGfx211Leaf" in text
         ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        assert re.search(
-            r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()
-        ), "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        m = re.search(r"function test-rocmgfx211leaf[\s\S]{0,400}?@\(([^)]*)\)", text.lower())
+        assert m, "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"Test-RocmGfx211Leaf holds {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
         assert "$_pinGfx211 = Test-RocmGfx211Leaf" in text, (
             "setup.ps1 install-spec path should reuse Test-RocmGfx211Leaf, not "
             "re-hardcode the allowlist (they must not diverge)"
@@ -283,9 +306,12 @@ class TestGfx211AllowlistParity:
 
     def test_stack_py_allowlist(self):
         text = STACK_PY.read_text(encoding = "utf-8").lower()
-        assert (
-            '"gfx120x-all", "gfx1151", "gfx1150"' in text
-        ), "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        m = re.search(r"_rocm_gfx_torch211_leaves[^=]*=\s*frozenset\(\s*\{([^}]*)\}", text)
+        assert m, "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"_ROCM_GFX_TORCH211_LEAVES is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
 
 class TestCudaLeafDigitParity:
@@ -351,15 +377,21 @@ class TestCudaLeafDigitParity:
 
 class TestKnown211SetParity:
     """The KNOWN-2.11 rocm/gfx set must be identical across all four installers:
-    exactly {rocm7.2} plus the gfx allowlist {gfx120x-all, gfx1151, gfx1150}.
+    exactly {rocm7.2} plus TestGfx211AllowlistParity.EXPECTED.
     rocm7.3 / torch 2.12 do not exist, so no side may floor them speculatively."""
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The 2.11 floor case matches exactly rocm7.2 + the three gfx leaves.
-        assert re.search(
-            r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text
-        ), "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
+        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
+        # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
+        # asserted here so the rocm-version half cannot drift on its own.
+        m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
+        assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
+        alternatives = set(m.group(1).lower().split("|"))
+        assert alternatives == {"rocm7.2"} | TestGfx211AllowlistParity.EXPECTED, (
+            f"install.sh 2.11 floor is {sorted(alternatives)}, expected "
+            f"{sorted({'rocm7.2'} | TestGfx211AllowlistParity.EXPECTED)}"
+        )
         # No speculative rocm7.3 anywhere.
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
