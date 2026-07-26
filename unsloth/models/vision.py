@@ -354,6 +354,7 @@ def _uses_flash_attention_for_generation(config):
             _is_flash_attention_requested(attn_implementation.get(config_name))
             for config_name in (
                 "text_config",
+                "llm_config",
                 "decoder_config",
                 "language_config",
                 "decoder",
@@ -371,6 +372,7 @@ def _uses_flash_attention_for_generation(config):
             configs.append(text_config)
     for config_name in (
         "text_config",
+        "llm_config",
         "decoder_config",
         "language_config",
         "decoder",

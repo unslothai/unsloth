@@ -57,6 +57,16 @@ def test_per_backbone_text_flash_attention_is_detected():
     assert uses_flash_attention(public_config)
 
 
+def test_per_backbone_llm_flash_attention_is_detected():
+    config = SimpleNamespace(
+        _attn_implementation = {
+            "vision_config": "sdpa",
+            "llm_config": "flash_attention_2",
+        }
+    )
+    assert uses_flash_attention(config)
+
+
 def test_nested_text_and_decoder_configs_are_detected():
     nested_text = SimpleNamespace(attn_implementation = "flash_attention_2")
     assert uses_flash_attention(
@@ -65,6 +75,11 @@ def test_nested_text_and_decoder_configs_are_detected():
     assert uses_flash_attention(
         SimpleNamespace(decoder_config = {"_attn_implementation": "flash_attention_2"})
     )
+
+
+def test_nested_llm_config_is_detected():
+    config = SimpleNamespace(llm_config = SimpleNamespace(_attn_implementation = "flash_attention_2"))
+    assert uses_flash_attention(config)
 
 
 def test_get_text_config_is_detected():
