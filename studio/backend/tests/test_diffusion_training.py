@@ -265,8 +265,12 @@ def test_complete_event_keeps_the_ema_adapter_path():
     # field on the way into the snapshot leaves that adapter undiscoverable by any client.
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
-        {"type": "complete", "output_dir": "/o", "lora_path": "/o/a.safetensors",
-         "ema_path": "/o/ema/a.safetensors"}
+        {
+            "type": "complete",
+            "output_dir": "/o",
+            "lora_path": "/o/a.safetensors",
+            "ema_path": "/o/ema/a.safetensors",
+        }
     )
     snap = svc.status()
     assert snap["lora_path"] == "/o/a.safetensors"
