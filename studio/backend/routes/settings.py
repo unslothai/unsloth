@@ -34,6 +34,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
@@ -126,11 +127,51 @@ class OpenAIAutoSwitchResponse(BaseModel):
 
 
 class ModelOverridePayload(BaseModel):
-    model_id: str = Field(..., min_length = 1)
-    llama_extra_args: list[str] = Field(default_factory = list)
+    """One model's saved launch config, applied when the API loads that model.
+
+    Everything past ``model_id`` is optional and omitted means "app default", so a
+    payload carrying only ``model_id`` clears the entry. The bounds here mirror
+    ``LoadRequest`` so a bad value is rejected at the boundary instead of being
+    silently dropped by the normalizer; the enum-ish fields (KV dtype, speculative
+    mode) are left to it, since their valid sets follow the llama.cpp build.
+    """
+
+    model_id: str = Field(..., min_length = 1, max_length = 512)
+    # None means "leave the stored value alone": the settings UI has no control
+    # for launch flags, so a save from it must not wipe flags set through this
+    # API. An explicit [] clears them (that is how "forget this model" arrives).
+    llama_extra_args: Optional[list[str]] = None
     # ge=1: 0 is not a valid sequence length, and the setter drops a falsy value,
     # so reject it at the boundary instead of accepting then silently discarding it.
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
+    custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
+    kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
+    speculative_type: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    tensor_parallel: bool = False
+    # Validated in bytes below, not by max_length: pydantic counts characters,
+    # so a multi-byte template could pass here and then be silently dropped by
+    # the normalizer (which measures UTF-8) while the request still returned 200.
+    chat_template_override: Optional[str] = None
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
+    # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
+    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
+    n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
+    gpu_ids: Optional[list[int]] = None
+
+
+    @field_validator("chat_template_override")
+    @classmethod
+    def _limit_chat_template_bytes(cls, value: Optional[str]) -> Optional[str]:
+        # Mirrors LoadRequest.normalize_blank_chat_template_override so the same
+        # template is accepted or rejected identically on both paths.
+        if value is None:
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(
+                f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit."
+            )
+        return value
 
 
 class ModelOverridesResponse(BaseModel):
@@ -289,12 +330,40 @@ def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import validate_extra_args
+    from utils.openai_auto_switch_settings import get_model_override
     try:
-        extra_args = validate_extra_args(payload.llama_extra_args)
+        # A payload carrying only model_id is the documented "remove", so it
+        # wipes everything. Otherwise it is a real save, and omitted launch flags
+        # are carried over from the stored entry (the settings UI cannot express
+        # them and must not delete them).
+        requested_extra_args = payload.llama_extra_args
+        saved_fields = payload.model_dump(
+            exclude = {"model_id", "llama_extra_args"}, exclude_none = True
+        )
+        is_removal = not payload.tensor_parallel and not {
+            key: value
+            for key, value in saved_fields.items()
+            if key != "tensor_parallel"
+        }
+        if requested_extra_args is None and not is_removal:
+            requested_extra_args = get_model_override(payload.model_id).get(
+                "llama_extra_args"
+            )
+        extra_args = validate_extra_args(requested_extra_args)
         set_model_override(
             payload.model_id,
             llama_extra_args = extra_args,
             max_seq_length = payload.max_seq_length,
+            custom_context_length = payload.custom_context_length,
+            kv_cache_dtype = payload.kv_cache_dtype,
+            speculative_type = payload.speculative_type,
+            spec_draft_n_max = payload.spec_draft_n_max,
+            tensor_parallel = payload.tensor_parallel,
+            chat_template_override = payload.chat_template_override,
+            gpu_memory_mode = payload.gpu_memory_mode,
+            gpu_layers = payload.gpu_layers,
+            n_cpu_moe = payload.n_cpu_moe,
+            gpu_ids = payload.gpu_ids,
         )
     except ValueError as exc:
         raise log_and_http_error(

@@ -210,8 +210,211 @@ def set_openai_auto_switch(
     )
 
 
+# --- Per-model launch config -------------------------------------------------
+#
+# An override is the server-side twin of the UI's per-model config (the browser
+# localStorage map behind features/model-picker/model-config). The UI mirrors
+# every save here so a model loaded by an OpenAI-compatible API request gets the
+# same launch settings a user would get loading it from the picker; without this
+# the API path could only ever apply the two legacy fields below.
+#
+# Legacy entries hold just {llama_extra_args, max_seq_length}; every field is
+# optional and absent means "fall back to the app default", so old entries keep
+# loading correctly. A write is a full replace of the fields it expresses, so the
+# route carries `llama_extra_args` over when the payload omits it (the settings
+# UI has no control for launch flags and must not wipe them).
+#
+# Known gap: the picker resolves a couple of knobs as "per-model value, else the
+# user's global preference" -- GPU memory mode and speculative decoding, whose
+# globals live in browser localStorage. An override deliberately stores only an
+# explicit per-model choice (so the model keeps following later global changes),
+# and the server cannot see the globals at all. So for a model that follows the
+# global on one of those two, an API load falls back to the app default rather
+# than the user's global. Every other field matches the picker exactly.
+
+# Mirrors _valid_cache_types in core/inference/llama_cpp.py.
+VALID_KV_CACHE_DTYPES = frozenset(
+    {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
+)
+# Canonical values plus the legacy spellings LoadRequest still accepts.
+VALID_SPECULATIVE_TYPES = frozenset(
+    {
+        "auto",
+        "mtp",
+        "ngram",
+        "mtp+ngram",
+        "off",
+        "default",
+        "draft-mtp",
+        "ngram-mod",
+        "ngram-simple",
+    }
+)
+# Only these two consume spec_draft_n_max (mirrors MTP_SPECULATIVE_TYPES in the UI).
+MTP_SPECULATIVE_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp"})
+VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
+
+MAX_SEQ_LENGTH_CEILING = 1048576
+MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
+
+
+def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in allowed else None
+
+
+def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < minimum or parsed > maximum:
+        return None
+    return parsed
+
+
+def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate one per-model launch config, dropping anything unusable.
+
+    Silently drops rather than raising: an override is a convenience mirror of the
+    UI's config, so one stale field (a KV dtype this llama.cpp build lost, a GPU id
+    from another host) must not block persisting the rest or fail the API load that
+    reads it. ``validate_extra_args`` is the caller's job -- it lives in the
+    llama_server_args allow-list module, which this one must not import.
+    """
+    entry: dict[str, Any] = {}
+
+    extra_args = payload.get("llama_extra_args")
+    if isinstance(extra_args, (list, tuple)) and extra_args:
+        entry["llama_extra_args"] = [str(arg) for arg in extra_args]
+
+    # 0 / negative means "unset"; the loader reads absence as the app default.
+    for key in ("max_seq_length", "custom_context_length"):
+        parsed = _bounded_int(payload.get(key), minimum = 1, maximum = MAX_SEQ_LENGTH_CEILING)
+        if parsed:
+            entry[key] = parsed
+
+    kv_cache_dtype = _clean_str(payload.get("kv_cache_dtype"), VALID_KV_CACHE_DTYPES)
+    if kv_cache_dtype:
+        entry["kv_cache_dtype"] = kv_cache_dtype
+
+    speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
+    if speculative_type:
+        entry["speculative_type"] = speculative_type
+        # Only meaningful for the MTP modes; storing it otherwise would resurface
+        # in the UI as an edit the loader silently ignores.
+        if speculative_type in MTP_SPECULATIVE_TYPES:
+            spec_draft_n_max = _bounded_int(
+                payload.get("spec_draft_n_max"), minimum = 1, maximum = 16
+            )
+            if spec_draft_n_max:
+                entry["spec_draft_n_max"] = spec_draft_n_max
+
+    if _coerce_bool(payload.get("tensor_parallel")):
+        entry["tensor_parallel"] = True
+
+    template = payload.get("chat_template_override")
+    if isinstance(template, str) and template.strip():
+        if len(template.encode("utf-8")) <= MAX_CHAT_TEMPLATE_OVERRIDE_BYTES:
+            entry["chat_template_override"] = template
+
+    # Only "manual" is a real override: persisting "auto" would pin the model and
+    # stop it following later changes to the global GPU memory preference.
+    if _clean_str(payload.get("gpu_memory_mode"), VALID_GPU_MEMORY_MODES) == "manual":
+        entry["gpu_memory_mode"] = "manual"
+
+    # -1 is Auto (llama.cpp --fit owns layer sizing), which is also the default,
+    # so only a pinned count >= 0 is worth storing.
+    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 1024)
+    if gpu_layers is not None:
+        entry["gpu_layers"] = gpu_layers
+
+    n_cpu_moe = _bounded_int(payload.get("n_cpu_moe"), minimum = 1, maximum = 1024)
+    if n_cpu_moe:
+        entry["n_cpu_moe"] = n_cpu_moe
+
+    gpu_ids = payload.get("gpu_ids")
+    if isinstance(gpu_ids, (list, tuple)) and gpu_ids:
+        # De-duplicate, preserving order: resolve_requested_gpu_ids rejects a
+        # repeated id outright, so storing [0, 0] would make every later API load
+        # of this model fail with a 400 that the picker never hits.
+        cleaned_ids: list[int] = []
+        for gid in gpu_ids:
+            parsed = _bounded_int(gid, minimum = 0, maximum = 1024)
+            if parsed is not None and parsed not in cleaned_ids:
+                cleaned_ids.append(parsed)
+        if cleaned_ids:
+            entry["gpu_ids"] = cleaned_ids
+
+    return entry
+
+
+def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Optional[int]:
+    """The ``max_seq_length`` an API load should send for this override.
+
+    Mirrors resolveFitMaxSeqLength in the UI (features/chat/presets/preset-policy.ts):
+    under Manual GPU memory with Auto layers, llama.cpp's ``--fit`` owns context
+    sizing, so the load sends the explicit context pin (or 0 to hand sizing over)
+    rather than the stored max sequence length. Returns None to leave the field
+    at the loader's default.
+    """
+    manual_auto_layers = (
+        is_gguf
+        and override.get("gpu_memory_mode") == "manual"
+        and override.get("gpu_layers") is None
+    )
+    if manual_auto_layers:
+        return override.get("custom_context_length") or 0
+    # max_seq_length wins where both are set. The UI only ever sends it for a
+    # non-GGUF model (a GGUF's context is `custom_context_length`), so in
+    # practice the two never collide from that path; a hand-written or legacy
+    # entry that sets it on a GGUF is honoured, which is this API's contract.
+    return override.get("max_seq_length") or override.get("custom_context_length")
+
+
+def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> dict[str, Any]:
+    """Map a stored per-model config onto ``LoadRequest`` keyword arguments.
+
+    Mirrors the UI's load payload (features/chat/api/chat-adapter.ts) so an API
+    auto-switch load and a picker load of the same model produce the same command
+    line. GPU placement is GGUF-only there, so it is gated the same way here: a
+    safetensors model loads through HF auto-placement and must not inherit a
+    hidden GGUF GPU pin.
+    """
+    if not override:
+        return {}
+    kwargs: dict[str, Any] = {}
+
+    max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
+    if max_seq_length is not None:
+        kwargs["max_seq_length"] = max_seq_length
+    for source, target in (
+        ("llama_extra_args", "llama_extra_args"),
+        ("kv_cache_dtype", "cache_type_kv"),
+        ("speculative_type", "speculative_type"),
+        ("spec_draft_n_max", "spec_draft_n_max"),
+        ("tensor_parallel", "tensor_parallel"),
+        ("chat_template_override", "chat_template_override"),
+    ):
+        if override.get(source) is not None:
+            kwargs[target] = override[source]
+
+    if is_gguf:
+        if override.get("gpu_memory_mode") is not None:
+            kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
+        if override.get("gpu_layers") is not None:
+            kwargs["gpu_layers"] = override["gpu_layers"]
+        if override.get("n_cpu_moe") is not None:
+            kwargs["n_cpu_moe"] = override["n_cpu_moe"]
+        if override.get("gpu_ids") is not None:
+            kwargs["gpu_ids"] = override["gpu_ids"]
+    return kwargs
+
+
 def get_model_overrides() -> dict[str, dict]:
-    """Per-model launch overrides keyed by model id ({llama_extra_args, max_seq_length})."""
+    """Per-model launch configs keyed by model id (see normalize_model_override)."""
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
     return raw if isinstance(raw, dict) else {}
 
@@ -226,15 +429,22 @@ def set_model_override(
     model_id: str,
     llama_extra_args: Optional[list[str]] = None,
     max_seq_length: Optional[int] = None,
+    **config: Any,
 ) -> dict:
-    """Upsert one model's launch override; an override with no fields removes it."""
+    """Upsert one model's launch config; a config with no usable fields removes it.
+
+    The two legacy parameters stay positional for existing callers; every other
+    per-model field is passed by keyword and normalized together.
+    """
     if not model_id or not model_id.strip():
         raise ValueError("model_id is required.")
-    entry: dict[str, Any] = {}
-    if llama_extra_args:
-        entry["llama_extra_args"] = [str(arg) for arg in llama_extra_args]
-    if max_seq_length:
-        entry["max_seq_length"] = max(0, int(max_seq_length))
+    entry = normalize_model_override(
+        {
+            **config,
+            "llama_extra_args": llama_extra_args,
+            "max_seq_length": max_seq_length,
+        }
+    )
 
     from storage.studio_db import upsert_app_setting_map_entry
 

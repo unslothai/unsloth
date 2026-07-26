@@ -258,3 +258,34 @@ def test_api_monitor_append_reply_exact_cap_then_more_marks_truncated():
     monitor.append_reply(entry_id, "y")
     reply = monitor.snapshot()[0]["reply"]
     assert len(reply) == m._MAX_REPLY_CHARS and reply.endswith("...")
+
+
+def test_api_monitor_clear_is_scoped_to_one_subject():
+    # Every other read on the monitor is subject-scoped. An unscoped clear from
+    # the route would let one caller erase another's history and zero their
+    # active count in the middle of a generation.
+    monitor = ApiMonitor(max_entries = 4)
+    alice = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "alice prompt",
+        subject = "alice",
+    )
+    bob = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "bob prompt",
+        subject = "bob",
+    )
+
+    monitor.clear(subject = "alice")
+    assert monitor.snapshot(subject = "alice") == []
+    assert [entry["id"] for entry in monitor.snapshot(subject = "bob")] == [bob]
+    assert monitor.active_count(subject = "bob") == 1
+    assert monitor.get(alice, subject = "alice") is None
+
+    # Passing no subject is the explicit "everything" path.
+    monitor.clear()
+    assert monitor.snapshot(subject = "bob") == []

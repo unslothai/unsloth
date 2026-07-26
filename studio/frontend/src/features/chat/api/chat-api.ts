@@ -129,6 +129,13 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+export async function clearApiMonitor(): Promise<void> {
+  const response = await authFetch("/api/inference/monitor", {
+    method: "DELETE",
+  });
+  await parseJsonOrThrow<{ cleared: boolean }>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {

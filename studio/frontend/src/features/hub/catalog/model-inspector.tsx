@@ -403,6 +403,8 @@ export type ModelInspectorActions = {
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
+  /** Open this model's full settings page, with the quant the card resolved. */
+  onOpenSettings?: (ggufVariant: string | null) => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({
@@ -438,6 +440,7 @@ export const ModelInspector = memo(function ModelInspector({
     onTrain,
     onInventoryChange,
     onSearchHub,
+    onOpenSettings,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -705,6 +708,7 @@ export const ModelInspector = memo(function ModelInspector({
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
               onChange={onInventoryChange}
+              onOpenSettings={onOpenSettings}
             />
           ) : (
             <DownloadSection

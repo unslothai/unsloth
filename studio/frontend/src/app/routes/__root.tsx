@@ -5,16 +5,14 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import {
-  SettingsDialog,
-  useSettingsDialogStore,
-} from "@/features/settings";
+import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
 import {
   ChatPage,
   clearNewChatDraft,
   useChatRuntimeStore,
   type ChatSearch,
 } from "@/features/chat";
+import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
@@ -33,13 +31,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import {
-  Suspense,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-} from "react";
+import { Suspense, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { AppProvider } from "../provider";
 
 declare module "@tanstack/react-router" {
@@ -76,11 +68,17 @@ const CHAT_ONLY_ALLOWED = new Set([
   // Export stays reachable on chat-only hosts so the page can show its own grayed-out reason
   // instead of a silent redirect; it self-gates via export capability, so nothing runs.
   "/export",
+  // Chat-only hosts (Intel Macs, Apple Silicon without MLX, no-GPU boxes) serve
+  // the OpenAI-compatible API exactly like any other host, so the monitor has to
+  // be reachable there. Without this the floating panel's own "Expand" button
+  // and the Settings > API card both redirect to /chat.
+  "/api-monitor",
 ]);
 
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
-  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
+  if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
+    return true;
   return false;
 }
 
@@ -224,6 +222,8 @@ function RootLayout() {
     <AppProvider>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
+      {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
+      {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
@@ -241,7 +241,9 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
-          <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
+          <SidebarInset
+            className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}
+          >
             <Navbar />
             <div
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}

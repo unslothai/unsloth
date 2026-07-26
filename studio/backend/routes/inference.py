@@ -3581,6 +3581,7 @@ async def _maybe_auto_switch_model(
         get_openai_auto_switch_enabled,
         get_auto_unload_idle_seconds,
         get_model_override,
+        model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
     from core.inference.llama_keepwarm import (
@@ -3716,13 +3717,35 @@ async def _maybe_auto_switch_model(
                         if _already_serving():
                             _record_serving_alias()
                             return
-                        # Apply this model's saved launch flags so the swap honors the config.
-                        override = get_model_override(override_id)
+                        # Apply this model's saved launch config so an API-driven swap
+                        # loads it exactly as the picker would: context, KV dtype,
+                        # speculative decoding, chat template and GPU placement, not
+                        # just the two legacy flags. Look the config up under the
+                        # variant-qualified id first (two quants of one repo can carry
+                        # different configs), then the bare advertised id, then the
+                        # concrete load path, so a config saved under any of the names
+                        # this model is known by is found.
+                        override = {}
+                        for override_key in (
+                            f"{override_id}:{variant}" if variant else None,
+                            override_id,
+                            target_id,
+                        ):
+                            if not override_key:
+                                continue
+                            override = get_model_override(override_key)
+                            if override:
+                                break
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        if override.get("llama_extra_args") is not None:
-                            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-                        if override.get("max_seq_length") is not None:
-                            load_kwargs["max_seq_length"] = override["max_seq_length"]
+                        load_kwargs.update(
+                            model_override_load_kwargs(
+                                override,
+                                # variant is set for every GGUF the resolver returns; the
+                                # reload-stash path carries the quant it froze.
+                                is_gguf = bool(variant)
+                                or target_id.lower().endswith(".gguf"),
+                            )
+                        )
                         # Reuse the load impl so its dedup, tensor fallback, and threading
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
@@ -5701,6 +5724,22 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         "active_requests": active_requests,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
+
+
+@studio_router.delete("/monitor")
+async def clear_api_monitor(current_subject: str = Depends(get_current_subject)):
+    """Drop this caller's recorded API history so a debugging session starts clean.
+
+    Scoped to the current subject, like every read on the monitor: an unscoped
+    wipe would erase another user's history and zero their active-request count
+    while their generation is still streaming.
+
+    The caller's own in-flight requests are dropped from the log too; they keep
+    streaming to their client, they just stop being reported here (a later append
+    re-adds nothing, since the entry id no longer resolves).
+    """
+    api_monitor.clear(subject = current_subject)
+    return {"cleared": True}
 
 
 @studio_router.get("/monitor/{entry_id}")

@@ -9,6 +9,7 @@ import {
 import {
   getInferenceStatus,
   isExternalModelId,
+  listGgufVariants,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -24,9 +25,13 @@ import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
 import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
 import {
   applyModelLoadConfigToRuntime,
+  applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   hfModelFitsDevice,
   resolveInitialConfig,
+  useActiveModelConfig,
+  type ModelPickTarget,
+  type PerModelConfig,
 } from "@/features/model-picker";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -42,6 +47,7 @@ import {
 } from "react";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
+import { HubModelSettingsView } from "./catalog/hub-model-settings-view";
 import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
 import {
@@ -345,6 +351,12 @@ export function ModelsPage() {
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeGgufContextLength = useChatRuntimeStore(
+    (s) => s.ggufContextLength,
+  );
+  // Live settings of the loaded model, so opening its settings page shows what
+  // it is actually running with rather than the last saved draft.
+  const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
@@ -1213,6 +1225,100 @@ export function ModelsPage() {
       runSelectedModel(opts, selectedModel?.isDownloaded ?? true),
     [runSelectedModel, selectedModel],
   );
+
+  // Full-page per-model settings, opened from a downloaded row's menu. Local
+  // state rather than a URL param: the page is a transient editor over the
+  // catalog, and a deep link to it would need the row's identity re-resolved
+  // against an inventory that may not have loaded yet.
+  const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+  const openModelSettings = useCallback(
+    async (row: CachedInventoryRow | LocalInventoryRow) => {
+      // loadId is what the loader accepts; repoId is only a display/API alias.
+      const id = row.loadId;
+      // Cached repo rows never carry a quant: the inventory emits one row per
+      // repo with format_variant null (see cache_inventory.py). Opening settings
+      // with a null variant would key the saved config to `repo::` while the
+      // loader reads `repo::Q4_K_M`, so the settings would silently never apply
+      // and the server mirror would be keyed wrong too. Resolve the quant the
+      // same way the on-device card does before opening.
+      let ggufVariant = row.formatVariant?.trim() || null;
+      if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
+        const repoId = row.kind === "cache" ? row.repoId : (row.repoId ?? null);
+        if (repoId) {
+          try {
+            const res = await listGgufVariants(repoId, hfApiToken(hfToken), {
+              preferLocalCache: true,
+              localPath: row.kind === "local" ? row.path : (row.cachePath ?? null),
+            });
+            const downloaded = res.variants.filter((v) => v.downloaded);
+            ggufVariant =
+              // Prefer the loaded quant, then the repo default, then whatever is
+              // on disk, mirroring LocalOnDeviceCard's selectedQuant.
+              downloaded.find((v) =>
+                ggufVariantsMatch(v.quant, activeGgufVariant),
+              )?.quant ??
+              downloaded.find((v) =>
+                ggufVariantsMatch(v.quant, res.default_variant),
+              )?.quant ??
+              downloaded[0]?.quant ??
+              null;
+          } catch {
+            // Offline or an unreadable cache: fall through with no variant. The
+            // settings page still works, it just cannot pin a specific quant.
+            ggufVariant = null;
+          }
+        }
+      }
+      const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+      setSettingsTarget({
+        id,
+        displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
+        ggufVariant,
+        isGguf: row.isGguf,
+        meta: {
+          source: "local",
+          isLora: row.modelFormat === "adapter",
+          ggufVariant: ggufVariant ?? undefined,
+          isGguf: row.isGguf,
+          // Partial downloads still open settings, but must not claim to be
+          // complete or the loader skips its download-progress reporting.
+          isDownloaded: !row.partial,
+          // Not carried on inventory rows; ModelConfigPage reads the GGUF header
+          // itself to size the context slider.
+          contextLength: null,
+        },
+      });
+    },
+    [activeGgufVariant, hfToken],
+  );
+  // Applying from the settings page loads the model with exactly those settings.
+  // ModelConfigPage has already persisted them (locally and, when "remember" is
+  // on, to the server), so an API request for this model gets the same load.
+  const runSettingsTarget = useCallback(
+    (config: PerModelConfig) => {
+      const target = settingsTarget;
+      if (!target) return;
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
+      applyPerModelConfigToRuntime(config);
+      setSettingsTarget(null);
+      void selectModel({
+        id: target.id,
+        source: "local",
+        ggufVariant: target.ggufVariant ?? undefined,
+        isGguf: target.isGguf,
+        isDownloaded: true,
+        isLora: target.meta.isLora,
+        keepSpeculative: true,
+        forceReload: true,
+        previousConfig,
+      }).catch(() => undefined);
+    },
+    [selectModel, settingsTarget],
+  );
   const handleLoadLocal = useCallback(
     (opts: ModelLoadOptions = {}) => runSelectedModel(opts, true),
     [runSelectedModel],
@@ -1220,6 +1326,30 @@ export function ModelsPage() {
   const handleTrain = useCallback(() => {
     // Hub → train integration ships in a later PR.
   }, []);
+  // Settings opened from the detail view's on-device card. The card resolves
+  // which quant it is showing, so it passes that in rather than re-deriving it.
+  const openSelectedModelSettings = useCallback(
+    (ggufVariant: string | null) => {
+      if (!selectedModel) return;
+      const id = selectedModel.resource.runId;
+      const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+      setSettingsTarget({
+        id,
+        displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
+        ggufVariant,
+        isGguf: selectedModel.isGguf,
+        meta: {
+          source: "local",
+          isLora: selectedModel.modelFormat === "adapter",
+          ggufVariant: ggufVariant ?? undefined,
+          isGguf: selectedModel.isGguf,
+          isDownloaded: selectedModel.isDownloaded,
+          contextLength: null,
+        },
+      });
+    },
+    [selectedModel],
+  );
   const handleSearchHub = useCallback(
     (next: string) => {
       const trimmed = next.trim();
@@ -1280,6 +1410,7 @@ export function ModelsPage() {
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
+      onOpenSettings: openSelectedModelSettings,
     }),
     [
       handleLoad,
@@ -1289,6 +1420,7 @@ export function ModelsPage() {
       handleTrain,
       handleSearchHub,
       refreshInventory,
+      openSelectedModelSettings,
     ],
   );
 
@@ -1370,6 +1502,7 @@ export function ModelsPage() {
       onRetry: handleRetrySearch,
       onInventoryChange: refreshInventory,
       onSwitchDevice: handleSwitchDevice,
+      onOpenModelSettings: openModelSettings,
     }),
     [
       handleSelect,
@@ -1378,6 +1511,7 @@ export function ModelsPage() {
       handleRetrySearch,
       refreshInventory,
       handleSwitchDevice,
+      openModelSettings,
     ],
   );
 
@@ -1520,6 +1654,10 @@ export function ModelsPage() {
 
   const detailOpen = urlModel !== null;
   const splitMode = allModelsView === "split";
+  // The catalog is unreachable when an opaque overlay sits on top of it: the
+  // detail view (full-page layout only, since split renders it alongside) or the
+  // settings page (always full-bleed).
+  const catalogCovered = (detailOpen && !splitMode) || settingsTarget !== null;
 
   return (
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
@@ -1575,9 +1713,15 @@ export function ModelsPage() {
             splitMode
               ? "flex-1 lg:w-[460px] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",
-            detailOpen && !splitMode && "pointer-events-none",
+            // The settings page is a full-bleed opaque overlay in every layout,
+            // including split, so it always takes the catalog out of the tab
+            // order. Without this, tabbing out of the settings form walks into
+            // the virtualized rows hidden behind it and screen readers announce
+            // the whole model list underneath.
+            catalogCovered && "pointer-events-none",
           )}
-          aria-hidden={(detailOpen && !splitMode) || undefined}
+          aria-hidden={catalogCovered || undefined}
+          inert={catalogCovered || undefined}
         >
           <ModelsCatalog
             state={catalogState}
@@ -1624,6 +1768,32 @@ export function ModelsPage() {
               />
             </div>
           )
+        )}
+
+        {/* Sits above the detail overlay (z-30): opening settings from a row
+            while a model preview is open should show the settings, not stack
+            behind it. */}
+        {settingsTarget && (
+          <div className="hub-canvas absolute inset-0 z-30 flex min-h-0 flex-col">
+            <HubModelSettingsView
+              target={settingsTarget}
+              loadedConfig={
+                modelIdsMatch(activeCheckpoint, settingsTarget.id) &&
+                ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant)
+                  ? activeModelConfig
+                  : null
+              }
+              loadedContextLength={
+                modelIdsMatch(activeCheckpoint, settingsTarget.id) &&
+                ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant)
+                  ? activeGgufContextLength
+                  : null
+              }
+              onBack={() => setSettingsTarget(null)}
+              onRun={runSettingsTarget}
+              compact={splitMode}
+            />
+          </div>
         )}
       </div>
 

@@ -55,6 +55,7 @@ import {
   resolveInitialConfig,
   savePerModelConfig,
 } from "../model-config/per-model-config";
+import { syncModelOverride } from "../api/model-overrides";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
 import {
@@ -578,6 +579,12 @@ interface ModelConfigPageProps {
   loadedContextLength?: number | null;
   initialConfig?: PerModelConfig | null;
   variant?: "page" | "sidebar";
+  /**
+   * Page variant only: render the built-in "Run settings" title block. A host
+   * that already shows the model name as its own page heading (the Hub's
+   * settings page) turns this off so the name is not printed twice.
+   */
+  showHeader?: boolean;
 }
 
 export function ModelConfigPage({
@@ -588,6 +595,7 @@ export function ModelConfigPage({
   loadedContextLength = null,
   initialConfig = null,
   variant = "page",
+  showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
@@ -870,6 +878,21 @@ export function ModelConfigPage({
     } else {
       saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
     }
+    // Mirror to the server so an OpenAI-compatible API request that loads this
+    // model gets these exact settings, not app defaults. Best-effort and
+    // non-blocking: the localStorage write above already governs this browser.
+    // Forgetting clears the server entry too, so the two never disagree.
+    //
+    // Skipped when the local write failed (quota, a future-schema entry): the
+    // browser and the server would otherwise permanently disagree about this
+    // model, with no way for the user to tell which one the next load used.
+    if (!saveFailed) {
+      syncModelOverride(
+        target.id,
+        target.ggufVariant,
+        remember ? effectiveRuntimeConfig : null,
+      );
+    }
     if (effectivePersistenceOnly) {
       if (saveFailed) {
         toast.error("Couldn't save settings for this model.");
@@ -898,7 +921,7 @@ export function ModelConfigPage({
 
   return (
     <div className="flex flex-col">
-      {variant === "page" && (
+      {variant === "page" && showHeader && (
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
             <button

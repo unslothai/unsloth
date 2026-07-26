@@ -3819,3 +3819,177 @@ def test_env_idle_below_floor_is_clamped(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 600
     monkeypatch.delenv(settings.MODEL_IDLE_TTL_ENV_VAR)
     assert settings.get_auto_unload_idle_seconds() == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-model launch config: normalization, LoadRequest mapping, key resolution.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
+    # A stale field must not cost the user the whole config, so bad values are
+    # dropped one by one rather than rejecting the payload.
+    entry = settings.normalize_model_override(
+        {
+            "max_seq_length": 8192,
+            "kv_cache_dtype": "not_a_dtype",
+            "speculative_type": "mtp",
+            "spec_draft_n_max": 999,  # out of range for the MTP draft count
+            "gpu_memory_mode": "auto",  # only "manual" is a real override
+            "gpu_layers": -1,  # -1 is Auto, which is already the default
+            "n_cpu_moe": 0,
+            "gpu_ids": [1, 1, 0, "2", -5],
+            "tensor_parallel": False,
+            "llama_extra_args": [],
+        }
+    )
+    assert entry == {
+        "max_seq_length": 8192,
+        "speculative_type": "mtp",
+        "gpu_ids": [1, 0, 2],
+    }
+
+
+def test_normalize_model_override_rejects_oversized_chat_template():
+    small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
+    assert small["chat_template_override"] == "{{ bos }}"
+    # The limit is bytes, not characters: a multi-byte template just under the
+    # character limit can still be over the byte limit.
+    huge = "é" * settings.MAX_CHAT_TEMPLATE_OVERRIDE_BYTES
+    assert "chat_template_override" not in settings.normalize_model_override(
+        {"chat_template_override": huge}
+    )
+
+
+def test_spec_draft_n_max_only_stored_for_mtp_modes():
+    mtp = settings.normalize_model_override(
+        {"speculative_type": "mtp", "spec_draft_n_max": 4}
+    )
+    assert mtp["spec_draft_n_max"] == 4
+    # A non-MTP mode ignores the draft count at load time, so storing it would
+    # show the user an edit that never takes effect.
+    ngram = settings.normalize_model_override(
+        {"speculative_type": "ngram", "spec_draft_n_max": 4}
+    )
+    assert "spec_draft_n_max" not in ngram
+
+
+def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
+    # Manual GPU memory with Auto layers means llama.cpp --fit owns the context,
+    # so the load sends the context pin (or 0), not the stored max seq length.
+    override = {"gpu_memory_mode": "manual", "max_seq_length": 8192}
+    assert settings.resolve_fit_max_seq_length(override, is_gguf = True) == 0
+    assert (
+        settings.resolve_fit_max_seq_length(
+            {**override, "custom_context_length": 4096}, is_gguf = True
+        )
+        == 4096
+    )
+    # Pinning the layer count takes --fit back out of the picture.
+    assert (
+        settings.resolve_fit_max_seq_length({**override, "gpu_layers": 20}, is_gguf = True)
+        == 8192
+    )
+    # Not a GGUF, so none of this applies.
+    assert settings.resolve_fit_max_seq_length(override, is_gguf = False) == 8192
+
+
+def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
+    override = {
+        "max_seq_length": 4096,
+        "kv_cache_dtype": "q8_0",
+        "tensor_parallel": True,
+        "gpu_memory_mode": "manual",
+        "gpu_layers": 20,
+        "n_cpu_moe": 3,
+        "gpu_ids": [0, 1],
+    }
+    gguf = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert gguf["cache_type_kv"] == "q8_0"
+    assert gguf["tensor_parallel"] is True
+    assert gguf["gpu_layers"] == 20
+    assert gguf["gpu_ids"] == [0, 1]
+
+    # A safetensors model loads through HF auto-placement; inheriting a GGUF GPU
+    # pin here would silently change where the weights land.
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["max_seq_length"] == 4096
+    assert "gpu_layers" not in safetensors
+    assert "gpu_ids" not in safetensors
+    assert "n_cpu_moe" not in safetensors
+    assert "gpu_memory_mode" not in safetensors
+
+    # Every key it produces has to be a real LoadRequest field, or the load call
+    # raises TypeError at the moment the user's request arrives.
+    LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
+    # Settings are saved per quant, so Q4_K_M and Q8_0 of the same repo are
+    # different entries; the bare repo id is only the fallback.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF": {"max_seq_length": 1024},
+        "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192, "gpu_layers": 20},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.max_seq_length == 8192
+    assert req.gpu_layers == 20
+
+
+def test_auto_switch_falls_back_to_bare_repo_override(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {"unsloth/B-GGUF": {"max_seq_length": 1024}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].max_seq_length == 1024
+
+
+def test_override_route_preserves_launch_flags_across_a_settings_only_update(monkeypatch):
+    # The settings page has no control for llama_extra_args, so saving from it
+    # omits the field. Omitted must mean "leave it alone", or every save from the
+    # UI would quietly wipe flags set elsewhere.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"]
+        ),
+        "tester",
+    )
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 4096),
+        "tester",
+    )
+    entry = resp.overrides["unsloth/B-GGUF"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 4096
+
+    # An explicit empty list is how the UI says "forget this model", and with no
+    # other fields left that removes the entry outright.
+    gone = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", llama_extra_args = []),
+        "tester",
+    )
+    assert "unsloth/B-GGUF" not in gone.overrides

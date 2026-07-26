@@ -15,7 +15,17 @@ export {
   type NumericValueInputHandle,
   snapToStep,
 } from "./components/numeric-value-input";
+export { ModelConfigPage } from "./components/model-config-page";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
+export type { ModelPickTarget } from "./components/model-selector/types";
+export {
+  fetchModelOverrides,
+  modelOverrideKey,
+  putModelOverride,
+  syncModelOverride,
+  type ApiModelOverride,
+  type ApiModelOverrides,
+} from "./api/model-overrides";
 export {
   useActiveModelConfig,
 } from "./hooks/use-active-model-config";

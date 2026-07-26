@@ -269,9 +269,20 @@ class ApiMonitor:
                 if entry.status == "running" and (subject is None or entry.subject == subject)
             )
 
-    def clear(self) -> None:
+    def clear(self, *, subject: Optional[str] = None) -> None:
+        """Drop recorded entries. ``subject`` limits the wipe to one caller's.
+
+        Every other read on this class is subject-scoped, so an unscoped clear
+        would let one user erase another's history (and zero their active count
+        mid-generation). Callers that genuinely mean "everything" pass None.
+        """
         with self._lock:
-            self._entries.clear()
+            if subject is None:
+                self._entries.clear()
+                return
+            self._entries = deque(
+                entry for entry in self._entries if entry.subject != subject
+            )
 
     def _find_locked(self, entry_id: str) -> Optional[ApiMonitorEntry]:
         for entry in self._entries:

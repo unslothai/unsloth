@@ -53,6 +53,7 @@ import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
+  CardSettingsButton,
   CardUpdateButton,
   DeleteConfirmDialog,
   UpdateConfirmDialog,
@@ -96,6 +97,8 @@ interface LocalOnDeviceCardProps {
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /** Open this model's full settings page for the shown quant. */
+  onOpenSettings?: (ggufVariant: string | null) => void;
 }
 
 function formatAdapterLabel(
@@ -214,6 +217,7 @@ export function LocalOnDeviceCard({
   onEject,
   onTrain,
   onChange,
+  onOpenSettings,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -549,6 +553,14 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
+              {onOpenSettings && (
+                <CardSettingsButton
+                  label={`Settings for ${repoId}`}
+                  // Hand over the quant this card resolved, so the settings page
+                  // edits the variant the user is looking at rather than the repo.
+                  onClick={() => onOpenSettings(selectedQuant ?? null)}
+                />
+              )}
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}
