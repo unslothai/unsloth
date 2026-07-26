@@ -225,6 +225,11 @@ _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_530_cache: dict[tuple[str, str | None], bool] = {}
 _remote_auto_map_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 
+# Models whose config.json got a definitive 401/403/404 (absent, or not readable with this
+# token). Tracked separately from _config_json_cache, which only holds configs we could
+# read, so "no auto_map" from an unread config is never mistaken for "no auto_map".
+_config_json_absent: set[tuple[str, str | None]] = set()
+
 # AutoConfig-probe tier cache for the process lifetime (cleared on restart), keyed by
 # model_name plus a local config.json signature (see _probe_cache_key) so an overwritten
 # checkpoint re-probes. Not keyed by Hub sha, so the probe never imports huggingface_hub
@@ -627,8 +632,30 @@ def _hf_api_url(path: str) -> str:
     return f"{_hf_endpoint_base()}{path}"
 
 
+def _parse_link_next(link_header: str | None) -> str | None:
+    """Next-page URL from a GitHub-style ``Link`` header, or None."""
+    for part in (link_header or "").split(","):
+        seg = part.split(";")
+        if len(seg) >= 2 and 'rel="next"' in seg[1]:
+            return seg[0].strip().strip("<>")
+    return None
+
+
+# A repo tree needs one request per 1000 entries; stop well past any real repo rather
+# than follow a cursor loop forever.
+_HF_API_MAX_PAGES = 200
+
+
 def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | None, bool]:
-    """GET a Hub API path via stdlib urllib. Returns (parsed_json, success)."""
+    """GET a Hub API path via stdlib urllib, following ``Link`` pagination.
+
+    The tree endpoint returns at most ``limit`` entries per response (1000 by default) and
+    advertises the next cursor as ``Link: rel="next"``, which is how ``huggingface_hub``'s
+    own ``list_repo_tree`` walks it. Reading only the first response silently truncates a
+    large repo, so list payloads are concatenated across pages. Returns
+    ``(parsed_json, success)``; success is False if any page fails, so a partial listing is
+    never mistaken for a complete one.
+    """
     if _env_offline():
         return None, False
 
@@ -637,10 +664,26 @@ def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | N
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
+    url = _hf_api_url(path)
+    merged: list = []
     try:
-        req = urllib.request.Request(_hf_api_url(path), headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
-            return json.loads(resp.read().decode()), True
+        for _ in range(_HF_API_MAX_PAGES):
+            req = urllib.request.Request(url, headers = headers)
+            with urllib.request.urlopen(req, timeout = 10) as resp:
+                payload = json.loads(resp.read().decode())
+                next_url = _parse_link_next(resp.headers.get("Link"))
+            if not isinstance(payload, list):
+                return payload, True
+            merged.extend(payload)
+            if not next_url:
+                return merged, True
+            # The cursor URL is echoed by the endpoint; only ever follow it over http(s).
+            if not next_url.startswith(("http://", "https://")):
+                logger.debug("Refusing non-http Hub pagination link for %s: %s", path, next_url)
+                return None, False
+            url = next_url
+        logger.debug("Hub API pagination exceeded %s pages for %s", _HF_API_MAX_PAGES, path)
+        return None, False
     except Exception as exc:
         logger.debug("HF API request failed for %s: %s", path, exc)
         return None, False
@@ -689,25 +732,64 @@ def _collect_external_py_sources(refs: set, hf_token: str | None = None) -> tupl
 
 
 def _auto_map_config_files(model_name: str) -> tuple[str, ...]:
-    """Configs to read for ``auto_map``. A local dir is free to read, so use every
-    remote-code config; a Hub id uses only ``config.json`` (already cached) because
-    transformers resolves remote MODELING code from there, and the extra files would
-    add an uncached fetch each to every tier lookup. Tokenizer auto_map is passed in by
-    its own caller (see ``known_refs``); a repo declaring modeling auto_map has every
-    ``.py`` in it fetched, which covers its processor code too."""
+    """Configs to read for ``auto_map``, the same set for a local dir and a Hub id.
+
+    A processor declared only in ``preprocessor_config.json`` / ``processor_config.json`` /
+    ``video_preprocessor_config.json`` (e.g. TencentARC/TimeLens-7B, whose config.json is a
+    stock ``qwen2_5_vl``) is still executed by ``AutoProcessor.from_pretrained(...,
+    trust_remote_code=True)``, so restricting a Hub id to ``config.json`` reports a
+    definitive negative for remote code that really does run. The extra reads land only on
+    the probe=True activation path, once per model, and only when the repo is scanned.
+    """
     from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
-    return REMOTE_CODE_CONFIG_FILES if _safe_is_dir(Path(model_name)) else ("config.json",)
+    return REMOTE_CODE_CONFIG_FILES
 
 
-def _repo_has_auto_map(model_name: str, hf_token: str | None = None) -> bool:
-    """True when a remote-code config in the repo declares ``auto_map``."""
+def _repo_auto_map_refs(model_name: str, hf_token: str | None = None) -> tuple[set, bool, bool]:
+    """``(refs, has_auto_map, definitive)`` from the repo's remote-code configs.
+
+    Each config is read exactly once. ``definitive`` is False when a config could not be
+    read at all (transient Hub failure, offline Hub id), so "this repo declares no
+    auto_map" is never concluded from a config nobody managed to look at.
+    """
     from utils.security.remote_code_scan import _auto_map_refs
 
+    refs: set = set()
+    has_auto_map = False
+    definitive = True
     for cfg_name in _auto_map_config_files(model_name):
-        cfg = _load_repo_json_file(model_name, cfg_name, hf_token)
-        if isinstance(cfg, dict) and _auto_map_refs(cfg):
-            return True
-    return False
+        cfg, cfg_definitive = _load_repo_json_checked(model_name, cfg_name, hf_token)
+        if not cfg_definitive:
+            definitive = False
+        if isinstance(cfg, dict):
+            found = _auto_map_refs(cfg)
+            if found:
+                has_auto_map = True
+                refs |= found
+    return refs, has_auto_map, definitive
+
+
+def _decode_source_bytes(raw: bytes) -> str:
+    """Decode Python source bytes the way CPython does.
+
+    PEP 263: a BOM or a ``# -*- coding: <enc> -*-`` cookie in the first two lines declares
+    the file's encoding, so a legitimate non-UTF-8 module must not fail to decode here and
+    turn a real 5.x-only import into an unreadable source. ``tokenize.detect_encoding``
+    implements exactly that rule. Undecodable bytes fall back to replacement, matching how
+    local checkpoint files are already read.
+    """
+    import io
+    import tokenize
+
+    encoding = "utf-8"
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+    except Exception:
+        pass
+    try:
+        return raw.decode(encoding)
+    except Exception:
+        return raw.decode(encoding, errors = "replace")
 
 
 def _read_repo_text_file(
@@ -737,33 +819,43 @@ def _read_repo_text_file(
     try:
         req = urllib.request.Request(url, headers = headers)
         with urllib.request.urlopen(req, timeout = 10) as resp:
-            return resp.read().decode()
+            return _decode_source_bytes(resp.read())
     except Exception as exc:
         logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
         return None
 
 
-def _load_repo_json_file(
+def _load_repo_json_checked(
     model_name: str,
     filename: str,
     hf_token: str | None = None,
-) -> dict | None:
-    """Parsed JSON from a repo-relative file; local first, else HuggingFace raw fetch."""
+) -> tuple[dict | None, bool]:
+    """``(parsed_json, definitive)`` for a repo-relative JSON file; local first, else a raw
+    Hub fetch.
+
+    ``definitive`` is False only when the answer is genuinely unknown: a transient remote
+    failure, or an offline Hub id. A local read, a 401/403/404 and a parse error are all
+    definitive answers, so only a read that never happened blocks caching.
+    """
     if filename == "config.json":
-        return _load_config_json(model_name, hf_token)
+        cfg = _load_config_json(model_name, hf_token)
+        if cfg is not None or _safe_is_dir(Path(model_name)) or not _looks_like_hf_id(model_name):
+            return cfg, True
+        return None, _config_json_answer_is_definitive(model_name, hf_token)
     local_path = Path(model_name) / filename
     if _safe_is_file(local_path):
         try:
             with open(local_path) as f:
-                return json.load(f)
+                return json.load(f), True
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_path, exc)
-            return None
-    if _safe_is_dir(Path(model_name)):
-        return None
-    if _env_offline() or not _looks_like_hf_id(model_name):
-        return None
+            return None, True
+    if _safe_is_dir(Path(model_name)) or not _looks_like_hf_id(model_name):
+        return None, True
+    if _env_offline():
+        return None, False
 
+    import urllib.error
     import urllib.request
 
     url = _hf_raw_file_url(model_name, filename)
@@ -773,10 +865,15 @@ def _load_repo_json_file(
     try:
         req = urllib.request.Request(url, headers = headers)
         with urllib.request.urlopen(req, timeout = 10) as resp:
-            return json.loads(resp.read().decode())
+            return json.loads(resp.read().decode()), True
+    except urllib.error.HTTPError as exc:
+        # 404 = genuinely absent; 401/403 = definitively unreadable with this token.
+        # Anything else (5xx, rate limit) is transient and must stay inconclusive.
+        logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
+        return None, exc.code in (401, 403, 404)
     except Exception as exc:
         logger.debug("Could not fetch %s for '%s': %s", filename, model_name, exc)
-        return None
+        return None, False
 
 
 def _remote_auto_map_py_contents(
@@ -792,16 +889,13 @@ def _remote_auto_map_py_contents(
     exists and saves re-reading that config. Returns ``(sources, definitive)``; when
     ``definitive`` is False the scan was incomplete and negatives must not be cached.
     """
-    from utils.security.remote_code_scan import _auto_map_refs
+    own_refs, has_auto_map, cfg_definitive = _repo_auto_map_refs(model_name, hf_token)
+    if not known_refs and not has_auto_map:
+        # An unread config proves nothing: report it as inconclusive rather than as a
+        # repo that declares no auto_map, so the negative is not cached until a real read.
+        return [], cfg_definitive
 
-    if not known_refs and not _repo_has_auto_map(model_name, hf_token):
-        return [], True
-
-    ext_refs: set = set(known_refs or ())
-    for cfg_name in _auto_map_config_files(model_name):
-        cfg = _load_repo_json_file(model_name, cfg_name, hf_token)
-        if isinstance(cfg, dict):
-            ext_refs |= _auto_map_refs(cfg)
+    ext_refs: set = set(known_refs or ()) | own_refs
 
     local_root = Path(model_name)
     if _safe_is_dir(local_root):
@@ -817,7 +911,7 @@ def _remote_auto_map_py_contents(
         if any(repo is not None for repo, _ in ext_refs) and not ext_ok:
             return sources, False
         sources.extend(ext_sources)
-        return sources, True
+        return sources, cfg_definitive
 
     if _env_offline() or not _looks_like_hf_id(model_name):
         return [], False
@@ -829,23 +923,25 @@ def _remote_auto_map_py_contents(
     if any(repo is not None for repo, _ in ext_refs) and not ext_ok:
         return sources, False
     sources.extend(ext_sources)
-    return sources, True
+    return sources, cfg_definitive
 
 
-def _imported_dotted_names(src: str) -> set[str]:
-    """Absolute module paths *src* imports, resolved with ``ast``.
+def _parsed_dotted_imports(src: str) -> set[str] | None:
+    """Absolute module paths *src* imports, resolved with ``ast``; ``None`` if it does not
+    parse.
 
-    Catches what a per-line substring scan cannot: a parenthesized multi-line import,
-    and the equivalent ``from <parent> import <submodule>`` spelling. Relative imports
-    are skipped (a repo's own same-named helper must not match). Empty when the source
-    does not parse.
+    Catches what a per-line substring scan cannot: a parenthesized multi-line import, and
+    the equivalent ``from <parent> import <submodule>`` spelling. Relative imports are
+    skipped (a repo's own same-named helper must not match). ``None`` (unparseable) and an
+    empty set (parsed, imports nothing) are different answers, so the caller only falls
+    back to the line scan for source ``ast`` could not read at all.
     """
     import ast
 
     try:
         tree = ast.parse(src)
     except Exception:
-        return set()
+        return None
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -856,21 +952,31 @@ def _imported_dotted_names(src: str) -> set[str]:
     return names
 
 
+def _imported_dotted_names(src: str) -> set[str]:
+    """Absolute module paths *src* imports; empty when the source does not parse."""
+    return _parsed_dotted_imports(src) or set()
+
+
 def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) -> bool:
     """True when a source *imports* one of *markers*.
 
-    Import lines only: a marker named in a comment or docstring must not promote the
-    tier. The line scan runs first (not ``ast``) on purpose, since remote code that
-    fails to parse would otherwise turn into a silent negative and crash on the default
-    tier; the ``ast`` pass then only ADDS the spellings a line scan cannot see.
+    Import statements only: a marker sitting in a docstring, a comment or any other string
+    literal must not promote the tier, since ``ast`` resolves what the module actually
+    imports. Source that ``ast`` cannot parse still falls back to the raw line scan, so
+    unparseable remote code never turns into a silent negative that crashes on the default
+    tier; that fallback is the only place a substring match is trusted.
     """
     for src in sources:
-        for line in src.splitlines():
-            stripped = line.strip()
-            if stripped.startswith(("import ", "from ")) and any(m in stripped for m in markers):
-                return True
-    for src in sources:
-        for name in _imported_dotted_names(src):
+        names = _parsed_dotted_imports(src)
+        if names is None:
+            for line in src.splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("import ", "from ")) and any(
+                    m in stripped for m in markers
+                ):
+                    return True
+            continue
+        for name in names:
             if any(name == m or name.startswith(m + ".") for m in markers):
                 return True
     return False
@@ -1137,7 +1243,10 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     import urllib.error
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    # Endpoint-aware: a mirror-only deployment (HF_ENDPOINT set, huggingface.co blocked)
+    # must be able to read the config that gates the whole auto_map scan, or the
+    # endpoint-aware tree/raw requests below it are never reached.
+    url = _hf_raw_file_url(model_name, "config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -1152,6 +1261,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         # private metadata to an unauthenticated/wrong-token request.
         if exc.code in (401, 403, 404):
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
+            _config_json_absent.add(cache_key)
             return None
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
         return _config_json_from_hf_cache(model_name)
@@ -1165,6 +1275,16 @@ def _config_json_is_definitive(model_name: str, hf_token: str | None = None) -> 
     """True if the last ``_load_config_json`` read for this model+token was cached
     (definitive), not a transient fallback (not stored, so callers re-check next call)."""
     return _token_cache_key(model_name, hf_token) in _config_json_cache
+
+
+def _config_json_answer_is_definitive(model_name: str, hf_token: str | None = None) -> bool:
+    """True when ``_load_config_json`` actually established an answer for this model+token.
+
+    Either it read a config (cached) or the Hub said 401/403/404. A transient failure
+    stores neither, so "no config" stays inconclusive and no negative gets cached.
+    """
+    key = _token_cache_key(model_name, hf_token)
+    return key in _config_json_cache or key in _config_json_absent
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:

@@ -1288,9 +1288,19 @@ class TestGetTransformersTier:
             mock_urlopen.assert_not_called()
 
     def test_remote_config_json_is_fetched_once_for_config_tiers(self):
-        """510 and 550 slow-path checks should share one config.json fetch."""
+        """510 and 550 slow-path checks should share one config.json fetch.
+
+        The auto_map scan additionally reads the remote-code configs once each (a processor
+        declared only in preprocessor/processor config is executable too), so pin the real
+        invariant: config.json is fetched exactly once, and nothing beyond the remote-code
+        config set is fetched for a repo that declares no auto_map.
+        """
+        from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
         class _Response:
+            def __init__(self):
+                self.headers = {}
+
             def __enter__(self):
                 return self
 
@@ -1305,10 +1315,20 @@ class TestGetTransformersTier:
                     }
                 ).encode()
 
-        with patch("urllib.request.urlopen", return_value = _Response()) as mock_urlopen:
+        urls = []
+
+        def _fake_urlopen(req, timeout = 10):
+            urls.append(req.full_url)
+            return _Response()
+
+        with patch("urllib.request.urlopen", side_effect = _fake_urlopen):
             assert get_transformers_tier("org/no-fast-substring-model") == "550"
 
-        assert mock_urlopen.call_count == 1
+        assert sum(u.endswith("/config.json") for u in urls) == 1
+        assert {u.rsplit("/", 1)[1] for u in urls} <= set(REMOTE_CODE_CONFIG_FILES)
+        # No repo tree listing and no .py fetches: nothing declared auto_map.
+        assert not any("/tree/" in u for u in urls)
+        assert not any(u.endswith(".py") for u in urls)
 
     def test_qwen35_returns_530(self):
         with (
@@ -3788,3 +3808,355 @@ class TestProbeFalseSkipsAutoMapScan:
         )
         monkeypatch.setattr(tv, "_read_repo_text_file", lambda m, fn, tok = None: _V5_IMPORT)
         assert get_transformers_tier("org/qwen3.5-remote", probe = True) == "510"
+
+
+class _PagedResponse:
+    """urlopen stand-in that can carry a ``Link: rel="next"`` header."""
+
+    def __init__(
+        self,
+        payload: bytes,
+        next_url: str | None = None,
+    ):
+        self._payload = payload
+        self.headers = {"Link": f'<{next_url}>; rel="next"'} if next_url else {}
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _http_error(url: str, code: int):
+    import urllib.error
+    return urllib.error.HTTPError(url, code, "err", {}, None)
+
+
+class TestHubTreePagination:
+    """The Hub tree endpoint pages at 1000 entries; a partial listing is not a negative."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_py_file_on_second_page_is_found(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        page1 = [{"type": "file", "path": f"w-{i}.safetensors"} for i in range(1000)]
+        page2 = [{"type": "file", "path": "modeling_custom.py"}]
+        cursor = "https://huggingface.co/api/models/org/big/tree/main?recursive=1&cursor=abc"
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if "/tree/" in url and "cursor=" not in url:
+                return _PagedResponse(json.dumps(page1).encode(), cursor)
+            if "cursor=" in url:
+                return _PagedResponse(json.dumps(page2).encode())
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._list_hub_repo_py_files("org/big") == ({"modeling_custom.py"}, True)
+
+    def test_single_page_still_one_request(self, monkeypatch):
+        """Negative control: no Link header means exactly one request."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        calls = []
+
+        def _urlopen(req, timeout = 10):
+            calls.append(req.full_url)
+            return _PagedResponse(json.dumps([{"type": "file", "path": "a.py"}]).encode())
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._list_hub_repo_py_files("org/small") == ({"a.py"}, True)
+        assert len(calls) == 1
+
+    def test_failed_later_page_is_not_a_complete_listing(self, monkeypatch):
+        """Negative control: losing page 2 must report failure, never a truncated success."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        cursor = "https://huggingface.co/api/models/org/big/tree/main?recursive=1&cursor=abc"
+
+        def _urlopen(req, timeout = 10):
+            if "cursor=" in req.full_url:
+                raise OSError("connection reset on page 2")
+            return _PagedResponse(json.dumps([{"type": "file", "path": "a.py"}]).encode(), cursor)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._list_hub_repo_py_files("org/big") == (set(), False)
+
+    def test_non_http_pagination_link_is_refused(self, monkeypatch):
+        """Negative control: never follow a cursor that leaves http(s)."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+
+        def _urlopen(req, timeout = 10):
+            return _PagedResponse(json.dumps([]).encode(), "file:///etc/passwd")
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._list_hub_repo_py_files("org/evil") == (set(), False)
+
+
+class TestUnreadableAutoMapConfigIsInconclusive:
+    """A config nobody could read is not proof that a repo declares no auto_map."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+        tv_mod = __import__("utils.transformers_version", fromlist = ["x"])
+        tv_mod._config_json_absent.clear()
+
+    def test_transient_config_failure_is_not_cached_and_recovers(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        cfg = json.dumps(
+            {"model_type": "custom", "auto_map": {"AutoModel": "modeling_custom.Model"}}
+        ).encode()
+        state = {"up": False}
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if not state["up"]:
+                raise OSError("temporary Hub outage")
+            if url.endswith("/config.json"):
+                return _PagedResponse(cfg)
+            if "/tree/" in url:
+                return _PagedResponse(
+                    json.dumps([{"type": "file", "path": "modeling_custom.py"}]).encode()
+                )
+            if url.endswith("modeling_custom.py"):
+                return _PagedResponse(_V5_IMPORT.encode())
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        needs, definitive = tv._remote_auto_map_scan_result("org/custom-remote")
+        assert (needs, definitive) == (False, False)
+        assert not _remote_auto_map_needs_510_cache  # the outage cached nothing
+
+        state["up"] = True
+        _config_json_cache.clear()
+        assert tv._remote_auto_map_scan_result("org/custom-remote") == (True, True)
+
+    def test_missing_config_is_still_a_definitive_negative(self, monkeypatch, tmp_path):
+        """Negative control: a real 404 is an answer, so the negative may be cached."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+
+        def _urlopen(req, timeout = 10):
+            raise _http_error(req.full_url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._remote_auto_map_scan_result("org/plain-model") == (False, True)
+        assert _remote_auto_map_needs_510_cache  # definitive, so memoized
+
+
+class TestProcessorOnlyAutoMapIsScanned:
+    """A processor declared only in a processor config is executable remote code too."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_hub_preprocessor_config_auto_map_promotes_tier(self, monkeypatch, tmp_path):
+        """Mirrors TencentARC/TimeLens-7B: stock config.json, processor auto_map only."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        base_cfg = json.dumps({"model_type": "qwen2_5_vl"}).encode()
+        pre_cfg = json.dumps(
+            {"auto_map": {"AutoProcessor": "processing_custom.CustomProcessor"}}
+        ).encode()
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if url.endswith("/config.json"):
+                return _PagedResponse(base_cfg)
+            if url.endswith("/preprocessor_config.json"):
+                return _PagedResponse(pre_cfg)
+            if "/tree/" in url:
+                return _PagedResponse(
+                    json.dumps([{"type": "file", "path": "processing_custom.py"}]).encode()
+                )
+            if url.endswith("processing_custom.py"):
+                return _PagedResponse(_V5_IMPORT.encode())
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._check_remote_auto_map_needs_510("org/vlm-remote") is True
+
+    def test_repo_without_any_auto_map_fetches_no_py(self, monkeypatch, tmp_path):
+        """Negative control: no auto_map anywhere means no listing and no .py fetches."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        urls = []
+
+        def _urlopen(req, timeout = 10):
+            urls.append(req.full_url)
+            if req.full_url.endswith("/config.json"):
+                return _PagedResponse(json.dumps({"model_type": "llama"}).encode())
+            raise _http_error(req.full_url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._check_remote_auto_map_needs_510("org/plain-model") is False
+        assert not any("/tree/" in u for u in urls)
+        assert not any(u.endswith(".py") for u in urls)
+
+
+class TestScanPrerequisiteConfigHonorsHfEndpoint:
+    """A mirror-only deployment must be able to read the config that gates the scan."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_config_json_fetched_from_mirror(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal")
+        cfg = json.dumps(
+            {"model_type": "custom", "auto_map": {"AutoModel": "modeling_custom.Model"}}
+        ).encode()
+
+        def _urlopen(req, timeout = 10):
+            url = req.full_url
+            if url.startswith("https://huggingface.co"):
+                raise OSError("huggingface.co is blocked by the firewall")
+            if url.endswith("/config.json"):
+                return _PagedResponse(cfg)
+            if "/tree/" in url:
+                return _PagedResponse(
+                    json.dumps([{"type": "file", "path": "modeling_custom.py"}]).encode()
+                )
+            if url.endswith("modeling_custom.py"):
+                return _PagedResponse(_V5_IMPORT.encode())
+            raise _http_error(url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        assert tv._load_config_json("org/custom-remote") is not None
+        assert tv._check_remote_auto_map_needs_510("org/custom-remote") is True
+
+    def test_default_endpoint_unchanged(self, monkeypatch, tmp_path):
+        """Negative control: without HF_ENDPOINT the canonical host is still used."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        seen = {}
+
+        def _urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _PagedResponse(json.dumps({"model_type": "llama"}).encode())
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        tv._load_config_json("org/model")
+        assert seen["url"] == "https://huggingface.co/org/model/raw/main/config.json"
+
+
+class TestRemoteSourceEncoding:
+    """Remote Python must decode by its declared encoding, as CPython does (PEP 263)."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_pep263_cookie_module_is_decoded(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        latin1 = (
+            "# -*- coding: latin-1 -*-\n"
+            "# auteur Andr\xe9\n"
+            "from transformers.utils.output_capturing import capture\n"
+        ).encode("latin-1")
+        with pytest.raises(UnicodeDecodeError):
+            latin1.decode("utf-8")
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", lambda req, timeout = 10: _PagedResponse(latin1)
+        )
+        text = tv._read_repo_text_file("org/custom-remote", "modeling_custom.py")
+        assert text is not None
+        assert "output_capturing" in text
+        assert tv._remote_auto_map_py_matches(tv._TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, [text])
+
+    def test_undeclared_binary_still_decodes_without_raising(self, monkeypatch):
+        """Negative control: garbage bytes degrade to replacement, never an exception."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout = 10: _PagedResponse(b"\xff\xfe\x00\x01 not utf-8"),
+        )
+        assert tv._read_repo_text_file("org/custom-remote", "modeling_custom.py") is not None
+
+    def test_plain_utf8_unchanged(self, monkeypatch):
+        """Negative control: ordinary UTF-8 source round-trips exactly."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        src = "# café\nfrom transformers.utils.output_capturing import capture\n"
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda req, timeout = 10: _PagedResponse(src.encode("utf-8")),
+        )
+        assert tv._read_repo_text_file("org/custom-remote", "modeling_custom.py") == src
+
+
+class TestImportScanIgnoresNonImportText:
+    """Only real import statements promote the tier; unparseable source keeps the fallback."""
+
+    MARKERS = ("transformers.utils.output_capturing",)
+
+    def _matches(self, src: str) -> bool:
+        import utils.transformers_version as tv
+        return tv._remote_auto_map_py_matches(tv._TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, [src])
+
+    def test_marker_in_docstring_does_not_match(self):
+        src = (
+            '"""Custom model.\n\n'
+            "On transformers>=5.10 you would write:\n\n"
+            "from transformers.utils.output_capturing import capture\n\n"
+            '"""\nimport torch\n'
+        )
+        assert self._matches(src) is False
+
+    def test_marker_in_plain_string_does_not_match(self):
+        src = 'import torch\n\nHELP = """\nfrom transformers.utils.output_capturing import c\n"""\n'
+        assert self._matches(src) is False
+
+    def test_marker_in_comment_does_not_match(self):
+        src = "import torch\n# from transformers.utils.output_capturing import capture\n"
+        assert self._matches(src) is False
+
+    def test_unparseable_source_still_matches_by_line(self):
+        """The round-1 property: broken remote code must never become a silent negative."""
+        src = "from transformers.utils.output_capturing import capture\n\ndef broken(:\n    pass\n"
+        assert self._matches(src) is True
+
+    def test_real_imports_still_match(self):
+        for src in (
+            "from transformers.utils.output_capturing import capture\n",
+            "import transformers.utils.output_capturing\n",
+            "from transformers.utils import output_capturing\n",
+            "from transformers.utils.output_capturing import (\n    capture,\n)\n",
+        ):
+            assert self._matches(src) is True
