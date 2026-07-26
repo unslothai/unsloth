@@ -2,11 +2,9 @@ export const PROMPT_QUEUE_STOP_EVENT = "unsloth:prompt-queue-stop";
 
 export interface PromptQueueStopOptions {
   /**
-   * Whether to also cancel the prompt the queue already dispatched.
-   *
-   * Navigation stops the queue feeding more prompts but leaves the one in
-   * flight generating like any other chat, so it passes `false`. An explicit
-   * stop passes `true` (the default).
+   * Whether to also cancel the prompt the queue already dispatched. Navigation
+   * leaves the in-flight one generating and passes `false`; an explicit stop
+   * passes `true` (the default).
    */
   cancelActiveRun?: boolean;
 }

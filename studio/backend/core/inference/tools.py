@@ -2454,9 +2454,8 @@ def is_always_safe_tool(name: str) -> bool:
     return name in _ALWAYS_SAFE_TOOLS
 
 
-# Tools whose provisional card is only a text preview of the arguments, so it
-# can stream while the call is still waiting for approval. render_html is
-# excluded: its card renders the payload, which is the thing being approved.
+# Tools whose provisional card is only a text preview of the arguments, so it can
+# stream while awaiting approval. render_html renders the payload being approved.
 _TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal"})
 
 

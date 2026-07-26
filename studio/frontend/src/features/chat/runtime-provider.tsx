@@ -1262,10 +1262,9 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       if (syncActiveThreadId) {
-        // Stop feeding the outgoing thread queued prompts, but leave its run
-        // alone: assistant-ui keeps every visited thread's runtime mounted, so
-        // it keeps streaming and the sidebar shows it running. Only an explicit
-        // Stop (or deleting the conversation) cancels one now.
+        // Stop queueing prompts to the outgoing thread but leave its run alone:
+        // its runtime stays mounted and keeps streaming. Only an explicit Stop
+        // (or deleting the conversation) cancels one.
         requestPromptQueueStop({ cancelActiveRun: false });
       }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
@@ -1303,9 +1302,8 @@ function ThreadNewChatSwitch({
       return;
     }
     // New Chat leaves the previous conversation generating: its runtime stays
-    // mounted (assistant-ui only tears one down on delete/detach), the adapter
-    // keeps appending to it and the sidebar spins, exactly like switching to
-    // Train or Export. Stopping it is its own Stop button's job.
+    // mounted, the adapter keeps appending and the sidebar spins. Stopping it
+    // is its own Stop button's job.
     requestPromptQueueStop({ cancelActiveRun: false });
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.

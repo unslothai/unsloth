@@ -4328,8 +4328,8 @@ def _raise_or_cancel_active_generations(
             },
         )
     if not cancel:
-        # Refusal-only pass for a forced swap: the caller cancels later, once no
-        # remaining check can still reject the load.
+        # Refusal-only pass for a forced swap: the caller cancels later, once
+        # nothing left can reject the load.
         return 0
     cancelled = active_generations.cancel_all()
     if cancelled:
@@ -4416,13 +4416,11 @@ async def load_model(
     # holds this gate.
     async with inference_lifecycle_gate():
         _raise_if_sidecar_swap_in_progress()
-        # The active-generation gate runs from inside _load_model_impl, once it has
-        # decided this is a real reload. An Apply on the already-loaded model
-        # (settings sheet, a Compare pane, a recipe run's model) returns
-        # already_loaded without touching llama-server, so refusing it -- or, on
-        # the retry the 409 asks for, cancelling every chat and then returning
-        # already_loaded -- would stop chats nothing was going to interrupt. Still
-        # inside the gate, so the check stays atomic with the teardown it guards.
+        # The active-generation gate runs inside _load_model_impl, once it knows this
+        # is a real reload: an Apply on the already-loaded model returns
+        # already_loaded without touching llama-server, so gating it would stop chats
+        # nothing interrupts. Still inside the lifecycle gate, so the check stays
+        # atomic with the teardown it guards.
         return await _load_model_impl(
             request,
             fastapi_request,
@@ -4636,15 +4634,13 @@ async def _load_model_impl(
                     chat_template = _chat_template,
                 )
 
-        # Past every already_loaded fast return: this request really will replace
-        # the running model, so now let the caller gate it on the chats that would
-        # stop. Refusal only here -- a non-forced swap fails fast, before the HF
-        # resolve below -- because everything between this point and the teardown
-        # (identifier resolution, GPU validation, the training guard, the download
-        # -manager check) can still reject the load, and a cancel that ran first
-        # would have stopped every chat for a model that never gets loaded. The
-        # matching destructive pass runs just before each teardown below.
-        # Auto-switch passes no hook and keeps its current behaviour.
+        # Past every already_loaded fast return, so this request really will replace
+        # the running model: gate it on the chats that would stop. Refusal only, so a
+        # non-forced swap fails fast; everything between here and the teardown
+        # (identifier resolution, GPU validation, training guard, download-manager
+        # check) can still reject the load, and cancelling first would stop every chat
+        # for a model that never loads. The destructive pass runs at each teardown
+        # below. Auto-switch passes no hook and keeps its current behaviour.
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
 
@@ -4761,17 +4757,15 @@ async def _load_model_impl(
                         ),
                     )
 
-            # A sidecar install can reserve the swap window during the awaits
-            # above (identifier resolution, tier probe, training guard, download
-            # check), and the recheck after the drain would then 409 a load whose
-            # chats the next line has already stopped. Reject it before that.
+            # A sidecar install can reserve the swap window during the awaits above,
+            # and the recheck after the drain would then 409 a load whose chats the
+            # next line has already stopped. Reject it before that.
             _raise_if_sidecar_swap_in_progress()
 
-            # Point of no return for the GGUF path: every check that could still
-            # reject this load has passed, so now stop the chats the swap will
-            # interrupt (or refuse, if the caller never opted in and one started
-            # while the checks above ran). Must precede the drain below, which
-            # would otherwise wait out the very generations force is meant to end.
+            # Point of no return for the GGUF path: nothing left can reject this load,
+            # so stop the chats the swap interrupts (or refuse, if the caller never
+            # opted in). Must precede the drain below, which would otherwise wait out
+            # the very generations force is meant to end.
             if on_reload_confirmed is not None:
                 on_reload_confirmed(cancel = True)
 
@@ -4992,12 +4986,12 @@ async def _load_model_impl(
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = get_inference_backend()
 
-        # Same sidecar rejection as the GGUF branch, ahead of the cancel so a
-        # reservation taken during preflight cannot 409 chats already stopped.
+        # Same sidecar rejection as GGUF, ahead of the cancel so a reservation taken
+        # during preflight cannot 409 chats already stopped.
         _raise_if_sidecar_swap_in_progress()
 
-        # Point of no return for the Unsloth path: same rule as the GGUF branch
-        # above -- cancel only once nothing left can reject the load.
+        # Point of no return for the Unsloth path: cancel only once nothing left
+        # can reject the load.
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)
 
@@ -5745,12 +5739,10 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
-    # Same gate as /load, and refusal only for the same reason: a non-forced
-    # unload still fails fast here, before queueing on the lifecycle gate, but
-    # cancelling is destructive and this request has not yet resolved that it
-    # unloads anything. The matching destructive pass runs at each teardown
-    # below. Ahead of the "stop loading" fast paths, which only fire for a
-    # still-loading model and so have no generations of their own.
+    # Same gate as /load: refusal only, so a non-forced unload fails fast before
+    # queueing on the lifecycle gate, but this request has not yet resolved that it
+    # unloads anything. The destructive pass runs at each teardown below. Ahead of
+    # the "stop loading" fast paths, which have no generations of their own.
     _raise_or_cancel_active_generations(
         force = request.force_cancel_active,
         action = "Unloading the model",
@@ -5801,10 +5793,9 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
         # swap in a fresh subprocess mid-unload and the unload command would land on the
         # new worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
-            # Rechecked under the gate, like /load: the middleware takes and
-            # releases this same gate before a request starts inference, so a chat
-            # can register while this request queues here. Checking only before the
-            # wait would tear llama-server down mid-stream. Still refusal only.
+            # Rechecked under the gate, like /load: the middleware takes and releases
+            # this same gate before a request starts inference, so a chat can register
+            # while this request queues here. Still refusal only.
             _raise_or_cancel_active_generations(
                 force = request.force_cancel_active,
                 action = "Unloading the model",
@@ -5819,8 +5810,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 )
                 or not llama_backend.is_loaded
             ):
-                # Point of no return for the GGUF path: this request really does
-                # replace the running server, so now stop the chats it interrupts.
+                # Point of no return: this really does replace the running server,
+                # so stop the chats it interrupts.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
@@ -5846,9 +5837,8 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except HTTPException:
-        # The active-generation gate's 409 (and any other typed refusal raised
-        # inside the block) must reach the client as itself: HTTPException is a
-        # plain Exception, so the catch-all below would rewrite it as a 500.
+        # Typed refusals (the gate's 409) must reach the client as themselves; the
+        # catch-all below would rewrite them as a 500.
         raise
     except Exception as e:
         logger.error(f"Error unloading model: {e}", exc_info = True)
@@ -8533,9 +8523,9 @@ async def openai_chat_completions(
                 gen = None
                 next_task = None
                 stream_completed = False
-                # A call parked on the approval prompt is not decoding, so it
-                # gives its slot back until the user answers. Without this a few
-                # unanswered prompts hold every slot and no chat can start.
+                # A call parked on the approval prompt is not decoding, so it gives
+                # its slot back until the user answers; otherwise a few unanswered
+                # prompts hold every slot and no chat can start.
                 _parked = False
 
                 def _park_admission(on: bool):
@@ -8607,8 +8597,8 @@ async def openai_chat_completions(
                         if event is _tool_sentinel:
                             break
 
-                        # Anything arriving after the gated tool_start means the
-                        # user answered, so take the slot back.
+                        # Anything after the gated tool_start means the user
+                        # answered, so take the slot back.
                         if not (
                             event["type"] == "tool_start" and event.get("awaiting_confirmation")
                         ):
@@ -11028,14 +11018,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             bytes_iter = None
             disconnect_event = threading.Event()
             disconnect_watcher = None
-            # This proxy relays straight from llama-server, so the swap gate has
-            # to see it: without an entry a non-forced /unload counts zero
-            # generations and tears the server down mid-response (/unload runs no
-            # idle drain, unlike /load). Sharing disconnect_event means a forced
-            # swap stops the relay through the check it already polls. Entered
-            # here, inside the body generator, so a response whose body never
-            # starts leaves nothing behind (see _responses_stream). No thread_id:
-            # public API surface, not a Studio conversation.
+            # This proxy relays straight from llama-server, so the swap gate has to
+            # see it: without an entry a non-forced /unload counts zero generations
+            # and tears the server down mid-response (/unload runs no idle drain).
+            # Sharing disconnect_event lets a forced swap stop the relay through the
+            # check it already polls. Entered inside the body generator, so a response
+            # whose body never starts leaves nothing behind (see _responses_stream).
+            # No thread_id: public API surface, not a Studio conversation.
             _tracker = _TrackedCancel(disconnect_event, model = monitor_model)
             _tracker.__enter__()
             try:
@@ -11114,8 +11103,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 yield _openai_stream_error_sse_bytes(error_chunk)
                 return
             finally:
-                # Nested so a close-time failure can't skip the unregister and
-                # leave a phantom generation 409-ing every later swap.
+                # Nested so a close-time failure can't skip the unregister and leave
+                # a phantom generation 409-ing every later swap.
                 try:
                     await _aclose_stream_resources(
                         watchers = (disconnect_watcher,),
@@ -11975,12 +11964,11 @@ async def _responses_stream(
     )
     body["stream_options"] = {"include_usage": True}
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
-    # Same per-run event the stream already watches for a client disconnect, now
-    # shared with the cancel/active-generation registries: this direct GGUF path
-    # decodes on llama-server like the chat and Anthropic pass-throughs, so a
-    # non-forced /unload must see it and refuse instead of tearing the server
-    # down mid-response. Entered inside the body generator (below) so a response
-    # whose body never starts can't leave an entry behind and 409 every reload.
+    # The stream's own disconnect event, now shared with the cancel/active-generation
+    # registries: this direct GGUF path decodes on llama-server, so a non-forced
+    # /unload must see it and refuse instead of tearing the server down mid-response.
+    # Entered inside the body generator (below) so a response whose body never starts
+    # can't leave an entry behind and 409 every reload.
     cancel_event = threading.Event()
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
     try:
@@ -12841,10 +12829,10 @@ async def _responses_stream(
         yield _sse("response.completed", completed_response)
 
     async def admitted_event_generator():
-        # Register for the body's whole lifetime, admission wait included: the
-        # run holds a decode slot from here on, so /load and /unload must count
-        # it. __exit__ runs from the finally below on every exit (exhausted,
-        # aclose, or the athrow _SameTaskStreamingResponse sends on disconnect).
+        # Register for the body's whole lifetime, admission wait included: the run
+        # holds a decode slot from here on, so /load and /unload must count it.
+        # __exit__ runs from the finally below on every exit (exhausted, aclose, or
+        # the athrow _SameTaskStreamingResponse sends on disconnect).
         _tracker.__enter__()
         lease = reservation.lease_nowait()
         admission_wait_started_at = None
@@ -13740,13 +13728,11 @@ async def _anthropic_tool_stream(
         )
 
     async def _stream():
-        # The server-tool loop decodes on llama-server for its whole body, but
-        # unlike the pass-through it never registered, so a non-forced /unload saw
-        # zero generations and tore the server down mid-response (/unload runs no
-        # idle drain, unlike /load). Entered here, inside the body generator, so a
-        # response whose body never starts leaves nothing behind (see
-        # _responses_stream). No thread_id: public API surface, not a Studio
-        # conversation, same as the pass-through.
+        # The server-tool loop decodes on llama-server for its whole body, so without
+        # an entry a non-forced /unload saw zero generations and tore the server down
+        # mid-response (/unload runs no idle drain). Entered inside the body generator
+        # so a response whose body never starts leaves nothing behind (see
+        # _responses_stream). No thread_id: public API surface, like the pass-through.
         _tracker = _TrackedCancel(cancel_event, model = model_name)
         _tracker.__enter__()
         try:
@@ -13755,10 +13741,9 @@ async def _anthropic_tool_stream(
                 yield line
 
             captured_finish_reason = None
-            # Whether the response currently ends on a pending tool_use block (the
-            # client must act → stop_reason "tool_use") as opposed to final text.
-            # The server may run a tool and then keep generating, which flips this
-            # back to False — that is an end_turn (or max_tokens) response.
+            # Response ends on a pending tool_use block (client must act →
+            # stop_reason "tool_use") rather than final text. A server tool that
+            # keeps generating flips this back to False: an end_turn response.
             ends_on_tool_use = False
             tool_blocks_emitted = 0
             drop_until_tool_end = False
@@ -13769,7 +13754,7 @@ async def _anthropic_tool_stream(
             gen = run_gen()
             _next_task = None
             # Watcher to cancel on disconnect: the in-loop poll fires only between
-            # events, so a mid-prefill disconnect would otherwise hold the decode slot.
+            # events, so a mid-prefill disconnect would hold the decode slot.
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -13797,15 +13782,15 @@ async def _anthropic_tool_stream(
                     etype = event.get("type")
                     if etype == "heartbeat":
                         # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
-                        # skip: a dropped tool still runs server-side and its events keep the
-                        # stall keepalive from firing, so dropping heartbeats would go silent.
+                        # skip: a dropped tool still runs server-side and its events
+                        # suppress the stall keepalive, so dropping these goes silent.
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if etype in ("tool_output", "tool_args"):
                         # Live stdout / arg streaming have no Anthropic Messages equivalent
-                        # (the full call/result follow in tool_use / tool_result), so drop them.
-                        # They keep the stall keepalive from firing, so a chatty tool would go
-                        # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
+                        # (the full call/result follow in tool_use / tool_result), so drop
+                        # them. They suppress the stall keepalive, so a chatty tool would go
+                        # silent past the ~100s proxy cap: emit a rate-limited one instead.
                         _now = time.monotonic()
                         if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
                             _last_drop_keepalive = _now
@@ -13821,10 +13806,10 @@ async def _anthropic_tool_stream(
                         _fr = event.get("finish_reason")
                         if _fr is not None:
                             captured_finish_reason = _fr
-                    # Strip leaked tool-call XML from content events first, so a
-                    # content event that was purely tool XML doesn't count as text.
-                    # Protected helper preserves <think> rehearsal and balanced
-                    # [TOOL_CALLS] trailing prose (raw _TOOL_XML_RE.sub corrupts both).
+                    # Strip leaked tool-call XML first, so a content event that was
+                    # purely tool XML doesn't count as text. The protected helper keeps
+                    # <think> rehearsal and balanced [TOOL_CALLS] trailing prose, which
+                    # a raw _TOOL_XML_RE.sub corrupts.
                     if etype == "content":
                         event = dict(event)
                         event["text"] = _strip_tool_xml_for_display(
@@ -13842,11 +13827,10 @@ async def _anthropic_tool_stream(
                         ends_on_tool_use = True
                     elif etype == "tool_end":
                         tool_blocks_emitted += 1
-                        # A tool_end means Unsloth executed the tool server-side, so
-                        # the response no longer ends on a pending client action.
-                        # Without this, a server tool that produces no trailing text
-                        # would be mislabeled stop_reason "tool_use", telling the
-                        # client to run a tool Unsloth already ran.
+                        # Unsloth ran the tool server-side, so the response no longer
+                        # ends on a pending client action. Otherwise a server tool with
+                        # no trailing text is mislabeled stop_reason "tool_use", telling
+                        # the client to run a tool Unsloth already ran.
                         ends_on_tool_use = False
                     elif etype == "content" and event.get("text"):
                         ends_on_tool_use = False
@@ -13854,18 +13838,18 @@ async def _anthropic_tool_stream(
                         yield line
             except Exception as e:
                 logger.error("anthropic_messages stream error: %s", e)
-                # force = True so an unclassified mid-stream failure (llama-server crash,
-                # decode OOM, dropped socket) still emits an SSE error and returns, instead
-                # of a normal message_stop that masks a truncated turn as a clean finish.
+                # force = True so an unclassified mid-stream failure (crash, decode OOM,
+                # dropped socket) emits an SSE error instead of a normal message_stop
+                # that masks a truncated turn as a clean finish.
                 _error_event = _anthropic_stream_error_event(e, force = True)
                 if _error_event is not None:
                     yield _error_event
                     return
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-                # Drain a still-running next(gen) worker before closing, so a mid-prefill
-                # disconnect releases the thread/generator/tool resources. Closing first
-                # would race into ValueError('generator already executing').
+                # Drain a still-running next(gen) worker first, so a mid-prefill
+                # disconnect releases the thread/generator/tool resources; closing
+                # first races into ValueError('generator already executing').
                 await _drain_pending_next_task(_next_task, cancel_event)
                 if gen is not None:
                     try:
@@ -13903,10 +13887,9 @@ async def _anthropic_plain_stream(
         input_tokens = await asyncio.to_thread(llama_backend.count_chat_tokens, openai_messages)
 
     async def _stream():
-        # Registered like the tool stream above. This is the default /v1/messages
-        # path -- any client that declares no tools takes it -- and it decodes on
-        # llama-server, so without an entry a non-forced /unload tore the server
-        # down mid-response.
+        # Registered like the tool stream above: this is the default /v1/messages path
+        # (any client declaring no tools) and it decodes on llama-server, so without an
+        # entry a non-forced /unload tore the server down mid-response.
         _tracker = _TrackedCancel(cancel_event, model = model_name)
         _tracker.__enter__()
         try:
@@ -13919,7 +13902,7 @@ async def _anthropic_plain_stream(
             gen = run_gen()
             _next_task = None
             # Watcher to cancel on disconnect: the in-loop poll fires only between
-            # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
+            # chunks, so a mid-prefill disconnect would hold the decode slot.
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -13928,8 +13911,7 @@ async def _anthropic_plain_stream(
                     if cancel_event.is_set() or await request.is_disconnected():
                         cancel_event.set()
                         return
-                    # Stall keepalive (see Anthropic tool stream) each window while
-                    # next(gen) runs in a worker.
+                    # Stall keepalive each window while next(gen) runs in a worker.
                     _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
@@ -13957,18 +13939,18 @@ async def _anthropic_plain_stream(
                         yield line
             except Exception as e:
                 logger.error("anthropic_messages stream error: %s", e)
-                # force = True so an unclassified mid-stream failure (llama-server crash,
-                # decode OOM, dropped socket) still emits an SSE error and returns, instead
-                # of a normal message_stop that masks a truncated turn as a clean finish.
+                # force = True so an unclassified mid-stream failure (crash, decode OOM,
+                # dropped socket) emits an SSE error instead of a normal message_stop
+                # that masks a truncated turn as a clean finish.
                 _error_event = _anthropic_stream_error_event(e, force = True)
                 if _error_event is not None:
                     yield _error_event
                     return
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-                # Drain a still-running next(gen) worker before closing, so a mid-prefill
-                # disconnect releases the thread/generator/model resources. Closing first
-                # would race into ValueError('generator already executing').
+                # Drain a still-running next(gen) worker first, so a mid-prefill
+                # disconnect releases the thread/generator/model resources; closing
+                # first races into ValueError('generator already executing').
                 await _drain_pending_next_task(_next_task, cancel_event)
                 if gen is not None:
                     try:
@@ -14289,9 +14271,9 @@ async def _anthropic_passthrough_stream(
 
     # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST
     # works without the caller having to know the local message_id.
-    # No thread_id: this is the public API surface, not a Studio conversation.
-    # It still registers so a reload cannot yank llama-server out from under it.
-    # Built here but entered below, inside the body generator: see _stream().
+    # No thread_id: public API surface, not a Studio conversation. It still registers
+    # so a reload cannot yank llama-server out from under it. Built here but entered
+    # below, inside the body generator: see _stream().
     _tracker = _TrackedCancel(
         cancel_event,
         cancel_id,
@@ -14348,11 +14330,11 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
-            # Entered inside the body generator, under the finally that exits it
-            # (as in _anthropic_plain_stream / _anthropic_tool_stream). Entering
-            # eagerly leaks: aclose() runs no body on a never-started generator,
-            # so a client that drops before the body starts would leave the run
-            # registered until restart, 409-ing every later /load and /unload.
+            # Entered inside the body generator, under the finally that exits it (as
+            # in _anthropic_plain_stream). Entering eagerly leaks: aclose() runs no
+            # body on a never-started generator, so a client that drops before the
+            # body starts leaves the run registered until restart, 409-ing every
+            # later /load and /unload.
             _tracker.__enter__()
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}

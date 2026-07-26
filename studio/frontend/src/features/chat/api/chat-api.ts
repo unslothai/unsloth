@@ -141,9 +141,8 @@ export interface ActiveGenerationsResponse {
  * Chats generating on the backend right now.
  *
  * Authoritative where `runningByThreadId` is not: that map is per-tab in-memory
- * state, so it is empty after a reload and blind to a second tab. /load and
- * /unload 409 on these unless the caller confirms, so the model-swap gate has to
- * consult the backend rather than only the local map.
+ * state, empty after a reload and blind to a second tab. /load and /unload 409
+ * on these, so the model-swap gate must consult the backend.
  */
 export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
   const response = await authFetch("/api/inference/active-generations");

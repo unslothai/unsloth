@@ -8,10 +8,9 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
  * was dispatched.
  *
  * `cancelByThreadId` is assistant-ui's `cancelRun()`, registered only for the
- * thread on screen; it aborts the fetch and backs the composer's Stop button.
- * `serverCancelByThreadId` is registered for every run and POSTs that run's own
- * `cancel_id`, so it is the only handle a background conversation has. Both are
- * per-run, so neither can touch a sibling or llama-server itself.
+ * thread on screen. `serverCancelByThreadId` is registered for every run and
+ * POSTs that run's own `cancel_id`, so it is the only handle a background
+ * conversation has. Both are per-run: neither can touch a sibling.
  */
 export function stopChatThread(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
@@ -32,7 +31,7 @@ export function stopChatThread(threadId: string | null | undefined): boolean {
     const serverCancel = serverCancelByThreadId[threadId];
     if (serverCancel) {
       // Also after cancelRun(): a proxy that swallows the fetch abort would
-      // otherwise leave the backend decoding.
+      // leave the backend decoding.
       serverCancel();
       stopped = true;
     }

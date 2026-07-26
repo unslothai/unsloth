@@ -6,11 +6,9 @@
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
 /**
- * True while this card's call is parked on the Allow / Deny prompt.
- *
- * The entry is registered when the backend gates the call and cleared once the
- * decision lands, so a card can say it is waiting on a human rather than
- * counting up "Running" against a prompt nobody has answered yet.
+ * True while this card's call is parked on the Allow / Deny prompt, so it can
+ * say it is waiting rather than counting up "Running" against an unanswered
+ * prompt. Registered when the backend gates the call, cleared on the decision.
  */
 export function useToolAwaitingApproval(toolCallId?: string): boolean {
   return useChatRuntimeStore(

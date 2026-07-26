@@ -464,9 +464,9 @@ export function useChatModelRuntime() {
     useChatRuntimeStore.getState().setModelLoading(true);
     void (async () => {
       try {
-        // The model being unloaded is the one still loading, so it has no
-        // generations, but a chat may stream on the previous one. No force:
-        // let the 409 surface rather than kill it.
+        // The model being unloaded is still loading, so it has no generations,
+        // but a chat may stream on the previous one: no force, let the 409
+        // surface rather than kill it.
         await unloadModel({ model_path: model.id }).catch(() => {});
       } finally {
         cancelUnloadPendingRef.current = false;
@@ -533,9 +533,9 @@ export function useChatModelRuntime() {
       };
       if (bailIfLoadInFlight()) return;
 
-      // Every chat decodes on the llama-server this load replaces, so a load
-      // ends all of them. Ask first, then allow the cancel; the 409 gate stays
-      // armed for callers that never confirmed (second tab, desktop app, curl).
+      // Every chat decodes on the llama-server this load replaces, so ask
+      // first, then allow the cancel; the 409 gate stays armed for callers
+      // that never confirmed (second tab, desktop app, curl).
       const stopDecision = await confirmStopRunningChatsIfNeeded(
         forceReload ? "Applying these settings" : "Loading a different model",
       );
@@ -545,10 +545,9 @@ export function useChatModelRuntime() {
         }
         return;
       }
-      // Re-check: the guard above ran before this await, which always GETs
-      // active-generations, so a pick made in that window passed it too and
-      // would start a rival load over the same refs. Nothing between here and
-      // the reservation below awaits, so the first to resume claims the load.
+      // Re-check: the confirm above always awaits a GET, so a pick made in that
+      // window would start a rival load over the same refs. Nothing awaits
+      // between here and the reservation, so the first to resume claims it.
       if (bailIfLoadInFlight()) return;
       const forceCancelActive = stopDecision.forceCancelActive;
 
@@ -833,8 +832,8 @@ export function useChatModelRuntime() {
               : undefined;
 
             if (currentCheckpoint) {
-              // Covered by the load's confirmation below; without the flag the
-              // gate would 409 the swap the user just approved.
+              // Covered by the load's confirmation; without the flag the gate
+              // would 409 the swap the user just approved.
               await unloadModel({
                 model_path: currentCheckpoint,
                 force_cancel_active: forceCancelActive,
@@ -1175,8 +1174,8 @@ export function useChatModelRuntime() {
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
-                  // The failed swap already unloaded the server those
-                  // generations ran on, so the gate must not block the restore.
+                  // The failed swap already unloaded the server those runs
+                  // used, so the gate must not block the restore.
                   force_cancel_active: true,
                 });
                 const rollbackSpeculativeType = normalizeSpeculativeType(
@@ -1595,8 +1594,7 @@ export function useChatModelRuntime() {
         "Unloading the model",
       );
       if (!stopDecision.proceed) return false;
-      // Same window as selectModel: the confirm above always awaits a GET, so
-      // a load may have started since the guard.
+      // Same window as selectModel: a load may have started during the confirm.
       if (bailIfLoading()) return false;
 
       async function performUnload(): Promise<void> {

@@ -212,8 +212,8 @@ export type ReasoningStyle =
 export type DiffusionCanvasFrame = {
   /**
    * Conversation that produced this frame, or null when the run started before
-   * its thread id was known. Chats run in parallel, so an untagged global frame
-   * would render one chat's denoising preview inside every other chat's bubble.
+   * its thread id was known. Untagged frames would otherwise render one chat's
+   * denoising preview inside every other chat's bubble.
    */
   threadId: string | null;
   block: number;
@@ -737,21 +737,19 @@ type ChatRuntimeStore = {
    * The subset of `runningByThreadId` decoding on the local llama-server.
    *
    * An external-provider chat streams from that provider instead, so swapping
-   * the local model neither interrupts it nor needs its consent -- the backend
-   * drops those requests from its own in-flight tracking for the same reason
-   * (`untrack_current_request` before proxying), which is why they never appear
-   * in `active_generations` or trigger the 409.
+   * the local model neither interrupts it nor needs its consent. The backend
+   * drops those from its in-flight tracking for the same reason, so they never
+   * appear in `active_generations` or trigger the 409.
    */
   localRunByThreadId: Record<string, boolean>;
   cancelByThreadId: Record<string, () => void>;
   /**
    * Backend cancel for a thread generating in the background.
    *
-   * `cancelByThreadId` only holds the visible thread's `cancelRun()`, but New
-   * Chat now leaves the previous conversation streaming and it still has to be
-   * stoppable (deleting it, a forced reload). The adapter parks a closure here
-   * that POSTs that run's own cancel_id: same per-run path as Stop, and it
-   * never touches a sibling conversation.
+   * `cancelByThreadId` only holds the visible thread's `cancelRun()`, but a
+   * conversation left streaming by New Chat still has to be stoppable. The
+   * adapter parks a closure here that POSTs that run's own cancel_id: the same
+   * per-run path as Stop, so it never touches a sibling conversation.
    */
   serverCancelByThreadId: Record<string, () => void>;
   autoTitle: boolean;
@@ -874,9 +872,8 @@ type ChatRuntimeStore = {
   webFetchToolsEnabled: boolean;
   /**
    * Live tool status per conversation ("Running Python: ...") with the moment
-   * it started. Keyed by thread: chats run in parallel, so a global string
-   * would show one chat's tool call above every other chat's composer, and the
-   * timestamp keeps the elapsed counter from restarting on a thread switch.
+   * it started. Keyed by thread, or one chat's tool call shows above every
+   * other composer; the timestamp keeps the counter across a thread switch.
    */
   toolStatusByThreadId: Record<string, { status: string; startedAt: number }>;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
@@ -1554,7 +1551,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { serverCancelByThreadId: next };
     }),
   // `cancel` narrows removal to the run that registered it: a tool continuation
-  // can start the next leg first, and a blind delete would drop the live handle.
+  // starts the next leg first, and a blind delete would drop the live handle.
   clearThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const current = state.serverCancelByThreadId[threadId];

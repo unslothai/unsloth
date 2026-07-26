@@ -16,8 +16,8 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
   "github-light",
   "github-dark",
 ];
-/** Past this the block stays plain monospace. The whole script is still there;
- * shiki just isn't worth the main-thread time on a payload that size. */
+/** Past this the block stays plain monospace: shiki is not worth the
+ * main-thread time on a payload that size. */
 const MAX_HIGHLIGHT_CHARS = 20_000;
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
@@ -61,7 +61,6 @@ export function CopyBtn({ text }: { text: string }) {
   );
 }
 
-/** Save the code to a file via a client-side Blob. */
 function DownloadBtn({ code, name }: { code: string; name: string }) {
   const download = useCallback(() => {
     if (typeof document === "undefined") {
@@ -79,7 +78,7 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
       // Revoke next tick, after the click consumes the URL.
       setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch {
-      // Best-effort: never break the transcript over a download.
+      // Never break the transcript over a download.
     }
   }, [code, name]);
 
@@ -96,8 +95,8 @@ function DownloadBtn({ code, name }: { code: string; name: string }) {
   );
 }
 
-/** A fence longer than any backtick run inside the code, so a script that
- * itself contains ``` can't terminate the block early. */
+/** A fence longer than any backtick run in the code, so a script containing
+ * ``` cannot terminate the block early. */
 function fenceFor(source: string): string {
   const longest = (source.match(/`+/g) ?? []).reduce(
     (max, run) => Math.max(max, run.length),
@@ -106,11 +105,10 @@ function fenceFor(source: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
-/** Syntax-highlighted code via Streamdown + shiki; inherits parent container.
- * The code is always in the DOM (a plain monospace placeholder), but shiki only
- * tokenizes once the block scrolls near the viewport, so a long transcript with
- * many scripts doesn't highlight every one up front. Falls back to immediate
- * highlight when IntersectionObserver is unavailable (SSR / tests). */
+/** Syntax-highlighted code via Streamdown + shiki. The code is always in the
+ * DOM as plain monospace, but shiki only tokenizes once the block scrolls near
+ * the viewport, so a long transcript does not highlight every script up front.
+ * Highlights immediately where IntersectionObserver is missing (SSR / tests). */
 function HighlightedCode({
   code: source,
   language,
@@ -129,7 +127,7 @@ function HighlightedCode({
     () => typeof IntersectionObserver === "undefined",
   );
   // Pinned to the bottom until the reader scrolls up, so a streaming payload
-  // visibly grows instead of sitting on its first few lines.
+  // visibly grows.
   const pinnedToBottom = useRef(true);
   useEffect(() => {
     if (nearViewport) return;
@@ -142,8 +140,8 @@ function HighlightedCode({
           io.disconnect();
         }
       },
-      // Highlight just before the block enters view so it's colorized by the
-      // time the user reaches it, without tokenizing off-screen scripts.
+      // Highlight just before the block enters view, so it is ready by the
+      // time the user reaches it.
       { rootMargin: "200px" },
     );
     io.observe(el);
@@ -165,8 +163,8 @@ function HighlightedCode({
     }
   };
 
-  // Skip shiki while the model is still writing (it would re-tokenize on every
-  // fragment) and on payloads too big to tokenize cheaply.
+  // Skip shiki while the model is writing (it re-tokenizes on every fragment)
+  // and on payloads too big to tokenize cheaply.
   const highlight =
     nearViewport && !plain && source.length <= MAX_HIGHLIGHT_CHARS;
 
@@ -186,11 +184,9 @@ function HighlightedCode({
           {markdown}
         </Streamdown>
       ) : (
-        // A div, not a <pre>: the container's [&_pre]:!p-0 would override a
-        // <pre>'s padding and shift the content by p-3 when shiki swaps in. Keep
-        // the same p-3, and whitespace-pre (not pre-wrap) so long lines scroll in
-        // the container's overflow-auto exactly like the highlighted <pre>, rather
-        // than wrapping taller and then collapsing when shiki swaps in.
+        // A div, not a <pre>: the container's [&_pre]:!p-0 would strip the
+        // padding and shift the content when shiki swaps in. Same p-3, and
+        // whitespace-pre (not pre-wrap) so long lines scroll rather than wrap.
         <div className="whitespace-pre p-3 font-mono text-xs text-muted-foreground">
           {source}
         </div>
@@ -200,9 +196,8 @@ function HighlightedCode({
 }
 
 /**
- * The code a tool is about to run, shown in full with Copy / Download. Lives
- * inside the card's collapsible content, so the chevron hides the code and the
- * output together and the buttons only exist while the card is open.
+ * The code a tool is about to run, shown in full with Copy / Download. Lives in
+ * the card's collapsible content, so the chevron hides code and output together.
  */
 export function ToolCodeCell({
   label,

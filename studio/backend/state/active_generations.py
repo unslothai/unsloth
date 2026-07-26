@@ -23,9 +23,8 @@ import time
 import uuid
 from typing import Any, Optional
 
-# handle id -> entry. Keyed by an opaque handle, not thread_id: a tool
-# continuation can register before the previous leg unregisters, and a
-# thread_id-keyed dict would drop one of the two.
+# handle id -> entry. Keyed by handle, not thread_id: a tool continuation can
+# register before the previous leg unregisters, and one key would drop the other.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
 

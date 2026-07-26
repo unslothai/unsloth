@@ -11356,9 +11356,8 @@ class LlamaCppBackend:
                                                 and is_always_safe_tool(current_name)
                                             )
                                             # A text-preview card still streams while
-                                            # gated: nothing runs before the decision,
-                                            # and hiding it leaves the chat blank for as
-                                            # long as the model writes the payload.
+                                            # gated; hiding it leaves the chat blank
+                                            # while the model writes the payload.
                                             and not has_text_only_provisional_card(current_name)
                                         )
                                         # Keep small-argument tools on the normal path.
@@ -11467,9 +11466,8 @@ class LlamaCppBackend:
                                                 _sniffed = _sniff_text_tool_name(
                                                     _call_text, _enabled_tool_names
                                                 )
-                                                # Same rule as the structured path: gated
-                                                # calls stream only when their card is a
-                                                # text preview.
+                                                # Structured-path rule: gated calls
+                                                # stream only from a text-preview card.
                                                 if (
                                                     _sniffed
                                                     and not (
@@ -12073,9 +12071,8 @@ class LlamaCppBackend:
                     start_event["awaiting_confirmation"] = needs_confirm
 
                     try:
-                        # Gated calls are not running yet, so say so: the badge
-                        # otherwise counts up "Running ..." while it waits on a
-                        # human, which reads as a hang.
+                        # Gated calls are not running yet; a "Running ..." badge
+                        # counting up while it waits on a human reads as a hang.
                         yield {
                             "type": "status",
                             "text": (

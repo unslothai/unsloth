@@ -6,7 +6,6 @@ import { create } from "zustand";
 type Resolver = (confirmed: boolean) => void;
 
 // One at a time: a new request declines any pending one so no promise leaks.
-// Mirrors the remote-code consent dialog store.
 let pendingResolver: Resolver | null = null;
 
 interface StopRunningChatsDialogStore {

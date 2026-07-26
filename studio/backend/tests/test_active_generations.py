@@ -154,8 +154,7 @@ def test_registry_survives_concurrent_register_unregister():
 # ── the model-swap gate ───────────────────────────────────────────────
 
 
-# The registry needs only the stdlib, so it runs anywhere. The gate lives in
-# routes.inference, which pulls the whole inference stack: skip when absent.
+# The gate lives in routes.inference, which pulls the whole inference stack.
 def _route_gate():
     pytest.importorskip("fastapi", reason = "inference stack not installed")
     routes_inference = pytest.importorskip(
@@ -292,9 +291,8 @@ def _stub_load_route(monkeypatch, *, active_model_name):
 
 
 def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
-    # Re-Applying the model that is already loaded returns already_loaded without
-    # touching llama-server, so it must not 409 (nor, on the retry the 409 tells
-    # the caller to send, stop every chat for a no-op).
+    # Re-applying the resident model returns already_loaded without touching
+    # llama-server, so it must neither 409 nor stop chats on the forced retry.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -317,8 +315,7 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
 
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
-    # The gate itself is intact: a load that would actually replace the running
-    # model still 409s, and still names the chats it would stop.
+    # A load that would really replace the model still 409s and names the chats.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -338,13 +335,10 @@ def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
 
 
 def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
-    # force_cancel_active is the retry the 409 asks for, so by the time it
-    # arrives the user has approved stopping their chats -- but only in exchange
-    # for the new model. Preflight (identifier resolution, GPU validation, the
-    # training-coexistence guard, the download-manager check) all runs after the
-    # confirmation and can still reject the load, and the resident model is
-    # untouched when it does. Cancelling before those checks would end every
-    # chat and then hand back an error, losing the runs for nothing.
+    # The user approved stopping their chats in exchange for the new model, but
+    # preflight (identifier, GPU, training guard, downloads) runs after that
+    # confirmation and can still reject the load. Cancelling first would end
+    # every chat and then hand back an error, losing the runs for nothing.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     import contextlib
@@ -355,8 +349,7 @@ def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
 
     inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
     monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
-    # Stands in for any preflight refusal; from_identifier returning None is the
-    # route's own "Invalid model identifier" 400.
+    # Stands in for any preflight refusal; a None here is the route's own 400.
     monkeypatch.setattr(inf_mod.ModelConfig, "from_identifier", staticmethod(lambda **kwargs: None))
 
     ev = threading.Event()
@@ -388,8 +381,8 @@ def _stub_unload_backends(monkeypatch, *, llama, backend):
 
 
 def test_unload_rechecks_active_generations_under_the_lifecycle_gate(monkeypatch):
-    # /load repeats the check under the gate; /unload has to as well, or a chat
-    # that starts while this request queues on the gate is torn down mid-stream.
+    # Without the recheck, a chat that starts while this request queues on the
+    # gate is torn down mid-stream.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
@@ -476,11 +469,9 @@ def _run_unload(inf_mod, monkeypatch, *, loaded_gguf, requested, force, torn_dow
 
 
 def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch):
-    # A second tab swapped the model, so this tab's Eject names one that is no
-    # longer loaded. The standard backend deliberately treats a name it never
-    # loaded as a no-op and still reports success, so cancelling before the route
-    # resolves what it will unload ends every chat and leaves the resident model
-    # up: the runs are lost for nothing. Same rule /load already follows.
+    # A second tab swapped the model, so this Eject names one no longer loaded.
+    # That is a no-op that still reports success, so cancelling before the route
+    # resolves what it will unload loses every run for nothing.
     _route_gate()  # skips when the inference stack is unavailable
     import routes.inference as inf_mod
 
@@ -503,8 +494,7 @@ def test_forced_unload_of_a_stale_model_path_leaves_the_chats_alone(monkeypatch)
 
 
 def test_forced_unload_of_the_loaded_model_still_stops_its_chats(monkeypatch):
-    # The other half of the rule: a real unload must still cancel, or the gate
-    # would be a no-op and llama-server would go down mid-stream.
+    # A real unload must still cancel, or llama-server goes down mid-stream.
     _route_gate()  # skips when the inference stack is unavailable
     import routes.inference as inf_mod
 
@@ -574,9 +564,9 @@ class _NeverDisconnectedRequest:
 
 
 def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/responses streams straight to llama-server (no chat pass-through), so
-    # without its own registration a non-forced /unload saw zero generations and
-    # tore the server down mid-response.
+    # /v1/responses streams straight to llama-server, so without its own
+    # registration a non-forced /unload saw zero generations and tore the
+    # server down mid-response.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -607,8 +597,8 @@ def test_direct_responses_stream_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_forced_reload_stops_a_direct_responses_stream(monkeypatch):
-    # The registered event has to be the one the stream actually watches, or
-    # force_cancel_active would unload the server while it keeps decoding.
+    # The registered event must be the one the stream watches, or a forced
+    # reload unloads the server while it keeps decoding.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -650,9 +640,8 @@ def _install_completions_stream_mock(monkeypatch, events):
     import routes.inference as inf_mod
 
     def handler(request):
-        # One network chunk per SSE event, as llama-server sends them: the relay
-        # polls its cancel flag between upstream chunks, so a single buffered
-        # body would never exercise it.
+        # One network chunk per SSE event: the relay polls its cancel flag
+        # between upstream chunks, so a buffered body would never exercise it.
         async def _chunks():
             for event in events:
                 yield f"data: {json.dumps(event)}\n\n".encode()
@@ -705,9 +694,9 @@ class _CompletionsRequest(_NeverDisconnectedRequest):
 
 
 def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/completions relays straight from llama-server. Without its own
-    # registration a non-forced /unload counted zero generations and tore the
-    # server down mid-response (unlike /load, /unload runs no idle drain).
+    # /v1/completions relays straight from llama-server, and unlike /load,
+    # /unload runs no idle drain: without its own registration a non-forced
+    # /unload counted zero generations and tore the server down mid-response.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -735,8 +724,8 @@ def test_completions_proxy_stream_is_visible_to_the_swap_gate(monkeypatch):
 
 
 def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
-    # The registered event has to be the one the relay actually watches, or
-    # force_cancel_active would unload the server while it keeps decoding.
+    # The registered event must be the one the relay watches, or a forced
+    # reload unloads the server while it keeps decoding.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -781,9 +770,8 @@ def _anthropic_stream_args(chunks):
 
 
 def test_local_anthropic_plain_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # The no-tool path is what any /v1/messages client that declares no tools
-    # takes. Only the client-tool pass-through ever registered, so this one was
-    # invisible to the gate and a non-forced /unload killed it mid-response.
+    # Only the client-tool pass-through ever registered, so the no-tool
+    # /v1/messages path was invisible to the gate and died mid-response.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
 
@@ -943,9 +931,8 @@ def _run_server_parallel_default(path: str, consts: dict):
 
 
 def test_run_server_default_matches_the_cli_parallel_default():
-    # colab.py calls run_server() without llama_parallel_slots, so the
-    # signature default is what Colab actually runs with. At 1 the admission
-    # queue serialises every chat there despite the parallel-chat UI.
+    # colab.py calls run_server() without llama_parallel_slots, so the signature
+    # default is what Colab runs with; at 1 the admission queue serialises it.
     run_path = os.path.join(_backend, "run.py")
     consts = _parallel_constants(run_path)
 
@@ -987,12 +974,10 @@ def test_colab_launcher_inherits_the_parallel_default():
 
 
 def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(monkeypatch):
-    # The destructive cancel is the point of no return: by design nothing after
-    # it may still reject the load. A transformers sidecar install can reserve
-    # the swap window during the seconds of preflight (identifier resolution,
-    # the tier probe, the training guard, the download-manager check all await
-    # network work), and the recheck guarding the teardown then 409s. Run after
-    # the cancel, that recheck stops every chat for a model that never loads.
+    # The destructive cancel is the point of no return: nothing after it may
+    # reject the load. A sidecar install can reserve the swap window during the
+    # seconds of preflight, and the recheck guarding the teardown then 409s --
+    # run after the cancel it stops every chat for a model that never loads.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     import contextlib
@@ -1022,8 +1007,7 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
     monkeypatch.setattr(inf_mod, "_guard_chat_load_against_training", lambda *a, **k: None)
     monkeypatch.setattr(inf_mod, "_resolve_inherited_extra_args", lambda *a, **k: None)
 
-    # An install reserves the window while preflight runs: the two route-level
-    # checks pass, every check after them 409s.
+    # The two route-level checks pass, every check after them 409s.
     seen = {"calls": 0}
 
     def _sidecar_reserved_during_preflight():
@@ -1063,15 +1047,11 @@ def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(mo
 
 
 def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
-    # A pass-through response whose body never starts -- the client dropped while
-    # the headers went out, or the request task was cancelled before Starlette
-    # ever called the response -- must leave both registries clean. A tracker
-    # entered eagerly beside the response could never be unregistered: a
-    # never-started async generator runs no body code at all, so neither its
-    # finally, nor aclose(), nor athrow() can exit it (PEP 342 throws "at the
-    # start of its function body if next() has not been called yet"). The run
-    # would sit in the registries until restart and 409 every later non-forced
-    # /load and /unload -- worse than the teardown this tracking guards against.
+    # A pass-through response whose body never starts must leave both registries
+    # clean. A tracker entered eagerly beside the response could never be
+    # unregistered: a never-started async generator runs no body code, so
+    # neither its finally, nor aclose(), nor athrow() can exit it (PEP 342). The
+    # run would sit there until restart and 409 every later non-forced request.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     import inspect
@@ -1104,14 +1084,14 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
             cancel_id = "c1",
         )
 
-    # The response is built and then abandoned, exactly as it is when the request
-    # task is cancelled before Starlette calls it.
+    # Built and abandoned, as when the request task is cancelled before Starlette
+    # calls the response.
     asyncio.run(_build())
     assert active_generations.count() == 0
     assert not inf_mod._CANCEL_REGISTRY
 
-    # The client is already gone when the headers go out, so the first send fails
-    # and the body generator is never entered.
+    # The client is gone when the headers go out, so the first send fails and the
+    # body generator is never entered.
     async def _drive():
         response = await _build()
 
@@ -1128,8 +1108,8 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     assert active_generations.count() == 0
     assert not inf_mod._CANCEL_REGISTRY
 
-    # ...and it is still tracked once the body really runs: the enter has to stay
-    # inside the generator, under the finally that exits it, not be dropped.
+    # Still tracked once the body runs: the enter stays inside the generator,
+    # under the finally that exits it.
     src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
     assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
     assert src.index("_tracker.__enter__()") < src.index("_tracker.__exit__(None, None, None)")

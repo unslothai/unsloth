@@ -80,7 +80,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 
   const authToken = getAuthToken();
   // The gate only opens once the call parsed, so a pending approval means the
-  // script is written even where the args status still reads as streaming.
+  // script is written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCode && !awaitingApproval;
 

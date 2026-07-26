@@ -730,8 +730,8 @@ function stopPromptQueueRun(cancelActiveRun = true) {
 
 if (typeof window !== "undefined") {
   window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
-    // Navigation stops the queue but leaves the dispatched prompt streaming in
-    // the background; an explicit stop (the default) cancels it too.
+    // Navigation leaves the dispatched prompt streaming; an explicit stop
+    // (the default) cancels it too.
     const detail = (event as CustomEvent<{ cancelActiveRun?: boolean }>).detail;
     stopPromptQueueRun(detail?.cancelActiveRun ?? true);
   });
@@ -2696,15 +2696,14 @@ const ArtifactsToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  // This conversation's tool call only. Chats run in parallel, so a global
-  // status would put one chat's "Running Python..." above every composer,
-  // including a brand-new empty chat.
+  // This conversation's tool call only: a global status would put one chat's
+  // "Running Python..." above every composer.
   const threadListItemId = useAuiState(({ threadListItem }) => threadListItem.id);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
   const entry = useChatRuntimeStore((s) => {
     const own = s.toolStatusByThreadId[threadListItemId ?? ""];
-    // A first turn can start before the thread id is persisted, so the adapter
-    // files it under "__default". Only this thread's own run may claim it.
+    // A first turn starts before its id is persisted, so the adapter files it
+    // under "__default"; only this thread's own run may claim it.
     return own ?? (isThreadRunning ? s.toolStatusByThreadId.__default : undefined);
   });
   const toolStatus = entry?.status ?? null;
@@ -2747,8 +2746,8 @@ const ToolStatusDisplay: FC = () => {
   if (!(toolStatus && startedAt && visible)) {
     return null;
   }
-  // Counted from the store's start time, not a local tick, so leaving the
-  // conversation and coming back resumes instead of restarting at 0.
+  // From the store's start time, not a local tick, so returning to the
+  // conversation resumes instead of restarting at 0.
   const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
   const isRunning = toolStatus.startsWith("Running");
   const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
@@ -3621,9 +3620,8 @@ const DiffusionCanvas: FC = () => {
   const threadListItemRemoteId = useAuiState(
     ({ threadListItem }) => threadListItem.remoteId,
   );
-  // Chats run in parallel, so only this conversation's own frames may render
-  // here. An untagged frame (run started before its thread id was known) still
-  // renders, so a first turn keeps its live preview.
+  // Only this conversation's own frames may render here. An untagged frame
+  // (thread id not yet known) still does, so a first turn keeps its preview.
   const ownsCanvas =
     canvas?.threadId == null ||
     canvas.threadId === threadListItemId ||

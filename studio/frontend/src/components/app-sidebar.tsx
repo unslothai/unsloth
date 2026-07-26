@@ -520,13 +520,12 @@ export function AppSidebar() {
     });
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
-  // The whole map, so each row can show its own spinner: several conversations
-  // generate at once now that New Chat leaves the previous one running.
+  // The whole map, so each row can show its own spinner.
   const runningThreadIds = useChatRuntimeStore((s) => s.runningByThreadId);
   const runningChatCount = Object.values(runningThreadIds).filter(Boolean).length;
   const anyChatRunning = runningChatCount > 0;
   // Where "Return to Chat" lands: the newest running chat, not the empty draft
-  // New Chat left active. Map insertion order is start order.
+  // New Chat left active (map insertion order is start order).
   const runningThreadId = (() => {
     const ids = Object.entries(runningThreadIds)
       .filter(([, on]) => on)
@@ -899,10 +898,8 @@ export function AppSidebar() {
     variant: "project" | "recent",
   ) {
     const isPinned = pinnedIdSet.has(item.id);
-    // A row can be generating while you look at another one, so mirror the
-    // Train / Export nav spinners instead of running silently. A compare row's
-    // id is the pair id, while runningByThreadId is keyed per pane thread, so
-    // aggregate the pair's member threads rather than looking the row id up.
+    // A compare row's id is the pair id, while runningByThreadId is keyed per
+    // pane thread, so aggregate its member threads instead of the row id.
     const isGenerating =
       item.type === "compare"
         ? (item.threadIds ?? []).some((id) => Boolean(runningThreadIds[id]))

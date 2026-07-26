@@ -22,11 +22,9 @@ export function toolPaneScope(modelType?: ModelType, pairId?: string): string {
 }
 
 /**
- * Narrow a pane scope to one conversation.
- *
- * Conversations in one pane stream concurrently now, so two threads can each be
- * mid tool call and both call it "call_0". Without the thread in the key they
- * share a store entry and the finished cards show each other's output.
+ * Narrow a pane scope to one conversation. Two threads in a pane can each be
+ * mid tool call and both call it "call_0", so without the thread in the key
+ * they share a store entry and the cards show each other's output.
  */
 export function toolThreadScope(paneScope: string, threadId?: string): string {
   return `${paneScope}\u0000${threadId ?? ""}`;
@@ -35,11 +33,9 @@ export function toolThreadScope(paneScope: string, threadId?: string): string {
 export const ToolPaneScopeContext = createContext<string>(toolPaneScope());
 
 /**
- * Store-key scope for the conversation this component renders in.
- *
- * Takes the thread id from the surrounding runtime, the same id the adapter
- * gets as `unstable_threadId` and writes under, so reader and writer agree
- * without threading a prop through every tool card.
+ * Store-key scope for the conversation this component renders in. Takes the
+ * thread id from the surrounding runtime, the same id the adapter writes
+ * under, so reader and writer agree without threading a prop through.
  */
 export function useToolPaneScope(): string {
   const paneScope = useContext(ToolPaneScopeContext);

@@ -234,9 +234,8 @@ class LlamaAdmissionQueue:
         self._lock = threading.Lock()
         self._active = 0
         self._capacity = 1
-        # Holders that stopped decoding (parked on a tool approval prompt). They
-        # keep their lease but must not count against capacity, or a handful of
-        # unanswered prompts wedges every other chat.
+        # Holders parked on a tool approval prompt keep their lease but must not
+        # count against capacity, or unanswered prompts wedge every other chat.
         self._parked = 0
         self._waiters: Deque[_Waiter] = deque()
 

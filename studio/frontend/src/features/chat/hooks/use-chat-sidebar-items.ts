@@ -28,8 +28,7 @@ export interface SidebarItem {
   id: string;
   /**
    * Compare rows only: the pane threads behind this pair id. `runningByThreadId`
-   * is keyed per pane thread, never by the pair id, so row-level activity has to
-   * aggregate these instead of looking the row's own id up.
+   * is keyed per pane thread, so row-level activity aggregates these.
    */
   threadIds?: string[];
   title: string;
@@ -169,9 +168,8 @@ export function useChatSidebarItems(options?: {
 }
 
 function cancelIfRunning(threadId: string): void {
-  // Reaches a background thread too, which cancelByThreadId cannot: it only
-  // holds the visible thread's cancelRun(). A deleted chat must stop streaming,
-  // or the run keeps writing to a conversation that no longer exists.
+  // Reaches a background thread, which cancelByThreadId cannot: a deleted chat
+  // must stop, or the run keeps writing to a conversation that is gone.
   stopChatThread(threadId);
 }
 

@@ -2053,9 +2053,8 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Local tool ids ("call_0") repeat across turns, panes (compare mode) and
-      // now conversations, since two chats in one pane can each be mid tool
-      // call. Scope by pane AND thread; the cards read the same key through
+      // Local tool ids ("call_0") repeat across turns, panes and conversations,
+      // so scope by pane AND thread; the cards read the same key through
       // useToolPaneScope(). Prefer unstable_threadId: the id the reader sees.
       const toolOutputPaneScope = toolThreadScope(
         toolPaneScope(options.modelType, options.pairId),
@@ -2505,8 +2504,7 @@ export function createOpenAIStreamAdapter(
 
       const threadKey = resolvedThreadId || "__default";
 
-      // Per-run cancellation token so a delayed stop POST can't match
-      // the next run on the same thread.
+      // Per-run token so a delayed stop POST can't match the next run.
       const cancelId =
         typeof crypto !== "undefined" && "randomUUID" in crypto
           ? crypto.randomUUID()
@@ -2515,9 +2513,8 @@ export function createOpenAIStreamAdapter(
       // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only
       // holds the visible thread's cancelRun(), so this controller is the only
       // way to end a backgrounded chat's request: the cancel POST below reaches
-      // llama-server runs only, never an external provider's stream (the
-      // backend proxies those without registering a cancel) and never the audio
-      // route (it answers before the cancel registry is entered).
+      // llama-server runs only, never an external provider's stream nor the
+      // audio route.
       const runAbort = new AbortController();
       const runSignal = runAbort.signal;
       const forwardAbort = () => runAbort.abort(abortSignal.reason);
@@ -2615,9 +2612,8 @@ export function createOpenAIStreamAdapter(
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
       // Flagged local/external so the model-swap gate only counts the chats a
-      // reload actually ends: an external-provider run never touches
-      // llama-server, which is why the backend leaves it out of
-      // active_generations too.
+      // reload ends: an external-provider run never touches llama-server, and
+      // the backend leaves it out of active_generations for the same reason.
       runtime.setThreadRunning(threadKey, true, { local: !isExternalRequest });
       let cumulativeText = "";
       let reasoningStartAt: number | null = null;
@@ -2790,8 +2786,8 @@ export function createOpenAIStreamAdapter(
         // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
         // unmounts (navigation / background thread switch) and detach=false for an
         // explicit Stop. Only a real Stop cancels the backend run; a detach must
-        // leave a backgrounded generation streaming. runSignal forwards that
-        // reason, so a detach still reads as one here.
+        // leave a backgrounded generation streaming; runSignal forwards the
+        // reason so a detach still reads as one here.
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
@@ -2814,13 +2810,11 @@ export function createOpenAIStreamAdapter(
         }).catch(() => {});
       };
 
-      // Stop handle that works when this conversation is not the visible one.
-      // cancelByThreadId only holds the main thread's cancelRun(), yet a
-      // background chat still has to be stoppable (deleting it, a forced
-      // reload). Aborting this run's own controller closes just its request,
-      // and the abort listener above posts this run's cancel_id so a local
-      // llama-server stops decoding too. The abort is what ends an external
-      // provider stream: its cancel_id is never registered backend-side.
+      // Stop handle for when this conversation is not the visible one, which
+      // cancelByThreadId cannot reach. Aborting this run's own controller
+      // closes just its request, and the listener above posts its cancel_id so
+      // llama-server stops decoding too. For an external provider, whose
+      // cancel_id is never registered backend-side, the abort is the stop.
       const serverCancel = () => runAbort.abort();
       runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
@@ -3339,8 +3333,8 @@ export function createOpenAIStreamAdapter(
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
                 runtime.setActiveDiffusionCanvas({
-                  // Tagged so a background run's frames can't render inside the
-                  // chat the user is actually looking at.
+                  // Tagged so a background run's frames stay out of the
+                  // chat the user is looking at.
                   threadId: resolvedThreadKey,
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
@@ -3482,10 +3476,9 @@ export function createOpenAIStreamAdapter(
                   const approvalId = (toolEvent.approval_id as string) || "";
                   const awaitingConfirmation =
                     toolEvent.awaiting_confirmation === true;
-                  // A provisional card may already be on screen for this call,
-                  // streaming its arguments. Keep using that part id, else the
-                  // confirmation-scoped id opens a SECOND card and the first one
-                  // never gets its tool_end and spins "Running" forever.
+                  // A provisional card may already be streaming its arguments.
+                  // Reuse that part id, else the confirmation-scoped id opens a
+                  // second card and the first spins "Running" forever.
                   const openPartId = backendToolCallId
                     ? toolPartIdByBackendId.get(backendToolCallId)
                     : undefined;
@@ -4074,12 +4067,10 @@ export function createOpenAIStreamAdapter(
 
         // Gate on the captured checkpoint still being active so a late
         // completion from provider A doesn't populate the bar after a
-        // mid-stream switch to provider B. Gate on the thread too: the bar shows
-        // the visible conversation, and chats now keep running in the
-        // background, so a run finishing after New Chat / a thread switch would
-        // otherwise repaint another chat's (or an empty chat's) usage.
-        // resolvedThreadKey is null only when the run started before its id was
-        // known, which is left alone rather than dropped.
+        // mid-stream switch to provider B. Gate on the thread too: the bar
+        // shows the visible conversation, so a background run finishing after
+        // New Chat would otherwise repaint another chat's usage. A null
+        // resolvedThreadKey (id not yet known) is left alone, not dropped.
         const usageThreadIsVisible =
           resolvedThreadKey === null ||
           useChatRuntimeStore.getState().activeThreadId === resolvedThreadKey;
@@ -4195,8 +4186,7 @@ export function createOpenAIStreamAdapter(
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        // Scoped: clearing globally used to wipe the badge of every OTHER chat
-        // whose tool was still running.
+        // Scoped: a global clear wiped the badge of every other running chat.
         runtime.setToolStatus(threadKey, null);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
@@ -4213,8 +4203,7 @@ export function createOpenAIStreamAdapter(
         runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only
         // the committed markdown answer (cancellation/error included). Scoped:
-        // clearing globally used to wipe the live frame of another chat that was
-        // still denoising.
+        // a global clear wiped the live frame of another denoising chat.
         runtime.clearActiveDiffusionCanvasForThread(resolvedThreadKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
@@ -4228,7 +4217,7 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setThreadRunning(threadKey, false);
         // Passing serverCancel keeps a newer run's handle: a tool continuation
-        // can register the next leg before this one unwinds.
+        // registers the next leg before this one unwinds.
         runtime.clearThreadServerCancel(threadKey, serverCancel);
       }
     },

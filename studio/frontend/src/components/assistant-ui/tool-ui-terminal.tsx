@@ -50,13 +50,12 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   );
   const displayOutput = preferFullToolOutput(fullOutput, output);
   // The gate only opens once the call parsed, so a pending approval means the
-  // command is written even where the args status still reads as streaming.
+  // command is written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCommand && !awaitingApproval;
 
   return (
-    // Open when mounted mid-run so the command and live output show; collapsed
-    // from history, where the chevron reveals command and output together.
+    // Open mid-run so command and live output show, collapsed from history.
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}

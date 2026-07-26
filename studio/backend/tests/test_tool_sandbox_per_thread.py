@@ -54,8 +54,7 @@ def test_a_directory_is_private_to_its_conversation(workdir):
 
 
 def test_project_chats_deliberately_share_one_workspace(workdir, monkeypatch):
-    # Chats in a project are meant to see each other's files, so they resolve to
-    # the project workspace instead of a per-thread dir.
+    # Chats in a project are meant to see each other's files.
     from core.inference import tools
     monkeypatch.setattr(tools, "_get_project_workdir", lambda sid: "/tmp/project-ws")
     assert tools._get_workdir("project-abc") == "/tmp/project-ws"

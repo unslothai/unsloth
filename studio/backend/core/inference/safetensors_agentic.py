@@ -1209,8 +1209,8 @@ def run_safetensors_tool_loop(
             start_event["awaiting_confirmation"] = needs_confirm
 
             try:
-                # A gated call has not started yet, so say it is waiting rather
-                # than counting up "Running" against a human (GGUF parity).
+                # A gated call has not started: say waiting, not "Running"
+                # counting up against a human (GGUF parity).
                 yield {
                     "type": "status",
                     "text": (

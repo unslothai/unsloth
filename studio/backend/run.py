@@ -1357,11 +1357,10 @@ def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     set_tool_policy(enable_tools)
 
 
-# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. The Chat tab streams
-# several conversations at once and the admission queue caps decodes at the slot
-# count, so a direct launch matches the CLI. VRAM fit may still cut it back.
-# Defined above run_server() so it can be the programmatic default too: embedders
-# that omit the argument (colab.py) would otherwise serialise every chat.
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*: the admission queue caps
+# concurrent chats at the slot count, so a direct launch matches the CLI (VRAM fit
+# may still cut it back). Defined above run_server() so it is the programmatic
+# default too, or embedders that omit it (colab.py) serialise every chat.
 _PARALLEL_MIN = 1
 _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 4

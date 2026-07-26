@@ -37,8 +37,8 @@ export interface LoadModelRequest {
   model_path: string;
   /**
    * Stop any chats still generating instead of getting a 409. A load replaces
-   * the single llama-server every open conversation decodes on, so background
-   * chats cannot survive it. The UI sets this only after the user confirms.
+   * the single llama-server every conversation decodes on, so they cannot
+   * survive it. The UI sets this only after the user confirms.
    */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
@@ -203,9 +203,8 @@ export interface LoadModelResponse {
 export interface UnloadModelRequest {
   model_path: string;
   /**
-   * Stop any chats still generating instead of getting a 409. Unloading
-   * replaces the single llama-server every open conversation decodes on, so
-   * background chats cannot survive it.
+   * Stop any chats still generating instead of getting a 409. Unloading takes
+   * down the llama-server every conversation decodes on.
    */
   force_cancel_active?: boolean;
 }
