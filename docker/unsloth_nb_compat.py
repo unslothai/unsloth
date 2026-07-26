@@ -14,8 +14,14 @@ keep the base venv intact and ship coherent transformers "sidecars" -- each is a
 `pip install --target <dir> --no-deps transformers==X` plus the matched
 huggingface_hub/tokenizers/safetensors. To use version X we just prepend its
 sidecar dir to sys.path BEFORE transformers is imported; the rest of the stack
-(torch, vllm, unsloth, peft, trl) comes from the base venv unchanged. Verified:
-base unsloth loads + generates under both a 4.57.6 and a 5.5.0 sidecar on B200.
+(torch, vllm, unsloth, peft, trl) comes from the base venv unchanged.
+
+That "rest of the stack" is the catch, and it is why selection has a FLOOR as
+well as a ceiling (see sidecar_for): vLLM is version-locked to transformers, so a
+sidecar older than what the baked vLLM accepts does not give the notebook an
+older transformers, it gives it an ImportError at `import unsloth`. The image
+therefore only ships sidecars whose vLLM import has been verified at build time,
+and records the lowest of them as the floor.
 
 Two activation paths:
   * driven/headless: `unsloth-run <notebook>` sets PYTHONPATH at kernel launch.
@@ -30,6 +36,20 @@ import os, sys, glob, json
 SIDECAR_ROOT = os.environ.get("UNSLOTH_TF_SIDECAR_ROOT", "/opt/unsloth-venv/tf-sidecars")
 # The pip/uv shim writes the transformers version a notebook asked for here.
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
+
+# Lowest transformers the image's baked vLLM can import. A sidecar below this is
+# not "an older transformers", it is a BROKEN image: `import unsloth` dies before
+# the first model cell. Written by the Dockerfile's sidecar verification step
+# (which imports vllm.transformers_utils.config under every candidate and drops
+# the ones that raise), so it tracks whatever vLLM the image actually bakes
+# instead of a literal that rots on the next bump. Measured on vLLM 0.26.0:
+#
+#   transformers 4.57.6  FAIL  "Support for Transformers v4 ... removed in vLLM v0.24.0"
+#   transformers 5.3.0   FAIL  "cannot import name 'ALLOWED_LAYER_TYPES'"
+#   transformers 5.5.0   OK
+#   transformers 5.10.2  OK
+#   transformers 5.14.1  OK (the baked one, no sidecar)
+FLOOR_FILE = os.path.join(SIDECAR_ROOT, ".vllm_min_transformers")
 
 
 def _logging_enabled() -> bool:
@@ -70,6 +90,51 @@ def _baked():
     return out
 
 
+def min_version():
+    """Lowest transformers this image's vLLM can import, or None if unrecorded.
+
+    UNSLOTH_TF_SIDECAR_MIN overrides, so a hand-mounted sidecar root can declare
+    its own floor. Returns None when neither is set, which keeps the pre-floor
+    behaviour for any environment that never ran the build-time verification."""
+    v = os.environ.get("UNSLOTH_TF_SIDECAR_MIN", "").strip()
+    if v:
+        return v
+    try:
+        with open(FLOOR_FILE) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
+def _eligible():
+    """Baked sidecars the floor allows, as a sorted [(Version, version_str, dir)].
+
+    Returns None when the versions cannot be parsed (no packaging available)."""
+    baked = _baked()
+    if not baked:
+        return []
+    try:
+        from packaging.version import Version
+    except Exception:
+        return None
+    floor = min_version()
+    try:
+        low = Version(floor) if floor else None
+    except Exception:
+        low = None
+    rows = []
+    for v, d in baked.items():
+        try:
+            ver = Version(v)
+        except Exception:
+            continue
+        if low is not None and ver < low:
+            continue  # vLLM cannot import it; activating it only breaks the run
+        rows.append((ver, v, d))
+    rows.sort()
+    return rows
+
+
 def tier_for_model(model_name: str):
     """Best-effort minimum transformers version for a model id (or None)."""
     if not model_name:
@@ -85,21 +150,42 @@ def tier_for_model(model_name: str):
 def sidecar_for(version: str):
     """Map a requested/needed transformers version to a baked sidecar dir.
 
-    Uses ceiling semantics: the smallest baked version >= the request, because a
-    model added in version X needs *at least* X. If the request is newer than
-    every baked sidecar, return None -> use the base venv (the newest 5.x)."""
-    baked = _baked()
-    if not baked or not version:
+    FLOOR then CEILING, in that order:
+
+      * floor -- a sidecar the baked vLLM cannot import is never eligible, no
+        matter what the notebook pinned. Selecting one used to break `import
+        unsloth` in 254 of the 433 shipped notebooks, because the two common pin
+        families (4.5x -> the 4.57.6 sidecar, 5.2/5.3 -> the 5.3.0 sidecar) both
+        landed on a sidecar vLLM 0.26.0 refuses. A request below the floor is
+        clamped UP to the lowest eligible sidecar: that is the closest version to
+        what the notebook asked for that this image can actually run.
+      * ceiling -- among the eligible sidecars pick the smallest >= the request,
+        because a model added in version X needs *at least* X.
+
+    A request newer than every eligible sidecar returns None -> use the base venv
+    (the newest 5.x), which is always vLLM-compatible."""
+    if not version:
         return None
-    if version in baked:
-        return baked[version]
+    rows = _eligible()
+    if rows is None:  # no packaging: only an exact, still-eligible match is safe
+        baked = _baked()
+        d = baked.get(version)
+        floor = min_version()
+        return d if (d and (not floor or version == floor)) else None
+    if not rows:
+        return None
+    for _ver, v, d in rows:
+        if v == version:
+            return d
     try:
         from packaging.version import Version
         want = Version(version)
     except Exception:
         return None
-    ge = sorted((Version(v), d) for v, d in baked.items() if Version(v) >= want)
-    return ge[0][1] if ge else None
+    for ver, _v, d in rows:
+        if ver >= want:
+            return d
+    return None
 
 
 def requested_version():

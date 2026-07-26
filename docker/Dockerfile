@@ -252,9 +252,28 @@ RUN set -eux \
 # unsloth_nb_compat.py). Each sidecar is transformers==X + matched
 # huggingface_hub/tokenizers/safetensors, --no-deps into its own --target under
 # ${VENV}/tf-sidecars. Prepending one to sys.path swaps transformers without
-# touching the cu128 base. Versions mirror Studio's tiers (4.57.6 +
-# 5.3.0/5.5.0/5.10.2). ~300MB after the strip below. Fail-soft per arch/wheel.
+# touching the cu128 base. Candidate versions mirror Studio's tiers (4.57.6 +
+# 5.3.0/5.5.0/5.10.2). Fail-soft per arch/wheel.
+#
+# Every candidate is then VERIFIED against the baked vLLM and dropped if it does
+# not survive, because vLLM is version-locked to transformers and a sidecar it
+# cannot import does not give the notebook an older transformers -- it gives it
+# an ImportError at `import unsloth`, before the first model cell. Measured on
+# this image (vLLM 0.26.0): 4.57.6 raises "Support for Transformers v4 ... was
+# removed in vLLM v0.24.0" and 5.3.0 raises "cannot import name
+# 'ALLOWED_LAYER_TYPES'", between them breaking 254 of the 433 shipped notebooks,
+# whose transformers pins select exactly those two. 5.5.0 and 5.10.2 pass.
+#
+# vllm.transformers_utils.config is the gate because it is the vLLM module that
+# reads the transformers API, it reproduces BOTH failures, and it imports without
+# a GPU (the build host has none, so `import unsloth` cannot be used here).
+# Deriving the kept set instead of hardcoding it means a later vLLM bump that
+# widens or narrows the supported range re-tunes the image by itself. The lowest
+# survivor is recorded as the selection FLOOR read by unsloth_nb_compat.
 RUN set -eux \
+ && if ${VENV}/bin/python -c "import vllm" >/dev/null 2>&1; then HAVE_VLLM=1; else HAVE_VLLM=0; fi \
+ && echo ">> sidecar verification: baked vLLM importable=${HAVE_VLLM}" \
+ && KEPT="" \
  && for TFV in 4.57.6 5.3.0 5.5.0 5.10.2; do \
         SCRATCH="$(mktemp -d)"; \
         if ! ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
@@ -271,8 +290,24 @@ RUN set -eux \
             ${HFV:+"huggingface_hub==${HFV}"} \
             ${TKV:+"tokenizers==${TKV}"} \
             ${SFV:+"safetensors==${SFV}"}; \
-        echo ">> sidecar transformers==${TFV} (hf_hub=${HFV} tokenizers=${TKV} safetensors=${SFV})"; \
+        if [ "$HAVE_VLLM" = "1" ] && ! PYTHONPATH="$DEST" ${VENV}/bin/python \
+                -c "import vllm.transformers_utils.config" >/dev/null 2>&1; then \
+            echo ">> sidecar transformers==${TFV} DROPPED -- the baked vLLM cannot import under it:"; \
+            PYTHONPATH="$DEST" ${VENV}/bin/python \
+                -c "import vllm.transformers_utils.config" 2>&1 | tail -2 || true; \
+            rm -rf "$DEST"; \
+            continue; \
+        fi; \
+        KEPT="${KEPT} ${TFV}"; \
+        echo ">> sidecar transformers==${TFV} kept (hf_hub=${HFV} tokenizers=${TKV} safetensors=${SFV})"; \
     done \
+ && if [ -z "$KEPT" ]; then \
+        echo ">> FATAL: no transformers sidecar survived vLLM verification"; exit 1; \
+    fi \
+ && if [ "$HAVE_VLLM" = "1" ]; then \
+        printf '%s\n' $KEPT | sort -V | head -1 > ${VENV}/tf-sidecars/.vllm_min_transformers; \
+    fi \
+ && echo ">> sidecars kept:${KEPT} floor=$(cat ${VENV}/tf-sidecars/.vllm_min_transformers 2>/dev/null || echo '(none)')" \
  && { du -sh ${VENV}/tf-sidecars || true; }
 
 # Informational pin record (NOT byte-reproducible: pip freeze omits wheel hashes
