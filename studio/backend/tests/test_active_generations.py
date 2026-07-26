@@ -446,9 +446,7 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
                     inf_mod.load_model(
                         LoadRequest(model_path = "org/A", force_cancel_active = True),
                         SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1)
-                            )
+                            app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
                         ),
                         "tester",
                     )

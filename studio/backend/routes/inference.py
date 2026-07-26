@@ -4804,9 +4804,7 @@ async def _load_model_impl(
             # server under them. No check follows, so this wait can never strand a
             # cancelled chat behind a 409.
             if cancel_pending:
-                await _wait_for_model_switch_idle(
-                    current_request_counted = current_request_counted
-                )
+                await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
