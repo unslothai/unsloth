@@ -982,33 +982,43 @@ def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) ->
     return False
 
 
-def _local_py_signature(model_name: str) -> str | None:
-    """Signature of a local checkpoint's ``.py`` files (path + size + mtime), or ``""``
-    for a Hub id. ``None`` when the walk fails, which means "do not cache".
+def _local_scan_signature(model_name: str) -> str | None:
+    """Signature of a local checkpoint's scan inputs (path + size + mtime), or ``""`` for a
+    Hub id. ``None`` when the walk fails, which means "do not cache".
 
-    Folded into the scan cache key (mirrors ``_probe_cache_key``) so a checkpoint whose
-    remote code is written or replaced after a first lookup is re-scanned instead of
-    reusing a stale negative.
+    Covers the ``.py`` files AND every config that can declare an ``auto_map``, because both
+    decide the answer. A checkpoint materialized in stages can land its code first and gain
+    the ``auto_map`` afterwards: signing only the ``.py`` would keep serving the earlier
+    "no remote code" negative although not one byte of the new declaration was ever read.
+
+    Folded into the scan cache keys (mirrors ``_probe_cache_key``) so a checkpoint whose
+    remote code or whose declaration is written or replaced after a first lookup is
+    re-scanned instead of reusing a stale answer.
     """
-    if not _safe_is_dir(Path(model_name)):
+    root = Path(model_name)
+    if not _safe_is_dir(root):
         return ""
     try:
+        paths = sorted(root.rglob("*.py"))
+        paths += [root / name for name in _auto_map_config_files(model_name)]
         parts = []
-        for py_path in sorted(Path(model_name).rglob("*.py")):
+        for path in paths:
             try:
-                st = py_path.stat()
+                st = path.stat()
             except OSError:
+                # Absent (or unreadable) contributes nothing; it starts contributing the
+                # moment it appears, which is exactly the change we must notice.
                 continue
-            parts.append(f"{py_path}:{st.st_size}:{st.st_mtime_ns}")
+            parts.append(f"{path}:{st.st_size}:{st.st_mtime_ns}")
         return "\0".join(parts)
     except Exception as exc:
-        logger.debug("Could not signature local .py files under %s: %s", model_name, exc)
+        logger.debug("Could not signature local scan inputs under %s: %s", model_name, exc)
         return None
 
 
 def _remote_auto_map_scan_result(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
     """Return ``(needs_510, scan_was_definitive)`` for auto_map remote code."""
-    signature = _local_py_signature(model_name)
+    signature = _local_scan_signature(model_name)
     cache_key = (*_token_cache_key(model_name, hf_token), signature)
     if signature is not None and cache_key in _remote_auto_map_needs_510_cache:
         return _remote_auto_map_needs_510_cache[cache_key], True
@@ -1064,7 +1074,13 @@ def _tokenizer_auto_map_needs_v5(
         definitive = all(repo is not None or _safe_is_file(local_root / fn) for repo, fn in refs)
         ext_sources, ext_ok = _collect_external_py_sources(refs, hf_token)
         if any(repo is not None for repo, _ in refs) and not ext_ok:
-            return False, False
+            # An unreachable external repo makes the closure incomplete, so the negative
+            # stays uncached -- but the local sources already read can still PROVE 5.x.
+            # Returning early here would drop that proof and route a checkpoint whose own
+            # tokenizer imports the 5.x-only backend to the default sidecar, so keep the
+            # partial sources and let the marker scan below decide (mirrors
+            # _remote_auto_map_py_contents, which also returns what it managed to read).
+            definitive = False
         sources.extend(ext_sources)
     else:
         # Pass the tokenizer refs: they already prove remote code exists, so a repo
@@ -1085,11 +1101,14 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     Checks local tokenizer_config.json, else fetches from HuggingFace (authenticated
     with ``hf_token`` so gated/private repos resolve). Cached in
     ``_tokenizer_class_cache``, keyed by (model, token) so an unauthenticated miss does
-    not poison a later authed read. Returns False on any network/parse error
+    not poison a later authed read, plus the local scan signature so a checkpoint whose
+    tokenizer config or remote code is replaced in this process is re-read rather than
+    answered from the previous contents. Returns False on any network/parse error
     (fail-open to default version).
     """
-    cache_key = _token_cache_key(model_name, hf_token)
-    if cache_key in _tokenizer_class_cache:
+    signature = _local_scan_signature(model_name)
+    cache_key = (*_token_cache_key(model_name, hf_token), signature)
+    if signature is not None and cache_key in _tokenizer_class_cache:
         return _tokenizer_class_cache[cache_key]
 
     # --- Check local tokenizer_config.json first ---------------------------
@@ -1129,7 +1148,10 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    # Endpoint-aware: a mirror-only deployment (HF_ENDPOINT set, huggingface.co blocked)
+    # must be able to read the tokenizer config, or the auto_map scan it gates below is
+    # never reached and a custom tokenizer silently routes to the default tier.
+    url = _hf_raw_file_url(model_name, "tokenizer_config.json")
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
@@ -1148,12 +1170,13 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
                 model_name,
                 tokenizer_class,
             )
-        if definitive:
+        if definitive and signature is not None:
             _tokenizer_class_cache[cache_key] = result
         return result
     except Exception as exc:
         logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
-        _tokenizer_class_cache[cache_key] = False
+        if signature is not None:
+            _tokenizer_class_cache[cache_key] = False
         return False
 
 
@@ -1392,9 +1415,17 @@ def _check_config_needs_530(model_name: str, hf_token: str | None = None) -> boo
     return result
 
 
-def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
+def _check_config_needs_510(
+    model_name: str,
+    hf_token: str | None = None,
+    scan_auto_map: bool = True,
+) -> bool:
     """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
-    ``hf_token``; cached by (model, token) only for a definitive read)."""
+    ``hf_token``; cached by (model, token) only for a definitive read).
+
+    ``scan_auto_map=False`` drops the remote-code scan for the cheap parent-side check
+    (``probe=False``), which only asks "is this 5.x at all" and never activates a sidecar.
+    """
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_needs_510_cache:
         return _config_needs_510_cache[cache_key]
@@ -1412,6 +1443,14 @@ def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> boo
             cfg.get("model_type"),
         )
         return True
+
+    if not scan_auto_map:
+        # Same trade as the name fast path: the scan costs a read of every remote-code
+        # config, a recursively paged tree listing and one raw request per .py, which must
+        # not sit on the cheap parent-side path (model inspection, load logging) where a
+        # large repo or a degraded Hub would stall it. Never cached: this negative only
+        # says "no config match", and the activation path (probe=True) still scans.
+        return False
 
     remote_needs, remote_definitive = _remote_auto_map_scan_result(model_name, hf_token)
     if remote_needs:
@@ -2122,7 +2161,7 @@ def get_transformers_tier(
         return tier
 
     # --- Slow config fallbacks (network for HF IDs; authenticated with hf_token) --------
-    if _check_config_needs_510(model_name, hf_token):
+    if _check_config_needs_510(model_name, hf_token, scan_auto_map = probe):
         tier = _raise_tier_for_nested(_load_config_json(model_name, hf_token), "510")
         logger.info("Transformers tier %s selected for %s (config.json check)", tier, model_name)
         return tier

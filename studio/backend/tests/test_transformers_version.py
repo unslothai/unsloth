@@ -331,7 +331,10 @@ class TestCheckTokenizerConfigNeedsV5:
         tc = {"tokenizer_class": "TokenizersBackend"}
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        key = (str(tmp_path), None)
+        import utils.transformers_version as tv
+
+        # The key carries the local scan signature so replacing the checkpoint re-reads it.
+        key = (str(tmp_path), None, tv._local_scan_signature(str(tmp_path)))
         _check_tokenizer_config_needs_v5(str(tmp_path))
         assert key in _tokenizer_class_cache
         assert _tokenizer_class_cache[key] is True
@@ -368,7 +371,8 @@ class TestCheckTokenizerConfigNeedsV5:
         assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
         assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
         assert seen_auth == [None, "Bearer tok"]
-        assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
+        # A Hub id has an empty local signature, so its key stays (model, token, "").
+        assert _tokenizer_class_cache[("org/gated", None, "")] is False  # miss not poisoning
 
 
 # ---------------------------------------------------------------------------
@@ -1616,7 +1620,7 @@ class TestProbeTier:
     def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
         # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
         monkeypatch.setattr(
-            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None, **kw: False
         )
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
@@ -1639,7 +1643,7 @@ class TestProbeTier:
         seen = {}
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510",
-            lambda m, t = None: seen.update({"510": t}) or False,
+            lambda m, t = None, **kw: seen.update({"510": t}) or False,
         )
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_550",
@@ -1727,7 +1731,7 @@ class TestProbeGating:
 
     def _patch_checks_to_tokenizer(self, monkeypatch):
         monkeypatch.setattr(
-            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None, **kw: False
         )
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
@@ -1816,7 +1820,7 @@ class TestProbeGating:
         # A 5.x-saved standard-tokenizer model must report as 5.x (for vision routing)
         # without spawning a probe.
         monkeypatch.setattr(
-            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None, **kw: False
         )
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
@@ -3712,7 +3716,7 @@ class TestLocalScanCacheFreshness:
             )
         )
         assert _check_tokenizer_config_needs_v5(str(tmp_path)) is False
-        assert (str(tmp_path), None) not in _tokenizer_class_cache
+        assert not _tokenizer_class_cache  # nothing memoized at any key
         (tmp_path / "tokenization_my.py").write_text(
             "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
         )
@@ -3752,7 +3756,7 @@ class TestTokenizerAutoMapTransientScan:
         )
         with patch("urllib.request.urlopen", return_value = _hf_response(tok_cfg)):
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
-            assert ("org/tok-only", None) not in _tokenizer_class_cache
+            assert not _tokenizer_class_cache  # nothing memoized at any key
             state["listing_ok"] = True
             assert _check_tokenizer_config_needs_v5("org/tok-only") is True
 
@@ -3775,7 +3779,7 @@ class TestTokenizerAutoMapTransientScan:
             after_first = mock_url.call_count
             assert _check_tokenizer_config_needs_v5("org/tok-only") is False
             assert mock_url.call_count == after_first  # second call served from the cache
-        assert _tokenizer_class_cache[("org/tok-only", None)] is False
+        assert _tokenizer_class_cache[("org/tok-only", None, "")] is False
 
 
 class TestProbeFalseSkipsAutoMapScan:
@@ -4160,3 +4164,217 @@ class TestImportScanIgnoresNonImportText:
             "from transformers.utils.output_capturing import (\n    capture,\n)\n",
         ):
             assert self._matches(src) is True
+
+
+# ---------------------------------------------------------------------------
+# Round 3: partial scans, signature coverage, mirror endpoint, probe=False cost
+# ---------------------------------------------------------------------------
+
+_V5_TOK_IMPORT = "from transformers.tokenization_utils_tokenizers import TokenizersBackend\n"
+
+
+def _tokenizer_checkpoint(root: Path, refs: list, tok_src: str):
+    """A local checkpoint whose tokenizer auto_map points at ``refs``."""
+    (root / "tokenizer_config.json").write_text(
+        json.dumps({"tokenizer_class": "MyTok", "auto_map": {"AutoTokenizer": refs}})
+    )
+    (root / "tokenization_my.py").write_text(tok_src)
+    return root
+
+
+class TestPartialTokenizerScanKeepsPositiveMatch:
+    """An unreachable external repo must not discard proof already read from disk."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_local_proof_survives_external_repo_failure(self, monkeypatch, tmp_path: Path):
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        _tokenizer_checkpoint(
+            tmp_path,
+            ["tokenization_my.MyTok", "other/repo--tokenization_fast.MyTokFast"],
+            _V5_TOK_IMPORT,
+        )
+        monkeypatch.setattr(tv, "_list_hub_repo_py_files", lambda repo, tok = None: (set(), False))
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
+    def test_incomplete_scan_without_proof_is_still_uncached(self, monkeypatch, tmp_path: Path):
+        """Negative control: no local proof means inconclusive, and nothing is memoized."""
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        _tokenizer_checkpoint(
+            tmp_path,
+            ["tokenization_my.MyTok", "other/repo--tokenization_fast.MyTokFast"],
+            "import torch\n",
+        )
+        monkeypatch.setattr(tv, "_list_hub_repo_py_files", lambda repo, tok = None: (set(), False))
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is False
+        assert not _tokenizer_class_cache  # nothing memoized at any key
+
+
+class TestScanSignatureCoversAutoMapConfigs:
+    """The scan cache key must follow the declaration, not just the code."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_auto_map_added_after_the_code_is_rescanned(self, tmp_path: Path):
+        """A staged checkpoint: .py first, processor auto_map afterwards."""
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "custom_remote"}))
+        (tmp_path / "processing_custom.py").write_text(_V5_IMPORT)
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is False
+        (tmp_path / "preprocessor_config.json").write_text(
+            json.dumps({"auto_map": {"AutoProcessor": "processing_custom.CustomProcessor"}})
+        )
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
+
+    def test_unrelated_file_still_serves_the_cache(self, monkeypatch, tmp_path: Path):
+        """Negative control: only .py and auto_map configs may bust the scan cache."""
+        import utils.transformers_version as tv
+
+        _auto_map_checkpoint(tmp_path, _V5_IMPORT)
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
+        (tmp_path / "generation_config.json").write_text(json.dumps({"do_sample": True}))
+        monkeypatch.setattr(
+            tv,
+            "_remote_auto_map_py_contents",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("rescanned unchanged inputs")),
+        )
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
+
+
+class TestTokenizerScanCacheFreshness:
+    """The tokenizer cache must not answer from a checkpoint that has since changed."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def test_rescanned_when_tokenizer_source_replaced(self, tmp_path: Path):
+        _tokenizer_checkpoint(tmp_path, ["tokenization_my.MyTok", None], "import torch\n")
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is False
+        (tmp_path / "tokenization_my.py").write_text(_V5_TOK_IMPORT)
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
+    def test_rescanned_when_tokenizer_config_replaced(self, tmp_path: Path):
+        (tmp_path / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "LlamaTokenizerFast"})
+        )
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is False
+        (tmp_path / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is True
+
+    def test_unchanged_checkpoint_is_served_from_cache(self, monkeypatch, tmp_path: Path):
+        """Negative control: an untouched checkpoint must not be re-read every call."""
+        import utils.transformers_version as tv
+
+        _tokenizer_checkpoint(tmp_path, ["tokenization_my.MyTok", None], "import torch\n")
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is False
+        monkeypatch.setattr(
+            tv,
+            "_tokenizer_auto_map_needs_v5",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("rescanned unchanged inputs")),
+        )
+        assert _check_tokenizer_config_needs_v5(str(tmp_path)) is False
+
+
+class TestTokenizerConfigFetchHonorsEndpoint:
+    """A mirror-only deployment must reach the tokenizer config, or the scan never runs."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def _serve(self, monkeypatch, mirror: str | None):
+        import utils.transformers_version as tv
+
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        if mirror:
+            monkeypatch.setenv("HF_ENDPOINT", mirror)
+        else:
+            monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        urls = []
+        tok_cfg = json.dumps(
+            {"tokenizer_class": "MyTok", "auto_map": {"AutoTokenizer": ["tokenization_my.M", None]}}
+        ).encode()
+
+        def _urlopen(req, timeout = 10):
+            urls.append(req.full_url)
+            if mirror and not req.full_url.startswith(mirror):
+                raise OSError("huggingface.co is blocked in this deployment")
+            if req.full_url.endswith("/tokenizer_config.json"):
+                return _PagedResponse(tok_cfg)
+            raise _http_error(req.full_url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        monkeypatch.setattr(
+            tv, "_list_hub_repo_py_files", lambda repo, tok = None: ({"tokenization_my.py"}, True)
+        )
+        monkeypatch.setattr(tv, "_read_repo_text_file", lambda m, fn, tok = None: _V5_TOK_IMPORT)
+        return urls
+
+    def test_mirror_endpoint_reaches_the_auto_map_scan(self, monkeypatch):
+        urls = self._serve(monkeypatch, "https://hf-mirror.example")
+        assert _check_tokenizer_config_needs_v5("org/mirror-only") is True
+        assert urls and all(u.startswith("https://hf-mirror.example") for u in urls)
+
+    def test_public_endpoint_is_the_default(self, monkeypatch):
+        """Negative control: with no HF_ENDPOINT the public host is still used."""
+        urls = self._serve(monkeypatch, None)
+        assert _check_tokenizer_config_needs_v5("org/public") is True
+        assert urls[0] == "https://huggingface.co/org/public/raw/main/tokenizer_config.json"
+
+
+class TestProbeFalseSkipsConfigFallbackScan:
+    """probe=False is the cheap parent-side path: no tree listing, no per-.py fetches."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
+        _remote_auto_map_needs_510_cache.clear()
+
+    def _hub(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "empty-hub"))
+        urls = []
+        cfg = json.dumps(
+            {"model_type": "custom_remote", "auto_map": {"AutoModel": "modeling_custom.Model"}}
+        ).encode()
+        tree = json.dumps([{"type": "file", "path": f"modeling_{i}.py"} for i in range(12)]).encode()
+
+        def _urlopen(req, timeout = 10):
+            urls.append(req.full_url)
+            if req.full_url.endswith("/config.json"):
+                return _PagedResponse(cfg)
+            if "/tree/" in req.full_url:
+                return _PagedResponse(tree)
+            if req.full_url.endswith(".py"):
+                return _PagedResponse(_V5_IMPORT.encode())
+            raise _http_error(req.full_url, 404)
+
+        monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+        return urls
+
+    def test_probe_false_does_not_list_or_fetch_repo_code(self, monkeypatch, tmp_path):
+        urls = self._hub(monkeypatch, tmp_path)
+        assert get_transformers_tier("org/custom-remote", probe = False) == "default"
+        assert not [u for u in urls if "/tree/" in u or u.endswith(".py")]
+
+    def test_probe_false_negative_does_not_poison_activation(self, monkeypatch, tmp_path):
+        """Negative control: the skipped scan must not be memoized as a 510 negative."""
+        urls = self._hub(monkeypatch, tmp_path)
+        assert get_transformers_tier("org/custom-remote", probe = False) == "default"
+        assert ("org/custom-remote", None) not in _config_needs_510_cache
+        assert get_transformers_tier("org/custom-remote", probe = True) == "510"
+        assert [u for u in urls if u.endswith(".py")]  # the activation path did scan
