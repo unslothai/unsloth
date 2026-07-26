@@ -16,12 +16,15 @@ source-scanning tests do constantly:
 
 A call is an offence when it does un-pinned text I/O and either of two things
 holds. It runs at import, where nothing can see a tmp_path fixture yet. Or the
-path it reads anchors on something checked in: a module-level constant, which a
-fixture parameter can never be, or `__file__`. Anchoring is what decides the
-second one, followed through `/` joins, path methods, and the locals and loop
-variables of the enclosing function, so `for p in (_B / "routes").rglob("*.py")`
-is in scope and anything growing out of a tmp_path is not. That rule reaches
-test bodies, where the same failure lands one step later:
+path it reads anchors on something checked in: a module-level constant or
+import, which a fixture parameter can never be, or `__file__`. Anchoring is
+what decides the second one, followed through `/` joins, path methods, the
+locals and loop variables of the enclosing function, and the parameters of
+helpers every caller hands a checked-in path. So
+`for p in (_B / "routes").rglob("*.py")` is in scope, `_source(LOADER_PATH)`
+puts the bare read inside `_source` in scope, and anything growing out of a
+tmp_path stays out. That reaches test bodies, where the same failure lands one
+step later:
 
     test_gemma4_chat_template.py opens unsloth/chat_templates.py through a
     helper its tests call, and cp1252 cannot decode that file ("byte 0x90").
@@ -29,17 +32,19 @@ test bodies, where the same failure lands one step later:
     test_gguf_load_cache_reuse.py as `Path(__file__).parent.parent / ...`, both
     dying on the same 0x81 the two cancel modules hit at collection.
 
-Every question the rules ask is answered inside one function, which keeps them
-mechanical enough to enforce with no allowlist and quiet about temp-dir I/O,
-where the platform default is harmless and the test wrote the bytes itself.
+Every question the rules ask is answered by the call, its path expression, or
+the call sites of the helper it sits in, which keeps them mechanical enough to
+enforce with no allowlist and quiet about temp-dir I/O, where the platform
+default is harmless and the test wrote the bytes itself.
 
 Two shapes are consequently out of reach, both fixed by hand and neither
-detectable without whole-program dataflow. A path that arrives from another
-function, as `for path in _iter_caller_files()` does in
+decidable without tracking values through returns. A path a helper hands back
+rather than takes in, as `for path in _iter_caller_files()` does in
 test_security_gate_consistency.py, says nothing about itself at the read. And
 text read from a checked-in file then written back to a tmp_path, as at
-test_studio_install_workspace_guard.py:851, is unsafe only because of where the
-string came from. Reviewers have to catch those two.
+test_studio_install_workspace_guard.py:851 and test_scan_packages.py:40, is
+unsafe only because of where the string came from. Reviewers have to catch
+those two.
 """
 
 # `str | None` below is evaluated at import on Python 3.9 without this, and
@@ -53,7 +58,7 @@ TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 # Both trees ship to Windows contributors, and separate CI jobs collect them
 # (repo-cpu-tests and the studio-backend matrix), so the rule covers both.
-ROOTS = (TESTS, REPO / "studio" / "backend" / "tests")
+ROOTS = (TESTS, REPO / "studio" / "backend" / "tests", REPO / "unsloth_cli" / "tests")
 GUARDED_METHODS = {"read_text", "write_text"}
 NOT_PATH_RECEIVERS = {
     "codecs",
@@ -105,6 +110,8 @@ PATH_METHODS = {
     "with_name",
     "with_suffix",
 }
+# Receivers that are not themselves a path, so the path is the first argument.
+MODULE_RECEIVERS = set(NOT_PATH_RECEIVERS) | set(COMPRESSED_OPENERS) | PATH_CLASSES | {"io"}
 # Where each API takes its encoding positionally, for the bound call.
 ENCODING_POSITION = {"read_text": 0, "write_text": 1, "Path.open": 2, "open": 3}
 # Distinct from None so that "no mode argument at all" still means text.
@@ -258,6 +265,10 @@ def _module_level_names(tree: ast.Module) -> set:
             names.update(t.id for t in node.targets if isinstance(t, ast.Name))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # `start._CODEX_FALLBACK_PROMPT` is a path another module defines at
+            # its own module scope, so the import is an anchor like any constant.
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
     return names
 
 
@@ -281,9 +292,16 @@ def _local_names(func) -> set:
 
 
 def _path_expr(call: ast.Call):
-    """The expression the call reads from."""
+    """The expression naming the file the call reads.
+
+    Usually the receiver, but a module or the Path class in that slot means the
+    path is the first argument instead: `Path.read_text(REPO / "x.py")` and
+    `gzip.open(path, "rt")` both read their argument, not `Path` or `gzip`.
+    """
     func = call.func
     if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name) and func.value.id in MODULE_RECEIVERS:
+            return call.args[0] if call.args else None
         return func.value
     if isinstance(func, ast.Name) and func.id == "open" and call.args:
         return call.args[0]
@@ -312,9 +330,9 @@ def _path_root(node: ast.AST) -> ast.AST:
                 node = func.value
             elif node.args:
                 node = node.args[0]
-            elif isinstance(func, ast.Attribute):
-                node = func.value
             else:
+                # An unrecognised no-argument method says nothing about where
+                # its result points, so tempfile.mkdtemp() stops here.
                 return node
         else:
             return node
@@ -383,6 +401,53 @@ def _checked_in_locals(func, module_names: set, shadowed) -> set:
         good = grown
 
 
+def _checked_in_params(tree: ast.Module, module_names: set) -> set:
+    """(function, parameter) pairs that only ever receive a checked-in path.
+
+    `_source(LOADER_PATH)` is what tells us that the `path` parameter of
+    `_source` is reading a file that ships in the repo; the bare
+    `path.read_text()` inside it cannot say so on its own. One hop only, and a
+    parameter any call leaves out, or passes anything else, is not tracked.
+    """
+    funcs = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    # Which function each call sits in, so a parameter already known to hold a
+    # checked-in path can be passed on to the next helper.
+    owner: dict = {}
+
+    def _mark(node, name):
+        if isinstance(node, ast.Call):
+            owner[id(node)] = name
+        for child in ast.iter_child_nodes(node):
+            _mark(child, child.name if isinstance(child, ast.FunctionDef) else name)
+
+    _mark(tree, None)
+    good: set = set()
+    while True:
+        grown, bad = set(), set()
+        for call in ast.walk(tree):
+            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                continue
+            func = funcs.get(call.func.id)
+            if func is None or any(isinstance(a, ast.Starred) for a in call.args):
+                continue
+            here = {p for f, p in good if f == owner.get(id(call))}
+            params = [a.arg for a in [*func.args.posonlyargs, *func.args.args]]
+            supplied = dict(zip(params, call.args))
+            supplied.update({k.arg: k.value for k in call.keywords if k.arg in params})
+            for param in params:
+                value = supplied.get(param)
+                ok = value is not None and _is_checked_in_root(value, module_names, (), here)
+                (grown if ok else bad).add((func.name, param))
+        grown -= bad
+        if grown == good:
+            return good
+        good = grown
+
+
 def _checked_in_path_calls(tree: ast.Module):
     """Yield calls, at any depth, whose path is provably a checked-in file.
 
@@ -399,6 +464,7 @@ def _checked_in_path_calls(tree: ast.Module):
     """
     module_names = _module_level_names(tree)
     consumed = _eagerly_consumed(tree)
+    params = _checked_in_params(tree, module_names)
 
     def visit(
         node,
@@ -408,6 +474,8 @@ def _checked_in_path_calls(tree: ast.Module):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             shadowed = shadowed | _local_names(node)
             derived = _checked_in_locals(node, module_names, shadowed)
+            name = getattr(node, "name", None)
+            derived = derived | {p for f, p in params if f == name}
         elif _is_main_guard(node):
             # Never runs under pytest, so rule 1 skips it for the same reason.
             for child in node.orelse:

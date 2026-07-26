@@ -37,7 +37,9 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     # The build helper writes to its own dir; copy + patch HERE.
     builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
-    rebuilt_helper.write_text(builder_src)
+    # builder_src came out of a checked-in file, so it carries whatever
+    # non-ASCII that file holds and cp1252 cannot encode it back out.
+    rebuilt_helper.write_text(builder_src, encoding = "utf-8")
     # Run with SOURCE_DATE_EPOCH=0 and HERE override via a shim.
     shim = rebuild_dir / "run.py"
     shim.write_text(

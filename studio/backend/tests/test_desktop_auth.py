@@ -123,7 +123,7 @@ def test_ensure_default_admin_does_not_recreate_bootstrap_for_existing_admin():
 
 def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch):
     created = storage.ensure_default_admin()
-    bootstrap_pw = storage._BOOTSTRAP_PW_PATH.read_text().strip()
+    bootstrap_pw = storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
 
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     created_again = storage.ensure_default_admin()
@@ -136,12 +136,12 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
 
 def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
     seed_user()
-    storage._BOOTSTRAP_PW_PATH.write_text(" \n")
+    storage._BOOTSTRAP_PW_PATH.write_text(" \n", encoding = "utf-8")
 
     created = storage.ensure_default_admin()
 
     assert created is False
-    assert storage._BOOTSTRAP_PW_PATH.read_text() == " \n"
+    assert storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8") == " \n"
     assert storage.get_bootstrap_password() is None
 
 
