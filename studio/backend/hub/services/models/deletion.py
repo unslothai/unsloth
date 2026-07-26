@@ -82,7 +82,9 @@ def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
         for f in getattr(rev, "files", ()):
-            name = str(getattr(f, "file_name", ""))
+            # Snapshot-relative, like the listing: ``file_name`` is the basename,
+            # so a subdir layout loses the quant (and its flavor) that is shown.
+            name = cache_inventory._cached_repo_file_name(f)
             if not predicate(name):
                 continue
             file_path = getattr(f, "file_path", None)
