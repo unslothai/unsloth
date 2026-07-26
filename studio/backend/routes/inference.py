@@ -5813,22 +5813,12 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
 
-    # Same gate as /load: refusal only, so a non-forced unload fails fast before
-    # queueing on the lifecycle gate. Skipped when no teardown branch can fire, or a
-    # request naming a model another tab already replaced would 409 on chats it cannot
-    # interrupt instead of returning its no-op. The destructive pass runs at each
-    # teardown below. Ahead of the "stop loading" fast paths, which have no generations.
-    if _unload_may_evict(request.model_path):
-        _raise_or_cancel_active_generations(
-            force = request.force_cancel_active,
-            action = "Unloading the model",
-            cancel = False,
-        )
     try:
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly. /load holds the lifecycle gate for the whole (multi-minute) load,
         # so gating first would make the cancel wait it out. cancel_load only tears the
-        # loading subprocess down (no unload command), so it is safe off-gate.
+        # loading subprocess down (no unload command), so it is safe off-gate -- and ahead
+        # of the active-generation refusal below, which it can never need (see there).
         backend = get_inference_backend()
         loading = getattr(backend, "get_loading_model", lambda: None)()
         if (
@@ -5863,6 +5853,30 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
             note_model_unloaded()
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
+
+        # Same gate as /load: refusal only, so a non-forced unload fails fast before
+        # queueing on the lifecycle gate. Skipped when no teardown branch can fire, or a
+        # request naming a model another tab already replaced would 409 on chats it cannot
+        # interrupt instead of returning its no-op. The destructive pass runs at each
+        # teardown below.
+        #
+        # BEHIND the two "stop loading" fast paths above, not ahead of them. Both cancel a
+        # load that has not replaced anything yet, so neither can interrupt a chat: the
+        # standard one only fires for a name in ``loading_models`` (that subprocess is
+        # already loading the new model, so nothing is serving on it), and the GGUF one
+        # only for a llama-server that is up but NOT serving. Refusing them counted a
+        # teardown that cannot happen. It also could not be retried: the frontend's Cancel
+        # sends this unload without force_cancel_active and drops the error, and its
+        # AbortController is never wired into the /load fetch, so a 409 here left the user
+        # told the load had stopped while it ran on to cancel those very chats and swap the
+        # model. A request naming anything else -- including the previous model while a
+        # different one loads -- still falls through to the refusal below.
+        if _unload_may_evict(request.model_path):
+            _raise_or_cancel_active_generations(
+                force = request.force_cancel_active,
+                action = "Unloading the model",
+                cancel = False,
+            )
 
         # Serialize with /load under the same lifecycle gate: the Unsloth unload now runs
         # off the event loop (asyncio.to_thread), so without this a concurrent /load could

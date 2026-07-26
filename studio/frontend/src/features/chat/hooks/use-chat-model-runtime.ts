@@ -464,9 +464,11 @@ export function useChatModelRuntime() {
     useChatRuntimeStore.getState().setModelLoading(true);
     void (async () => {
       try {
-        // The model being unloaded is still loading, so it has no generations,
-        // but a chat may stream on the previous one: no force, let the 409
-        // surface rather than kill it.
+        // Unforced on purpose: a chat may stream on the PREVIOUS model and
+        // must not be killed by cancelling this load. The failure is dropped
+        // because there is nothing to report -- the route runs its stop-loading
+        // fast path ahead of the active-chat refusal, so cancelling a load that
+        // has replaced nothing is not refused.
         await unloadModel({ model_path: model.id }).catch(() => {});
       } finally {
         cancelUnloadPendingRef.current = false;

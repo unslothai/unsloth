@@ -655,9 +655,11 @@ def test_unforced_unload_of_the_loaded_model_still_refuses_while_chats_stream(mo
 
 
 def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatch):
-    # cancelLoading -> /unload with no force. The GGUF branch evicts a llama-server that is
-    # up but not yet serving whatever model the request names, so a stale path is NOT
-    # harmless here: a chat on the previous model must still get the 409, not be killed.
+    # An Eject naming the PREVIOUS model while a different one loads (a stale tab, not
+    # cancelLoading -- that names the loading model, see below). The GGUF branch evicts a
+    # llama-server that is up but not yet serving whatever model the request names, so a
+    # stale path is NOT harmless here: a chat on the previous model must still get the
+    # 409, not be killed.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
@@ -695,6 +697,92 @@ def test_unforced_unload_still_refuses_while_a_gguf_load_is_in_flight(monkeypatc
     assert exc.value.status_code == 409
     assert torn_down == []
     assert not ev.is_set()
+
+
+def test_cancelling_an_in_flight_standard_load_is_not_refused_by_the_chat_gate(monkeypatch):
+    # The real cancelLoading shape: /unload naming the model that is still LOADING, with
+    # no force. Cancelling a load replaces nothing, so it cannot interrupt a chat on the
+    # previous model and must not 409 -- the frontend drops the error and never aborts the
+    # /load fetch, so refusing here leaves the user told the load stopped while it runs on
+    # to cancel that very chat.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import UnloadRequest
+
+    cancelled: list[str] = []
+    torn_down: list[str] = []
+    inf_mod, _kw = _stub_unload_backends(
+        monkeypatch,
+        # Nothing on llama-server: the load in flight is a safetensors one.
+        llama = SimpleNamespace(
+            is_active = False,
+            is_loaded = False,
+            model_identifier = None,
+            unload_model = lambda: torn_down.append("gguf"),
+        ),
+        backend = SimpleNamespace(
+            get_loading_model = lambda: "org/B",
+            cancel_load = lambda path: bool(cancelled.append(path)) or True,
+            active_model_name = None,
+            models = {},
+            unload_model = lambda path: torn_down.append("unsloth"),
+        ),
+    )
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = asyncio.run(
+            inf_mod.unload_model(
+                UnloadRequest(model_path = "org/B", force_cancel_active = False), "tester"
+            )
+        )
+        # The chat on the previous model is untouched: the load never reached it.
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+    assert response.status == "unloaded"
+    assert cancelled == ["org/B"]
+    assert torn_down == []
+
+
+def test_cancelling_an_in_flight_gguf_load_is_not_refused_by_the_chat_gate(monkeypatch):
+    # Same cancelLoading shape against the GGUF fast path: llama-server is up for the
+    # named model but not yet serving it, so killing that child ends a load, not a chat.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    from types import SimpleNamespace
+
+    from models.inference import UnloadRequest
+
+    torn_down: list[str] = []
+    inf_mod, _kw = _stub_unload_backends(
+        monkeypatch,
+        llama = SimpleNamespace(
+            is_active = True,
+            is_loaded = False,  # spawned, health check not passed: mid-load
+            model_identifier = "org/B-GGUF",
+            unload_model = lambda: torn_down.append("gguf"),
+        ),
+        backend = SimpleNamespace(
+            get_loading_model = lambda: None,
+            active_model_name = None,
+            models = {},
+            unload_model = lambda path: torn_down.append("unsloth"),
+        ),
+    )
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = asyncio.run(
+            inf_mod.unload_model(
+                UnloadRequest(model_path = "org/B-GGUF", force_cancel_active = False), "tester"
+            )
+        )
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+    assert response.status == "unloaded"
+    assert torn_down == ["gguf"]
 
 
 def _install_responses_stream_mock(monkeypatch, chunks):

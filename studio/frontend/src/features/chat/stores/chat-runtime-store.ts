@@ -733,6 +733,16 @@ type ContextUsageSnapshot = {
   cacheWriteTokens?: number;
 };
 
+/**
+ * One live run behind `runningByThreadId[id]`, with the `local` flag it was
+ * started with so the model-swap gate can still tell a llama-server run from an
+ * external-provider one when several runs share a key.
+ */
+type ThreadRunOwner = {
+  owner: () => void;
+  local: boolean;
+};
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -751,18 +761,27 @@ type ChatRuntimeStore = {
    * appear in `active_generations` or trigger the 409.
    */
   localRunByThreadId: Record<string, boolean>;
-  /** Which run set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. */
-  runOwnerByThreadId: Record<string, () => void>;
+  /**
+   * Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`.
+   *
+   * A list, not one entry: every run without a resolved thread id shares the
+   * "__default" key, so concurrent runs land on the same key and each needs its
+   * own slot. Replacing a single entry would let the newer run's clear delete
+   * the shared entry out from under an older one still generating.
+   */
+  runOwnerByThreadId: Record<string, ThreadRunOwner[]>;
   cancelByThreadId: Record<string, () => void>;
   /**
-   * Backend cancel for a thread generating in the background.
+   * Backend cancels for the threads generating in the background.
    *
    * `cancelByThreadId` only holds the visible thread's `cancelRun()`, but a
    * conversation left streaming by New Chat still has to be stoppable. The
    * adapter parks a closure here that POSTs that run's own cancel_id: the same
-   * per-run path as Stop, so it never touches a sibling conversation.
+   * per-run path as Stop, so it never touches a conversation behind another
+   * key. A list for the same reason as `runOwnerByThreadId`: runs sharing the
+   * "__default" key must not overwrite each other's stop handle.
    */
-  serverCancelByThreadId: Record<string, () => void>;
+  serverCancelByThreadId: Record<string, (() => void)[]>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
@@ -1008,7 +1027,9 @@ type ChatRuntimeStore = {
    * `local` defaults to true: an unqualified caller is a llama-server run, so the
    * model-swap gate keeps counting it. `owner` narrows the clear to the run that
    * set the flag, like `clearThreadServerCancel`: unresolved thread ids share the
-   * "__default" key, so a blind delete would drop a sibling's live entry.
+   * "__default" key, so a blind delete would drop a sibling's live entry. Owners
+   * accumulate, so `runningByThreadId[id]` (and `localRunByThreadId[id]`, while
+   * any local owner remains) survives until the last owner clears.
    */
   setThreadRunning: (
     threadId: string,
@@ -1541,24 +1562,39 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const next = { ...state.runningByThreadId };
       const nextLocal = { ...state.localRunByThreadId };
       const nextOwner = { ...state.runOwnerByThreadId };
+      const owners = state.runOwnerByThreadId[threadId] ?? [];
+      const local = options?.local !== false;
       if (running) {
         next[threadId] = true;
         if (options?.owner) {
-          nextOwner[threadId] = options.owner;
+          nextOwner[threadId] = [...owners, { owner: options.owner, local }];
         }
-        if (options?.local === false) {
-          delete nextLocal[threadId];
-        } else {
+        // Any local owner keeps the key counted by the model-swap gate, so an
+        // external run joining a shared key must not clear a sibling's flag.
+        if (local) {
           nextLocal[threadId] = true;
+        } else if (!owners.some((o) => o.local)) {
+          delete nextLocal[threadId];
         }
       } else {
-        const owner = state.runOwnerByThreadId[threadId];
-        if (options?.owner && owner && owner !== options.owner) {
-          return state;
+        const remaining = options?.owner
+          ? owners.filter((o) => o.owner !== options.owner)
+          : [];
+        // An owner that is not in the list has already been cleared, or the key
+        // belongs to siblings only: either way this run must change nothing.
+        if (options?.owner && remaining.length === owners.length) return state;
+        if (remaining.length > 0) {
+          nextOwner[threadId] = remaining;
+          if (remaining.some((o) => o.local)) {
+            nextLocal[threadId] = true;
+          } else {
+            delete nextLocal[threadId];
+          }
+        } else {
+          delete next[threadId];
+          delete nextLocal[threadId];
+          delete nextOwner[threadId];
         }
-        delete next[threadId];
-        delete nextLocal[threadId];
-        delete nextOwner[threadId];
       }
       return {
         runningByThreadId: next,
@@ -1582,7 +1618,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   registerThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.serverCancelByThreadId };
-      next[threadId] = cancel;
+      next[threadId] = [...(state.serverCancelByThreadId[threadId] ?? []), cancel];
       return { serverCancelByThreadId: next };
     }),
   // `cancel` narrows removal to the run that registered it: unresolved thread ids
@@ -1591,9 +1627,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       const current = state.serverCancelByThreadId[threadId];
       if (current === undefined) return state;
-      if (cancel !== undefined && current !== cancel) return state;
+      const remaining =
+        cancel === undefined ? [] : current.filter((c) => c !== cancel);
+      if (remaining.length === current.length) return state;
       const next = { ...state.serverCancelByThreadId };
-      delete next[threadId];
+      if (remaining.length > 0) {
+        next[threadId] = remaining;
+      } else {
+        delete next[threadId];
+      }
       return { serverCancelByThreadId: next };
     }),
   setAutoTitle: (autoTitle) =>
