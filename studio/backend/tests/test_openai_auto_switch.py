@@ -1096,6 +1096,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     from pathlib import Path
     import routes.models as models_route
     from utils import paths as upaths
+    from utils import hf_cache_settings
     import storage.studio_db as studio_db
 
     scanned = []
@@ -1116,13 +1117,18 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "known_hf_hub_caches",
+        lambda: [tmp_path / "active", tmp_path / "previous"],
+    )
     monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [tmp_path / "lmstudio"])
     monkeypatch.setattr(
         studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
     )
-    for sub in ("active", "legacy", "default", "lmstudio", "custom"):
+    for sub in ("active", "previous", "legacy", "default", "lmstudio", "custom"):
         (tmp_path / sub).mkdir()
 
     resolver._build_index()
@@ -1131,6 +1137,7 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     lm = {p for k, p in scanned if k == "lm"}
     assert str((tmp_path / "legacy").resolve()) in hf
     assert str((tmp_path / "default").resolve()) in hf
+    assert str((tmp_path / "previous").resolve()) in hf
     assert str((tmp_path / "custom").resolve()) in hf
     assert str((tmp_path / "lmstudio").resolve()) in lm
 

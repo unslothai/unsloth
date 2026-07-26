@@ -173,7 +173,7 @@ export function HubOptionMenu<T extends string>({
           aria-label={ariaLabel}
           title={title}
           className={cn(
-            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2.5 rounded-full pl-3 pr-2.5 text-[12.5px] transition-colors",
+            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2.5 rounded-full pl-3 pr-2.5 text-ui-12p5 transition-colors",
             "focus-visible:border-border focus-visible:ring-0 focus-visible:ring-offset-0",
             className,
           )}

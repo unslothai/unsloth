@@ -70,6 +70,8 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
+PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
+PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
@@ -145,10 +147,19 @@ with sync_playwright() as p:
     )
     # Health pre-flight: bash-side health wait can pass before the auth DB migrates.
     wait_for_health(BASE, timeout = 30.0, info = info)
-    browser = p.chromium.launch(
-        headless = True,
-        args = chromium_launch_args(),
-    )
+    if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
+        fail(f"unsupported STUDIO_PLAYWRIGHT_BROWSER={PLAYWRIGHT_BROWSER!r}")
+        sys.exit(1)
+    browser_type = getattr(p, PLAYWRIGHT_BROWSER)
+    launch_kwargs = {"headless": True}
+    if PLAYWRIGHT_BROWSER == "chromium":
+        launch_kwargs["args"] = chromium_launch_args()
+        if PLAYWRIGHT_CHANNEL:
+            launch_kwargs["channel"] = PLAYWRIGHT_CHANNEL
+    elif PLAYWRIGHT_CHANNEL:
+        fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
+        sys.exit(1)
+    browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
         reduced_motion = "reduce",
@@ -464,11 +475,6 @@ with sync_playwright() as p:
         else:
             default_ctx = ctx_in.input_value()
             info(f"default Context Length shown: {default_ctx!r}")
-            ctx_in.click()
-            ctx_in.fill(str(DISTINCT_CTX))
-            page.wait_for_timeout(300)
-            page.keyboard.press("Tab")  # blur to commit
-            page.wait_for_timeout(300)
             remember = popover.get_by_label("Remember for this model").first
             if _count(remember):
                 try:
@@ -477,12 +483,16 @@ with sync_playwright() as p:
                     remember.click()
             else:
                 fail("'Remember for this model' checkbox not found")
+            ctx_in.click()
+            ctx_in.fill(str(DISTINCT_CTX))
             page.wait_for_timeout(300)
             shoot("05-ctx-set")
             btn = primary_button(popover)
             if btn is None:
                 fail("primary Load/Save button not found in run-settings")
             else:
+                # Keep the input focused. The button click must commit the draft
+                # and use it in the same load request.
                 btn.click()
                 page.wait_for_timeout(2500)
                 shoot("06-after-load")
@@ -570,6 +580,47 @@ with sync_playwright() as p:
         else:
             info("OK reset: distinctive context cleared from unsloth_model_configs")
         shoot("08-after-reset")
+
+    # ─────────────────────────────────────────────────────
+    # 3b. Re-typing the value already shown must not pin an override (HARD).
+    # Entering the currently displayed native/default context commits no
+    # onChange (the value is unchanged), so the cached blur value must not be
+    # replayed into a stored override on Load. Otherwise re-typing the shown
+    # number, or doing so before a Reset, recreates a phantom context pin.
+    # ─────────────────────────────────────────────────────
+    step("re-typing the shown context does not pin an override")
+    ctx_in = context_input(popover)
+    native_default = _as_int(ctx_in.input_value()) if ctx_in else None
+    if ctx_in is None or native_default is None:
+        info("skip re-type-shown: Context Length input has no numeric default")
+    else:
+        remember = popover.get_by_label("Remember for this model").first
+        if _count(remember):
+            try:
+                remember.check()
+            except Exception:
+                remember.click()
+        ctx_in.click()
+        ctx_in.fill(str(native_default))
+        page.wait_for_timeout(200)
+        btn = primary_button(popover)
+        if btn is not None and btn.is_enabled():
+            # Same-click Load: the button click must commit the draft, but a draft
+            # equal to the shown value carries no override.
+            btn.click()
+            page.wait_for_timeout(1500)
+        cfg = read_configs()
+        pinned = any(
+            _as_int(e.get("customContextLength")) == native_default for e in config_entries(cfg)
+        )
+        if pinned:
+            fail(
+                "re-typing the shown context pinned it as an override "
+                f"(customContextLength={native_default})"
+            )
+        else:
+            info("OK re-type-shown: shown context not stored as an override")
+        shoot("08b-after-retype-shown")
     close_picker()
 
     # ─────────────────────────────────────────────────────

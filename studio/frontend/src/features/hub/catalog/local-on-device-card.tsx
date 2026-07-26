@@ -138,15 +138,15 @@ function BaseModelReference({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+          <span className="shrink-0 text-ui-11 font-medium text-muted-foreground">
             {baseModelSourceLabel(baseModelSource)}
           </span>
-          <span className="truncate text-[12px] font-medium text-foreground">
+          <span className="truncate text-ui-12 font-medium text-foreground">
             {baseModel}
           </span>
         </div>
         {baseModelSummary && (
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          <p className="mt-0.5 truncate text-ui-11 text-muted-foreground">
             {baseModelSummary}
           </p>
         )}
@@ -247,7 +247,10 @@ export function LocalOnDeviceCard({
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
-      await deleteCachedModel(repoId, undefined, hfToken || undefined);
+      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
+      // the cache snapshot path: pass it so the delete targets the cache this
+      // card shows instead of falling back to the active cache.
+      await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,
@@ -424,7 +427,7 @@ export function LocalOnDeviceCard({
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
-        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-[12px] leading-5 text-amber-700 dark:text-amber-300">
+        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={1.75}
@@ -440,7 +443,7 @@ export function LocalOnDeviceCard({
       <div className="hub-download-card">
         <div className="group/dl flex items-center">
           <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-            <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+            <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
               <DotTag
                 tone="success"
                 label={selectedVariantIsActive ? "Loaded" : "On device"}
@@ -452,7 +455,7 @@ export function LocalOnDeviceCard({
                     <button
                       type="button"
                       disabled={currentVariantState.loading}
-                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-[10.5px] leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
                         {currentVariantState.loading
@@ -464,7 +467,7 @@ export function LocalOnDeviceCard({
                               : "Select"}
                       </span>
                       {selectedVariant && (
-                        <span className="shrink-0 font-sans text-[10px] text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                           {formatBytes(selectedVariant.size_bytes)}
                         </span>
                       )}
@@ -509,14 +512,14 @@ export function LocalOnDeviceCard({
                                 : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
                             )}
                           >
-                            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-format-gguf">
+                            <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
                               {label}
                             </span>
                             <span className="flex shrink-0 items-center gap-1.5">
                               {isLoaded && (
                                 <DotTag tone="success" label="Loaded" />
                               )}
-                              <span className="text-[10px] text-muted-foreground tabular-nums">
+                              <span className="text-ui-10 text-muted-foreground tabular-nums">
                                 {formatBytes(variant.size_bytes)}
                               </span>
                             </span>

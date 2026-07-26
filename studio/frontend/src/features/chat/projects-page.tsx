@@ -34,7 +34,6 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  createChatProject,
   deleteChatProject,
   renameChatProject,
   useChatProjects,
@@ -42,6 +41,7 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
   Download01Icon,
@@ -124,7 +124,6 @@ export function ProjectsPage() {
   );
 
   const [creating, setCreating] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
@@ -258,21 +257,6 @@ export function ProjectsPage() {
     navigate({ to: "/chat", search: { project: projectId } });
   }
 
-  async function commitCreate() {
-    const name = nameDraft.trim();
-    if (!name) return;
-    try {
-      const project = await createChatProject(name);
-      setCreating(false);
-      setNameDraft("");
-      openProject(project.id);
-    } catch (err) {
-      toast.error("Failed to create project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
-  }
-
   async function commitRename() {
     const target = renaming;
     const name = renameDraft.trim();
@@ -367,7 +351,7 @@ export function ProjectsPage() {
         }}
       />
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+        <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           Projects
         </h1>
         <div className="flex items-center gap-3">
@@ -419,7 +403,7 @@ export function ProjectsPage() {
                 <DropdownMenuSubTrigger>Export All Projects</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -430,7 +414,7 @@ export function ProjectsPage() {
                   </DropdownMenuGroup>
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Per chat
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -445,7 +429,7 @@ export function ProjectsPage() {
                 <DropdownMenuSubTrigger>Export Projects + Recents</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-52">
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Combined
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -456,7 +440,7 @@ export function ProjectsPage() {
                   </DropdownMenuGroup>
                   <DropdownMenuSeparator />
                   <DropdownMenuGroup>
-                    <DropdownMenuLabel className="pb-1 pt-2 text-[11px] font-medium">
+                    <DropdownMenuLabel className="pb-1 pt-2 text-ui-11 font-medium">
                       Per chat
                     </DropdownMenuLabel>
                     {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
@@ -469,20 +453,13 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button
-            onClick={() => {
-              setNameDraft("");
-              setCreating(true);
-            }}
-          >
-            New project
-          </Button>
+          <Button onClick={() => setCreating(true)}>New project</Button>
         </div>
       </div>
 
       {!hasLoaded ? (
         <div className="mt-16">
-          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -511,10 +488,7 @@ export function ProjectsPage() {
             <Button
               variant="outline"
               className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
-              onClick={() => {
-                setNameDraft("");
-                setCreating(true);
-              }}
+              onClick={() => setCreating(true)}
             >
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
               Create your first project
@@ -526,7 +500,7 @@ export function ProjectsPage() {
         <div className="mt-16">
           {/* Column header. Name starts at the folder icon's left edge; the
               right-anchored columns keep Modified over its values. */}
-          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-[13px] font-medium text-muted-foreground">
+          <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="w-40 shrink-0">Modified</span>
             <span className="w-8 shrink-0" />
@@ -571,7 +545,7 @@ export function ProjectsPage() {
                   className="size-5"
                 />
               </span>
-              <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-foreground">
+              <span className="min-w-0 flex-1 truncate text-ui-15 font-semibold text-foreground">
                 {project.name}
               </span>
               <span className="w-40 shrink-0 text-sm text-muted-foreground">
@@ -674,42 +648,8 @@ export function ProjectsPage() {
         </>
       )}
 
-      {/* Create project */}
-      <Dialog
-        open={creating}
-        onOpenChange={(open) => {
-          if (!open) setCreating(false);
-        }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitCreate();
-              }
-            }}
-            autoFocus
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={() => void commitCreate()} disabled={!nameDraft.trim()}>
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Create project (name + drag-and-drop sources) */}
+      <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
       {/* Rename project */}
       <Dialog

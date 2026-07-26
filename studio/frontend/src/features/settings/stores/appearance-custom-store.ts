@@ -510,11 +510,20 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
+  // The UI font size drives a typography scale factor, never the root font
+  // size: rem-based layout geometry must not move with the preference. The
+  // scale reaches text through the --text-* / --text-ui-* / --leading-*
+  // tokens in index.css.
   if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    style.fontSize = `${c.uiFontSize}px`;
+    setVar("--ui-font-scale", String(c.uiFontSize / UI_FONT_SIZE_RANGE.default));
+    el.setAttribute("data-ui-font-size", String(c.uiFontSize));
   } else {
-    style.removeProperty("font-size");
+    setVar("--ui-font-scale", null);
+    el.removeAttribute("data-ui-font-size");
   }
+  // Older builds scaled the root font size directly; clear any stale inline
+  // value so layout never scales with the preference again.
+  style.removeProperty("font-size");
 
   if (c.codeFontSize !== null) {
     el.setAttribute("data-code-font-size", "");

@@ -241,11 +241,15 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
         "chat_template.jinja": big_jinja,
         "tokenizer_config.json": tokenizer_config,
     }
+    selected_cache = tmp_path / "selected-cache" / "hub"
+    observed_cache_dirs = []
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
     monkeypatch.setattr("picker.service.iter_hf_cache_snapshots", lambda resolved: [])
+    monkeypatch.setattr("picker.service.active_hf_hub_cache", lambda: str(selected_cache))
 
     def _fake_download(repo_id, rel, **kwargs):
+        observed_cache_dirs.append(kwargs.get("cache_dir"))
         target = files.get(rel)
         if target is None:
             raise FileNotFoundError(rel)
@@ -264,3 +268,5 @@ def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, mo
     monkeypatch.setattr(huggingface_hub.HfApi, "get_paths_info", _fake_get_paths_info)
 
     assert read_default_chat_template("org/big-jinja-model") == "SMALL_TEMPLATE"
+    assert observed_cache_dirs
+    assert set(observed_cache_dirs) == {str(selected_cache)}

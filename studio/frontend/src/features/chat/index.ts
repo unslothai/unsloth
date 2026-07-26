@@ -119,3 +119,25 @@ export {
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";
+export { subscribeDictationLevel } from "./adapters/dictation-level";
+export {
+  StudioDictationAdapter,
+  cancelActiveStudioDictation,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "./adapters/studio-dictation-adapter";
+export {
+  StudioModelDictationAdapter,
+  fetchSttStatus,
+  loadSttModel,
+  startSttDownload,
+  unloadSttModel,
+  validateSttModel,
+  type SttDownloadStatus,
+} from "./adapters/studio-model-dictation-adapter";
+export {
+  StudioSpeechSynthesisAdapter,
+  createConfiguredUtterance,
+  curateSystemVoices,
+  generateStudioTtsAudio,
+} from "./adapters/studio-speech-synthesis-adapter";
