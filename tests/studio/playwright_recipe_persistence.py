@@ -56,7 +56,12 @@ def info(message: str) -> None:
     print(f"[recipe-sync] {message}", flush = True)
 
 
-def request_json(path: str, *, method: str = "GET", body: object | None = None) -> dict:
+def request_json(
+    path: str,
+    *,
+    method: str = "GET",
+    body: object | None = None,
+) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(
         f"{BASE}{path}",
@@ -76,9 +81,9 @@ def login(username: str, password: str) -> dict:
     )
     assert payload.get("access_token"), f"login for {username!r} returned no access token"
     assert payload.get("refresh_token"), f"login for {username!r} returned no refresh token"
-    assert not payload.get("must_change_password"), (
-        f"account {username!r} still requires a password change"
-    )
+    assert not payload.get(
+        "must_change_password"
+    ), f"account {username!r} still requires a password change"
     return payload
 
 
@@ -319,9 +324,7 @@ def main() -> None:
             reload_list = reload_list_info.value
             assert reload_list.status == 200
             reloaded_recipe = next(
-                recipe
-                for recipe in reload_list.json()["recipes"]
-                if recipe["id"] == RECIPE_ID
+                recipe for recipe in reload_list.json()["recipes"] if recipe["id"] == RECIPE_ID
             )
             assert reloaded_recipe["name"] == ACCOUNT_A_NAME
             page.get_by_text(ACCOUNT_A_NAME, exact = True).wait_for(state = "visible")
@@ -340,8 +343,7 @@ def main() -> None:
             put_legacy_recipe(page, ACCOUNT_A_NAME)
             with page.expect_response(
                 lambda response: response.request.method == "DELETE"
-                and urlparse(response.url).path
-                == f"/api/user-assets/recipes/{RECIPE_ID}"
+                and urlparse(response.url).path == f"/api/user-assets/recipes/{RECIPE_ID}"
                 and response.request.headers.get("authorization")
                 == f"Bearer {tokens_a['access_token']}",
                 timeout = 30_000,
@@ -390,8 +392,7 @@ def main() -> None:
 
             list_a_after_delete = wait_for_recipe_list(page, tokens_a)
             assert all(
-                recipe["id"] != RECIPE_ID
-                for recipe in list_a_after_delete.json()["recipes"]
+                recipe["id"] != RECIPE_ID for recipe in list_a_after_delete.json()["recipes"]
             )
             page.get_by_text(ACCOUNT_B_NAME, exact = True).wait_for(state = "hidden")
             page.screenshot(path = str(ART / "recipe-persistence-pass.png"), full_page = True)
