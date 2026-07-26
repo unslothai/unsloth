@@ -305,6 +305,43 @@ def test_run_omitted_flag_respects_inherited_env(monkeypatch, inherited):
     assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == inherited
 
 
+_SAMPLING_ENV_SUFFIXES = (
+    "TEMPERATURE",
+    "TOP_P",
+    "TOP_K",
+    "MIN_P",
+    "REPETITION_PENALTY",
+    "PRESENCE_PENALTY",
+)
+
+
+def test_run_sampling_flags_set_env(monkeypatch):
+    """`--temperature`/`--top-k` write UNSLOTH_SAMPLING_* (a hard override the backend applies);
+    an omitted sampling flag leaves its env unset so the per-model recommendation stays."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE + ["--temperature", "0.3", "--top-k", "40"])
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TEMPERATURE"] == "0.3"
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TOP_K"] == "40"
+    assert "UNSLOTH_SAMPLING_TOP_P" not in studio_mod.os.environ
+
+
+def test_run_no_sampling_flags_leaves_env_unset(monkeypatch):
+    """Plain `unsloth run` writes no UNSLOTH_SAMPLING_*; the server keeps the recommendation."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in studio_mod.os.environ)
+
+
+def test_run_rejects_out_of_range_sampling_flag(monkeypatch):
+    """typer enforces the documented ranges before a value can reach the server."""
+    result, _captured = _invoke_run(monkeypatch, _BASE + ["--temperature", "9"])
+    assert result.exit_code != 0
+
+
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
@@ -344,12 +381,14 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        _BASE + ["--parallel", "8", "--top-k", "20", "--temp", "0.7"],
+        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use
+        # --seed / --temp here, which remain genuine llama-server pass-through flags.
+        _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
     argv = captured[0]["argv"]
     assert _value_after(argv, "--parallel") == "8", argv
-    assert _value_after(argv, "--top-k") == "20", argv
+    assert _value_after(argv, "--seed") == "42", argv
     assert _value_after(argv, "--temp") == "0.7", argv
 
 

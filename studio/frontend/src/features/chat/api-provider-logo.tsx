@@ -40,10 +40,10 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-/**
- * Renders a registry provider's logo when its asset exists under
- * `public/provider-logos/`. OpenAI's is inverted in dark mode for contrast.
- */
+// Monochrome logos vanish on a dark background.
+const DARK_INVERT_LOGOS = new Set(["openai", "ollama", "openrouter"]);
+
+/** Provider logo from `public/provider-logos/`; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
   const src = apiProviderLogoSrc(providerType);
   if (!src && isCustomProviderType(providerType)) {
@@ -63,7 +63,7 @@ export function ApiProviderLogo({ providerType, className, title }: ApiProviderL
       aria-hidden
       className={cn(
         "shrink-0 object-contain",
-        providerType === "openai" && "dark:invert",
+        providerType && DARK_INVERT_LOGOS.has(providerType) && "dark:invert",
         className,
       )}
     />
