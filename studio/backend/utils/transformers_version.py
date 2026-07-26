@@ -200,14 +200,20 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
 }
 
-# Import strings in auto_map remote .py that only exist in transformers>=5.x.
-_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = ("tokenization_utils_tokenizers",)
+# Import strings in auto_map remote .py that only exist in transformers>=5.x
+# (``tokenization_utils_tokenizers`` landed in 5.0.0). Fully qualified so a repo's
+# own same-named helper module cannot match.
+_TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
+    "transformers.tokenization_utils_tokenizers",
+)
 
-# Import strings in auto_map remote modeling code that require transformers>=5.10.
+# Remote modeling imports the default 4.57.x tier cannot satisfy
+# (``utils.output_capturing`` landed in 5.3.0). Only symbols ABSENT from 4.57.x
+# belong here: ``modeling_layers`` (4.52+) and ``use_kernel_forward_from_hub``
+# (4.51+) import fine on default, so matching them would push ordinary
+# custom-code models (EXAONE, MiniMax, Molmo2, ...) onto the sidecar.
 _TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
-    "modeling_layers",
-    "utils.output_capturing",
-    "use_kernel_forward_from_hub",
+    "transformers.utils.output_capturing",
 )
 
 # Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
@@ -625,6 +631,9 @@ def _hf_api_url(path: str) -> str:
 
 def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | None, bool]:
     """GET a Hub API path via stdlib urllib. Returns (parsed_json, success)."""
+    if _env_offline():
+        return None, False
+
     import urllib.request
 
     headers = {"User-Agent": "unsloth-studio"}
@@ -681,11 +690,22 @@ def _collect_external_py_sources(refs: set, hf_token: str | None = None) -> tupl
     return sources, True
 
 
-def _repo_has_auto_map(model_name: str, hf_token: str | None = None) -> bool:
-    """True when any remote-code config in the repo declares ``auto_map``."""
-    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES, _auto_map_refs
+def _auto_map_config_files(model_name: str) -> tuple[str, ...]:
+    """Configs to read for ``auto_map``. A local dir is free to read, so use every
+    remote-code config; a Hub id uses only ``config.json`` (already cached) because
+    transformers resolves remote MODELING code from there, and the extra files would
+    add an uncached fetch each to every tier lookup. Tokenizer/processor auto_map is
+    passed in by its own caller (see ``known_refs``)."""
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
 
-    for cfg_name in REMOTE_CODE_CONFIG_FILES:
+    return REMOTE_CODE_CONFIG_FILES if _safe_is_dir(Path(model_name)) else ("config.json",)
+
+
+def _repo_has_auto_map(model_name: str, hf_token: str | None = None) -> bool:
+    """True when a remote-code config in the repo declares ``auto_map``."""
+    from utils.security.remote_code_scan import _auto_map_refs
+
+    for cfg_name in _auto_map_config_files(model_name):
         cfg = _load_repo_json_file(model_name, cfg_name, hf_token)
         if isinstance(cfg, dict) and _auto_map_refs(cfg):
             return True
@@ -762,21 +782,25 @@ def _load_repo_json_file(
 
 
 def _remote_auto_map_py_contents(
-    model_name: str, hf_token: str | None = None
+    model_name: str,
+    hf_token: str | None = None,
+    known_refs: set | None = None,
 ) -> tuple[list[str], bool]:
     """Executable remote-code sources transformers may load (own, helper, external).
 
     Stdlib-only (urllib + HF REST API) so tier detection never imports ``huggingface_hub``
-    before a transformers sidecar is activated. Returns ``(sources, definitive)``; when
+    before a transformers sidecar is activated. ``known_refs`` are ``auto_map`` refs the
+    caller already parsed (tokenizer/processor config), which both proves remote code
+    exists and saves re-reading that config. Returns ``(sources, definitive)``; when
     ``definitive`` is False the scan was incomplete and negatives must not be cached.
     """
-    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES, _auto_map_refs
+    from utils.security.remote_code_scan import _auto_map_refs
 
-    if not _repo_has_auto_map(model_name, hf_token):
+    if not known_refs and not _repo_has_auto_map(model_name, hf_token):
         return [], True
 
-    ext_refs: set = set()
-    for cfg_name in REMOTE_CODE_CONFIG_FILES:
+    ext_refs: set = set(known_refs or ())
+    for cfg_name in _auto_map_config_files(model_name):
         cfg = _load_repo_json_file(model_name, cfg_name, hf_token)
         if isinstance(cfg, dict):
             ext_refs |= _auto_map_refs(cfg)
@@ -811,7 +835,18 @@ def _remote_auto_map_py_contents(
 
 
 def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) -> bool:
-    return any(any(marker in src for marker in markers) for src in sources)
+    """True when a source *imports* one of *markers*.
+
+    Import lines only: a marker named in a comment or docstring must not promote the
+    tier. Line matching (not ``ast``) on purpose, since remote code that fails to parse
+    would otherwise turn into a silent negative and crash on the default tier.
+    """
+    for src in sources:
+        for line in src.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("import ", "from ")) and any(m in stripped for m in markers):
+                return True
+    return False
 
 
 def _remote_auto_map_scan_result(model_name: str, hf_token: str | None = None) -> tuple[bool, bool]:
@@ -863,7 +898,9 @@ def _tokenizer_auto_map_needs_v5(data: dict, model_name: str, hf_token: str | No
             return False
         sources.extend(ext_sources)
     else:
-        sources, definitive = _remote_auto_map_py_contents(model_name, hf_token)
+        # Pass the tokenizer refs: they already prove remote code exists, so a repo
+        # whose only auto_map is the tokenizer's is still scanned.
+        sources, definitive = _remote_auto_map_py_contents(model_name, hf_token, known_refs = refs)
         if not definitive and not sources:
             return False
 

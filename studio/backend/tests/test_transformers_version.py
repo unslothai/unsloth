@@ -560,7 +560,7 @@ class TestCheckConfigNeeds510:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_custom.py").write_text(
-            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            "from transformers.utils.output_capturing import capture_outputs\n"
         )
 
         assert _check_remote_auto_map_needs_510(str(tmp_path)) is True
@@ -575,6 +575,29 @@ class TestCheckConfigNeeds510:
         assert _check_remote_auto_map_needs_510("org/custom-remote") is False
         assert ("org/custom-remote", None) not in _remote_auto_map_needs_510_cache
 
+    def test_offline_local_checkpoint_external_auto_map_makes_no_request(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """Offline must reach the Hub API for nothing, even via an external auto_map.
+
+        A local checkpoint is scanned offline, so its external ``auto_map`` refs would
+        otherwise hit the repo-tree endpoint and block on the connect timeout every
+        call (the incomplete scan is never cached).
+        """
+        import utils.transformers_version as tv
+
+        _remote_auto_map_needs_510_cache.clear()
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "extorg/extrepo--modeling_ext.Model"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        monkeypatch.setattr(tv, "_env_offline", lambda: True)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            assert get_transformers_tier(str(tmp_path), probe = False) == "default"
+            mock_urlopen.assert_not_called()
+
     def test_hf_endpoint_used_for_remote_auto_map_fetch(self, monkeypatch):
         """Remote auto_map fetches must honor HF_ENDPOINT mirrors."""
         from utils.transformers_version import _read_repo_text_file
@@ -588,7 +611,7 @@ class TestCheckConfigNeeds510:
 
         class _Resp:
             def read(self):
-                return b"from transformers.modeling_layers import X\n"
+                return b"from transformers.utils.output_capturing import X\n"
 
             def __enter__(self):
                 return self
@@ -602,7 +625,7 @@ class TestCheckConfigNeeds510:
 
         monkeypatch.setattr("urllib.request.urlopen", _urlopen)
         text = _read_repo_text_file("org/custom-remote", "modeling_custom.py")
-        assert "modeling_layers" in text
+        assert "output_capturing" in text
         assert seen["url"].startswith("https://hf-mirror.example/org/custom-remote/raw/main/")
 
     def test_tokenizer_external_auto_map_needs_v5(self, monkeypatch, tmp_path: Path):
@@ -660,7 +683,7 @@ class TestCheckConfigNeeds510:
         monkeypatch.setattr(
             tv,
             "_remote_auto_map_py_contents",
-            lambda *a, **k: (["from transformers.modeling_layers import X\n"], True),
+            lambda *a, **k: (["from transformers.utils.output_capturing import X\n"], True),
         )
         assert _check_remote_auto_map_needs_510("org/custom-remote") is True
         assert _check_config_needs_510("org/custom-remote") is True
@@ -979,10 +1002,57 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_astral.py").write_text(
-            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            "from transformers.utils.output_capturing import capture_outputs\n"
         )
 
         assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_remote_code_importable_on_default_stays_default(self, tmp_path: Path):
+        """4.57.x-importable remote code must NOT be pushed onto the sidecar.
+
+        ``transformers.modeling_layers`` (4.52+) and ``use_kernel_forward_from_hub``
+        (4.51+) both exist in the default tier, so custom-code models built on them
+        (EXAONE, MiniMax, Molmo2, step3, ...) must keep loading on default.
+        """
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.integrations import use_kernel_forward_from_hub\n"
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert _check_remote_auto_map_needs_510(str(tmp_path)) is False
+        assert get_transformers_tier(str(tmp_path)) == "default"
+
+    def test_lower_tier_config_kept_when_remote_code_loads_on_default(self, tmp_path: Path):
+        """Remote code that needs no 5.x symbol must not hoist a 550 config to 510."""
+        cfg = {
+            "architectures": ["Gemma4ForConditionalGeneration"],
+            "model_type": "gemma4",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "550"
+
+    def test_repo_owned_module_of_same_name_does_not_match(self, tmp_path: Path):
+        """Markers are transformers-qualified, so a repo's own helper cannot match."""
+        cfg = {
+            "model_type": "custom_remote",
+            "auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomForCausalLM"},
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        (tmp_path / "modeling_custom.py").write_text(
+            "from .utils.output_capturing import capture_outputs\n"
+        )
+
+        assert get_transformers_tier(str(tmp_path)) == "default"
 
     def test_local_custom_remote_auto_map_returns_510(self, tmp_path: Path):
         """Local unknown model_types must scan auto_map before default (#7353 Codex)."""
@@ -992,7 +1062,7 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_custom.py").write_text(
-            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            "from transformers.utils.output_capturing import capture_outputs\n"
         )
 
         assert get_transformers_tier(str(tmp_path)) == "510"
@@ -1008,7 +1078,7 @@ class TestGetTransformersTier:
         helpers = tmp_path / "helpers"
         helpers.mkdir()
         (helpers / "sub.py").write_text(
-            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            "from transformers.utils.output_capturing import capture_outputs\n"
         )
 
         assert get_transformers_tier(str(tmp_path)) == "510"
@@ -1029,7 +1099,7 @@ class TestGetTransformersTier:
             if repo_id == "evilorg/evilrepo":
                 return [
                     "from .helper import run\n",
-                    "from transformers.modeling_layers import GradientCheckpointingLayer\n",
+                    "from transformers.utils.output_capturing import capture_outputs\n",
                 ], True
             return [], False
 
@@ -1045,7 +1115,7 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_custom.py").write_text(
-            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            "from transformers.utils.output_capturing import capture_outputs\n"
         )
 
         assert get_transformers_tier(str(tmp_path)) == "510"
@@ -1075,7 +1145,7 @@ class TestGetTransformersTier:
             hf_token = None,
         ):
             if model_name == "org/qwen3.5-custom-remote" and filename == "modeling_custom.py":
-                return "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+                return "from transformers.utils.output_capturing import capture_outputs\n"
             return None
 
         monkeypatch.setattr(tv, "_load_config_json", _fake_load)
@@ -1097,7 +1167,7 @@ class TestGetTransformersTier:
         }
         (tmp_path / "config.json").write_text(json.dumps(cfg))
         (tmp_path / "modeling_custom.py").write_text(
-            "from transformers.modeling_layers import GradientCheckpointingLayer\n"
+            "from transformers.utils.output_capturing import capture_outputs\n"
         )
 
         real_import = builtins.__import__

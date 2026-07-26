@@ -154,7 +154,7 @@ cfg = {
 with open(os.path.join(model_dir, "config.json"), "w") as f:
     json.dump(cfg, f)
 with open(os.path.join(model_dir, "modeling_astral.py"), "w") as f:
-    f.write("from transformers.modeling_layers import GradientCheckpointingLayer\n")
+    f.write("from transformers.utils.output_capturing import capture_outputs\n")
 
 pkg = os.path.join(home, ".venv_t5_510", "transformers")
 os.makedirs(pkg, exist_ok = True)
