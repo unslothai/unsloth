@@ -71,11 +71,16 @@ def test_get_new_mapper_does_not_rebind_the_installed_fp8_tables(monkeypatch):
     namespace = {"FLOAT_TO_FP8_BLOCK_MAPPER": block, "FLOAT_TO_FP8_ROW_MAPPER": row}
     get_new_mapper = _extract_get_new_mapper(namespace)
 
-    int_to_float, float_to_int, map_to_16bit = get_new_mapper()
+    int_to_float, float_to_int, map_to_16bit, fp8_block, fp8_row = get_new_mapper()
 
     # _get_new_mapper swallows every exception and returns empty dicts, so assert
     # it actually ran before trusting anything below.
     assert int_to_float and float_to_int and map_to_16bit, "the fetch/exec path did not run"
+
+    # the probe has to hand the FETCHED fp8 tables back, or a newly added fp8 repo would
+    # miss both the installed tables and the probe and skip the upgrade message
+    assert fp8_block and fp8_row
+    assert fp8_block is not block and fp8_row is not row
 
     assert namespace["FLOAT_TO_FP8_BLOCK_MAPPER"] is block
     assert namespace["FLOAT_TO_FP8_ROW_MAPPER"] is row
