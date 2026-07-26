@@ -1112,6 +1112,67 @@ class TestPreUpgradeVariantKeyStillLoads:
         assert _find_local_gguf_by_variant(d, "Q6_K").endswith("00001-of-00002.gguf")
 
 
+class TestInheritedFlavorDoesNotBreakOtherReaders:
+    """An inherited parent flavor changes the label every other reader keys on,
+    so endianness, deletion and the chat-template lookup all have to follow."""
+
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            # The UD- prefix is part of the quant identity, so a parent naming a
+            # different base must not lend its flavor.
+            ("UD-Q4_K_XL-MTP/model-Q4_K_XL.gguf", "Q4_K_XL"),
+            ("Q4_K_XL-MTP/model-UD-Q4_K_XL.gguf", "UD-Q4_K_XL"),
+            ("UD-Q4_K_XL-MTP/model-UD-Q4_K_XL.gguf", "UD-Q4_K_XL-MTP"),
+            ("Q4_K_XL-MTP/model-Q4_K_XL.gguf", "Q4_K_XL-MTP"),
+        ],
+    )
+    def test_ud_prefix_is_part_of_the_quant_identity(self, path, expected):
+        from hub.utils.gguf import extract_quant_label as hub_extract
+
+        assert _extract_quant_label(path) == expected
+        assert hub_extract(path) == expected
+
+    @pytest.mark.parametrize(
+        "path,is_be",
+        [
+            ("Q6_K-MTP/model-Q6_K-be.gguf", True),
+            ("Q6_K/model-Q6_K-be.gguf", True),
+            ("model-Q6_K-be.gguf", True),
+            ("Q6_K-MTP/model-Q6_K.gguf", False),
+            ("IQ4_XS-3.53bpw/m-IQ4_XS-be.gguf", True),
+        ],
+    )
+    def test_big_endian_still_detected_under_an_inherited_flavor(self, path, is_be):
+        from core.inference.llama_cpp import _is_big_endian_gguf_path as llama_is_be
+        from hub.utils.gguf import is_big_endian_gguf_path as hub_is_be
+        from utils.models.model_config import _is_big_endian_gguf_path
+
+        label = _extract_quant_label(path)
+        assert _is_big_endian_gguf_path(path, label) is is_be
+        assert hub_is_be(path, label) is is_be
+        assert llama_is_be(path, label) is is_be
+
+    @pytest.mark.parametrize(
+        "relative,needle,matches",
+        [
+            ("model-Q6_K-MTP.gguf", "q6_k", True),
+            ("Q6_K-MTP/model.gguf", "q6_k", True),
+            ("m-IQ4_XS-3.53bpw.gguf", "iq4_xs", True),
+            ("model-Q6_K-MTP.gguf", "q6_k-mtp", True),
+            # -MTPX is not a flavor at all, so the file is a plain Q6_K.
+            ("model-Q6_K-MTPX.gguf", "q6_k", True),
+            # A different base quant never matches.
+            ("model-Q4_K_M-MTP.gguf", "q6_k", False),
+            ("model-Q6_K-MTP.gguf", "q4_k_m", False),
+        ],
+    )
+    def test_chat_template_lookup_accepts_legacy_keys(self, relative, needle, matches):
+        from picker.service import _variant_matches
+
+        assert _variant_matches(relative, needle) is matches
+
+
 class TestPreUpgradeVariantKeyResolvesFromCache:
     """Same pre-#7460 compatibility gap as ``_find_local_gguf_by_variant``, but on
     the HF-cache path that validation and diffusion classification read."""

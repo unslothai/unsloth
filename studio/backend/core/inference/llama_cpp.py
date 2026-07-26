@@ -959,6 +959,11 @@ def _is_companion_gguf_path(path: str) -> bool:
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+# Mirror of hub/utils/gguf.py ``_POST_QUANT_VARIANT_SUFFIX_RE``.
+_POST_QUANT_VARIANT_SUFFIX_RE = re.compile(
+    r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
+    re.IGNORECASE,
+)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -976,7 +981,9 @@ def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
-    variant_key = variant_key.strip().lower()
+    # A flavor suffix can come from the parent dir, so match on the base quant
+    # or ``Q6_K-MTP/model-Q6_K-be.gguf`` reads as quant-in-parent-only.
+    variant_key = _POST_QUANT_VARIANT_SUFFIX_RE.sub("", variant_key).strip().lower()
     variant_index = stem.find(variant_key) if variant_key else -1
     parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
     variant_in_parent_only = (

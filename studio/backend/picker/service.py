@@ -17,6 +17,7 @@ from hub.services.models.folder_browser import (
 from hub.utils.gguf import extract_quant_label, iter_hf_cache_snapshots
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
+    _POST_QUANT_VARIANT_SUFFIX_RE,
     _extract_quant_label,
     _is_big_endian_gguf_path,
     _is_mmproj,
@@ -249,14 +250,12 @@ def _variant_matches(relative_path: str, needle: str) -> bool:
         return True
     if extract_quant_label(relative_path).lower() == needle:
         return True
+    # Recipes saved before #7460 store the base quant, so accept any post-quant
+    # flavor the extractors now keep (bpw sizes and MTP grafts alike).
     prefix = f"{needle}-"
     if not quant.startswith(prefix):
         return False
-    suffix = quant[len(prefix) :]
-    if not suffix.endswith("bpw"):
-        return False
-    value = suffix[:-3]
-    return bool(value) and value.replace(".", "", 1).isdigit()
+    return _POST_QUANT_VARIANT_SUFFIX_RE.fullmatch(quant[len(needle) :]) is not None
 
 
 _GGUF_SPLIT_INDEX_RE = re.compile(r"-(\d{3,})-of-\d{3,}$", re.IGNORECASE)

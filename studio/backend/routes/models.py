@@ -2253,7 +2253,9 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        if _extract_quant_label(path.name).lower() != variant.lower():
+        # Label from the path relative to the export root, matching the listing:
+        # a subdir layout keeps its quant (and flavor) in the directory name.
+        if _extract_quant_label(path.relative_to(root).as_posix()).lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size

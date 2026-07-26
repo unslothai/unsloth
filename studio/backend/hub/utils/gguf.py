@@ -121,7 +121,9 @@ def is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
-    quant_key = quant.strip().lower()
+    # A flavor suffix can come from the parent dir, so match on the base quant
+    # or ``Q6_K-MTP/model-Q6_K-be.gguf`` reads as quant-in-parent-only.
+    quant_key = _POST_QUANT_VARIANT_SUFFIX_RE.sub("", quant).strip().lower()
     quant_index = stem.find(quant_key) if quant_key else -1
     parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
     quant_in_parent_only = (
@@ -230,6 +232,11 @@ def _base_quant_for_preference(label: str) -> str:
     return _POST_QUANT_VARIANT_SUFFIX_RE.sub("", label).upper()
 
 
+def _full_base_label(match: re.Match) -> str:
+    """Quant identity including the ``UD-`` prefix, which distinguishes quants."""
+    return f"{match.group(1) or ''}{match.group(2)}".upper()
+
+
 def _parent_flavor_suffix(normalized: str, match: re.Match) -> str:
     """Flavor suffix from the nearest quant-named parent dir, if it agrees.
 
@@ -242,7 +249,7 @@ def _parent_flavor_suffix(normalized: str, match: re.Match) -> str:
         parent_match = _select_quant_match(segment)
         if parent_match is None:
             continue
-        if parent_match.group(2).upper() != match.group(2).upper():
+        if _full_base_label(parent_match) != _full_base_label(match):
             return ""
         suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(segment[parent_match.end() :])
         return suffix_match.group(0) if suffix_match else ""

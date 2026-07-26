@@ -1617,6 +1617,11 @@ class GgufVariantInfo:
 _FLOAT_PRECISION_LABELS = frozenset({"BF16", "F16", "F32"})
 
 
+def _full_base_label(match: re.Match) -> str:
+    """Quant identity including the ``UD-`` prefix, which distinguishes quants."""
+    return f"{match.group(1) or ''}{match.group(2)}".upper()
+
+
 def _select_quant_label_match(text: str, quant_re: str) -> Optional[re.Match]:
     """Prefer real quants over BF16/F16/F32 infixes (mirrors hub gguf parser)."""
     fallback: Optional[re.Match] = None
@@ -1681,7 +1686,8 @@ def _extract_quant_label(filename: str) -> str:
                 m = _select_quant_label_match(segment, quant_re)
                 if m is None:
                     continue
-                if m.group(2).upper() == match.group(2).upper():
+                # The ``UD-`` prefix is part of the quant identity, so compare it too.
+                if _full_base_label(m) == _full_base_label(match):
                     suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(segment[m.end() :])
                     if suffix_match:
                         label += suffix_match.group(0)
@@ -1716,7 +1722,9 @@ def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0].lower()
-    quant_key = quant.strip().lower()
+    # A flavor suffix can come from the parent dir, so match on the base quant
+    # or ``Q6_K-MTP/model-Q6_K-be.gguf`` reads as quant-in-parent-only.
+    quant_key = _POST_QUANT_VARIANT_SUFFIX_RE.sub("", quant).strip().lower()
     quant_index = stem.find(quant_key) if quant_key else -1
     parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
     quant_in_parent_only = (

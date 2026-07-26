@@ -97,3 +97,32 @@ def test_returns_none_when_quant_absent(tmp_path):
 
     assert path is None
     assert total == 0
+
+
+def test_delete_variant_matches_the_listed_label(tmp_path):
+    """``_delete_gguf_variant_files`` must key on the same label the listing shows.
+
+    Reading only ``path.name`` misses every subdir layout, so the displayed
+    variant 404s instead of deleting.
+    """
+    for names, variant in [
+        (["Q6_K-MTP/model-Q6_K.gguf"], "Q6_K-MTP"),
+        (["Q6_K/model.gguf"], "Q6_K"),
+        (["model-Q6_K.gguf"], "Q6_K"),
+        (["IQ4_XS-3.53bpw/m.gguf"], "IQ4_XS-3.53bpw"),
+    ]:
+        root = tmp_path / variant.replace(".", "_") / str(len(names))
+        for name in names:
+            _write(root / name, 16)
+        assert models_route._delete_gguf_variant_files(root, variant)[0] == 1
+
+
+def test_delete_variant_leaves_other_quants_alone(tmp_path):
+    root = tmp_path / "mixed"
+    _write(root / "Q6_K-MTP/model-Q6_K.gguf", 16)
+    _write(root / "Q6_K/model-Q6_K.gguf", 16)
+    _write(root / "model-Q4_K_M.gguf", 16)
+
+    assert models_route._delete_gguf_variant_files(root, "Q6_K-MTP")[0] == 1
+    assert (root / "Q6_K/model-Q6_K.gguf").exists()
+    assert (root / "model-Q4_K_M.gguf").exists()
