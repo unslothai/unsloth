@@ -476,19 +476,23 @@ export function ApiMonitorConsole(): ReactElement {
           <div className="rounded-full border border-border px-2.5 py-1 text-xs capitalize text-muted-foreground">
             {statusLabel}
           </div>
-          {data?.active_model ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => void unloadActiveModel()}
-              disabled={unloading}
-              title="Unload the model and free its VRAM"
-            >
-              <PowerOffIcon className="size-3.5" />
-              {unloading ? "Unloading" : "Unload"}
-            </Button>
-          ) : null}
+          {/* Always rendered, disabled when idle: hiding it made the only manual
+              release path invisible exactly when someone goes looking for it. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => void unloadActiveModel()}
+            disabled={unloading || !data?.active_model}
+            title={
+              data?.active_model
+                ? "Unload the model and free its VRAM"
+                : "No model is loaded"
+            }
+          >
+            <PowerOffIcon className="size-3.5" />
+            {unloading ? "Unloading" : "Unload"}
+          </Button>
           <Button
             type="button"
             variant="ghost"
