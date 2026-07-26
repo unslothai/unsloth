@@ -3044,7 +3044,12 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     backend.supports_tools = True
     captured = {}
 
-    def _count(messages, system, tools, strict = False):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+    ):
         captured["tools"] = tools
         captured["messages"] = messages
         return 99
@@ -3068,9 +3073,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         enable_tools = True,
         enabled_tools = ["web_search"],
     )
-    response = asyncio.run(
-        inference_route.chat_count_tokens(payload, object(), "tester")
-    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
     import json
 
     assert json.loads(response.body) == {"input_tokens": 99}
