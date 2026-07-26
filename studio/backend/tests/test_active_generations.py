@@ -1607,6 +1607,344 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
     assert active_generations.count() == 0
 
 
+class _ChatRequest(_NeverDisconnectedRequest):
+    """Minimal stand-in for the Starlette Request /v1/chat/completions reads."""
+
+    def __init__(self):
+        from types import SimpleNamespace
+
+        self.method = "POST"
+        self.url = SimpleNamespace(path = "/v1/chat/completions")
+        self.state = SimpleNamespace(skip_api_monitor = True)
+        self.scope: dict = {}
+
+
+def _standard_chat_stubs(monkeypatch, backend):
+    """Point /v1/chat/completions at a standard (non-GGUF) backend.
+
+    ``supports_tools`` False keeps the request off the safetensors server-tool
+    loop, which registers on its own, so the plain default branch is exercised.
+    """
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False,
+            supports_tools = False,
+            is_vision = False,
+            context_length = None,
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(
+        inf_mod, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": False}
+    )
+
+    async def _no_auto_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _no_auto_switch)
+    return inf_mod
+
+
+def test_standard_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
+    # ``stream`` defaults to false on ChatCompletionRequest, so this is the
+    # default shape of a standard (non-GGUF) chat, and it drains generate() on
+    # the worker for the whole request. /unload runs no idle drain: unregistered,
+    # a non-forced swap counted zero generations, passed the gate and let
+    # unload_model() cancel the run, truncating the completion instead of 409ing.
+    # Only the streaming branch beside it was registered.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import routes.inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    seen = {}
+
+    class _StandardBackend:
+        active_model_name = "org/M"
+        models = {"org/M": {"chat_template_info": {"template": "chatml"}}}
+
+        def generate_chat_response(
+            self,
+            *,
+            cancel_event = None,
+            stats_holder = None,
+            **kwargs,
+        ):
+            # Sampled mid-generation: exactly the window an /unload lands in.
+            seen["count"] = active_generations.count()
+            seen["snapshot"] = active_generations.snapshot()
+            # And the gate must reach this run, on the event the decode watches.
+            seen["cancelled"] = active_generations.cancel_all()
+            seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
+            yield "33"
+
+        def reset_generation_state(self):
+            pass
+
+    _standard_chat_stubs(monkeypatch, _StandardBackend())
+
+    payload = ChatCompletionRequest(
+        model = "org/M",
+        messages = [{"role": "user", "content": "hi"}],
+        thread_id = "thread-chat",
+    )
+    response = asyncio.run(
+        inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject = "tester")
+    )
+
+    assert response.status_code == 200
+    assert seen["count"] == 1
+    # Named, so the swap dialog can say which chat it would interrupt.
+    assert seen["snapshot"][0]["thread_id"] == "thread-chat"
+    assert seen["cancelled"] == 1
+    assert seen["reached_the_decode"]
+    # And it unregisters, or one completion would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+def test_standard_non_stream_chat_unregisters_when_it_fails(monkeypatch):
+    # A raising backend must not strand an entry: that would 409 every later swap
+    # until the process restarts.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from fastapi import HTTPException
+
+    import routes.inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    class _BrokenBackend:
+        active_model_name = "org/M"
+        models = {"org/M": {"chat_template_info": {"template": "chatml"}}}
+
+        def generate_chat_response(self, **kwargs):
+            raise RuntimeError("decode exploded")
+            yield  # pragma: no cover - generator marker
+
+        def reset_generation_state(self):
+            pass
+
+    _standard_chat_stubs(monkeypatch, _BrokenBackend())
+
+    payload = ChatCompletionRequest(model = "org/M", messages = [{"role": "user", "content": "hi"}])
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject = "tester")
+        )
+
+    assert active_generations.count() == 0
+
+
+def test_audio_input_non_stream_chat_is_visible_to_the_swap_gate(monkeypatch):
+    # An audio-input model answering with the default stream=false transcribes
+    # (or generates an audio-conditioned reply) on the standard worker for the
+    # whole request, and /unload runs no idle drain: unregistered, a non-forced
+    # swap bypassed the 409 guard and could cancel and unload the worker
+    # mid-transcription. The streaming sibling beside it was already registered.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import routes.inference as inf_mod
+    from models.inference import ChatCompletionRequest
+
+    seen = {}
+
+    class _AudioInputBackend:
+        active_model_name = "org/AUDIO-IN"
+        models = {"org/AUDIO-IN": {"has_audio_input": True}}
+
+        def generate_audio_input_response(
+            self,
+            *,
+            cancel_event = None,
+            **kwargs,
+        ):
+            # Sampled mid-transcription: the window a concurrent swap lands in.
+            seen["count"] = active_generations.count()
+            seen["snapshot"] = active_generations.snapshot()
+            seen["cancelled"] = active_generations.cancel_all()
+            seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
+            yield "33"
+
+        def reset_generation_state(self):
+            pass
+
+    _standard_chat_stubs(monkeypatch, _AudioInputBackend())
+    monkeypatch.setattr(inf_mod, "_decode_audio_base64", lambda _b64: object())
+
+    payload = ChatCompletionRequest(
+        model = "org/AUDIO-IN",
+        messages = [{"role": "user", "content": "transcribe this"}],
+        audio_base64 = "ZmFrZQ==",
+        thread_id = "thread-audio-in",
+    )
+    response = asyncio.run(
+        inf_mod.openai_chat_completions(payload, _ChatRequest(), current_subject = "tester")
+    )
+
+    assert response.status_code == 200
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["thread_id"] == "thread-audio-in"
+    assert seen["cancelled"] == 1
+    assert seen["reached_the_decode"]
+    # And it unregisters, or one transcription would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+def _anthropic_route_stubs(monkeypatch, **overrides):
+    """Minimal GGUF backend + request stub for the /v1/messages route."""
+    from types import SimpleNamespace
+
+    import routes.inference as inf_mod
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    backend = SimpleNamespace(
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = True,
+        supports_tool_passthrough = True,
+        model_identifier = "org/M-GGUF",
+        base_url = "http://llama.test",
+        context_length = 4096,
+        count_chat_tokens = lambda *a, **k: 2,
+    )
+    backend.__dict__.update(overrides)
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
+    return inf_mod
+
+
+class _MessagesRequest(_NeverDisconnectedRequest):
+    """Minimal stand-in for the Starlette Request /v1/messages reads."""
+
+    def __init__(self):
+        from types import SimpleNamespace
+
+        self.method = "POST"
+        self.url = SimpleNamespace(path = "/v1/messages")
+        self.state = SimpleNamespace(skip_api_monitor = True)
+
+
+@pytest.mark.parametrize("with_server_tools", [False, True])
+def test_local_anthropic_non_stream_is_visible_to_the_swap_gate(monkeypatch, with_server_tools):
+    # ``stream`` defaults to false on /v1/messages, so the non-streaming plain
+    # and server-tool branches are the route's common shape, and both decode on
+    # llama-server for the whole request. Only their streaming siblings were
+    # registered, so a non-forced /unload counted zero generations and tore the
+    # server down mid-request.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    from models.inference import AnthropicMessagesRequest
+
+    seen = {}
+
+    def _sample():
+        # Sampled mid-generation: exactly the window an /unload lands in.
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        seen["cancelled"] = active_generations.cancel_all()
+
+    def _gen_plain(*, cancel_event = None, **kwargs):
+        _sample()
+        seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
+        yield "ok"
+
+    def _gen_tools(*, cancel_event = None, **kwargs):
+        _sample()
+        seen["reached_the_decode"] = cancel_event is not None and cancel_event.is_set()
+        yield {"type": "content", "text": "ok"}
+
+    inf_mod = _anthropic_route_stubs(
+        monkeypatch,
+        generate_chat_completion = _gen_plain,
+        generate_chat_completion_with_tools = _gen_tools,
+    )
+
+    fields = {"max_tokens": 16, "messages": [{"role": "user", "content": "hi"}]}
+    if with_server_tools:
+        fields["enable_tools"] = True
+        fields["tools"] = [{"type": "web_search_20250305", "name": "web_search"}]
+    payload = AnthropicMessagesRequest(**fields)
+
+    response = asyncio.run(
+        inf_mod.anthropic_messages(payload, request = _MessagesRequest(), current_subject = "tester")
+    )
+
+    assert response.status_code == 200
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    assert seen["cancelled"] == 1
+    # The event registered is the one the decode watches, so a forced swap lands.
+    assert seen["reached_the_decode"]
+    # And it unregisters, or one message would 409 every later reload.
+    assert active_generations.count() == 0
+
+
+def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatch):
+    # The client-tool pass-through holds llama-server for one non-streaming POST.
+    # Its streaming sibling registers inside the body generator; this branch had
+    # no entry at all, so a non-forced /unload counted zero generations and tore
+    # the server down mid-request.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+
+    import httpx
+
+    from models.inference import AnthropicMessagesRequest
+
+    seen = {}
+
+    def handler(request):
+        seen["count"] = active_generations.count()
+        seen["snapshot"] = active_generations.snapshot()
+        seen["cancelled"] = active_generations.cancel_all()
+        return httpx.Response(
+            200,
+            json = {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "33"}, "finish_reason": "stop"}
+                ]
+            },
+        )
+
+    inf_mod = _anthropic_route_stubs(monkeypatch)
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
+    )
+
+    # enable_tools False keeps the server-tool loop out of it, so the declared
+    # client tool takes the pass-through branch.
+    payload = AnthropicMessagesRequest(
+        max_tokens = 16,
+        messages = [{"role": "user", "content": "hi"}],
+        enable_tools = False,
+        tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
+    )
+
+    response = asyncio.run(
+        inf_mod.anthropic_messages(payload, request = _MessagesRequest(), current_subject = "tester")
+    )
+
+    assert response.status_code == 200
+    assert seen["count"] == 1
+    assert seen["snapshot"][0]["model"] == "org/M-GGUF"
+    assert seen["cancelled"] == 1
+    # And it unregisters, or one message would 409 every later reload.
+    assert active_generations.count() == 0
+
+
 def test_audio_generation_unregisters_when_it_fails(monkeypatch):
     # A raising backend must not strand an entry: that would 409 every later
     # load until the process restarts.

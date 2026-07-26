@@ -8208,6 +8208,14 @@ async def openai_chat_completions(
                     },
                 )
             else:
+                # `stream` defaults to False, so this is the ordinary shape of an
+                # audio-input chat, and it holds the worker for the whole request.
+                # /unload runs no idle drain, so unregistered a swap counted zero
+                # generations and cancelled this instead of returning 409. The
+                # streaming sibling's tracker covers only its own branch.
+                _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+                _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+                _tracker.__enter__()
                 try:
                     full_text = ""
                     for chunk_text in audio_input_generate():
@@ -8221,6 +8229,10 @@ async def openai_chat_completions(
                 except Exception as e:
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
+                finally:
+                    # Nested under the except arms too: api_monitor.fail() above can
+                    # throw, and a leaked entry 409s every later swap until restart.
+                    _tracker.__exit__(None, None, None)
                 api_monitor.set_reply(monitor_id, full_text)
                 api_monitor.finish(monitor_id)
                 response = ChatCompletion(
@@ -10579,6 +10591,14 @@ async def openai_chat_completions(
 
     # ── Non-streaming response ────────────────────────────────────
     else:
+        # `stream` defaults to False, so this is the default shape of a standard
+        # (non-GGUF) chat, and generate() holds the worker for the whole request.
+        # /unload runs no idle drain, so unregistered a swap had unload_model()
+        # cancel this run rather than returning 409. The GGUF sibling already
+        # registers its own non-streaming branch; this matches it.
+        _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
+        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+        _tracker.__enter__()
         try:
             full_text = ""
             for token in generate():
@@ -10699,6 +10719,10 @@ async def openai_chat_completions(
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+        finally:
+            # Nested under the except arms too: reset_generation_state() there can
+            # throw, and a leaked entry 409s every later swap until restart.
+            _tracker.__exit__(None, None, None)
 
 
 # =====================================================================
@@ -13692,6 +13716,27 @@ async def anthropic_messages(
             cancel_event,
         )
 
+    async def _tracked_anthropic_non_streaming(coro):
+        """Register a non-streaming /v1/messages run with the swap gate.
+
+        `stream` defaults to false, so this is the route's common shape, and all
+        three helpers hold llama-server for the whole await. /unload runs no idle
+        drain, so unregistered a swap tore the server down mid-request; only the
+        streaming siblings registered. Entered at the call site because the
+        pass-through takes no cancel_event of its own, and with no cancel keys
+        like the streaming tool/plain siblings, since the gate reaches a run
+        through the registry and keys would add a cancel surface to a public API.
+        Exactly one branch runs per request, so this cannot enter twice.
+        """
+        _tracker = _TrackedCancel(cancel_event, model = model_name)
+        _tracker.__enter__()
+        try:
+            return await _monitored_anthropic(coro)
+        finally:
+            # _monitored_anthropic's own monitor bookkeeping can throw; a leaked
+            # entry 409s every later swap until restart.
+            _tracker.__exit__(None, None, None)
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
@@ -13721,7 +13766,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                 )
             )
-        return await _monitored_anthropic(
+        return await _tracked_anthropic_non_streaming(
             _anthropic_passthrough_non_streaming(
                 llama_backend,
                 openai_messages,
@@ -13839,7 +13884,7 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                 )
             )
-        return await _monitored_anthropic(
+        return await _tracked_anthropic_non_streaming(
             _anthropic_tool_non_streaming(
                 _run_tool_gen,
                 message_id,
@@ -13877,7 +13922,7 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
             )
         )
-    return await _monitored_anthropic(
+    return await _tracked_anthropic_non_streaming(
         _anthropic_plain_non_streaming(
             _run_plain_gen,
             message_id,
