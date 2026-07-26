@@ -47,7 +47,7 @@ def near(
     return a is not None and b is not None and abs(a - b) <= tol
 
 
-_VP = "document.querySelector(\"[data-radix-select-viewport]\")"
+_VP = 'document.querySelector("[data-radix-select-viewport]")'
 SCROLL_TOP_JS = f"() => {_VP}.scrollTop"
 SCROLLABLE_JS = f"() => {{ const vp = {_VP}; return !!vp && vp.scrollHeight > vp.clientHeight; }}"
 VIEWPORT_STATE_JS = f"""
