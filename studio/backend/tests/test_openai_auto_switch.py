@@ -3147,9 +3147,7 @@ def test_chat_count_tokens_still_counts_text_only_messages(monkeypatch):
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
     payload = ChatCountTokensRequest(
         model = "org/A-GGUF",
-        messages = [
-            ChatMessage(role = "user", content = [{"type": "text", "text": "hello"}])
-        ],
+        messages = [ChatMessage(role = "user", content = [{"type": "text", "text": "hello"}])],
     )
     response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
     import json
