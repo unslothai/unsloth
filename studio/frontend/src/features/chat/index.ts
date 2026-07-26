@@ -52,6 +52,7 @@ export {
   toolThreadScope,
   useToolPaneScope,
 } from "./tool-output-scope";
+export { useToolAwaitingApproval } from "./tool-approval";
 export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";

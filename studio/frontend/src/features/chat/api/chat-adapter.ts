@@ -3465,8 +3465,18 @@ export function createOpenAIStreamAdapter(
                   const approvalId = (toolEvent.approval_id as string) || "";
                   const awaitingConfirmation =
                     toolEvent.awaiting_confirmation === true;
+                  // A provisional card may already be on screen for this call,
+                  // streaming its arguments. Keep using that part id, else the
+                  // confirmation-scoped id opens a SECOND card and the first one
+                  // never gets its tool_end and spins "Running" forever.
+                  const openPartId = backendToolCallId
+                    ? toolPartIdByBackendId.get(backendToolCallId)
+                    : undefined;
+                  const reuseOpenPart =
+                    !!openPartId &&
+                    toolCallParts.some((p) => p.toolCallId === openPartId);
                   const id =
-                    awaitingConfirmation && approvalId
+                    awaitingConfirmation && approvalId && !reuseOpenPart
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
