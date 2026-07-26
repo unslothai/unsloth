@@ -200,19 +200,22 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
 }
 
-# Import strings in auto_map remote .py that only exist in transformers>=5.x
-# (``tokenization_utils_tokenizers`` landed in 5.0.0). Fully qualified so a repo's
-# own same-named helper module cannot match.
+# Import strings in auto_map remote .py the default 4.57.x tier cannot satisfy, but the
+# 5.3 sidecar can (``tokenization_utils_tokenizers`` landed in 5.0.0,
+# ``utils.output_capturing`` in 5.2.0). Fully qualified so a repo's own same-named helper
+# module cannot match. Only modules ABSENT from 4.57.x belong here: ``modeling_layers``
+# (4.52+) and ``use_kernel_forward_from_hub`` (4.51+) import fine on default, so matching
+# them would push ordinary custom-code models (EXAONE, MiniMax, Molmo2, ...) onto a sidecar.
 _TRANSFORMERS_5_REMOTE_IMPORT_MARKERS: tuple[str, ...] = (
     "transformers.tokenization_utils_tokenizers",
+    "transformers.utils.output_capturing",
 )
 
-# Remote modeling imports the default 4.57.x tier cannot satisfy
-# (``utils.output_capturing`` landed in 5.3.0). Only symbols ABSENT from 4.57.x
-# belong here: ``modeling_layers`` (4.52+) and ``use_kernel_forward_from_hub``
-# (4.51+) import fine on default, so matching them would push ordinary
-# custom-code models (EXAONE, MiniMax, Molmo2, ...) onto the sidecar.
-_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = ("transformers.utils.output_capturing",)
+# Remote modeling imports that not even the 5.3 sidecar can satisfy. A module belongs here
+# only when it is absent from 5.3.0/5.5.0 as well; anything merely newer than 4.57.x goes in
+# the set above, where the 5.3 floor plus the AutoConfig probe escalates to 5.5/5.10 when the
+# model really needs it. Empty today: every marker found so far imports fine on 5.3.0.
+_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS: tuple[str, ...] = ()
 
 # Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
 # gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
@@ -632,6 +635,24 @@ def _hf_api_url(path: str) -> str:
     return f"{_hf_endpoint_base()}{path}"
 
 
+def _is_same_hub_origin(url: str) -> bool:
+    """True when *url* has the same scheme and authority as the configured Hub endpoint.
+
+    Pagination cursors are echoed back by the endpoint and are followed with the caller's
+    ``Authorization: Bearer <hf_token>`` header attached, so a cross-origin ``rel="next"``
+    from a compromised Hub, a hostile mirror or a MITM on a plain-http ``HF_ENDPOINT`` would
+    hand the user's Hub token to an arbitrary host (and turn the backend into an SSRF probe).
+    The real Hub answers with an absolute same-origin cursor, so requiring one costs nothing.
+    """
+    from urllib.parse import urlsplit
+
+    base = urlsplit(_hf_endpoint_base())
+    nxt = urlsplit(url)
+    if nxt.scheme not in ("http", "https"):
+        return False
+    return (nxt.scheme.lower(), nxt.netloc.lower()) == (base.scheme.lower(), base.netloc.lower())
+
+
 def _parse_link_next(link_header: str | None) -> str | None:
     """Next-page URL from a GitHub-style ``Link`` header, or None."""
     for part in (link_header or "").split(","):
@@ -677,9 +698,14 @@ def _hf_api_get_json(path: str, hf_token: str | None = None) -> tuple[object | N
             merged.extend(payload)
             if not next_url:
                 return merged, True
-            # The cursor URL is echoed by the endpoint; only ever follow it over http(s).
-            if not next_url.startswith(("http://", "https://")):
-                logger.debug("Refusing non-http Hub pagination link for %s: %s", path, next_url)
+            # The cursor URL is echoed by the endpoint; only ever follow it back to that same
+            # origin, since the next request replays the Authorization header verbatim.
+            # Refusing is also the safe answer for the listing: success=False keeps a
+            # truncated tree from passing as a complete one.
+            if not _is_same_hub_origin(next_url):
+                logger.debug(
+                    "Refusing cross-origin Hub pagination link for %s: %s", path, next_url
+                )
                 return None, False
             url = next_url
         logger.debug("Hub API pagination exceeded %s pages for %s", _HF_API_MAX_PAGES, path)
@@ -961,6 +987,12 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
     4.57.x-loadable custom model onto a 5.x sidecar. Only the guard's own body is dropped;
     its ``else`` / ``elif`` branches do run and are still collected, and ``if not
     TYPE_CHECKING:`` is not the guard, so its body is collected too.
+
+    ``importlib.import_module("pkg.mod")`` / ``__import__("pkg.mod")`` count too: remote code
+    that loads a versioned module that way really does import it at runtime, and recording
+    nothing would route the model to a sidecar where that call raises. Only a literal string
+    argument is read, so a marker sitting in a docstring, a comment or any other inert
+    literal still cannot promote the tier; a computed or f-string name is left alone.
     """
     import ast
 
@@ -968,6 +1000,23 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         return (isinstance(test, ast.Name) and test.id == "TYPE_CHECKING") or (
             isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
         )
+
+    def _dynamic_import_name(node) -> str | None:
+        """Module a constant-string ``import_module`` / ``__import__`` call loads."""
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            called = func.attr
+        elif isinstance(func, ast.Name):
+            called = func.id
+        else:
+            return None
+        if called not in ("import_module", "__import__") or not node.args:
+            return None
+        arg = node.args[0]
+        if not isinstance(arg, ast.Constant) or not isinstance(arg.value, str):
+            return None
+        # A leading dot is a relative import, skipped for the same reason as ImportFrom.
+        return None if arg.value.startswith(".") else arg.value
 
     try:
         tree = ast.parse(src)
@@ -988,6 +1037,11 @@ def _parsed_dotted_imports(src: str) -> set[str] | None:
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             stack.extend(node.orelse)
             continue
+        if isinstance(node, ast.Call):
+            dynamic = _dynamic_import_name(node)
+            if dynamic:
+                names.add(dynamic)
+            # Not a terminal node: keep walking so a nested call or import still counts.
         stack.extend(ast.iter_child_nodes(node))
     return names
 
@@ -1006,6 +1060,8 @@ def _remote_auto_map_py_matches(markers: tuple[str, ...], sources: list[str]) ->
     unparseable remote code never turns into a silent negative that crashes on the default
     tier; that fallback is the only place a substring match is trusted.
     """
+    if not markers:
+        return False
     for src in sources:
         names = _parsed_dotted_imports(src)
         if names is None:
@@ -1056,13 +1112,47 @@ def _local_scan_signature(model_name: str) -> str | None:
         return None
 
 
+def _hf_cache_snapshot_dir(model_name: str) -> Path | None:
+    """Newest local HF hub cache snapshot directory for a Hub id, or None.
+
+    Stdlib-only path resolution mirroring :func:`_config_json_from_hf_cache` (no
+    ``huggingface_hub`` import), so tier detection never loads the default-env hub before a
+    sidecar venv is activated.
+    """
+    # Only a canonical ``owner/repo`` Hub id maps to a cache dir; reject local paths.
+    if not model_name or model_name.count("/") != 1 or model_name[0] in "/.~" or "\\" in model_name:
+        return None
+    hub = (
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE")
+        or os.path.join(
+            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
+        )
+    )
+    repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
+    candidates: list[Path] = []
+    ref_main = repo_dir / "refs" / "main"
+    try:
+        if ref_main.is_file():
+            candidates.append(repo_dir / "snapshots" / ref_main.read_text().strip())
+        # No refs/main (e.g. commit-pinned downloads): newest snapshot by mtime, not a stale
+        # lexicographically-first SHA, matching what the Hub cache would actually load.
+        candidates += sorted(repo_dir.glob("snapshots/*"), key = _safe_mtime, reverse = True)
+        for path in candidates:
+            if path.is_dir():
+                return path
+    except Exception as exc:
+        logger.debug("HF cache snapshot lookup failed for '%s': %s", model_name, exc)
+    return None
+
+
 def _remote_auto_map_tier(model_name: str, hf_token: str | None = None) -> tuple[str, bool]:
     """Return ``(tier, scan_was_definitive)`` for auto_map remote code.
 
-    ``"510"`` when the closure imports a 5.10-only symbol, ``"530"`` when it imports the
-    5.x-only tokenizers backend module, else ``"default"``. The 5.x marker is classified
-    here and not only in the tokenizer check because remote code reached through
-    ``config.json`` or a processor config is never scanned by that check when
+    ``"510"`` when the closure imports a symbol no sidecar below 5.10 has, ``"530"`` when it
+    imports a module absent from 4.57.x but present in 5.3, else ``"default"``. The 5.x
+    marker is classified here and not only in the tokenizer check because remote code reached
+    through ``config.json`` or a processor config is never scanned by that check when
     ``tokenizer_config.json`` does not itself declare the module: the worker would then
     pick the default 4.57.x tier, which does not ship
     ``transformers.tokenization_utils_tokenizers`` at all.
@@ -1072,10 +1162,18 @@ def _remote_auto_map_tier(model_name: str, hf_token: str | None = None) -> tuple
     if signature is not None and cache_key in _remote_auto_map_tier_cache:
         return _remote_auto_map_tier_cache[cache_key], True
 
-    # Offline Hub ids cannot be scanned here; do not cache the assumed negative so a
-    # later online read re-fetches (mirrors _check_tokenizer_config_needs_v5).
+    # Offline Hub id: the Hub cannot be listed, but a previously downloaded snapshot is
+    # exactly the code an offline load would execute, so scan that instead of assuming the
+    # model has no 5.x-only import (which would activate 4.57.x and crash on a repo whose
+    # files are all present locally). The answer is still reported as non-definitive: the
+    # external auto_map repos cannot be reached offline, and nothing is cached under the Hub
+    # id, so a later online read re-fetches (mirrors _check_tokenizer_config_needs_v5).
     if _env_offline() and not _safe_is_dir(Path(model_name)):
-        return "default", False
+        snapshot = _hf_cache_snapshot_dir(model_name)
+        if snapshot is None:
+            return "default", False
+        tier, _ = _remote_auto_map_tier(str(snapshot), hf_token)
+        return tier, False
 
     sources, definitive = _remote_auto_map_py_contents(model_name, hf_token)
     if _remote_auto_map_py_matches(_TRANSFORMERS_510_REMOTE_IMPORT_MARKERS, sources):
