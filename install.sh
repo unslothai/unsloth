@@ -706,7 +706,11 @@ _smart_apt_install() {
         echo ""
         if _can_read_tty; then
             printf "    Accept? [Y/n] "
-            read -r REPLY </dev/tty || REPLY="y"
+            # An unreadable answer declines. _can_read_tty proved the device
+            # opens, so a failed read here is EOF, not consent; treating it as
+            # "yes" escalates on input nobody supplied, which is the same bug
+            # this branch exists to remove. Matches the autostart prompt below.
+            read -r REPLY </dev/tty || REPLY="n"
             case "$REPLY" in
                 [nN]*)
                     echo ""

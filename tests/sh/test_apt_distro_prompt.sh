@@ -112,6 +112,9 @@ run_smart() {
     _d=$(mktemp -d -p "$_TMP_ROOT")
     case "$_tty_mode" in
         tty)        printf 'y\n' > "$_d/tty" ;;
+        # Opens fine, but read gets EOF straight away: a drained or half-closed
+        # terminal. Being openable is not the same as being answerable.
+        eof)        : > "$_d/tty" ;;
         unopenable) make_unopenable "$_d/tty" ;;
     esac
 
@@ -215,6 +218,17 @@ if make_unopenable "$_probe/tty" && [ -r "$_probe/tty" ] && ! ( : <"$_probe/tty"
 else
     echo "  SKIP: this platform cannot fake a readable-but-unopenable /dev/tty"
 fi
+
+# A tty that opens but yields EOF must decline. Opening the device only proves
+# it exists; a failed read is nobody answering, and calling that "yes" escalates
+# through the branch that does have a terminal.
+_out=$(run_smart eof needspasswd)
+assert_contains "eof tty: declines instead of escalating" \
+    "$_out" "Please install these packages first"
+case "$_out" in
+    *SUDO_RAN*) echo "  FAIL: eof tty must not escalate"; FAIL=$((FAIL + 1)) ;;
+    *) echo "  PASS: eof tty runs nothing as root"; PASS=$((PASS + 1)) ;;
+esac
 
 # A cached authentication timestamp from an earlier, unrelated sudo must not
 # count as passwordless: nobody answered the prompt in this run, and the
