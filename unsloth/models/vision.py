@@ -387,7 +387,6 @@ def _uses_flash_attention_for_generation(config):
 
 
 def unsloth_base_fast_generate(self, *args, **kwargs):
-
     if len(args) != 0:
         input_ids = args[0]
     elif "input_ids" in kwargs:
