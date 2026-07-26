@@ -1150,8 +1150,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
     const wanted = routeSearch.model;
-    if (!wanted || handledRouteModel.current === wanted) return;
-    handledRouteModel.current = wanted;
+    // Model AND quant, as on the Images page: this page stays mounted, so a model-only
+    // marker turned every later pick of the same repo into a silent no-op.
+    const key = wanted ? `${wanted} ${routeSearch.quant ?? ""}` : null;
+    if (!wanted || !key || handledRouteModel.current === key) return;
+    handledRouteModel.current = key;
     void navigateSelf({ to: "/video", search: {}, replace: true });
     void loadOrStage(
       wanted,

@@ -699,6 +699,18 @@ def _download_scoped_snapshot(
     blob_hashes: frozenset[str] = frozenset()
     if info is not None:
         siblings = [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
+        # Every requested file must resolve. Dropping an unmatched name silently would
+        # shrink the manifest and the completion check to the survivors, and
+        # snapshot_download also succeeds when an allow pattern matches nothing, so the
+        # job would report complete and trigger a load with a required file missing.
+        missing = sorted(set(wanted) - {getattr(s, "rfilename", None) for s in siblings})
+        if missing:
+            print(
+                f"Scoped download of {repo_id} cannot resolve "
+                f"{len(missing)} requested file(s): {_format_path_list(missing)}",
+                file = sys.stderr,
+            )
+            sys.exit(1)
         expected_files = [
             ExpectedFile(
                 path = s.rfilename,

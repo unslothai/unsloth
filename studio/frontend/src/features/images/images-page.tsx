@@ -1822,8 +1822,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
     const wanted = routeSearch.model;
-    if (!wanted || handledRouteModel.current === wanted) return;
-    handledRouteModel.current = wanted;
+    // Key on the model AND the quant: this page stays mounted across navigation, so a
+    // model-only marker made every later pick of the same repo a no-op -- including a
+    // different quant, or the same one after chat evicted it -- without even clearing
+    // the query string, so the click did nothing at all.
+    const key = wanted ? `${wanted} ${routeSearch.quant ?? ""}` : null;
+    if (!wanted || !key || handledRouteModel.current === key) return;
+    handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
     void loadOrStage(
       wanted,

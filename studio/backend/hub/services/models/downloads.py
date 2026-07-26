@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from typing import Optional, Sequence, TYPE_CHECKING
 
 from fastapi import HTTPException
@@ -51,9 +52,22 @@ def _download_job_key(repo_id: str, variant: Optional[str]) -> str:
 _SCOPE_PREFIX = "@"
 
 
-def _scope_variant(scope_id: Optional[str]) -> Optional[str]:
+def _scope_variant(scope_id: Optional[str], files: Optional[Sequence[str]] = None) -> Optional[str]:
+    """The variant slot for a scoped job: ``@scope`` plus the requested FILE SET.
+
+    The file set has to be part of the identity. Every image download for a repo would
+    otherwise share ``@diffusion`` (and every video one ``@video``), so switching quant
+    while the first scoped job is still running made the second request adopt it: the UI
+    waited on the first file set and then loaded a file that was never fetched.
+    """
     scope = (scope_id or "").strip()
-    return f"{_SCOPE_PREFIX}{scope}" if scope else None
+    if not scope:
+        return None
+    wanted = sorted({f.strip() for f in (files or []) if f and f.strip()})
+    if not wanted:
+        return f"{_SCOPE_PREFIX}{scope}"
+    digest = hashlib.sha256("\n".join(wanted).encode()).hexdigest()[:12]
+    return f"{_SCOPE_PREFIX}{scope}-{digest}"
 
 
 def scoped_file_blob_hashes(
@@ -155,8 +169,8 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     # A scoped job fetches only `files` and keys itself apart from the repo's full snapshot.
-    scope_variant = _scope_variant(body.scope_id)
     scoped_files = [f for f in (body.files or []) if f and f.strip()]
+    scope_variant = _scope_variant(body.scope_id, scoped_files)
     if scope_variant is not None:
         if variant is not None:
             raise HTTPException(

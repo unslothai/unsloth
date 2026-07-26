@@ -1923,9 +1923,13 @@ export function HubModelPicker({
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
       // Task-scoped pages load single-file GGUF only; chat-only keeps runnable formats
       // (GGUF anywhere, plus MLX/safetensors on Mac).
+      // A curated artifact stays listed whatever its format: the catalog carries bf16
+      // pipelines, bnb-4bit and single-file fp8 next to the GGUFs, loadSpecFor knows how
+      // to load each, and a GGUF-only rule made every non-GGUF curated model
+      // undiscoverable on the Images and Video pages unless it was already cached.
       .filter((id) =>
         task
-          ? isKnownGgufRepo(id)
+          ? isKnownGgufRepo(id) || Boolean(catalog && artifactForRepoId(id, catalog))
           : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
       // Member repos of a catalog group would collapse into the canonical group row --
@@ -1979,7 +1983,13 @@ export function HubModelPicker({
         ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
     // Task-scoped pages load single-file GGUF only.
-    if (task) rows = rows.filter((r) => r.isGguf);
+    // Same as recommendedIds: a curated artifact is loadable whatever its format, so
+    // GGUF-only here hid the catalog's bf16 / bnb-4bit / fp8 models from Hub search.
+    if (task) {
+      rows = rows.filter(
+        (r) => r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)),
+      );
+    }
     // Members would render under their canonical group row, but that row does not exist
     // yet (see recommendedIds): filtering here removed curated models from Hub search too.
     // The "recommended" sort always applies the device-fit filter; the shared
@@ -2228,7 +2238,11 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            search: { model: id, quant: meta.ggufVariant ?? undefined },
+            // The target page uses this verbatim as the gguf filename, so it must be
+            // ggufFilename (an exact repo filename) and never ggufVariant (a label like
+            // "Q4_K_M", which routed a file that does not exist). No filename means a
+            // curated non-GGUF pick, which the page loads as a pipeline.
+            search: { model: id, quant: meta.ggufFilename ?? undefined },
           });
           return;
         }

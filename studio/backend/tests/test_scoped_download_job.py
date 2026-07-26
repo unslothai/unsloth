@@ -91,10 +91,12 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
 
     result = asyncio.run(dl.download_model_response(_request()))
     assert result["accepted"] is True
-    assert result["job_key"].endswith("@diffusion")
+    # The scope key carries a digest of the requested file set (see _scope_variant).
+    scope_variant = dl._scope_variant("diffusion", FILES)
+    assert result["job_key"].endswith(scope_variant)
 
     args = spawned["args"]
-    assert "--variant" in args and args[args.index("--variant") + 1] == "@diffusion"
+    assert "--variant" in args and args[args.index("--variant") + 1] == scope_variant
     # The file list travels in a temp JSON file, not argv: a pipeline repo lists hundreds.
     manifest_path = args[args.index("--files-json") + 1]
     assert json.loads(Path(manifest_path).read_text(encoding = "utf-8")) == FILES
@@ -121,7 +123,9 @@ def test_scoped_files_survive_into_the_registry(monkeypatch):
     assert captured["scoped_files"] == FILES
 
     metadata = dl._registry.get_job_metadata(
-        dl._download_job_key("black-forest-labs/FLUX.1-dev", "@diffusion")
+        dl._download_job_key(
+            "black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion", FILES)
+        )
     )
     assert metadata is not None and list(metadata.scoped_files) == FILES
 
@@ -132,3 +136,20 @@ def test_files_manifest_round_trips():
         assert json.loads(Path(path).read_text(encoding = "utf-8")) == FILES
     finally:
         Path(path).unlink(missing_ok = True)
+
+
+def test_scope_keys_differ_per_requested_file_set():
+    # Two quants of one repo are two different downloads. Sharing "@diffusion" made the
+    # second request adopt the first job, so the UI waited on the wrong file set and then
+    # loaded a file that had never been fetched.
+    a = dl._scope_variant("diffusion", ["flux1-dev-Q4_K_M.gguf", "ae.safetensors"])
+    b = dl._scope_variant("diffusion", ["flux1-dev-Q2_K.gguf", "ae.safetensors"])
+    assert a != b
+    assert a.startswith("@diffusion-") and b.startswith("@diffusion-")
+    # Order and duplicates must not change the identity (the same set is the same job).
+    assert a == dl._scope_variant("diffusion", ["ae.safetensors", "flux1-dev-Q4_K_M.gguf",
+                                               "flux1-dev-Q4_K_M.gguf"])
+    # A scope with no files keeps the bare form, and stays valid as a variant slot.
+    from hub.utils.paths import is_valid_gguf_variant
+    assert dl._scope_variant("video", []) == "@video"
+    assert is_valid_gguf_variant(a) and is_valid_gguf_variant("@video")
