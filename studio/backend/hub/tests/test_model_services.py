@@ -92,6 +92,25 @@ class TestExtractQuantToken:
         }
         assert labels == {"Q4_K_M", "Q8_0"}
 
+    def test_post_quant_mtp_suffixes_do_not_collapse(self):
+        assert (
+            gguf.extract_quant_token(
+                "Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-MTP.gguf",
+            )
+            == "Q6_K-MTP"
+        )
+        assert (
+            gguf.extract_quant_token(
+                "Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-PT-MTP.gguf",
+            )
+            == "Q6_K-PT-MTP"
+        )
+        labels = {
+            gguf.extract_quant_label("model-Q6_K-MTP.gguf"),
+            gguf.extract_quant_label("model-Q6_K-PT-MTP.gguf"),
+        }
+        assert labels == {"Q6_K-MTP", "Q6_K-PT-MTP"}
+
 
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
@@ -343,6 +362,19 @@ def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
         ("Q4_K_M", "model-Q4_K_M.gguf", 10)
     ]
+
+
+def test_list_local_gguf_variants_keeps_mtp_flavor_siblings_separate(tmp_path):
+    (tmp_path / "Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-MTP.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "Qwen3.6-40B-Deck-Opus-NEO-CODE-Q6_K-PT-MTP.gguf").write_bytes(b"y" * 200)
+
+    variants, has_vision = gguf.list_local_gguf_variants(str(tmp_path))
+
+    assert has_vision is False
+    assert {(v.quant, v.size_bytes) for v in variants} == {
+        ("Q6_K-MTP", 100),
+        ("Q6_K-PT-MTP", 200),
+    }
 
 
 @pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])

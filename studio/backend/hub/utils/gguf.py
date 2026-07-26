@@ -66,6 +66,12 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+# Post-quant suffixes that distinguish separate main-weight files sharing a
+# base quant (e.g. Qwen MTP graft variants: ...-Q6_K-MTP vs ...-Q6_K-PT-MTP).
+_POST_QUANT_VARIANT_SUFFIX_RE = re.compile(
+    r"-(?:(?:PT-)?MTP|[0-9]+(?:\.[0-9]+)?bpw)$",
+    re.IGNORECASE,
+)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -206,6 +212,16 @@ def _select_quant_match(text: str) -> Optional[re.Match]:
     return fallback
 
 
+def _quant_with_disambiguating_suffix(stem: str, match: re.Match) -> str:
+    prefix = match.group(1) or ""
+    quant = f"{prefix}{match.group(2)}"
+    tail = stem[match.end() :]
+    suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(tail)
+    if suffix_match:
+        quant += suffix_match.group(0)
+    return quant
+
+
 def extract_quant_token(filename: str) -> Optional[str]:
     stem = _gguf_stem(filename)
     match = _select_quant_match(stem)
@@ -217,8 +233,7 @@ def extract_quant_token(filename: str) -> Optional[str]:
                 match = parent_match
                 break
     if match:
-        prefix = match.group(1) or ""
-        return f"{prefix}{match.group(2)}"
+        return _quant_with_disambiguating_suffix(stem, match)
     return None
 
 

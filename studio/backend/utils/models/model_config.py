@@ -1631,7 +1631,9 @@ def _extract_quant_label(filename: str) -> str:
         # Optional bits-per-weight modifier so repos that ship multiple
         # files at the same base quant (e.g. byteshape's IQ4_XS at 3.53,
         # 3.97, 4.19 bpw) don't collapse into a single merged variant.
-        r"(-[0-9]+(?:\.[0-9]+)?bpw)?"
+        # Optional MTP flavor suffixes (e.g. -MTP, -PT-MTP) distinguish
+        # separate main-weight graft variants in the same folder (#7460).
+        r"(-[0-9]+(?:\.[0-9]+)?bpw|-(?:PT-)?MTP)?"
     )
     match = re.search(quant_re, stem, re.IGNORECASE)
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
