@@ -244,3 +244,86 @@ def test_validate_rejects_denied_llama_extra_args_on_gguf(monkeypatch):
         asyncio.run(inf.validate_model(req, current_subject = "tester"))
     assert excinfo.value.status_code == 400
     assert "--port" in excinfo.value.detail
+
+
+class _StopAfterGuard(Exception):
+    """Sentinel so the test stops at the guard instead of building a response."""
+
+
+def _drive_validate_guard(monkeypatch, *, request_extra_args, backend_extra_args):
+    """Return the llama_extra_args /validate hands the training guard."""
+    from types import SimpleNamespace
+
+    import utils.models.model_config as mc
+
+    monkeypatch.setattr(
+        inf,
+        "_resolve_model_identifier_for_request",
+        lambda request, operation: ("org/gguf-repo", "org/gguf-repo", False),
+    )
+    config = SimpleNamespace(
+        identifier = "org/gguf-repo",
+        display_name = "org/gguf-repo",
+        is_gguf = True,
+        is_lora = False,
+        is_vision = False,
+        gguf_file = None,
+        gguf_variant = "",
+    )
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
+    monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
+    monkeypatch.setattr(inf, "_effective_load_in_4bit", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            extra_args = list(backend_extra_args),
+            extra_args_source = ("org/gguf-repo", ""),
+        ),
+    )
+
+    seen = {}
+
+    def _capture(_config, **kwargs):
+        seen["llama_extra_args"] = kwargs.get("llama_extra_args")
+        raise _StopAfterGuard
+
+    monkeypatch.setattr(inf, "_guard_chat_load_against_training", _capture)
+
+    kwargs = {} if request_extra_args is None else {"llama_extra_args": request_extra_args}
+    req = ValidateModelRequest(model_path = "org/gguf-repo", **kwargs)
+    with pytest.raises(HTTPException):
+        asyncio.run(inf.validate_model(req, current_subject = "tester"))
+    return seen["llama_extra_args"]
+
+
+def test_validate_guard_sizes_with_the_requests_own_extra_args(monkeypatch):
+    # The guard's KV estimate reads -c/--ctx-size out of the extras. Dropping the
+    # caller's own extras lets /validate pass an estimate smaller than the /load
+    # that follows, so /load 409s after the UI already unloaded the live model.
+    seen = _drive_validate_guard(
+        monkeypatch,
+        request_extra_args = ["-c", "65536"],
+        backend_extra_args = [],
+    )
+    assert seen == ["-c", "65536"]
+
+
+def test_validate_guard_still_inherits_when_request_omits_extra_args(monkeypatch):
+    # Omitted means "inherit" on /load; /validate must size the same way.
+    seen = _drive_validate_guard(
+        monkeypatch,
+        request_extra_args = None,
+        backend_extra_args = ["-c", "65536"],
+    )
+    assert seen == ["-c", "65536"]
+
+
+def test_validate_guard_honours_an_explicit_empty_extra_args(monkeypatch):
+    # Explicit [] clears inherited extras on /load; the estimate must follow.
+    seen = _drive_validate_guard(
+        monkeypatch,
+        request_extra_args = [],
+        backend_extra_args = ["-c", "65536"],
+    )
+    assert seen == []

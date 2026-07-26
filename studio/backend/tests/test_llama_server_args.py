@@ -862,3 +862,63 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
         strip_template = False,
     )
     assert out == ["--model-draft", "/custom/mtp.gguf"]
+
+
+# ── Underscore aliases (llama.cpp folds `_` to `-` on long flags) ─────
+
+
+@pytest.mark.parametrize(
+    "denied",
+    [
+        "--api_key",
+        "--api_key_file",
+        "--api_prefix",
+        "--ssl_key_file",
+        "--ssl_cert_file",
+        "--n_parallel",
+        "--model_url",
+        "--hf_repo",
+        "--hf_file",
+        "--hf_token",
+        "--docker_repo",
+        "--mmproj_url",
+        "--slot_save_path",
+        "--models_dir",
+        "--models_preset",
+        "--models_max",
+        "--models_autoload",
+        "--reuse_port",
+        "--no_webui",
+        "--no_ui",
+        "--ui_config_file",
+        "--ui_mcp_proxy",
+    ],
+)
+def test_denylist_rejects_underscore_aliases(denied):
+    # common/arg.cpp runs std::replace(arg, '_', '-') on every `--` arg, so
+    # `--api_key` reaches --api-key. A hyphen-only denylist would be one
+    # underscore away from handing over auth, model identity and the port.
+    with pytest.raises(ValueError):
+        validate_extra_args([denied, "value"])
+    with pytest.raises(ValueError):
+        validate_extra_args([f"{denied}=value"])
+    assert is_managed_flag(denied) is True
+
+
+def test_underscore_normalisation_is_long_flags_only():
+    # Upstream leaves shorts alone, so `-m` stays managed but no short gains
+    # an underscore spelling.
+    assert is_managed_flag("-m") is True
+    assert is_managed_flag("--no_mmap") is False
+    assert is_managed_flag("--cpu_moe") is False
+    assert validate_extra_args(["--cpu_moe", "--no_mmap"]) == ["--cpu_moe", "--no_mmap"]
+
+
+def test_shadow_parsers_see_underscore_spellings():
+    # The child honours `--ctx_size`; if Unsloth's parsers miss it, the KV
+    # budget is sized for a different context than the server allocates.
+    assert parse_ctx_override(["--ctx_size", "8192"]) == 8192
+    assert parse_cache_override(["--cache_type_k", "q8_0"]) == "q8_0"
+    assert parse_split_mode_override(["--split_mode", "tensor"]) == "tensor"
+    assert extra_args_disable_mmproj(["--no_mmproj"]) is True
+    assert strip_shadowing_flags(["--ctx_size", "8192", "--top-k", "20"]) == ["--top-k", "20"]

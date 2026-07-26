@@ -13,8 +13,12 @@ export function parseLlamaExtraArgsInput(input: string): string[] {
   for (let i = 0; i < trimmed.length; i += 1) {
     const ch = trimmed[i];
     if (quote) {
-      if (ch === "\\" && i + 1 < trimmed.length) {
-        current += trimmed[i + 1];
+      // Only a quote or another backslash escapes, as in a shell. Anything
+      // else keeps its backslash, so a quoted Windows path survives
+      // ("C:\Program Files\t.jinja", not "C:Program Filest.jinja").
+      const next = i + 1 < trimmed.length ? trimmed[i + 1] : "";
+      if (ch === "\\" && (next === quote || next === "\\")) {
+        current += next;
         i += 1;
         continue;
       }
@@ -52,7 +56,9 @@ export function formatLlamaExtraArgs(
   }
   return args
     .map((token) => {
-      if (!/\s/.test(token)) {
+      // Quote chars need quoting too, else re-parsing the field strips them
+      // (`{"a":1}` -> `{a:1}`) and silently corrupts the value on the next blur.
+      if (!/[\s"']/.test(token)) {
         return token;
       }
       return `"${token.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;

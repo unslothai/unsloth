@@ -5147,10 +5147,12 @@ async def validate_model(
         # training guard must not refuse it. Real loads omit include_context_length /
         # include_chat_template, and /load applies the guard again.
         if not (request.include_context_length or request.include_chat_template):
-            # Match /load's inherited llama.cpp extras and parallel slot count so
-            # validation cannot pass a smaller estimate than the subsequent load.
+            # Match /load's llama.cpp extras and parallel slot count so validation
+            # cannot pass a smaller estimate than the subsequent load: the request's
+            # own extras when it sent them (their -c raises the KV estimate), else
+            # the previous same-model load's inherited ones.
             effective_extra_args = _resolve_inherited_extra_args(
-                request, config, model_identifier, None
+                request, config, model_identifier, request.llama_extra_args
             )
             # Off-loop: guard does sync nvidia-smi / HF work.
             await asyncio.to_thread(

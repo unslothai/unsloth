@@ -468,3 +468,26 @@ def test_model_config_page_exposes_custom_llama_server_args():
     assert "LlamaExtraArgsSetting" in src
     assert "parseLlamaExtraArgsInput" in src
     assert "text-[11px]" not in src
+
+
+def test_llama_extra_args_formatter_quotes_quote_chars():
+    """formatLlamaExtraArgs must re-quote tokens holding quote characters.
+
+    The field re-parses whatever formatLlamaExtraArgs rendered, so a token like
+    {"enable_thinking":false} that is emitted bare comes back as
+    {enable_thinking:false} on the next blur, silently corrupting the flag.
+    """
+    src = _read("features/model-picker/model-config/llama-extra-args.ts")
+    assert '/[\\s"\']/.test(token)' in src
+
+
+def test_llama_extra_args_parser_keeps_non_escape_backslashes():
+    """A quoted Windows path must survive the field.
+
+    Treating every backslash in a quoted token as an escape turns
+    "C:\\Program Files\\t.jinja" into "C:Program Filest.jinja", which is exactly
+    the platform issue #7022 was reported on. Only a quote or another backslash
+    escapes, as in a shell.
+    """
+    src = _read("features/model-picker/model-config/llama-extra-args.ts")
+    assert 'ch === "\\\\" && (next === quote || next === "\\\\")' in src
