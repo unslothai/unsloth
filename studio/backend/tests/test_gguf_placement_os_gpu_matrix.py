@@ -404,8 +404,6 @@ def test_diffusion_on_a_vulkan_bundle_resolves_physical_ids(tmp_path, route, mai
         # And the CUDA requirement still stands for every other host.
         for device in ("CPU", "XPU"):
             with pytest.raises(HTTPException) as exc:
-                _resolve(
-                    route, [1], binary = binary, vulkan = True, device = device, diffusion = True
-                )
+                _resolve(route, [1], binary = binary, vulkan = True, device = device, diffusion = True)
             assert exc.value.status_code == 400
             assert "diffusiongemma" in exc.value.detail.lower()
