@@ -12,6 +12,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { MicIcon } from "@/lib/mic-icon";
 import {
+  BotIcon,
   Cancel01Icon,
   CloudIcon,
   CpuIcon,
@@ -40,6 +41,7 @@ import {
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
 import { AboutTab } from "./tabs/about-tab";
+import { AgentsTab } from "./tabs/agents-tab";
 import { ApiKeysTab } from "./tabs/api-keys-tab";
 import { AppearanceTab } from "./tabs/appearance-tab";
 import { ChatTab } from "./tabs/chat-tab";
@@ -71,13 +73,11 @@ const TABS: TabDef[] = [
     id: "resources",
     labelKey: "settings.tabs.resources",
     icon: CpuIcon,
-    badgeKey: "common.new",
   },
   {
     id: "chat",
     labelKey: "settings.tabs.chat",
     icon: Message01Icon,
-    badgeKey: "common.new",
   },
   {
     id: "api-keys",
@@ -88,6 +88,12 @@ const TABS: TabDef[] = [
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
+  },
+  {
+    id: "agents",
+    labelKey: "settings.tabs.agents",
+    icon: BotIcon,
+    badgeKey: "common.new",
   },
   {
     id: "voice",
@@ -124,6 +130,8 @@ function renderTab(tab: SettingsTab) {
       return <DataTab />;
     case "api-keys":
       return <ApiKeysTab />;
+    case "agents":
+      return <AgentsTab />;
     case "about":
       return <AboutTab />;
   }
@@ -222,6 +230,7 @@ export function SettingsDialog() {
     connections: null,
     data: null,
     "api-keys": null,
+    agents: null,
     about: null,
   });
 
