@@ -163,9 +163,9 @@ def test_login_jsx_declares_exactly_one_password_input():
     ids = re.findall(r'id="([a-z-]+)"', subtree)
     # Lock the count, not the spelling, so a rename does not falsely fail.
     pw_ids = [x for x in ids if "password" in x]
-    assert len(pw_ids) == 1, (
-        f"login JSX must declare exactly one password-typed input; found {pw_ids!r}"
-    )
+    assert (
+        len(pw_ids) == 1
+    ), f"login JSX must declare exactly one password-typed input; found {pw_ids!r}"
 
 
 def test_auth_flow_routes_do_not_mount_global_settings():

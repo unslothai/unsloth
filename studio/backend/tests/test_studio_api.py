@@ -363,17 +363,17 @@ def test_openai_tools_nonstream(base_url: str, api_key: str):
     data = json.loads(text)
     assert "choices" in data, f"Missing 'choices': {text[:300]}"
     choice = data["choices"][0]
-    assert choice["finish_reason"] == "tool_calls", (
-        f"Expected finish_reason='tool_calls', got {choice['finish_reason']!r}"
-    )
+    assert (
+        choice["finish_reason"] == "tool_calls"
+    ), f"Expected finish_reason='tool_calls', got {choice['finish_reason']!r}"
     msg = choice["message"]
     tool_calls = msg.get("tool_calls") or []
     assert len(tool_calls) >= 1, f"No tool_calls in response: {msg}"
     first = tool_calls[0]
     assert first["type"] == "function"
-    assert first["function"]["name"] == "get_weather", (
-        f"Wrong tool name: {first['function']['name']!r}"
-    )
+    assert (
+        first["function"]["name"] == "get_weather"
+    ), f"Wrong tool name: {first['function']['name']!r}"
     # arguments must be valid JSON
     parsed = json.loads(first["function"]["arguments"])
     assert "city" in parsed, f"Tool call missing required 'city' arg: {parsed}"
@@ -403,9 +403,9 @@ def test_openai_tools_stream(base_url: str, api_key: str):
     )
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received"
-    assert _final_finish_reason(chunks) == "tool_calls", (
-        f"Expected final finish_reason='tool_calls', got {_final_finish_reason(chunks)!r}"
-    )
+    assert (
+        _final_finish_reason(chunks) == "tool_calls"
+    ), f"Expected final finish_reason='tool_calls', got {_final_finish_reason(chunks)!r}"
     assembled = _collect_streamed_tool_calls(chunks)
     assert len(assembled) >= 1, "No tool_calls reassembled from stream"
     first = assembled[0]
@@ -464,9 +464,9 @@ def test_openai_tools_multiturn(base_url: str, api_key: str):
     msg = data["choices"][0]["message"]
     # The model should respond with text now it has the tool result
     content = msg.get("content") or ""
-    assert len(content) > 0 or msg.get("tool_calls"), (
-        f"Expected text or follow-up tool call, got empty message: {msg}"
-    )
+    assert len(content) > 0 or msg.get(
+        "tool_calls"
+    ), f"Expected text or follow-up tool call, got empty message: {msg}"
     print(f"  PASS  openai tools multiturn: {content[:80]!r}")
 
 
@@ -486,9 +486,9 @@ def test_openai_sdk_tool_calling(base_url: str, api_key: str):
         tool_choice = "required",
         stream = False,
     )
-    assert resp.choices[0].finish_reason == "tool_calls", (
-        f"Expected finish_reason='tool_calls', got {resp.choices[0].finish_reason!r}"
-    )
+    assert (
+        resp.choices[0].finish_reason == "tool_calls"
+    ), f"Expected finish_reason='tool_calls', got {resp.choices[0].finish_reason!r}"
     tool_calls = resp.choices[0].message.tool_calls
     assert tool_calls and len(tool_calls) >= 1, "No tool_calls from SDK"
     tc = tool_calls[0]

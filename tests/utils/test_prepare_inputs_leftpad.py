@@ -119,17 +119,17 @@ def test_mask_derived_position_ids_branch_exists():
         "attention_mask.cumsum(...); reintroducing cache_position-based "
         "positions breaks left-padded batched generation (issue #3699)"
     )
-    assert "masked_fill_" in body_names or "masked_fill" in body_names, (
-        "the attention-mask branch must mask pad positions (masked_fill on mask == 0)"
-    )
+    assert (
+        "masked_fill_" in body_names or "masked_fill" in body_names
+    ), "the attention-mask branch must mask pad positions (masked_fill on mask == 0)"
     assigns_kwargs = any(
         isinstance(stmt, ast.Assign)
         and any(_is_kwargs_position_ids_target(t) for t in stmt.targets)
         for stmt in ast.walk(ast.Module(body = branch.body, type_ignores = []))
     )
-    assert assigns_kwargs, (
-        'the attention-mask branch must store the derived positions into kwargs["position_ids"]'
-    )
+    assert (
+        assigns_kwargs
+    ), 'the attention-mask branch must store the derived positions into kwargs["position_ids"]'
 
 
 def test_cache_position_only_used_as_fallback_for_position_ids():
@@ -305,9 +305,9 @@ def test_prefill_position_ids_derived_from_left_padded_mask():
     result = _prepare(FakeModel(), input_ids, MASK)
 
     position_ids = result.get("position_ids", None)
-    assert position_ids is not None, (
-        "prefill with a left-padded 2D attention mask must populate position_ids"
-    )
+    assert (
+        position_ids is not None
+    ), "prefill with a left-padded 2D attention mask must populate position_ids"
     assert torch.equal(position_ids.long().cpu(), EXPECTED_PREFILL_POSITIONS), (
         "prefill position_ids must be derived per row from the attention mask "
         "(cumsum - 1, pads masked), so each row starts counting at its first "
@@ -379,9 +379,9 @@ def test_caller_supplied_position_ids_are_passed_through():
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
     custom = torch.full((BS, SEQ), 7, dtype = torch.long)
     result = _prepare(FakeModel(), input_ids, MASK, position_ids = custom)
-    assert torch.equal(result["position_ids"], custom), (
-        "caller-supplied position_ids must not be overwritten"
-    )
+    assert torch.equal(
+        result["position_ids"], custom
+    ), "caller-supplied position_ids must not be overwritten"
 
 
 def test_legacy_tuple_cache_still_takes_cached_decode_path():

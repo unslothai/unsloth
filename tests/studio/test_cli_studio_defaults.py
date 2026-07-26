@@ -50,12 +50,12 @@ def test_studio_default_host_is_loopback():
     """`unsloth studio` (studio_default) --host default must be 127.0.0.1."""
     source = _STUDIO_CMD_PY.read_text(encoding = "utf-8")
     host_default = _find_typer_option_default(source, "studio_default", "--host")
-    assert host_default is not None, (
-        "Could not find --host typer.Option default in studio_default()"
-    )
-    assert host_default == "127.0.0.1", (
-        f"studio_default() --host default must be '127.0.0.1' (loopback) but got '{host_default}'."
-    )
+    assert (
+        host_default is not None
+    ), "Could not find --host typer.Option default in studio_default()"
+    assert (
+        host_default == "127.0.0.1"
+    ), f"studio_default() --host default must be '127.0.0.1' (loopback) but got '{host_default}'."
 
 
 def test_studio_run_host_is_loopback():

@@ -46,9 +46,9 @@ def test_ime_workflow_step_does_not_set_studio_old_pw():
     assert drive_idx != -1, "IME drive step not found in workflow"
     next_step_idx = yml.find("- name:", drive_idx + 1)
     drive_block = yml[drive_idx : next_step_idx if next_step_idx != -1 else None]
-    assert "STUDIO_OLD_PW" not in drive_block, (
-        "IME drive step still passes dead STUDIO_OLD_PW env var"
-    )
+    assert (
+        "STUDIO_OLD_PW" not in drive_block
+    ), "IME drive step still passes dead STUDIO_OLD_PW env var"
     assert "STUDIO_NEW_PW" in drive_block, "IME drive step missing STUDIO_NEW_PW"
 
 
@@ -58,18 +58,18 @@ def test_ime_pass_password_step_does_not_export_old_pw():
     assert pass_idx != -1, "IME password setup step not found"
     next_step_idx = yml.find("- name:", pass_idx + 1)
     pass_block = yml[pass_idx : next_step_idx if next_step_idx != -1 else None]
-    assert "STUDIO_IME_OLD_PW" not in pass_block, (
-        "IME password setup still exports dead STUDIO_IME_OLD_PW"
-    )
+    assert (
+        "STUDIO_IME_OLD_PW" not in pass_block
+    ), "IME password setup still exports dead STUDIO_IME_OLD_PW"
     assert "STUDIO_IME_NEW_PW" in pass_block
 
 
 def test_ime_playwright_script_does_not_read_studio_old_pw():
     src = IME_PY.read_text(encoding = "utf-8")
     code_only = re.sub(r'""".*?"""', "", src, flags = re.DOTALL)
-    assert "STUDIO_OLD_PW" not in code_only, (
-        "IME Playwright script still references dead STUDIO_OLD_PW env var"
-    )
+    assert (
+        "STUDIO_OLD_PW" not in code_only
+    ), "IME Playwright script still references dead STUDIO_OLD_PW env var"
     assert 'os.environ["STUDIO_NEW_PW"]' in code_only
 
 
@@ -77,9 +77,9 @@ def test_main_composer_has_stuck_compositionend_watchdog():
     """Issue #5546: WSL Chrome never emits compositionend after IME commit, so the
     composer needs a watchdog releasing the composing flag or Send stays disabled."""
     src = THREAD_TSX.read_text(encoding = "utf-8")
-    assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "main composer is missing the stuck-compositionend watchdog (issue #5546)"
-    )
+    assert (
+        "IME_STUCK_TIMEOUT_MS" in src
+    ), "main composer is missing the stuck-compositionend watchdog (issue #5546)"
     assert "onCompositionUpdate" in src, (
         "main composer is missing onCompositionUpdate wiring; the "
         "watchdog only resets while the IME is actively emitting events"
@@ -88,9 +88,9 @@ def test_main_composer_has_stuck_compositionend_watchdog():
 
 def test_compare_composer_has_stuck_compositionend_watchdog():
     src = SHARED_TSX.read_text(encoding = "utf-8")
-    assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "compare composer is missing the stuck-compositionend watchdog (issue #5546)"
-    )
+    assert (
+        "IME_STUCK_TIMEOUT_MS" in src
+    ), "compare composer is missing the stuck-compositionend watchdog (issue #5546)"
     assert "onCompositionUpdate" in src, "compare composer is missing onCompositionUpdate wiring"
 
 
@@ -161,9 +161,9 @@ def test_compare_composer_keydown_rearms_watchdog():
     """Same re-arm contract for the compare-mode composer."""
     src = SHARED_TSX.read_text(encoding = "utf-8")
     block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
-    assert "refreshStuckImeTimer" in block, (
-        "compare composer keydown gate must call refreshStuckImeTimer after re-pinning composingRef"
-    )
+    assert (
+        "refreshStuckImeTimer" in block
+    ), "compare composer keydown gate must call refreshStuckImeTimer after re-pinning composingRef"
 
 
 def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str) -> None:
@@ -176,15 +176,15 @@ def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str)
         "composingRef; candidate-confirming Enter must not submit"
     )
     guard_block = block[enter_idx:recovery_idx]
-    assert "preventDefault()" in guard_block, (
-        "Enter while composingRef is stuck must prevent the same key from falling through to submit"
-    )
-    assert refresh_call in guard_block, (
-        "Enter while composingRef is stuck must keep the watchdog armed"
-    )
-    assert "return;" in guard_block, (
-        "Enter while composingRef is stuck must not reach immediate recovery"
-    )
+    assert (
+        "preventDefault()" in guard_block
+    ), "Enter while composingRef is stuck must prevent the same key from falling through to submit"
+    assert (
+        refresh_call in guard_block
+    ), "Enter while composingRef is stuck must keep the watchdog armed"
+    assert (
+        "return;" in guard_block
+    ), "Enter while composingRef is stuck must not reach immediate recovery"
 
 
 def test_main_composer_stuck_enter_does_not_clear_before_submit():

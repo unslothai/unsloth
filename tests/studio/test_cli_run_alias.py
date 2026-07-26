@@ -39,9 +39,9 @@ def test_top_level_run_alias_registered():
         if is_run:
             found_decorator_call = True
             break
-    assert found_decorator_call, (
-        'Expected `app.command("run", ...)` registration in unsloth_cli/__init__.py'
-    )
+    assert (
+        found_decorator_call
+    ), 'Expected `app.command("run", ...)` registration in unsloth_cli/__init__.py'
 
 
 def test_studio_run_imported_for_alias():
@@ -58,6 +58,6 @@ def test_studio_run_imported_for_alias():
             if alias.name == "run":
                 has_import = True
                 break
-    assert has_import, (
-        "Expected `from unsloth_cli.commands.studio import run` in unsloth_cli/__init__.py"
-    )
+    assert (
+        has_import
+    ), "Expected `from unsloth_cli.commands.studio import run` in unsloth_cli/__init__.py"

@@ -84,6 +84,6 @@ def test_argparse_default_host_is_loopback():
     source = _RUN_PY.read_text(encoding = "utf-8")
     host_default = _parse_argparse_add_argument_default(source, "--host")
     assert host_default is not None, "Could not find add_argument('--host', ...) in run.py"
-    assert host_default == "127.0.0.1", (
-        f"run.py argparse --host default must be '127.0.0.1', got '{host_default}'"
-    )
+    assert (
+        host_default == "127.0.0.1"
+    ), f"run.py argparse --host default must be '127.0.0.1', got '{host_default}'"

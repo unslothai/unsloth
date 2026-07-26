@@ -70,9 +70,9 @@ def run_bash(
         timeout = timeout,
         env = run_env,
     )
-    assert result.returncode == 0, (
-        f"bash script failed (exit {result.returncode}):\n{result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"bash script failed (exit {result.returncode}):\n{result.stderr}"
     return result.stdout.strip()
 
 
@@ -632,13 +632,13 @@ class TestSourceCodePatterns:
         """git clone in source-build should use --branch via the clone args array."""
         content = SETUP_SH.read_text(encoding = "utf-8")
         assert "_CLONE_ARGS=(git clone --depth 1)" in content
-        assert '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content, (
-            "_CLONE_ARGS should be extended with --branch $_RESOLVED_SOURCE_REF"
-        )
+        assert (
+            '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
+        ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_SOURCE_REF"
         # --branch only when tag is not "latest".
-        assert '_RESOLVED_SOURCE_REF" != "latest"' in content, (
-            "Should guard against literal 'latest' tag"
-        )
+        assert (
+            '_RESOLVED_SOURCE_REF" != "latest"' in content
+        ), "Should guard against literal 'latest' tag"
 
     def test_setup_sh_source_build_uses_helper_latest_tag_only(self):
         """Shell source fallback should only use helper latest-tag resolution."""
@@ -719,9 +719,9 @@ class TestSourceCodePatterns:
         # Via NVCC_PREPEND_FLAGS (covers the configure-time probe too), not CMAKE_ARGS.
         assert "export NVCC_PREPEND_FLAGS=" in content
         cmake_args_lines = [line for line in content.splitlines() if "CMAKE_ARGS=" in line]
-        assert all("-allow-unsupported-compiler" not in line for line in cmake_args_lines), (
-            "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
-        )
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must stay out of CMAKE_ARGS (bash word-splitting safety)"
 
     def test_setup_ps1_exports_allow_unsupported_compiler(self):
         """Windows parity for PR #5826: CUDA toolkit whitelist lags MSVC. setup.ps1 sets
@@ -731,9 +731,9 @@ class TestSourceCodePatterns:
         # Via process env, not $CmakeArgs, so it reaches both the configure probe and `cmake --build`.
         assert "$env:NVCC_PREPEND_FLAGS" in content
         cmake_args_lines = [line for line in content.splitlines() if "$CmakeArgs +=" in line]
-        assert all("-allow-unsupported-compiler" not in line for line in cmake_args_lines), (
-            "flag must not be pushed into the $CmakeArgs array"
-        )
+        assert all(
+            "-allow-unsupported-compiler" not in line for line in cmake_args_lines
+        ), "flag must not be pushed into the $CmakeArgs array"
         # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The
         # branch also has an early GGML_CUDA=OFF (undetectable-arch CPU fallback,
         # #5854), so anchor on GGML_CUDA=ON and the final (no-GPU) GGML_CUDA=OFF.
@@ -754,12 +754,12 @@ class TestSourceCodePatterns:
             line for line in output.splitlines() if line.startswith("CPU_FALLBACK_CMAKE_ARGS=")
         )
         assert "-DGGML_METAL=OFF" in fallback_line
-        assert "@loader_path" not in fallback_line, (
-            "CPU fallback args should not contain RPATH flags"
-        )
-        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in fallback_line, (
-            "CPU fallback args should not contain RPATH build flag"
-        )
+        assert (
+            "@loader_path" not in fallback_line
+        ), "CPU fallback args should not contain RPATH flags"
+        assert (
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in fallback_line
+        ), "CPU fallback args should not contain RPATH build flag"
 
     def test_setup_sh_does_not_enable_metal_for_intel_macos(self):
         """Intel macOS should stay on the existing non-Metal path in this patch."""
@@ -1004,24 +1004,24 @@ class TestMacOSMetalBuildLogic:
         assert "FALLBACK_TRIGGERED" in output
         assert "BUILD_OK=true" in output
         assert "BUILD_DESC=building (CPU fallback)" in output
-        assert "TRY_METAL_CPU_FALLBACK=false" in output, (
-            "Fallback flag should be reset to false after configure fallback"
-        )
+        assert (
+            "TRY_METAL_CPU_FALLBACK=false" in output
+        ), "Fallback flag should be reset to false after configure fallback"
 
         # First cmake call has Metal ON, second has Metal OFF.
         calls = calls_file.read_text().splitlines()
         assert len(calls) >= 2, f"Expected >= 2 cmake calls, got {len(calls)}"
         assert "-DGGML_METAL=ON" in calls[0], f"First cmake call should have Metal ON: {calls[0]}"
-        assert "-DGGML_METAL=OFF" in calls[1], (
-            f"Second cmake call should have Metal OFF: {calls[1]}"
-        )
-        assert "-DGGML_METAL=ON" not in calls[1], (
-            f"Second cmake call should NOT have Metal ON: {calls[1]}"
-        )
+        assert (
+            "-DGGML_METAL=OFF" in calls[1]
+        ), f"Second cmake call should have Metal OFF: {calls[1]}"
+        assert (
+            "-DGGML_METAL=ON" not in calls[1]
+        ), f"Second cmake call should NOT have Metal ON: {calls[1]}"
         assert "@loader_path" not in calls[1], f"CPU fallback should not have RPATH: {calls[1]}"
-        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[1], (
-            f"CPU fallback should not have RPATH build flag: {calls[1]}"
-        )
+        assert (
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[1]
+        ), f"CPU fallback should not have RPATH build flag: {calls[1]}"
 
     def test_metal_build_failure_retries_cpu_fallback(self, tmp_path: Path):
         """When cmake --build fails on Metal, the fallback should re-configure and rebuild with CPU."""
@@ -1112,9 +1112,9 @@ class TestMacOSMetalBuildLogic:
         assert "BUILD_FALLBACK_TRIGGERED" in output
         assert "BUILD_OK=true" in output
         assert "BUILD_DESC=building (CPU fallback)" in output
-        assert "TRY_METAL_CPU_FALLBACK=false" in output, (
-            "Fallback flag should be reset to false after build fallback"
-        )
+        assert (
+            "TRY_METAL_CPU_FALLBACK=false" in output
+        ), "Fallback flag should be reset to false after build fallback"
 
         # configure (Metal ON), build (fails), re-configure (Metal OFF), rebuild.
         calls = calls_file.read_text().splitlines()
@@ -1124,10 +1124,10 @@ class TestMacOSMetalBuildLogic:
         assert "-DGGML_METAL=OFF" in calls[2]
         assert "-DGGML_METAL=ON" not in calls[2]
         assert "@loader_path" not in calls[2], f"CPU fallback should not have RPATH: {calls[2]}"
-        assert "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[2], (
-            f"CPU fallback should not have RPATH build flag: {calls[2]}"
-        )
-        assert "-DLLAMA_BUILD_TESTS=OFF" in calls[2], (
-            f"CPU fallback should preserve baseline flags: {calls[2]}"
-        )
+        assert (
+            "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON" not in calls[2]
+        ), f"CPU fallback should not have RPATH build flag: {calls[2]}"
+        assert (
+            "-DLLAMA_BUILD_TESTS=OFF" in calls[2]
+        ), f"CPU fallback should preserve baseline flags: {calls[2]}"
         assert "--build" in calls[3]

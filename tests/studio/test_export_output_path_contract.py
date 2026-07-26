@@ -40,9 +40,9 @@ def test_export_methods_return_three_tuple_annotation():
         assert isinstance(ret, ast.Subscript), f"{fn_name} return must be Tuple[...]"
         slc = ret.slice
         elts = slc.elts if isinstance(slc, ast.Tuple) else None
-        assert elts is not None and len(elts) == 3, (
-            f"{fn_name} return annotation must be a 3-tuple, got {ast.dump(ret)}"
-        )
+        assert (
+            elts is not None and len(elts) == 3
+        ), f"{fn_name} return annotation must be a 3-tuple, got {ast.dump(ret)}"
 
 
 def test_export_methods_return_three_element_tuples():
@@ -104,9 +104,9 @@ def test_gpu_save_method_bound_for_hub_only():
 
 def test_mlx_hub_only_uses_temp_directory():
     src = EXPORT.read_text(encoding = "utf-8")
-    assert src.count("tempfile.TemporaryDirectory") >= 3, (
-        "expected TemporaryDirectory in merged, base, and lora hub-push paths"
-    )
+    assert (
+        src.count("tempfile.TemporaryDirectory") >= 3
+    ), "expected TemporaryDirectory in merged, base, and lora hub-push paths"
     assert "import tempfile" in src.split("class ExportBackend")[0]
 
 

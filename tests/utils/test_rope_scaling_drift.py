@@ -209,9 +209,9 @@ def test_llama3_scaling_applied_to_inv_freq():
     vanilla = _vanilla_inv_freq()
 
     # Guard against a vacuous test: scaled inv_freq must differ from vanilla.
-    assert not torch.allclose(expected, vanilla, rtol = 1e-4), (
-        "test setup error: llama3-scaled inv_freq should differ from vanilla"
-    )
+    assert not torch.allclose(
+        expected, vanilla, rtol = 1e-4
+    ), "test setup error: llama3-scaled inv_freq should differ from vanilla"
     assert got is not None, (
         "_compute_config_rope_inv_freq returned None for a llama3 config; the "
         "config path is dropping config.rope_scaling, so long-context inference "
@@ -267,9 +267,9 @@ def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
 
     # llama3 model: keep native scaling, do not synthesize linear.
     scaling, native = _extended_rope_scaling(_make_config(LLAMA3_ROPE_SCALING), 2.0)
-    assert scaling is None and native == "llama3", (
-        "must keep native llama3 scaling instead of overwriting it with linear."
-    )
+    assert (
+        scaling is None and native == "llama3"
+    ), "must keep native llama3 scaling instead of overwriting it with linear."
 
     # yarn is not rebuildable by the patcher -> keep the safe linear fallback, not native.
     yarn = SimpleNamespace(rope_scaling = {"rope_type": "yarn", "factor": 2.0}, rope_theta = 500000.0)
@@ -366,9 +366,9 @@ def test_constructor_applies_llama3_scaling():
     rot = _unsloth_rotary(config)
     got = rot.inv_freq.float().cpu()
     expected = _reference_inv_freq(config, "llama3")
-    assert torch.allclose(got, expected, rtol = 1e-4, atol = 1e-6), (
-        "LlamaRotaryEmbedding built from a llama3 config produced unscaled inv_freq (issue #2405)."
-    )
+    assert torch.allclose(
+        got, expected, rtol = 1e-4, atol = 1e-6
+    ), "LlamaRotaryEmbedding built from a llama3 config produced unscaled inv_freq (issue #2405)."
 
 
 @requires_cuda
@@ -376,9 +376,9 @@ def test_constructor_unscaled_config_uses_vanilla_inv_freq():
     rot = _unsloth_rotary(_make_config(None))
     got = rot.inv_freq.float().cpu()
     vanilla = _vanilla_inv_freq()
-    assert torch.allclose(got, vanilla, rtol = 1e-4, atol = 1e-6), (
-        "LlamaRotaryEmbedding with no rope_scaling must use the vanilla inv_freq"
-    )
+    assert torch.allclose(
+        got, vanilla, rtol = 1e-4, atol = 1e-6
+    ), "LlamaRotaryEmbedding with no rope_scaling must use the vanilla inv_freq"
 
 
 @requires_cuda
@@ -477,9 +477,9 @@ def test_v5_blank_repair_roundtrip(build):
     assert snapshot, "rotary registers no buffers; nothing to guard"
 
     _blank_nonpersistent_buffers(rot)
-    assert any(not torch.equal(rot.get_buffer(name), snapshot[name]) for name in snapshot), (
-        "blanking changed no buffer; the round-trip would be vacuous"
-    )
+    assert any(
+        not torch.equal(rot.get_buffer(name), snapshot[name]) for name in snapshot
+    ), "blanking changed no buffer; the round-trip would be vacuous"
 
     wrapper = torch.nn.Module()
     wrapper.add_module("rotary_emb", rot)
