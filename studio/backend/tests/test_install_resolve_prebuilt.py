@@ -973,3 +973,85 @@ def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkey
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == UPSTREAM
     assert persist == "vulkan"
+
+
+# The gfx archs the fork's llama-prebuilt-manifest.json maps to a windows-rocm
+# bundle (gfx103X / gfx110X / gfx1150 / gfx1151 / gfx120X / gfx908 / gfx90a).
+# Auto-Vulkan must never steal a host one of these already covers.
+_FORK_WINDOWS_ROCM_GFX = (
+    "gfx908", "gfx90a",
+    "gfx1030", "gfx1031", "gfx1032", "gfx1034",
+    "gfx1100", "gfx1101", "gfx1102", "gfx1103",
+    "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+)
+
+
+def test_windows_hip_gfx_floor_covers_every_fork_windows_rocm_bundle():
+    # A gfx missing here routes to Vulkan and bypasses the fork manifest entirely,
+    # silently downgrading a hash-approved windows-rocm bundle to an unhashed
+    # upstream Vulkan build. Keep this in sync with the published manifest.
+    missing = [
+        gfx for gfx in _FORK_WINDOWS_ROCM_GFX if gfx not in ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS
+    ]
+    assert not missing, f"auto-Vulkan would steal fork windows-rocm archs: {missing}"
+
+
+@pytest.mark.parametrize("gfx", _FORK_WINDOWS_ROCM_GFX)
+def test_route_to_vulkan_prebuilt_keeps_every_fork_windows_rocm_arch(gfx, monkeypatch):
+    # No ambient opt-in: this asserts the AUTO path leaves covered archs alone.
+    monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert (repo, tag) == (FORK, "pin")
+    assert persist is None
+
+
+def test_llama_backend_hip_opts_out_of_auto_vulkan(monkeypatch):
+    # UNSLOTH_LLAMA_BACKEND names a backend, so hip must keep the HIP/fork path
+    # even on an arch the auto-fallback would otherwise route to Vulkan.
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+    host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert routed is host
+    assert repo == FORK
+    assert persist is None
+    assert ilp.force_vulkan_requested() is False
+
+
+def test_explicit_backend_beats_legacy_force_vulkan(monkeypatch):
+    # The specific variable wins: a stale UNSLOTH_FORCE_VULKAN must not overrule
+    # an explicit UNSLOTH_LLAMA_BACKEND=hip (rocm is the same backend).
+    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "rocm")
+    assert ilp.resolved_llama_backend() == "hip"
+    assert ilp.force_vulkan_requested() is False
+    host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False
+    )
+    assert repo == FORK
+    assert persist is None
+
+
+def test_unknown_llama_backend_value_falls_through_to_legacy_flag(monkeypatch):
+    # An unrecognised value is ignored (not an error), so the legacy flag and the
+    # auto-fallback both keep working exactly as they did without it.
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "banana")
+    assert ilp.resolved_llama_backend() is None
+    assert ilp.force_vulkan_requested() is False
+    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+    assert ilp.force_vulkan_requested() is True
+
+
+def test_llama_backend_flag_beats_conflicting_env(monkeypatch):
+    # --llama-backend is the caller's explicit request and outranks the env.
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
+    assert ilp.force_vulkan_requested("vulkan") is True
+    host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
+    assert repo == UPSTREAM
+    assert persist == "vulkan"

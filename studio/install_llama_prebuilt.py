@@ -64,13 +64,17 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 
-# ggml-org/llama.cpp release.yml windows-hip job GPU_TARGETS, plus gfx1034 and
-# gfx1103 which the fork windows-rocm gfx103X / gfx110X bundles cover (see the
-# gfx103X members in tests/studio/install/test_selection_logic.py). Cards below
-# this floor (e.g. gfx803 / RX 480) are invisible to the HIP prebuilt; Vulkan is
-# the practical llama-server backend on Windows for those hosts (#7357).
+# Every gfx a Windows AMD host can already be served: ggml-org/llama.cpp
+# release.yml windows-hip GPU_TARGETS, plus the archs the fork's windows-rocm
+# bundles cover (gfx103X adds gfx1034, gfx110X adds gfx1103, and gfx908 / gfx90a
+# ship as their own bundles). Must stay a superset of the manifest's windows-rocm
+# mapped_targets, else auto-Vulkan would steal a host the fork already builds for.
+# Cards below this floor (e.g. gfx803 / RX 480) are invisible to the HIP prebuilt;
+# Vulkan is the practical llama-server backend on Windows for those hosts (#7357).
 WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
     {
+        "gfx908",
+        "gfx90a",
         "gfx1030",
         "gfx1031",
         "gfx1032",
@@ -6058,6 +6062,12 @@ def llama_backend_from_env() -> str | None:
     return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_BACKEND"))
 
 
+def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
+    """The explicit backend for this run: --llama-backend, else the env var.
+    None when neither is set or the value is not a backend name we know."""
+    return _normalized_llama_backend(llama_backend) or llama_backend_from_env()
+
+
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
     """Whether this run should install the upstream Vulkan llama.cpp prebuilt.
 
@@ -6065,9 +6075,11 @@ def force_vulkan_requested(llama_backend: str | None = None) -> bool:
     or ``--llama-backend vulkan``. Scoped to the llama.cpp backend; the torch/training
     stack installs separately and still sees the real GPU.
     """
-    backend = _normalized_llama_backend(llama_backend) or llama_backend_from_env()
-    if backend == "vulkan":
-        return True
+    backend = resolved_llama_backend(llama_backend)
+    if backend is not None:
+        # An explicit backend is authoritative, so UNSLOTH_LLAMA_BACKEND=hip is a
+        # real opt-out rather than being overruled by a stale UNSLOTH_FORCE_VULKAN.
+        return backend == "vulkan"
     return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
         "1",
         "true",
@@ -6168,7 +6180,10 @@ def _route_to_vulkan_prebuilt(
     value to persist in the install marker when updates must re-assert Vulkan.
     """
     forced = force_vulkan_requested(llama_backend)
-    auto_no_hip = _should_auto_vulkan_for_amd_windows(host)
+    # Only auto-fall back when the run named no backend: an explicit hip/cpu is
+    # the opt-out for a host that would rather keep (or debug) its HIP bundle.
+    explicit_backend = resolved_llama_backend(llama_backend)
+    auto_no_hip = explicit_backend is None and _should_auto_vulkan_for_amd_windows(host)
     # Gate auto-routing on no PHYSICAL NVIDIA, not merely no usable one: a mixed
     # NVIDIA+Intel host that hides NVIDIA with CUDA_VISIBLE_DEVICES=""/-1 keeps
     # has_physical_nvidia=True while has_usable_nvidia goes False. Vulkan ignores
