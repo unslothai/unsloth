@@ -33,6 +33,7 @@ _RUNTIME_STORE = _FRONTEND_SRC / "features/chat/stores/chat-runtime-store.ts"
 _RUNTIME_HOOK = _FRONTEND_SRC / "features/chat/hooks/use-chat-model-runtime.ts"
 _HUB_IDENTITY = _FRONTEND_SRC / "features/hub/lib/model-identity.ts"
 _MODEL_IDENTITY = _FRONTEND_SRC / "features/model-picker/model-config/model-identity.ts"
+_APPLY_CONFIG = _FRONTEND_SRC / "features/model-picker/model-config/apply-per-model-config.ts"
 
 
 def _require_node():
@@ -328,3 +329,146 @@ def test_staged_load_config_forwards_the_saved_namespace():
     ):
         source = (_FRONTEND_SRC / relative).read_text()
         assert "selectedGpuIndexKind," in source, relative
+
+
+def test_cold_cache_resave_keeps_the_stored_gpu_namespace(tmp_path):
+    """Saving before /api/system resolves must not untag a Vulkan pick.
+
+    The settings snapshot reads the namespace from the shared device cache, so
+    a save taken while that cache is still cold carries none. Writing the pick
+    back untagged makes the next reconcile read it as a legacy physical pick and
+    discard it on the very Vulkan host it was saved from.
+    """
+    snapshot = _extract_function(_APPLY_CONFIG.read_text(), "currentRuntimePerModelConfig")
+    assert "cachedPinnableGpuIndexKind" in snapshot, "extracted the wrong function"
+    reconcile = _extract_function(_RUNTIME_STORE.read_text(), "reconcilePersistedGpuIds")
+    script = (
+        _STORAGE_SHIM
+        + """
+type GpuIndexKind = "physical" | "vulkan";
+let CURRENT_KIND: GpuIndexKind | null | undefined;
+let PINNABLE: number[] | null;
+function cachedPinnableGpuIndexKind() { return CURRENT_KIND; }
+function cachedPinnableGpuIndices() { return PINNABLE; }
+
+// Runtime store stub: only the fields the snapshot reads.
+const STATE: any = {
+  customContextLength: 8192,
+  params: { maxSeqLength: 4096 },
+  kvCacheDtype: "q8_0",
+  speculativeType: null,
+  specDraftNMax: null,
+  tensorParallel: false,
+  chatTemplateOverride: null,
+  gpuMemoryMode: "manual",
+  gpuLayers: 20,
+  nCpuMoe: 0,
+  selectedGpuIds: [0, 1],
+  ggufMemoryMode: null,
+};
+const useChatRuntimeStore = { getState: () => STATE };
+function cleanTemplate(v: string | null | undefined): string | null {
+  return v?.trim() ? v : null;
+}
+function normalizeSpeculativeType(v: any) { return v ?? null; }
+
+const mod = await import(%(config)s);
+const identity = await import(%(identity)s);
+const { normalizeMaxSeqLength } = mod;
+
+%(snapshot)s
+
+%(reconcile)s
+
+const MODEL = "unsloth/model-GGUF";
+const VARIANT = "Q4_K_M";
+const KEY = identity.modelStorageKey(MODEL, VARIANT);
+const readEntry = () =>
+  JSON.parse(localStorage.getItem("unsloth_model_configs") ?? "{}")[KEY] ?? null;
+
+// Session 1: the cache is warm, the picker is usable, the pick is tagged.
+CURRENT_KIND = "vulkan";
+PINNABLE = [0, 1];
+mod.savePerModelConfig(MODEL, VARIANT, currentRuntimePerModelConfig());
+const firstKind = readEntry()?.selectedGpuIndexKind ?? null;
+
+// Session 2: a fresh page load. The pick is restored while /api/system is
+// still in flight (reconcile keeps it, it cannot validate yet), then the user
+// edits an unrelated field and saves again.
+CURRENT_KIND = undefined;
+PINNABLE = null;
+STATE.customContextLength = 16384;
+const snapshotKindIsUndefined =
+  currentRuntimePerModelConfig().selectedGpuIndexKind === undefined;
+mod.savePerModelConfig(MODEL, VARIANT, currentRuntimePerModelConfig());
+const entry = readEntry();
+
+// The cache resolves: still the same Vulkan host.
+CURRENT_KIND = "vulkan";
+PINNABLE = [0, 1];
+const { config: reread } = mod.resolveInitialConfig(MODEL, VARIANT);
+const restored = reconcilePersistedGpuIds(
+  reread.selectedGpuIds,
+  reread.selectedGpuIndexKind,
+);
+
+console.log("RESULT " + JSON.stringify({
+  firstKind,
+  snapshotKindIsUndefined,
+  storedKind: entry?.selectedGpuIndexKind ?? null,
+  storedIds: entry?.selectedGpuIds ?? null,
+  storedContext: entry?.customContextLength ?? null,
+  restored,
+}));
+"""
+        % {
+            "config": json.dumps(_PER_MODEL_CONFIG.as_uri()),
+            "identity": json.dumps(_MODEL_IDENTITY.as_uri()),
+            "snapshot": snapshot,
+            "reconcile": reconcile,
+        }
+    )
+    result = _run(tmp_path, script)
+    assert result["firstKind"] == "vulkan"
+    # The snapshot itself still cannot know the namespace; that is the input.
+    assert result["snapshotKindIsUndefined"] is True
+    # The unrelated edit is saved, and the namespace already on record survives.
+    assert result["storedContext"] == 16384
+    assert result["storedIds"] == [0, 1]
+    assert result["storedKind"] == "vulkan"
+    # So the pick is still usable on the host it was made on.
+    assert result["restored"] == [0, 1]
+
+
+def test_staged_diffusion_name_check_matches_the_backend(tmp_path):
+    """The staged config page must classify DiffusionGemma like /validate does.
+
+    ``_classify_diffusion_gguf`` has no header to read before the download, so
+    it strips non-alphanumerics from the identity and looks for the family name.
+    The frontend gates the Host Memory control on the same rule; if the two
+    disagree the UI offers a mode the load then rejects with a 400.
+    """
+    identities = [
+        "unsloth/DiffusionGemma-2B-GGUF",
+        "unsloth/diffusion_gemma-2b-GGUF",
+        "/models/DiffusionGemma.Q4_K_M.gguf",
+        "unsloth/gemma-3-4b-it-GGUF",
+        "unsloth/Qwen3-8B-GGUF",
+        "",
+    ]
+    script = """
+const identity = await import(%(identity)s);
+const out: Record<string, boolean> = {};
+for (const name of %(names)s) {
+  out[name] = identity.looksLikeDiffusionGemma(name);
+}
+console.log("RESULT " + JSON.stringify(out));
+""" % {
+        "identity": json.dumps(_MODEL_IDENTITY.as_uri()),
+        "names": json.dumps(identities),
+    }
+    result = _run(tmp_path, script)
+    for name in identities:
+        # The backend rule, transcribed from routes/inference.py.
+        expected = "diffusiongemma" in re.sub(r"[^a-z0-9]+", "", name.lower())
+        assert result[name] is expected, name

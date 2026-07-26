@@ -609,3 +609,45 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_diffusion_gates_cover_the_staged_load_flow():
+    """Every control the diffusion runner rejects must be hidden before the load.
+
+    ``_reject_diffusion_memory_mode`` 400s an explicit gguf_memory_mode for a
+    DiffusionGemma GGUF, and it classifies a not-yet-downloaded repo from its
+    name alone. Gating the Host Memory select on the LOADED model only left the
+    staged "Load model" flow offering a mode the load then rejects.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "looksLikeDiffusionGemma(target.id)" in page
+    assert "isDiffusion={isDiffusionModel}" in page
+    assert "isDiffusion={isActiveModel && loadedIsDiffusion}" not in page
+
+    identity = _read("features/model-picker/model-config/model-identity.ts")
+    assert "export function looksLikeDiffusionGemma(" in identity
+    # Same normalization as _classify_diffusion_gguf in routes/inference.py.
+    assert 'replace(/[^a-z0-9]+/g, "")' in identity
+    assert '"diffusiongemma"' in identity
+
+
+def test_gpu_picker_hidden_when_its_ordinals_mean_other_devices():
+    """A diffusion GGUF resolves gpu_ids as CUDA physical ids even on a Vulkan
+    build (_resolve_gguf_gpu_ids_for_request sets ids_are_vulkan_ordinals to
+    False for it), while /api/system still advertises ggml Vulkan ordinals. The
+    picker must not offer indices that would pin a different card."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert 'const gpuIdsMeanOtherDevices = isDiffusion && gpuIndexKind === "vulkan"' in page
+    assert "!gpuIdsMeanOtherDevices &&" in page
+
+
+def test_cold_device_cache_never_untags_a_saved_gpu_pick():
+    """The settings snapshot cannot know the namespace before /api/system
+    resolves, so the storage layer keeps the namespace already on record rather
+    than writing the pick back untagged (which re-reads as a legacy physical
+    pick and is discarded on a Vulkan host)."""
+    config = _read("features/model-picker/model-config/per-model-config.ts")
+    assert "function keepStoredGpuIndexKind(" in config
+    assert "keepStoredGpuIndexKind(" in config.split("export function savePerModelConfig")[1]
+    assert "if (config.selectedGpuIndexKind !== undefined) {" in config
+    assert "selectedGpuIndexKind: stored.selectedGpuIndexKind" in config

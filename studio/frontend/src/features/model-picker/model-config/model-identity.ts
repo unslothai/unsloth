@@ -13,6 +13,22 @@ export {
 
 const MODEL_STORAGE_KEY_PREFIX = "v2:";
 
+// Mirror the backend's pre-download classifier (_classify_diffusion_gguf in
+// routes/inference.py): with no header to read it strips every non
+// alphanumeric character and looks for the DiffusionGemma family name. The
+// staged "Load model" flow has the same information, so it must reach the same
+// verdict as the /validate and /load that follow it.
+export function looksLikeDiffusionGemma(
+  ...parts: (string | null | undefined)[]
+): boolean {
+  return parts.some((part) =>
+    (part ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "")
+      .includes("diffusiongemma"),
+  );
+}
+
 type ParsedModelStorageKey = {
   modelId: string;
   ggufVariant: string;

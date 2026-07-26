@@ -96,6 +96,7 @@ def _resolve(
     vulkan,
     device,
     resolved = None,
+    diffusion = False,
 ):
     """Drive _resolve_gguf_gpu_ids_for_request with the host fully spoofed."""
     backend = SimpleNamespace(
@@ -103,7 +104,7 @@ def _resolve(
         _backend_lacks_gpu_lib = lambda *a, **k: LlamaCppBackend._backend_lacks_gpu_lib(binary),
     )
     with (
-        patch.object(route, "_classify_diffusion_gguf", return_value = False),
+        patch.object(route, "_classify_diffusion_gguf", return_value = diffusion),
         patch.object(route, "get_llama_cpp_backend", return_value = backend),
         patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
         patch.object(
@@ -364,3 +365,47 @@ def test_load_and_status_schemas_accept_pre_feature_payloads():
     assert status.gguf_memory_mode is None
     assert status.requested_gpu_ids is None
     assert status.gpu_ids is None
+
+
+def test_diffusion_on_a_vulkan_bundle_resolves_physical_ids(tmp_path, route, main_mod):
+    """A diffusion GGUF opts out of the Vulkan ordinal namespace at /load.
+
+    DiffusionGemma never runs through llama.cpp, so its gpu_ids stay CUDA
+    physical ids even when the installed bundle is Vulkan. /api/system has no
+    model context and still advertises the ggml Vulkan ordinals, so the two
+    namespaces collide on the same integers -- which is why the config page
+    hides the GPU picker for this combination (model-config-page.tsx).
+    """
+    binary = _make_bundle(tmp_path, "linux", ("cpu", "vulkan"))
+    probed = [
+        {"index": 0, "index_kind": "vulkan", "name": "V0"},
+        {"index": 1, "index_kind": "vulkan", "name": "V1"},
+    ]
+
+    with patch.object(sys, "platform", "linux"):
+        info = _system_gpu_ids_supported(
+            main_mod, binary = binary, vulkan = True, device = "CUDA", vulkan_devices = probed
+        )
+        # The picker is offered ggml Vulkan ordinals, with no model in the loop.
+        assert info["gguf_gpu_ids_supported"] is True
+        assert [d["index_kind"] for d in info["devices"]] == ["vulkan", "vulkan"]
+
+        _ids, normal_vulkan = _resolve(
+            route, [1], binary = binary, vulkan = True, device = "CUDA", diffusion = False
+        )
+        assert normal_vulkan is True
+
+        ids, diffusion_vulkan = _resolve(
+            route, [1], binary = binary, vulkan = True, device = "CUDA", diffusion = True
+        )
+        assert ids == [1]
+        assert diffusion_vulkan is False, "diffusion ids must resolve as CUDA physical ids"
+
+        # And the CUDA requirement still stands for every other host.
+        for device in ("CPU", "XPU"):
+            with pytest.raises(HTTPException) as exc:
+                _resolve(
+                    route, [1], binary = binary, vulkan = True, device = device, diffusion = True
+                )
+            assert exc.value.status_code == 400
+            assert "diffusiongemma" in exc.value.detail.lower()

@@ -646,6 +646,44 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
   );
 }
 
+function sameGpuIds(a?: number[] | null, b?: number[] | null): boolean {
+  if (a == null || b == null) {
+    return a == null && b == null;
+  }
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+// A snapshot taken while the /api/system cache is still cold carries no GPU
+// index namespace, and an untagged entry re-reads as a legacy physical pick --
+// which discards the same ids on a Vulkan host. The pick can only have come
+// from the entry already on record, so keep the namespace that entry carries
+// instead of writing the pick back untagged.
+function keepStoredGpuIndexKind(
+  map: StoredMap,
+  modelId: string,
+  ggufVariant: string | null | undefined,
+  config: PerModelConfig,
+): PerModelConfig {
+  if (config.selectedGpuIds == null) {
+    return config;
+  }
+  if (config.selectedGpuIndexKind !== undefined) {
+    return config;
+  }
+  const key = findConfigKeyForModelVariant(map, modelId, ggufVariant);
+  if (!key || storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
+    return config;
+  }
+  const stored = normalize(map[key]);
+  if (stored.selectedGpuIndexKind === undefined) {
+    return config;
+  }
+  if (!sameGpuIds(stored.selectedGpuIds, config.selectedGpuIds)) {
+    return config;
+  }
+  return { ...config, selectedGpuIndexKind: stored.selectedGpuIndexKind };
+}
+
 export function savePerModelConfig(
   modelId: string,
   ggufVariant: string | null | undefined,
@@ -657,8 +695,13 @@ export function savePerModelConfig(
   ) {
     return false;
   }
-  const normalized = normalize(config);
   const map = readMap();
+  const normalized = keepStoredGpuIndexKind(
+    map,
+    modelId,
+    ggufVariant,
+    normalize(config),
+  );
   if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
     return false;
   }
