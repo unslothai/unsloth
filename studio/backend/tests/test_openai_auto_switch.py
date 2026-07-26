@@ -3031,9 +3031,7 @@ def test_chat_count_tokens_returns_input_tokens(monkeypatch):
         model = "org/A-GGUF",
         messages = [ChatMessage(role = "user", content = "hello")],
     )
-    response = asyncio.run(
-        inference_route.chat_count_tokens(payload, object(), "tester")
-    )
+    response = asyncio.run(inference_route.chat_count_tokens(payload, object(), "tester"))
     import json
 
     assert json.loads(response.body) == {"input_tokens": 42}
