@@ -411,13 +411,14 @@ class JobManager:
                 return {"error": "artifact path missing"}
             return None
 
-        return self.get_dataset_from_artifact(
-            artifact_path, limit = limit, offset = offset
-        )
+        return self.get_dataset_from_artifact(artifact_path, limit = limit, offset = offset)
 
     @staticmethod
     def get_dataset_from_artifact(
-        artifact_path: str, *, limit: int, offset: int = 0
+        artifact_path: str,
+        *,
+        limit: int,
+        offset: int = 0,
     ) -> dict[str, Any]:
         """Load a durable dataset page from a server-owned recipe artifact."""
         try:

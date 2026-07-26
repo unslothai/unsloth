@@ -145,9 +145,7 @@ def get_persisted_execution_dataset(
     current_subject: str = Depends(get_current_subject),
 ):
     try:
-        execution = user_assets_db.get_recipe_execution(
-            current_subject, recipe_id, execution_id
-        )
+        execution = user_assets_db.get_recipe_execution(current_subject, recipe_id, execution_id)
     except UserAssetValidationError as error:
         raise_validation(error)
     if execution is None:
@@ -155,9 +153,7 @@ def get_persisted_execution_dataset(
     artifact_path = execution.get("artifact_path")
     if not isinstance(artifact_path, str) or not artifact_path:
         raise_not_found()
-    result = JobManager.get_dataset_from_artifact(
-        artifact_path, limit = limit, offset = offset
-    )
+    result = JobManager.get_dataset_from_artifact(artifact_path, limit = limit, offset = offset)
     if "error" in result:
         raise_not_found()
     return {**result, "limit": limit, "offset": offset}
