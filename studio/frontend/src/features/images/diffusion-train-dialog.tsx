@@ -344,7 +344,7 @@ export function DiffusionTrainDialog({
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-ui-11 text-muted-foreground">
                   10-50 images work well. Optional captions: a .txt per image (same
                   filename) or a metadata.jsonl; without them the trigger prompt below
                   captions every image. You can upload more into the same name later.
@@ -352,7 +352,7 @@ export function DiffusionTrainDialog({
               </div>
             )}
             {selectedDataset && selectedDataset.caption_count === 0 && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-ui-11 text-muted-foreground">
                 No caption files in this dataset - the trigger prompt below will be used
                 as the caption for every image.
               </p>
@@ -480,7 +480,7 @@ export function DiffusionTrainDialog({
                   : status.message}
                 {status.loss != null && !completed && <> · loss {status.loss.toFixed(4)}</>}
                 {status.lora_path && (
-                  <div className="mt-1 break-all text-[11px]">Saved: {status.lora_path}</div>
+                  <div className="mt-1 break-all text-ui-11">Saved: {status.lora_path}</div>
                 )}
               </div>
             </div>

@@ -125,7 +125,7 @@ function LabelTile({
               type="button"
               onClick={remove}
               disabled={deleting}
-              className="absolute right-1 top-1 rounded-md bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
+              className="absolute right-1 top-1 rounded-md bg-background/80 px-1.5 py-0.5 text-ui-11 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100 focus:opacity-100"
             >
               {deleting ? "..." : "Remove"}
             </button>
@@ -140,10 +140,10 @@ function LabelTile({
         rows={2}
         spellCheck={false}
         placeholder="Describe this image..."
-        className="min-h-[3rem] resize-none text-[11px]"
+        className="min-h-[3rem] resize-none text-ui-11"
         aria-label={`Caption for ${record.filename}`}
       />
-      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+      <div className="flex items-center justify-between text-ui-10 text-muted-foreground">
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <span className="truncate">{record.filename}</span>
@@ -214,7 +214,7 @@ export function DatasetLabelingGrid({
   );
 
   if (error) {
-    return <p className="text-[11px] text-destructive">{error}</p>;
+    return <p className="text-ui-11 text-destructive">{error}</p>;
   }
   if (records === null) {
     return (
@@ -224,7 +224,7 @@ export function DatasetLabelingGrid({
     );
   }
   if (records.length === 0) {
-    return <p className="text-[11px] text-muted-foreground">This dataset has no images yet.</p>;
+    return <p className="text-ui-11 text-muted-foreground">This dataset has no images yet.</p>;
   }
 
   const uncaptioned = records.filter((r) => !r.caption || r.caption.trim() === "").length;
@@ -236,7 +236,7 @@ export function DatasetLabelingGrid({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2 text-ui-11 text-muted-foreground">
         <span className="min-w-0 truncate">
           {total} image{total === 1 ? "" : "s"}
           {uncaptioned > 0 ? ` · ${uncaptioned} without a caption` : " · all captioned"}

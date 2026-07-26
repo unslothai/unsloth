@@ -910,7 +910,7 @@ export function DiffusionTrainPanel({
               <SelectItem value="linear">Linear decay</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-[11px] leading-snug text-muted-foreground">
+          <p className="text-ui-11 leading-snug text-muted-foreground">
             Constant is fine for most runs.
           </p>
         </div>
@@ -933,7 +933,7 @@ export function DiffusionTrainPanel({
               <SelectItem value="off">Off (faster steps)</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-[11px] leading-snug text-muted-foreground">
+          <p className="text-ui-11 leading-snug text-muted-foreground">
             Less VRAM, slightly slower steps.
           </p>
         </div>
@@ -964,7 +964,7 @@ export function DiffusionTrainPanel({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] leading-snug text-muted-foreground">
+            <p className="text-ui-11 leading-snug text-muted-foreground">
               {familyUntrainable ? (
                 // The reason itself (the backend's bf16-preflight text) already shows in
                 // the family picker's vram_note line above.
@@ -995,7 +995,7 @@ export function DiffusionTrainPanel({
                 <SelectItem value="no">fp32 (no mixed)</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-[11px] leading-snug text-muted-foreground">
+            <p className="text-ui-11 leading-snug text-muted-foreground">
               bf16 is right for modern GPUs.
             </p>
           </div>
@@ -1018,7 +1018,7 @@ export function DiffusionTrainPanel({
                 <SelectItem value="off">Off</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-[11px] leading-snug text-muted-foreground">
+            <p className="text-ui-11 leading-snug text-muted-foreground">
               Slower first step, faster after.
             </p>
           </div>
@@ -1036,7 +1036,7 @@ export function DiffusionTrainPanel({
         <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7">
           <div>
             <h2 className="text-base font-semibold">Train a LoRA</h2>
-            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+            <p className="mt-1 text-ui-11 leading-snug text-muted-foreground">
               Teach a model a style or subject from your own images.
             </p>
           </div>
@@ -1057,7 +1057,7 @@ export function DiffusionTrainPanel({
               </SelectContent>
             </Select>
             {family?.vram_note && (
-              <p className="text-[11px] leading-snug text-muted-foreground">{family.vram_note}</p>
+              <p className="text-ui-11 leading-snug text-muted-foreground">{family.vram_note}</p>
             )}
           </div>
 
@@ -1127,7 +1127,7 @@ export function DiffusionTrainPanel({
               </SelectContent>
             </Select>
             {importingId && (
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-ui-11 text-muted-foreground">
                 Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
               </p>
             )}
@@ -1170,7 +1170,7 @@ export function DiffusionTrainPanel({
                   {/* Count and Upload appear only once files are picked. */}
                   {pickedFileCount > 0 && (
                     <>
-                      <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                      <span className="min-w-0 flex-1 truncate text-ui-11 text-muted-foreground">
                         {pickedFileCount} file{pickedFileCount === 1 ? "" : "s"} selected
                       </span>
                       <Button
@@ -1186,7 +1186,7 @@ export function DiffusionTrainPanel({
                     </>
                   )}
                 </div>
-                <p className="text-[11px] leading-snug text-muted-foreground">
+                <p className="text-ui-11 leading-snug text-muted-foreground">
                   10-50 images is plenty. Captions are optional.
                 </p>
               </div>
@@ -1214,7 +1214,7 @@ export function DiffusionTrainPanel({
                     />
                   )}
                   {selectedDataset.caption_count === 0 && !gridOpen && (
-                    <p className="text-[11px] leading-snug text-muted-foreground">
+                    <p className="text-ui-11 leading-snug text-muted-foreground">
                       No captions yet, so the trigger prompt describes every image.
                     </p>
                   )}
@@ -1232,7 +1232,7 @@ export function DiffusionTrainPanel({
           {/* Trigger + adapter name (trigger first: it describes the dataset, the name
               just labels the output) */}
           {fullyCaptioned ? (
-            <p className="text-[11px] leading-snug text-muted-foreground">
+            <p className="text-ui-11 leading-snug text-muted-foreground">
               All {selectedDataset?.image_count} images have captions, so no trigger prompt
               is needed.
             </p>
@@ -1245,7 +1245,7 @@ export function DiffusionTrainPanel({
                 onChange={(e) => setInstancePrompt(e.target.value)}
                 className="h-8 text-xs"
               />
-              <p className="text-[11px] leading-snug text-muted-foreground">
+              <p className="text-ui-11 leading-snug text-muted-foreground">
                 The words you will use later to get this style back.
               </p>
             </div>
@@ -1259,7 +1259,7 @@ export function DiffusionTrainPanel({
               onChange={(e) => setOutputDir(e.target.value)}
               className="h-8 text-xs"
             />
-            <p className="text-[11px] leading-snug text-muted-foreground">
+            <p className="text-ui-11 leading-snug text-muted-foreground">
               Its name in the Create tab&apos;s picker.
             </p>
           </div>
@@ -1323,7 +1323,7 @@ export function DiffusionTrainPanel({
                   }
                 />
               </div>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-ui-11 text-muted-foreground">
                 {viewRun.family ? `${viewRun.family} - ` : ""}
                 {viewRun.base_model || ""}
                 {viewRun.ended_at
@@ -1367,7 +1367,7 @@ export function DiffusionTrainPanel({
                 </span>
               </div>
               {trainingSettings}
-              <p className="text-[11px] leading-snug text-muted-foreground">
+              <p className="text-ui-11 leading-snug text-muted-foreground">
                 Progress and charts take over here once training starts.
               </p>
             </div>
@@ -1394,14 +1394,14 @@ export function DiffusionTrainPanel({
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
                         {r.saved && (
-                          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] text-primary">
+                          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-ui-10 text-primary">
                             adapter saved
                           </span>
                         )}
-                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <span className="text-ui-10 uppercase tracking-wide text-muted-foreground">
                           {r.status}
                         </span>
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-ui-10 text-muted-foreground">
                           {r.ended_at ? new Date(r.ended_at * 1000).toLocaleString() : ""}
                         </span>
                       </span>
@@ -1457,7 +1457,7 @@ export function DiffusionTrainPanel({
                 />
               </div>
               {status?.message && (
-                <p className="text-[11px] text-muted-foreground">{status.message}</p>
+                <p className="text-ui-11 text-muted-foreground">{status.message}</p>
               )}
               {running && (
                 <Button
@@ -1493,7 +1493,7 @@ export function DiffusionTrainPanel({
                 <span className="text-sm font-semibold">
                   {completed ? "Adapter ready" : "Partial adapter saved"}
                 </span>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-ui-11 text-muted-foreground">
                   {completed
                     ? "Trained"
                     : "Stopped early; the adapter as of the last finished step was saved"}
@@ -1556,7 +1556,7 @@ export function DiffusionTrainPanel({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className={cn("rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5")}>
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-ui-10 uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-sm font-medium tabular-nums">{value}</div>
     </div>
   );

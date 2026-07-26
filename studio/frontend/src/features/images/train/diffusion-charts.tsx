@@ -125,7 +125,7 @@ export function DiffusionCharts({
           showAvgLine={true}
           scale="linear"
         />
-        <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+        <p className="px-1 text-ui-11 leading-snug text-muted-foreground">
           Per-step loss is noisy by design: every step samples a random noise level. Watch
           the smoothed line for the trend, not the raw jitter.
         </p>

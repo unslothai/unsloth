@@ -103,7 +103,7 @@ export function ExampleDatasetCards({
 
   return (
     <div className="grid gap-2">
-      <span className="text-[11px] font-medium text-muted-foreground">
+      <span className="text-ui-11 font-medium text-muted-foreground">
         Or start from an example dataset
       </span>
       <div className="grid gap-2">
@@ -124,14 +124,14 @@ export function ExampleDatasetCards({
               </Tooltip>
               <Tooltip>
                 <TooltipTrigger asChild={true}>
-                  <span className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-[10px] font-normal text-secondary-foreground">
+                  <span className="max-w-[110px] shrink truncate rounded-full bg-secondary px-2 py-0.5 text-ui-10 font-normal text-secondary-foreground">
                     {ex.license}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent>{ex.license}</TooltipContent>
               </Tooltip>
             </div>
-            <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+            <p className="line-clamp-2 text-ui-11 leading-snug text-muted-foreground">
               {ex.description}
             </p>
             {/* The card's action, so: bottom right, on the thumbnail row. */}

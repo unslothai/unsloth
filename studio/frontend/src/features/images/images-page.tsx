@@ -512,7 +512,7 @@ function ResolvedBadge({
   const resolved = status?.resolved?.[controlKey];
   if (!resolved || resolved.source !== "auto") return null;
   const badge = (
-    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
       Auto: {formatResolvedValue(controlKey, resolved.value)}
     </span>
   );
@@ -567,7 +567,7 @@ function AdvancedSelect({
           </SelectContent>
         </Select>
       </div>
-      {desc && <p className="text-[11px] leading-snug text-muted-foreground/70">{desc}</p>}
+      {desc && <p className="text-ui-11 leading-snug text-muted-foreground/70">{desc}</p>}
     </div>
   );
 }
@@ -949,7 +949,7 @@ function RecipePopover({
       <PopoverContent align="end" side="top" className="w-80 p-0">
         <div className="border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
-          <p className="text-[11px] text-muted-foreground">{formatTimestamp(image.created_at)}</p>
+          <p className="text-ui-11 text-muted-foreground">{formatTimestamp(image.created_at)}</p>
         </div>
         <div className="flex flex-col gap-2 px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={image.prompt} wrap />

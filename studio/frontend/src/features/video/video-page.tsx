@@ -344,7 +344,7 @@ function ResolvedBadge({
   const resolved = status?.resolved?.[controlKey];
   if (!resolved || resolved.source !== "auto") return null;
   const badge = (
-    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
+    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
       Auto: {formatResolvedValue(resolved.value)}
     </span>
   );
@@ -435,7 +435,7 @@ function RecipePopover({
       <PopoverContent align="end" side="top" className="w-80 p-0">
         <div className="border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
-          <p className="text-[11px] text-muted-foreground">{formatTimestamp(video.created_at)}</p>
+          <p className="text-ui-11 text-muted-foreground">{formatTimestamp(video.created_at)}</p>
         </div>
         <div className="flex flex-col gap-2 px-4 py-3 text-xs">
           <RecipeRow label="Prompt" value={video.prompt} wrap />
@@ -1401,7 +1401,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           {/* Loaded-model status line: family / kind / offload / speed, like the images page
               surfaces on load. Hidden until a model is resident. */}
           {status?.loaded && (
-            <div className="hidden items-center gap-3 text-[11px] md:flex">
+            <div className="hidden items-center gap-3 text-ui-11 md:flex">
               {status.family && <StatusChip label="Family" value={status.family} />}
               {status.model_kind && <StatusChip label="Kind" value={status.model_kind} />}
               {status.offload_policy && (
@@ -1584,7 +1584,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                   className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
                 />
                 {selected.has_audio && (
-                  <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-[11px] font-medium shadow-lg ring-1 ring-border backdrop-blur">
+                  <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
                     <HugeiconsIcon icon={VolumeHighIcon} className="size-3.5" />
                     Audio
                   </div>
@@ -1717,7 +1717,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                   {/* A terse caption strip so cards read at a glance. Left/bottom
                       padding clears the rounded-lg corner and the selection border
                       so the leading "5.0s" is never clipped by the curve. */}
-                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-[9px] font-medium leading-none text-white">
+                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
                     {clipMeta(video)}
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
@@ -1750,7 +1750,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                       className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-[10px] text-muted-foreground ring-1 ring-border transition-colors hover:text-destructive hover:ring-destructive/40"
                     >
                       <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                      <span className="text-[9px] font-medium">Clear all</span>
+                      <span className="text-ui-9 font-medium">Clear all</span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>Clear all videos</TooltipContent>

@@ -112,7 +112,7 @@ export function DatasetShowcase({
           className="hover-scrollbar flex w-full items-center gap-1.5 overflow-x-auto rounded-lg border border-border bg-muted/20 p-1.5 text-left transition-colors hover:border-foreground/20"
         >
           {names === null ? (
-            <div className="flex h-14 items-center gap-2 px-2 text-[11px] text-muted-foreground">
+            <div className="flex h-14 items-center gap-2 px-2 text-ui-11 text-muted-foreground">
               <Spinner className="size-3.5" /> Loading preview...
             </div>
           ) : (
@@ -123,7 +123,7 @@ export function DatasetShowcase({
               {remaining > 0 && (
                 <div className="flex size-14 shrink-0 flex-col items-center justify-center rounded-md bg-muted text-muted-foreground">
                   <span className="text-sm font-medium">+{remaining}</span>
-                  <span className="text-[9px]">more</span>
+                  <span className="text-ui-9">more</span>
                 </div>
               )}
             </>
