@@ -3,9 +3,19 @@
 
 """Regression tests for Deep Research query/prompt/citation/config hardening."""
 
+import asyncio
+import json
+import sys
+import time
+from types import SimpleNamespace
+
+import httpx
 import pytest
 
+from core import research_runs
 from core.research_runs import (
+    ResearchSupervisor,
+    RunCancelled,
     _citation_title,
     _escape_link_destination,
     _sanitize_public_query,
@@ -282,3 +292,211 @@ def test_dropped_raw_url_does_not_unbalance_prose():
     # An uncataloged URL is still removed, but the paren it swallowed belongs to the prose.
     out = _validate_report_sources("Claim (https://nope.com/x) here.", [])
     assert out == "Claim () here."
+
+
+def _install_probe_backends(monkeypatch, llama, native) -> None:
+    """Stand in for the two backend modules _local_model_ready probes, so the check can be
+    exercised without importing the ML stack. Pass an exception to make a probe raise."""
+
+    def _getter(value):
+        def _get():
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        return _get
+
+    monkeypatch.setitem(
+        sys.modules, "routes.inference", SimpleNamespace(get_llama_cpp_backend = _getter(llama))
+    )
+    monkeypatch.setitem(
+        sys.modules, "core.inference", SimpleNamespace(get_inference_backend = _getter(native))
+    )
+
+
+def test_local_model_ready_mirrors_the_chat_endpoint_checks(monkeypatch):
+    # Same two checks routes.inference.openai_chat_completions makes before it 400s.
+    unloaded = SimpleNamespace(is_loaded = False)
+    idle = SimpleNamespace(active_model_name = None)
+    _install_probe_backends(monkeypatch, SimpleNamespace(is_loaded = True), idle)
+    assert research_runs._local_model_ready() is True
+    _install_probe_backends(monkeypatch, unloaded, SimpleNamespace(active_model_name = "m"))
+    assert research_runs._local_model_ready() is True
+    _install_probe_backends(monkeypatch, unloaded, idle)
+    assert research_runs._local_model_ready() is False
+
+
+def test_local_model_ready_fails_open_when_neither_backend_can_be_probed(monkeypatch):
+    # A broken probe must not withhold a request; the endpoint stays the decider.
+    _install_probe_backends(monkeypatch, RuntimeError("boom"), RuntimeError("boom"))
+    assert research_runs._local_model_ready() is True
+
+
+def _response(status: int, *, detail: str = "", body: str = "") -> httpx.Response:
+    request = httpx.Request("POST", "http://127.0.0.1:1/v1/chat/completions")
+    if detail:
+        return httpx.Response(status, json = {"detail": detail}, request = request)
+    return httpx.Response(status, text = body, request = request)
+
+
+_NO_MODEL = "No model loaded. Call POST /inference/load first."
+
+
+def test_model_unloaded_only_matches_the_no_model_refusal():
+    assert asyncio.run(research_runs._model_unloaded(_response(400, detail = _NO_MODEL))) is True
+    # Any other 400 is a real bad request and must stay non-retryable.
+    assert (
+        asyncio.run(research_runs._model_unloaded(_response(400, detail = "Invalid 'tools'")))
+        is False
+    )
+    assert asyncio.run(research_runs._model_unloaded(_response(500, body = _NO_MODEL))) is False
+
+
+def _make_supervisor(check_active = None) -> ResearchSupervisor:
+    supervisor = ResearchSupervisor(
+        SimpleNamespace(state = SimpleNamespace(server_port = 1)),
+    )
+    if check_active is not None:
+        supervisor._check_active = check_active
+    return supervisor
+
+
+def _waiting_run(timeout_seconds: float) -> dict:
+    return {
+        "id": "run-1",
+        "ownerSubject": "user-1",
+        "config": {"budgets": {"modelTimeoutSeconds": timeout_seconds}},
+    }
+
+
+def test_wait_for_local_model_polls_until_a_model_is_loaded(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
+    states = iter([False, True])
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: next(states, True))
+    checked: list[str] = []
+
+    async def _check_active(run_id: str) -> None:
+        checked.append(run_id)
+
+    supervisor = _make_supervisor(_check_active)
+    assert asyncio.run(supervisor._wait_for_local_model(_waiting_run(30.0))) is True
+    # Cancellation/lease are re-checked before every poll.
+    assert checked == ["run-1", "run-1"]
+
+
+def test_wait_for_local_model_gives_up_at_the_run_timeout(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
+
+    async def _check_active(run_id: str) -> None:
+        return None
+
+    supervisor = _make_supervisor(_check_active)
+    started = time.monotonic()
+    assert asyncio.run(supervisor._wait_for_local_model(_waiting_run(0.05))) is False
+    assert time.monotonic() - started < 5
+
+
+def test_wait_for_local_model_still_honors_cancellation(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: False)
+
+    async def _check_active(run_id: str) -> None:
+        raise RunCancelled()
+
+    supervisor = _make_supervisor(_check_active)
+    with pytest.raises(RunCancelled):
+        asyncio.run(supervisor._wait_for_local_model(_waiting_run(30.0)))
+
+
+def _install_fake_client(monkeypatch, responses: list) -> list:
+    """Serve ``responses`` in order to both completion paths and record the sends."""
+    sent: list = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        def build_request(self, method, url, **kwargs):
+            return (method, url)
+
+        async def post(self, url, **kwargs):
+            sent.append(url)
+            return responses.pop(0)
+
+        async def send(self, request, *, stream = False):
+            sent.append(request)
+            return responses.pop(0)
+
+    monkeypatch.setattr(research_runs.httpx, "AsyncClient", _FakeClient)
+    monkeypatch.setattr(
+        research_runs.auth_storage, "create_api_key", lambda **kwargs: ("token", {"id": 1})
+    )
+    monkeypatch.setattr(
+        research_runs.auth_storage, "revoke_internal_api_key", lambda key_id: None
+    )
+    return sent
+
+
+def _ready_after_first_poll(monkeypatch) -> None:
+    monkeypatch.setattr(research_runs, "_MODEL_WAIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(research_runs, "_local_model_ready", lambda: True)
+
+
+def test_completion_retries_after_the_model_is_loaded_again(monkeypatch):
+    # A durable run resumes after a Studio restart and is approved long after creation, so the
+    # model can be unloaded when it calls. That 400 used to end the run and its gathered work.
+    _ready_after_first_poll(monkeypatch)
+    reply = {"choices": [{"message": {"content": "answer"}}]}
+    sent = _install_fake_client(
+        monkeypatch,
+        [_response(400, detail = _NO_MODEL), _response(200, body = json.dumps(reply))],
+    )
+
+    async def _check_active(run_id: str) -> None:
+        return None
+
+    supervisor = _make_supervisor(_check_active)
+    result = asyncio.run(supervisor._completion(_waiting_run(30.0), [{"role": "user"}]))
+    assert result == "answer"
+    assert len(sent) == 2
+
+
+def test_completion_still_fails_fast_on_a_real_bad_request(monkeypatch):
+    _ready_after_first_poll(monkeypatch)
+    sent = _install_fake_client(monkeypatch, [_response(400, detail = "Invalid 'tools'")])
+
+    async def _check_active(run_id: str) -> None:
+        return None
+
+    supervisor = _make_supervisor(_check_active)
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(supervisor._completion(_waiting_run(30.0), [{"role": "user"}]))
+    assert len(sent) == 1
+
+
+def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
+    _ready_after_first_poll(monkeypatch)
+    chunk = json.dumps({"choices": [{"delta": {"content": "report"}, "finish_reason": "stop"}]})
+    stream = f"data: {chunk}\n\ndata: [DONE]\n\n"
+    sent = _install_fake_client(
+        monkeypatch, [_response(400, detail = _NO_MODEL), _response(200, body = stream)]
+    )
+
+    async def _check_active(run_id: str) -> None:
+        return None
+
+    supervisor = _make_supervisor(_check_active)
+    report, reasoning, finish_reason = asyncio.run(
+        supervisor._stream_completion(
+            _waiting_run(30.0), [{"role": "user"}], report_progress = False
+        )
+    )
+    assert (report, reasoning, finish_reason) == ("report", "", "stop")
+    assert len(sent) == 2

@@ -114,6 +114,13 @@ _AUTO_SCRAPE_TOP_K = 3
 _AUTO_SCRAPE_TOTAL_CHARS = 6_000
 _WEB_RAG_TOP_N = 6
 _WEB_RAG_MIN_SCORE = 0.30
+# Poll interval while a run waits for a local model to be (re)loaded, and the detail
+# routes.inference returns when nothing is loaded (its 400 is transient, not a bad request).
+_MODEL_WAIT_POLL_SECONDS = 2.0
+# Each wait is bounded by modelTimeoutSeconds, but a model that keeps disappearing would
+# otherwise re-send forever, so cap how many times one call may wait.
+_MAX_MODEL_WAITS = 3
+_NO_MODEL_LOADED_DETAIL = "No model loaded"
 
 
 def _auto_scrape_default() -> int:
@@ -494,6 +501,42 @@ def _loaded_context_length() -> int | None:
     except Exception:
         logger.debug("research.context_probe_failed", exc_info = True)
     return None
+
+
+async def _model_unloaded(response: httpx.Response) -> bool:
+    """Whether the local endpoint refused because no model is loaded (routes.inference). That is
+    transient for a durable run -- the model can be loaded again -- unlike any other 400."""
+    if response.status_code != 400:
+        return False
+    try:
+        body = await response.aread()
+    except Exception:
+        return False
+    return _NO_MODEL_LOADED_DETAIL in body.decode("utf-8", "replace")
+
+
+def _local_model_ready() -> bool:
+    """Whether the local chat-completions path has a model to serve, using the same two checks
+    routes.inference.openai_chat_completions makes before it 400s. Fails open when neither
+    backend can be probed, so a probe failure can only run a request, never withhold one."""
+    probed = False
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        if getattr(get_llama_cpp_backend(), "is_loaded", False):
+            return True
+        probed = True
+    except Exception:
+        logger.debug("research.model_probe_llama_failed", exc_info = True)
+    try:
+        from core.inference import get_inference_backend
+
+        if getattr(get_inference_backend(), "active_model_name", None):
+            return True
+        probed = True
+    except Exception:
+        logger.debug("research.model_probe_failed", exc_info = True)
+    return not probed
 
 
 def _synthesis_evidence_budget() -> int:
@@ -1106,6 +1149,22 @@ class ResearchSupervisor:
             raise RuntimeError("Research is waiting for the Studio server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
+    async def _wait_for_local_model(self, run: dict) -> bool:
+        """Wait, up to the run's model timeout, for a model to be loaded again; True if one was.
+
+        A durable run resumes after a Studio restart and is approved long after it was created,
+        so the model it was started with can be gone. Waiting keeps the run alive instead of
+        ending it on a non-retryable 400 that discards every step and source it gathered."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + float(run["config"]["budgets"]["modelTimeoutSeconds"])
+        logger.info("research.waiting_for_local_model run_id=%s", run["id"])
+        while loop.time() < deadline:
+            await self._check_active(run["id"])
+            await asyncio.sleep(_MODEL_WAIT_POLL_SECONDS)
+            if _local_model_ready():
+                return True
+        return False
+
     async def _completion(
         self,
         run: dict,
@@ -1144,7 +1203,9 @@ class ResearchSupervisor:
         try:
             timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
             async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
-                for attempt in range(3):
+                attempt = 0
+                model_waits = 0
+                while True:
                     await self._check_active(run["id"])
                     try:
                         post_task = asyncio.create_task(
@@ -1169,6 +1230,17 @@ class ResearchSupervisor:
                         body = response.json()
                         break
                     except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                        # Nothing loaded (restart, eject): wait for a model and re-send without
+                        # spending an attempt, so the run survives instead of failing here.
+                        if isinstance(exc, httpx.HTTPStatusError) and await _model_unloaded(
+                            exc.response
+                        ):
+                            model_waits += 1
+                            if model_waits <= _MAX_MODEL_WAITS and await self._wait_for_local_model(
+                                run
+                            ):
+                                continue
+                            raise
                         retryable = (
                             not isinstance(exc, httpx.HTTPStatusError)
                             or exc.response.status_code >= 500
@@ -1176,6 +1248,7 @@ class ResearchSupervisor:
                         if not retryable or attempt == 2:
                             raise
                         await asyncio.sleep(2**attempt)
+                        attempt += 1
             message = body["choices"][0]["message"]
             thought = message.get("reasoning_content")
             if isinstance(thought, str) and thought.strip():
@@ -1342,26 +1415,43 @@ class ResearchSupervisor:
         try:
             timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
             async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
-                request = client.build_request(
-                    "POST",
-                    self._endpoint(),
-                    json = payload,
-                    headers = {"Authorization": f"Bearer {token}"},
-                )
                 response: httpx.Response | None = None
-                send_task = asyncio.create_task(client.send(request, stream = True))
+                send_task: asyncio.Task | None = None
+                model_waits = 0
                 try:
-                    while not send_task.done():
-                        await asyncio.wait({send_task}, timeout = 0.2)
-                        if self._cancel_event(run["id"]).is_set():
-                            send_task.cancel()
-                            try:
-                                await send_task
-                            except asyncio.CancelledError:
-                                pass
-                            await self._check_active(run["id"])
-                    response = await send_task
-                    response.raise_for_status()
+                    while True:
+                        request = client.build_request(
+                            "POST",
+                            self._endpoint(),
+                            json = payload,
+                            headers = {"Authorization": f"Bearer {token}"},
+                        )
+                        send_task = asyncio.create_task(client.send(request, stream = True))
+                        while not send_task.done():
+                            await asyncio.wait({send_task}, timeout = 0.2)
+                            if self._cancel_event(run["id"]).is_set():
+                                send_task.cancel()
+                                try:
+                                    await send_task
+                                except asyncio.CancelledError:
+                                    pass
+                                await self._check_active(run["id"])
+                        response = await send_task
+                        try:
+                            response.raise_for_status()
+                            break
+                        except httpx.HTTPStatusError as exc:
+                            # Nothing loaded (restart, eject): wait for a model and re-send.
+                            # Nothing has streamed yet, so this cannot duplicate report text.
+                            if not await _model_unloaded(exc.response):
+                                raise
+                            model_waits += 1
+                            if model_waits > _MAX_MODEL_WAITS:
+                                raise
+                            if not await self._wait_for_local_model(run):
+                                raise
+                            await response.aclose()
+                            response = None
                     async for line in self._iter_stream_lines(run["id"], response):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
@@ -1396,13 +1486,18 @@ class ResearchSupervisor:
                         ):
                             await flush_progress()
                 finally:
-                    if not send_task.done():
+                    if send_task is not None and not send_task.done():
                         send_task.cancel()
                         try:
                             await send_task
                         except asyncio.CancelledError:
                             pass
-                    if response is None and send_task.done() and not send_task.cancelled():
+                    if (
+                        response is None
+                        and send_task is not None
+                        and send_task.done()
+                        and not send_task.cancelled()
+                    ):
                         try:
                             response = send_task.result()
                         except Exception:
