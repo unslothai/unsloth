@@ -734,3 +734,26 @@ def test_export_endpoint_validation(client, monkeypatch):
     resp = client.get(f"/api/inference/video/gallery/{video['id']}/export?format=webm")
     assert resp.status_code == 501
     assert "PyAV" in resp.json()["detail"]
+
+
+def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
+    # For a GGUF / single-file video load the companion base supplies the VAE and text
+    # encoders, so it is as much part of the live model as the checkpoint. Deleting it used
+    # to sail past the guard, which only compared repo_id.
+    from hub.services.models import deletion
+
+    class _Backend:
+        def status(self):
+            return {
+                "loaded": True,
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "base_repo": "unsloth/LTX-2.3",
+            }
+
+        def loading_repo_ids(self):
+            return ()
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    assert deletion._video_blocks_delete("unsloth/LTX-2.3-GGUF") is not None
+    assert deletion._video_blocks_delete("unsloth/LTX-2.3") is not None
+    assert deletion._video_blocks_delete("unsloth/something-else") is None

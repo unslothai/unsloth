@@ -1921,8 +1921,11 @@ export function HubModelPicker({
           ? isKnownGgufRepo(id)
           : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
-      // Member repos of a catalog group collapse into the canonical group row.
-      .filter((id) => !catalog || !groupForRepoId(id, catalog))
+      // Member repos of a catalog group would collapse into the canonical group row --
+      // but nothing renders those rows yet (catalogGroupFitsDevice / groupMatchesQuery are
+      // imported and unused), and a task-scoped picker's `models` is catalogToModelOptions(),
+      // i.e. group members exclusively. Suppressing them here emptied Recommended on the
+      // Images and Video pages, so keep the artifacts listed until the grouped UI lands.
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
@@ -1970,8 +1973,8 @@ export function HubModelPicker({
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
     // Task-scoped pages load single-file GGUF only.
     if (task) rows = rows.filter((r) => r.isGguf);
-    // Members already render under their canonical group row.
-    if (catalog) rows = rows.filter((r) => !groupForRepoId(r.id, catalog));
+    // Members would render under their canonical group row, but that row does not exist
+    // yet (see recommendedIds): filtering here removed curated models from Hub search too.
     // The "recommended" sort always applies the device-fit filter; the shared
     // "Fits on device" tick extends it to the other sorts too.
     if (recommendedSort !== "recommended" && !fitOnDeviceOnly) return rows;

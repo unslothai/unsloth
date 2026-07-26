@@ -629,9 +629,14 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
         logger.debug(f"Video backend unavailable during delete guard for {repo_id}: {e}")
         return None
     status = backend.status()
-    if status.get("loaded") and status.get("repo_id"):
-        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
-            return "Unload the model before deleting"
+    if status.get("loaded"):
+        # repo_id names the checkpoint; for a GGUF / single-file load the companion base
+        # supplies the VAE and text encoders and is just as much part of the live model,
+        # so refuse it too (the Images guard above does the same via loaded_repo_ids).
+        for key in ("repo_id", "base_repo"):
+            held = status.get(key)
+            if held and _loaded_id_matches_repo(str(held), repo_id):
+                return "Unload the model before deleting"
     for lid in getattr(backend, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "A Video model load is using this repo; wait for it to finish"
