@@ -171,7 +171,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             # Only the active cache loads by repo id. Say so, or an inactive repo is
             # indexed under an id it cannot load by, and its snapshot basename (what
             # /v1/models advertises once loaded by path) is never a key at all.
-            return _scan_hf_cache(directory, active_cache = rp == active_root)
+            # No format classification here: nothing on this path reads model_format,
+            # and its recursive walk would duplicate the one _local_gguf_entry already
+            # does per snapshot, on the request path.
+            return _scan_hf_cache(
+                directory, active_cache = rp == active_root, classify_format = False
+            )
         except Exception as exc:  # a missing/malformed root must skip, never crash the index
             logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []

@@ -254,7 +254,9 @@ function discoverGgufModels(
   // disagree on spelling; two rows for one repo would leave the load id on only one.
   const seen = new Set(models.map((model) => model.toLowerCase()));
   const add = (model: string) => {
-    const key = model.toLowerCase();
+    // Local entries arrive here as absolute paths, and a path is case-sensitive on
+    // Linux: folding those would collapse two distinct models into one.
+    const key = looksLikePath(model) ? model : model.toLowerCase();
     if (seen.has(key)) {
       return;
     }
@@ -303,7 +305,10 @@ function localGgufEntries(
 ): { id: string; label: string }[] {
   const entries: { id: string; label: string }[] = [];
   for (const model of models) {
-    if (!(model.id && isLocalGguf(model))) {
+    // partial marks an interrupted sharded download: variant discovery would treat
+    // the shards it has as complete and build a command that fails on load. The
+    // cached repo row still offers it, and _repo_gguf_load_id withholds the path.
+    if (model.partial || !(model.id && isLocalGguf(model))) {
       continue;
     }
     // The path is the identity: two scanned models can share a basename, and it is

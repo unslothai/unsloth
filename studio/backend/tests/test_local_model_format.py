@@ -84,6 +84,30 @@ def test_scan_models_dir_mmproj_only_folder_is_not_gguf(tmp_path):
     assert formats["real"] == "gguf"
 
 
+def test_scan_models_dir_skips_standalone_mmproj_file(tmp_path):
+    # A loose mmproj-*.gguf is a vision adapter with no weights to serve, so it must
+    # not be offered as a model the way a loose primary GGUF is.
+    _touch(tmp_path / "mmproj-F16.gguf")
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
+def test_scan_lmstudio_dir_skips_standalone_mmproj_file(tmp_path):
+    _touch(tmp_path / "mmproj-F16.gguf")
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
+def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
+    # LM Studio's publisher/model.gguf layout classifies on a separate branch.
+    _touch(tmp_path / "Publisher" / "mmproj-F16.gguf")
+    _touch(tmp_path / "Publisher" / "model-Q4_K_M.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M"}
+
+
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
     # A config.json alongside the .gguf must not flip it to non-GGUF.
     d = tmp_path / "model"

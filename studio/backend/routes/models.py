@@ -352,7 +352,8 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
-            if gguf_file.is_file():
+            # A standalone mmproj is a vision adapter, not servable weights.
+            if gguf_file.is_file() and _is_main_gguf_filename(gguf_file.name):
                 try:
                     updated_at = gguf_file.stat().st_mtime
                 except OSError:
@@ -371,7 +372,9 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     return found
 
 
-def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalModelInfo]:
+def _scan_hf_cache(
+    cache_dir: Path, *, active_cache: bool = True, classify_format: bool = True
+) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
@@ -402,7 +405,11 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
         # Classify from the snapshot's own weights. A GGUF repo without a -GGUF
         # suffix is common, and leaving this unset makes every consumer guess from
         # the name; the snapshot is already resolved just above.
-        model_format = _dir_model_format(Path(snapshot), recursive = True) if snapshot else None
+        model_format = (
+            _dir_model_format(Path(snapshot), recursive = True)
+            if snapshot and classify_format
+            else None
+        )
         found.append(
             LocalModelInfo(
                 id = load_id,
@@ -472,7 +479,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     for child in lm_dir.iterdir():
         try:
             if not child.is_dir():
-                if child.suffix == ".gguf" and child.is_file():
+                if _is_main_gguf_filename(child.name) and child.is_file():
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -535,7 +542,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 updated_at = updated_at,
                             ),
                         )
-                    elif model_dir.suffix == ".gguf" and model_dir.is_file():
+                    elif _is_main_gguf_filename(model_dir.name) and model_dir.is_file():
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
