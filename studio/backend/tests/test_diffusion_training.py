@@ -1105,8 +1105,10 @@ def test_diffusion_info_skips_null_metadata_captions(client, dataset_roots):
     (folder / "a.png").write_bytes(b"x")
     (folder / "b.png").write_bytes(b"x")
     (folder / "metadata.jsonl").write_text(
-        json.dumps({"file_name": "a.png", "text": None}) + "\n"
-        + json.dumps({"file_name": "b.png", "text": "cap b"}) + "\n",
+        json.dumps({"file_name": "a.png", "text": None})
+        + "\n"
+        + json.dumps({"file_name": "b.png", "text": "cap b"})
+        + "\n",
         encoding = "utf-8",
     )
     r = client.get("/api/train/diffusion/info")
