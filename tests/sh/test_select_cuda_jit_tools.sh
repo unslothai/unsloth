@@ -14,6 +14,24 @@ ENTRYPOINT_SH="$SCRIPT_DIR/../../docker/entrypoint.sh"
 PASS=0
 FAIL=0
 
+# The fixtures below stage libnvrtc as symlinks and assert through readlink,
+# because retargeting that symlink is exactly what the function under test does.
+# git-bash copies instead of symlinking unless MSYS=winsymlinks:nativestrict and
+# the user is elevated, so readlink comes back empty and all 14 assertions fail
+# for reasons that have nothing to do with the code. That code only ever runs
+# inside a Linux container, so skip rather than pretend: an unconditional run
+# breaks tests/run_all.sh for every Windows contributor.
+_probe=$(mktemp -d)
+: > "$_probe/target"
+if ! ln -s target "$_probe/link" 2>/dev/null || [ "$(readlink "$_probe/link")" != "target" ]; then
+    rm -rf "$_probe"
+    echo "=== test_select_cuda_jit_tools ==="
+    echo "  SKIP: this filesystem does not honour symlinks (readlink cannot observe them)"
+    echo "PASS=0 FAIL=0 SKIPPED"
+    exit 0
+fi
+rm -rf "$_probe"
+
 # Extract just the helper function (same sed range as the other function tests).
 _FUNC_FILE=$(mktemp)
 sed -n '/^select_cuda_jit_tools()/,/^}/p' "$ENTRYPOINT_SH" > "$_FUNC_FILE"

@@ -511,9 +511,36 @@ def _raw_execd(shim, tool, args):
             return exc.argv[exc.argv.index("install") + 1 :]
 
 
-def test_forwarded_install_carries_protected_constraints(shim):
+class _FakeDist:
+    """Minimal stand-in for an importlib.metadata Distribution."""
+
+    def __init__(self, name, version):
+        self.metadata = {"Name": name}
+        self.version = version
+
+
+def _fake_distributions(monkeypatch, *pairs):
+    """Pin what _protected_constraints_file sees as INSTALLED.
+
+    It reads the ambient environment via importlib.metadata.distributions, so
+    without this the outcome depends on whatever happens to be in the venv:
+    with no protected package installed it correctly returns None (see its
+    docstring) and no --constraint pair is appended. That made the assertion
+    below environment-dependent, and it surfaced as an IndexError on execd[-2]
+    rather than a readable failure. The shim imports the symbol inside the
+    function, so patch it at its source.
+    """
+    monkeypatch.setattr(
+        "importlib.metadata.distributions",
+        lambda: [_FakeDist(n, v) for n, v in pairs],
+    )
+
+
+def test_forwarded_install_carries_protected_constraints(shim, monkeypatch):
+    _fake_distributions(monkeypatch, ("transformers", "5.14.1"), ("trl", "0.24.0"))
     execd = _raw_execd(shim, "pip", ["snac"])
-    assert execd is not None and execd[-2] == "--constraint", execd
+    assert execd is not None, "an unprotected target must still be forwarded"
+    assert len(execd) >= 2 and execd[-2] == "--constraint", execd
     pins = Path(execd[-1]).read_text(encoding = "utf-8").strip().splitlines()
     assert pins, "constraints file must pin the installed protected packages"
     assert all("==" in pin for pin in pins), pins
@@ -522,6 +549,16 @@ def test_forwarded_install_carries_protected_constraints(shim):
     assert all(
         n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
     ), names
+
+
+def test_forwarded_install_without_protected_packages_has_no_constraints(shim, monkeypatch):
+    # The other half of the contract: with nothing protected installed there is
+    # nothing to pin, so the install must still be forwarded, just bare. This is
+    # the case a bare venv actually hits.
+    _fake_distributions(monkeypatch, ("snac", "1.2.1"))
+    execd = _raw_execd(shim, "pip", ["snac"])
+    assert execd is not None, "the install must still be forwarded"
+    assert "--constraint" not in execd, execd
 
 
 def test_noop_install_gets_no_constraints(shim):
