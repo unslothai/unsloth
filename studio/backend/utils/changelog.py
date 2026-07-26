@@ -379,10 +379,12 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
     A closer must be the same character, at least as long, and carry nothing
     after it. So neither a ``` sample nor a ```` line with trailing text ends
     a ```` block early, while an opening fence may still have an info string.
+    Only spaces and tabs count as nothing: other Unicode whitespace is content.
     """
     if open_fence is None:
         return marker
-    if marker[0] == open_fence[0] and len(marker) >= len(open_fence) and not rest.strip():
+    closes = marker[0] == open_fence[0] and len(marker) >= len(open_fence)
+    if closes and not rest.strip(" \t"):
         return None
     return open_fence
 

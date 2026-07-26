@@ -26,6 +26,7 @@ CHANGELOG = REPO / "CHANGELOG.md"
 PANEL = FRONTEND / "components/update/release-notes-panel.tsx"
 NOTES_HOOK = FRONTEND / "hooks/use-release-notes.ts"
 PREVIEW = FRONTEND / "lib/release-notes-preview.ts"
+CODE_SPANS = FRONTEND / "lib/markdown-code-spans.ts"
 LINKS = FRONTEND / "lib/changelog-links.ts"
 WEB_BANNER = FRONTEND / "components/web/update-banner.tsx"
 TAURI_BANNER = FRONTEND / "components/tauri/update-banner.tsx"
@@ -246,7 +247,7 @@ def test_preview_keeps_identifier_underscores():
     """UNSLOTH_DISABLE_UPDATE_CHECK must not render as UNSLOTHDISABLEUPDATECHECK."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "BOLD_UNDERSCORE" in src and "ITALIC_UNDERSCORE" in src
-    assert "CODE_SPAN" in src, "code spans are parked so their underscores survive"
+    assert "parkCodeSpans" in src, "code spans are parked so their underscores survive"
     assert "const EMPHASIS" not in src, "the blanket emphasis strip is gone"
 
 
@@ -401,7 +402,7 @@ def test_preview_treats_code_as_literal():
     the text literally, so the preview must not transform or promote it."""
     src = PREVIEW.read_text(encoding = "utf-8")
     # Code spans are parked before any other inline transformation.
-    park = src.index("markdown.replace(CODE_SPAN")
+    park = src.index("parkCodeSpans(markdown")
     assert park < src.index("stripHtmlTags(\n    parked")
     # A "- cmd" line inside an indented code block is not a headline bullet.
     assert "INDENTED_CODE_INDENT" in src
@@ -608,9 +609,9 @@ def test_every_packaging_path_snapshots_the_changelog():
 def test_preview_code_spans_need_a_matching_closer():
     """A closer is a run of the same length, so ``Use `` `x` `` `` keeps the
     inner backticks the expanded notes show."""
-    src = PREVIEW.read_text(encoding = "utf-8")
-    assert "const CODE_SPAN = /(`+)([\\s\\S]*?)\\1(?!`)/g;" in src
-    assert "stripCodeSpanPadding" in src, "one space of padding is dropped, as in Markdown"
+    src = CODE_SPANS.read_text(encoding = "utf-8")
+    assert "candidate === ticks" in src, "a closer is a run of the same length"
+    assert "stripPadding" in src, "one space of padding is dropped, as in Markdown"
 
 
 def test_preview_skips_thematic_breaks():
@@ -769,7 +770,7 @@ def test_relative_changelog_links_point_at_the_repository():
     assert "https://github.com/unslothai/unsloth/blob/main/" in src
     assert "https://raw.githubusercontent.com/unslothai/unsloth/main/" in src
     # Absolute targets, fragments, fenced code and code spans stay untouched.
-    assert "ABSOLUTE" in src and "CODE_SPAN" in src and "FENCE" in src
+    assert "ABSOLUTE" in src and "codeSpans" in src and "FENCE" in src
     panel = PANEL.read_text(encoding = "utf-8")
     assert "resolveChangelogLinks" in panel
 
@@ -799,3 +800,40 @@ def test_collapsed_notes_surface_is_hidden_when_nothing_previews():
     empty muted strip is worse than no strip."""
     src = PANEL.read_text(encoding = "utf-8")
     assert "preview?.items.length === 0" in src
+
+
+def test_a_fence_closer_accepts_only_spaces_and_tabs(changelog_module):
+    """A delimiter followed by a non-breaking space is code content, so it must
+    not close the block and let a sample heading through."""
+    text = "## 1.0\n\n```\n```\u00a0\n## 9.9.9\n```\n\n- real note\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    plain = "## 1.0\n\n```\nx\n```\t\n\n## 2.0\n\n- two\n"
+    assert [e.version for e in changelog_module.parse_changelog(plain)] == ["1.0", "2.0"]
+    # The same rule in both frontend scanners.
+    for source in (PREVIEW, LINKS):
+        assert "/[^ \\t]/" in source.read_text(encoding = "utf-8")
+
+
+def test_code_spans_close_on_a_run_of_equal_length():
+    """`a``b [x](y.md)` is one code span, so the link inside it is literal."""
+    src = CODE_SPANS.read_text(encoding = "utf-8")
+    assert "candidate === ticks" in src, "closer length must match the opener"
+    # Shared, so the preview and the link resolver cannot drift apart.
+    assert "markdown-code-spans" in PREVIEW.read_text(encoding = "utf-8")
+    assert "markdown-code-spans" in LINKS.read_text(encoding = "utf-8")
+
+
+def test_preview_decodes_entities_like_the_renderer():
+    """Streamdown renders `AT&amp;T` as AT&T, so the collapsed preview must
+    not show the raw entity."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "NAMED_ENTITIES" in src and "decodeEntity" in src
+    # Decoded before code spans are restored, so code keeps the literal text.
+    assert src.index(".replace(ENTITY, decodeEntity)") < src.index(".replace(PARKED")
+
+
+def test_release_notes_request_refreshes_an_expired_token():
+    """A direct fetch cannot recover from a 401; authFetch refreshes first."""
+    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    assert "authFetch(" in src
+    assert "getAuthToken" not in src

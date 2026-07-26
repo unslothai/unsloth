@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Top changelog bullets, shown in the collapsed update popup.
+import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";
+
 export const RELEASE_NOTES_PREVIEW_ITEMS = 4;
 const PREVIEW_ITEM_MAX_CHARS = 120;
 // Bullets indented past the shallowest one are nested detail, not headlines.
@@ -25,7 +27,6 @@ const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
 // <https://x> and <a@b.c> are Markdown autolinks: keep the text they render.
 const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
-const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1(?!`)/g;
 // CommonMark type 1 HTML blocks render literally until a closing tag, which
 // the spec says need not be the one that opened the block.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
@@ -55,6 +56,8 @@ const HTML_BLOCK_TAGS = new Set(
    menuitem nav noframes ol optgroup option p param search section summary table
    tbody td tfoot th thead title tr track ul`.split(/\s+/),
 );
+// Only spaces and tabs may follow a closing fence.
+const NON_SPACE = /[^ \t]/;
 const HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
@@ -66,7 +69,17 @@ const ITALIC_STAR = /\*(?=\S)([^*\n]*?\S)\*/g;
 const ITALIC_UNDERSCORE = /(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)/g;
 const BACKTICK = /`/g;
 // A closer is a run of the same length, so `` `x` `` keeps its backticks.
-const CODE_SPAN = /(`+)([\s\S]*?)\1(?!`)/g;
+// Streamdown renders `AT&amp;T` as "AT&T", so the collapsed preview decodes
+// entities too. Parked code spans are restored afterwards and stay literal.
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: "\u00a0",
+};
+const ENTITY = /&(#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z][a-zA-Z0-9]{1,31});/g;
 const PARKED = /\uE000(\d+)\uE001/g;
 const WHITESPACE = /\s+/g;
 // Sentence end followed by something that actually starts a sentence.
@@ -130,10 +143,19 @@ interface Bullet {
 }
 
 /** One space of padding is dropped when a code span has it on both sides. */
-function stripCodeSpanPadding(code: string): string {
-  const padded =
-    code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "";
-  return padded ? code.slice(1, -1) : code;
+/** One entity as the character it renders as, or unchanged if unknown. */
+function decodeEntity(match: string, body: string): string {
+  if (body.startsWith("#")) {
+    const hex = body[1] === "x" || body[1] === "X";
+    const code = Number.parseInt(
+      hex ? body.slice(2) : body.slice(1),
+      hex ? 16 : 10,
+    );
+    return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+      ? String.fromCodePoint(code)
+      : match;
+  }
+  return NAMED_ENTITIES[body.toLowerCase()] ?? match;
 }
 
 /** Inline markdown stripped to plain text. */
@@ -141,8 +163,8 @@ function toPlainText(markdown: string): string {
   // Park code spans first: their contents are literal, so tags, links and
   // emphasis inside them must survive every transformation below.
   const codes: string[] = [];
-  const parked = markdown.replace(CODE_SPAN, (_match, _ticks, code: string) => {
-    codes.push(stripCodeSpanPadding(code));
+  const parked = parkCodeSpans(markdown, (code) => {
+    codes.push(code);
     return `\uE000${codes.length - 1}\uE001`;
   });
 
@@ -154,6 +176,7 @@ function toPlainText(markdown: string): string {
     .replace(ITALIC_STAR, "$1")
     .replace(ITALIC_UNDERSCORE, "$1$2")
     .replace(BACKTICK, "")
+    .replace(ENTITY, decodeEntity)
     .replace(PARKED, (_match, index: string) => codes[Number(index)] ?? "")
     .replace(WHITESPACE, " ")
     .trim();
@@ -203,12 +226,12 @@ function stripCommentSpans(
       break;
     }
     // A delimiter inside inline code is literal, not a comment opener.
-    CODE_SPAN_INLINE.lastIndex = index;
-    const span = CODE_SPAN_INLINE.exec(line);
-    if (span && span.index <= open && span.index + span[0].length > open) {
-      const end = span.index + span[0].length;
-      visible += line.slice(index, end);
-      index = end;
+    const span = codeSpans(line).find(
+      (candidate) => candidate.start <= open && candidate.end > open,
+    );
+    if (span) {
+      visible += line.slice(index, span.end);
+      index = span.end;
       continue;
     }
     visible += line.slice(index, open);
@@ -319,7 +342,10 @@ function nextFence(
     return marker;
   }
   const closes =
-    marker[0] === open[0] && marker.length >= open.length && rest.trim() === "";
+    marker[0] === open[0] &&
+    marker.length >= open.length &&
+    // Only spaces or tabs may follow a closer, per CommonMark.
+    !NON_SPACE.test(rest);
   return closes ? null : open;
 }
 

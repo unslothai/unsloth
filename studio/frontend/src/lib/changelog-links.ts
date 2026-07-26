@@ -9,18 +9,20 @@
  * first makes them behave the way GitHub renders the same file.
  */
 
+import { codeSpans, insideSpan } from "@/lib/markdown-code-spans";
+
 const LINK_BASE = "https://github.com/unslothai/unsloth/blob/main/";
 const IMAGE_BASE = "https://raw.githubusercontent.com/unslothai/unsloth/main/";
 
 // Inline `](dest)` plus the `[label]: dest` reference form. The destination is
 // either <bracketed> or runs to whitespace or the closing paren.
-const INLINE_TARGET = /(!?)\[((?:[^[\]\\]|\\.)*)\]\(\s*(<[^<>\n]*>|[^\s()]*)/g;
+const INLINE_TARGET =
+  /(!?)\[((?:[^[\]\\]|\\.)*)\]\(\s*(<[^<>\n]*>|(?:\\.|[^\s()])*)/g;
 const REFERENCE_TARGET = /^( {0,3}\[((?:[^[\]\\]|\\.)*)\]:\s*)(<[^<>\n]*>|\S+)/;
 // `![alt][label]`, `![label][]` and `![label]`: a definition they point at
 // has to resolve to the raw file, not to its page on GitHub.
 const IMAGE_REFERENCE = /!\[((?:[^[\]\\]|\\.)*)\](?:\[((?:[^[\]\\]|\\.)*)\])?/g;
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-const CODE_SPAN = /(`+)[\s\S]*?\1(?!`)/g;
 // A scheme, a protocol-relative host, or a fragment: already absolute enough.
 // `//` needs a host after it, so `///docs` stays a repository path.
 const ABSOLUTE = /^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|\/\/[^/]|#)/;
@@ -30,16 +32,26 @@ function label(text: string): string {
   return text.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+const NEEDS_BRACKETS = /[()\s]/;
+// `\(` in a destination is a literal paren, not part of the path.
+const ESCAPE = /\\(.)/g;
+// Only spaces and tabs may follow a closing fence.
+const NON_SPACE = /[^ \t]/;
+const LEADING_SLASHES = /^\/+/;
+
 function absolute(target: string, image: boolean): string {
   const base = image ? IMAGE_BASE : LINK_BASE;
-  const trimmed = target.trim();
+  const trimmed = target.trim().replace(ESCAPE, "$1");
   if (!trimmed || ABSOLUTE.test(trimmed)) {
     return target;
   }
   try {
     // GitHub resolves a leading slash against the repository root, not the
     // site root, so it is appended to the base rather than replacing its path.
-    const resolved = new URL(trimmed.replace(/^\/+/, ""), base).toString();
+    const resolved = new URL(
+      trimmed.replace(LEADING_SLASHES, ""),
+      base,
+    ).toString();
     // `../` can climb out of the repository. Leave those alone rather than
     // inventing a target outside it.
     return resolved.startsWith(base) ? resolved : target;
@@ -48,43 +60,44 @@ function absolute(target: string, image: boolean): string {
   }
 }
 
+/** The destination itself, without its angle brackets. */
+function unwrap(target: string): string {
+  return target.startsWith("<") && target.endsWith(">")
+    ? target.slice(1, -1)
+    : target;
+}
+
+/** The destination as it goes back into the line. */
+function wrap(resolved: string, original: string): string {
+  const bracketed = original.startsWith("<") && original.endsWith(">");
+  return bracketed || (resolved !== original && NEEDS_BRACKETS.test(resolved))
+    ? `<${resolved}>`
+    : resolved;
+}
+
 /** Rewrites one line's link and image targets, leaving code spans alone. */
 function rewriteLine(line: string, imageLabels: Set<string>): string {
   const reference = REFERENCE_TARGET.exec(line);
   if (reference) {
     const target = reference[3] ?? "";
-    const bracketed = target.startsWith("<") && target.endsWith(">");
-    const inner = bracketed ? target.slice(1, -1) : target;
     const resolved = absolute(
-      inner,
+      unwrap(target),
       imageLabels.has(label(reference[2] ?? "")),
     );
     const rest = line.slice(reference[0].length);
-    return `${reference[1]}${bracketed ? `<${resolved}>` : resolved}${rest}`;
+    return `${reference[1]}${wrap(resolved, target)}${rest}`;
   }
 
   // Code spans are literal, so their contents keep whatever they say.
-  const spans: [number, number][] = [];
-  CODE_SPAN.lastIndex = 0;
-  for (
-    let span = CODE_SPAN.exec(line);
-    span !== null;
-    span = CODE_SPAN.exec(line)
-  ) {
-    spans.push([span.index, span.index + span[0].length]);
-  }
-  const inSpan = (index: number): boolean =>
-    spans.some(([start, end]) => index >= start && index < end);
+  const spans = codeSpans(line);
 
   INLINE_TARGET.lastIndex = 0;
   return line.replace(INLINE_TARGET, (match, bang, text, target, offset) => {
-    if (inSpan(offset)) {
+    if (insideSpan(spans, offset)) {
       return match;
     }
-    const bracketed = target.startsWith("<") && target.endsWith(">");
-    const inner = bracketed ? target.slice(1, -1) : target;
-    const resolved = absolute(inner, bang === "!");
-    return `${bang}[${text}](${bracketed ? `<${resolved}>` : resolved}`;
+    const resolved = absolute(unwrap(target), bang === "!");
+    return `${bang}[${text}](${wrap(resolved, target)}`;
   });
 }
 
@@ -104,7 +117,7 @@ function outsideFences(
         // A closer matches the opening character and carries nothing after it.
         marker[0] === openFence[0] &&
         marker.length >= openFence.length &&
-        !(fence[2] ?? "").trim()
+        !NON_SPACE.test(fence[2] ?? "")
       ) {
         openFence = null;
       }

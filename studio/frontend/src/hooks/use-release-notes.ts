@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken, hasAuthToken } from "@/features/auth";
+import { authFetch, hasAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -63,17 +63,10 @@ async function fetchReleaseNotes(
   version: string,
   refresh = false,
 ): Promise<ReleaseNotes | null> {
-  const token = getAuthToken();
-  if (!token) {
-    return null;
-  }
-
-  const headers = new Headers();
-  headers.set("Authorization", `Bearer ${token}`);
   const query = `version=${encodeURIComponent(version)}${refresh ? "&refresh=true" : ""}`;
-  const res = await fetch(apiUrl(`/api/studio/release-notes?${query}`), {
-    headers,
-  });
+  // authFetch, not fetch: an expired access token is refreshed and retried
+  // instead of leaving the panel stuck on its error state.
+  const res = await authFetch(apiUrl(`/api/studio/release-notes?${query}`));
   if (!res.ok) {
     throw new Error(`Release notes request failed: ${res.status}`);
   }
