@@ -41,7 +41,12 @@ echo "  CUDA           ${CUDA_VERSION}  Ubuntu ${UBUNTU_VERSION}  Python ${PYTHO
 echo "  unsloth        @${UNSLOTH_REF}"
 echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
 echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
-echo "  arch list      8.0;8.6;8.9;9.0;10.0;12.0+PTX"
+# Read the arch list back out of the Dockerfile rather than repeating it: the
+# hand-copied banner had already drifted, dropping 7.5 and so under-reporting
+# Turing support to anyone reading this output.
+ARCH_LIST="$(sed -n 's/^[[:space:]]*TORCH_CUDA_ARCH_LIST="\([^"]*\)".*/\1/p' \
+             "$(dirname "$0")/Dockerfile" | head -n1)"
+echo "  arch list      ${ARCH_LIST:-unknown}"
 echo
 
 DOCKER_BUILDKIT=1 docker build \
