@@ -411,6 +411,78 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(result["devices"][0]["index"], 0)
         self.assertEqual(result["devices"][0]["visible_ordinal"], 0)
 
+    def test_cpu_training_host_reports_discrete_vulkan_inference_gpu(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend",
+                return_value = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
+                return_value = [(0, 7402, 8192)],
+            ),
+        ):
+            result = get_backend_visible_gpu_info()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["backend"], "vulkan")
+        self.assertEqual(result["index_kind"], "relative")
+        self.assertEqual(result["parent_visible_gpu_ids"], [])
+        self.assertEqual(
+            result["devices"],
+            [
+                {
+                    "index": 0,
+                    "index_kind": "relative",
+                    "visible_ordinal": 0,
+                    "name": "Vulkan0",
+                    "memory_total_gb": 8.0,
+                    "vram_used_gb": 0.77,
+                    "vram_free_gb": 7.23,
+                    "vram_utilization_pct": 9.6,
+                }
+            ],
+        )
+
+    def test_cpu_training_host_uses_capped_free_budget_for_vulkan_igpu(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend",
+                return_value = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
+                return_value = [(0, 12288, 0)],
+            ),
+        ):
+            result = get_backend_visible_gpu_info()
+
+        device = result["devices"][0]
+        self.assertEqual(device["memory_total_gb"], 12.0)
+        self.assertEqual(device["vram_free_gb"], 12.0)
+        self.assertIsNone(device["vram_used_gb"])
+        self.assertIsNone(device["vram_utilization_pct"])
+
+    def test_cpu_host_without_vulkan_devices_keeps_legacy_unavailable_shape(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._is_vulkan_backend",
+                return_value = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._get_gpu_memory",
+                return_value = [],
+            ),
+        ):
+            result = get_backend_visible_gpu_info()
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["backend"], "cpu")
+        self.assertEqual(result["devices"], [])
+
 
 class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
     def test_get_device_map_uses_explicit_gpu_selection(self):

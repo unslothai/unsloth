@@ -296,7 +296,7 @@ def detect_hardware() -> DeviceType:
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
         CHAT_ONLY_REASON = "no_gpu"
-    print("Hardware detected: CPU (no GPU backend available)")
+    print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
 
@@ -2661,6 +2661,52 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             ],
             "index_kind": "relative",
         }
+
+    # Vulkan is a llama.cpp inference backend, not a PyTorch training device, so
+    # detect_hardware() correctly leaves this host on DeviceType.CPU. Still expose
+    # the Vulkan devices to system/inference consumers so the UI can account for
+    # their VRAM instead of presenting a working Vulkan install as CPU-only.
+    if device == DeviceType.CPU:
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            if LlamaCppBackend._is_vulkan_backend():
+                vulkan_devices = []
+                for ordinal, free_mib, total_mib in LlamaCppBackend._get_gpu_memory():
+                    # Integrated Vulkan GPUs report total=0 because their memory
+                    # is shared. The probe's capped free value is the usable GPU
+                    # budget in that case and prevents the Hub from assuming 0 VRAM.
+                    budget_mib = total_mib or free_mib
+                    used_mib = max(0, total_mib - free_mib) if total_mib else None
+                    vulkan_devices.append(
+                        {
+                            "index": ordinal,
+                            "index_kind": "relative",
+                            "visible_ordinal": ordinal,
+                            "name": f"Vulkan{ordinal}",
+                            "memory_total_gb": round(budget_mib / 1024, 2),
+                            "vram_used_gb": round(used_mib / 1024, 2)
+                            if used_mib is not None
+                            else None,
+                            "vram_free_gb": round(free_mib / 1024, 2),
+                            "vram_utilization_pct": round((used_mib / total_mib) * 100, 1)
+                            if used_mib is not None and total_mib > 0
+                            else None,
+                        }
+                    )
+                if vulkan_devices:
+                    return {
+                        "available": True,
+                        "backend": "vulkan",
+                        "backend_cuda_visible_devices": None,
+                        "parent_visible_gpu_ids": [],
+                        "devices": vulkan_devices,
+                        # Vulkan indices are compact ggml ordinals, not physical
+                        # CUDA/ROCm IDs. This keeps physical-GPU pickers hidden.
+                        "index_kind": "relative",
+                    }
+        except Exception as e:
+            logger.debug("Vulkan GPU visibility query failed: %s", e)
 
     return {
         "available": False,

@@ -1184,14 +1184,19 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
             total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
             # Keep None (usage unknown, e.g. Windows ROCm perf counter) so the UI
             # shows unknown, not a fabricated 0 used / full free.
-            used_vram = util.get("vram_used_gb")
+            used_vram = util.get("vram_used_gb", dev.get("vram_used_gb"))
+            reported_free_vram = util.get("vram_free_gb", dev.get("vram_free_gb"))
 
             enriched_dev = dict(dev)
             enriched_dev["vram_used_gb"] = used_vram
             enriched_dev["vram_free_gb"] = (
-                round(total_vram - used_vram, 2) if total_vram and used_vram is not None else None
+                round(total_vram - used_vram, 2)
+                if total_vram and used_vram is not None
+                else reported_free_vram
             )
-            enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
+            enriched_dev["vram_utilization_pct"] = util.get(
+                "vram_utilization_pct", dev.get("vram_utilization_pct")
+            )
             enriched_devices.append(enriched_dev)
 
         # Whether GGUF loads accept an explicit gpu_ids pick: /load and
@@ -1207,7 +1212,12 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")
             gpu_ids_supported = True
+        # Preserve backend/index metadata from the visibility probe. In
+        # particular, a CPU training host can expose a Vulkan inference GPU and
+        # the UI must label that device as Vulkan rather than falling back to the
+        # top-level CPU training backend.
         gpu_info = {
+            **visibility_info,
             "available": visibility_info.get("available", False),
             "devices": enriched_devices,
             "gguf_gpu_ids_supported": gpu_ids_supported,
