@@ -683,7 +683,6 @@ class TestExtraArgsMtpDetection:
         # A zero-offload launch masks the GPUs away from the child; a pin it
         # cannot see aborts llama-server, so the alias must count as a pin.
         from core.inference.llama_cpp import LlamaCppBackend
-
         assert LlamaCppBackend._cmd_has_gpu_device_pin(cmd) is True
 
     @pytest.mark.parametrize(

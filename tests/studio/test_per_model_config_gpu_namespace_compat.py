@@ -71,8 +71,7 @@ def _write_harness(workdir: Path, script: str) -> None:
     """Write the node harness into a pytest tmp dir (never the repo tree)."""
     workdir.mkdir(parents = True, exist_ok = True)
     (workdir / "register.mjs").write_text(
-        "import { register } from 'node:module';\n"
-        "register('./loader.mjs', import.meta.url);\n"
+        "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n"
     )
     # Resolve the app's "@/" alias and Vite's extensionless relative imports.
     (workdir / "loader.mjs").write_text(
@@ -234,7 +233,8 @@ def test_reconcile_matrix_over_host_gpu_namespaces(tmp_path):
     """The saved namespace decides whether a pick may be reused on this host."""
     body = _extract_function(_RUNTIME_STORE.read_text(), "reconcilePersistedGpuIds")
     assert "cachedPinnableGpuIndexKind" in body, "extracted the wrong function"
-    script = """
+    script = (
+        """
 type GpuIndexKind = "physical" | "vulkan";
 let CURRENT_KIND: GpuIndexKind | null | undefined;
 let PINNABLE: number[] | null;
@@ -289,7 +289,9 @@ for (const c of cases) {
     : reconcilePersistedGpuIds(c.ids);
 }
 console.log("RESULT " + JSON.stringify(out));
-""" % body
+"""
+        % body
+    )
     result = _run(tmp_path, script)
     assert result["legacy_on_physical"] == [0, 1]
     assert result["legacy_on_vulkan"] is None

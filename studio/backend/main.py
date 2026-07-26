@@ -1218,8 +1218,7 @@ def _get_cached_system_gpu_info(logger) -> dict[str, Any]:
                 # would ignore a pin, and /load rejects one, so hide the picker
                 # instead of offering IDs that fail the load.
                 gpu_ids_supported = (
-                    get_device() != DeviceType.XPU
-                    and not LlamaCppBackend._backend_lacks_gpu_lib()
+                    get_device() != DeviceType.XPU and not LlamaCppBackend._backend_lacks_gpu_lib()
                 )
         except Exception as e:
             logger.debug(f"Could not resolve gpu_ids support: {e}")

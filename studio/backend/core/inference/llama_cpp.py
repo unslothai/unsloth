@@ -6722,9 +6722,7 @@ class LlamaCppBackend:
             elif _needs_diffusion_preflight and gguf_path and not hf_repo:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
-                _preflight_is_diffusion = self._gguf_path_is_diffusion(
-                    gguf_path, model_identifier
-                )
+                _preflight_is_diffusion = self._gguf_path_is_diffusion(gguf_path, model_identifier)
             if _preflight_is_diffusion:
                 if _explicit_memory_mode:
                     raise ValueError(

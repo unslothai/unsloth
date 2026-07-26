@@ -88,7 +88,15 @@ def _gguf_config():
     return SimpleNamespace(is_gguf = True)
 
 
-def _resolve(route, gpu_ids, *, binary, vulkan, device, resolved = None):
+def _resolve(
+    route,
+    gpu_ids,
+    *,
+    binary,
+    vulkan,
+    device,
+    resolved = None,
+):
     """Drive _resolve_gguf_gpu_ids_for_request with the host fully spoofed."""
     backend = SimpleNamespace(
         is_vulkan_build = lambda: vulkan,
@@ -98,9 +106,9 @@ def _resolve(route, gpu_ids, *, binary, vulkan, device, resolved = None):
         patch.object(route, "_classify_diffusion_gguf", return_value = False),
         patch.object(route, "get_llama_cpp_backend", return_value = backend),
         patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
-        patch.object(hardware_pkg, "get_device", return_value = getattr(
-            hardware_pkg.DeviceType, device
-        )),
+        patch.object(
+            hardware_pkg, "get_device", return_value = getattr(hardware_pkg.DeviceType, device)
+        ),
         patch(
             "utils.hardware.hardware.resolve_requested_gpu_ids",
             return_value = list(resolved if resolved is not None else (gpu_ids or [])),
@@ -117,7 +125,14 @@ def _resolve(route, gpu_ids, *, binary, vulkan, device, resolved = None):
         return asyncio.run(route._resolve_gguf_gpu_ids_for_request(_gguf_config(), gpu_ids))
 
 
-def _system_gpu_ids_supported(main_mod, *, binary, vulkan, device, vulkan_devices = None):
+def _system_gpu_ids_supported(
+    main_mod,
+    *,
+    binary,
+    vulkan,
+    device,
+    vulkan_devices = None,
+):
     """Drive /api/system's picker gate with the host fully spoofed."""
     devices = [
         {"index": 0, "index_kind": "physical", "name": "GPU0"},
@@ -134,9 +149,9 @@ def _system_gpu_ids_supported(main_mod, *, binary, vulkan, device, vulkan_device
             return_value = {"available": True, "devices": devices},
         ),
         patch.object(hardware_pkg, "get_visible_gpu_utilization", return_value = {"devices": []}),
-        patch.object(hardware_pkg, "get_device", return_value = getattr(
-            hardware_pkg.DeviceType, device
-        )),
+        patch.object(
+            hardware_pkg, "get_device", return_value = getattr(hardware_pkg.DeviceType, device)
+        ),
         patch.object(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a: vulkan)),
         patch.object(
             LlamaCppBackend,
@@ -177,9 +192,7 @@ def test_gpu_ids_decision_matrix(tmp_path, route, main_mod, os_name, gpu_name):
         expected_lacks = (gpu_name == "cpu_only") and os_name != "macos"
         assert lacks_gpu_lib is expected_lacks
 
-        info = _system_gpu_ids_supported(
-            main_mod, binary = binary, vulkan = False, device = device
-        )
+        info = _system_gpu_ids_supported(main_mod, binary = binary, vulkan = False, device = device)
         assert info["gguf_gpu_ids_supported"] is not expected_lacks
         # The device list is independent of the picker gate: hiding the picker
         # must never zero the VRAM fit badges.

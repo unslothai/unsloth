@@ -1051,7 +1051,13 @@ def test_remote_diffusion_rejects_explicit_memory_mode_after_download(tmp_path):
         )
 
 
-def _memory_mode_preflight_backend(tmp_path, killed, *, arch, downloads = None):
+def _memory_mode_preflight_backend(
+    tmp_path,
+    killed,
+    *,
+    arch,
+    downloads = None,
+):
     """A backend whose teardown is observable, for the pre-Phase-1 checks."""
     gguf = tmp_path / "model.gguf"
     _write_minimal_gguf(gguf, arch = arch)
@@ -1080,9 +1086,7 @@ def test_local_diffusion_memory_mode_rejected_before_teardown(tmp_path, mode):
     Phase 1 rather than killing a healthy server and then returning 400.
     """
     killed: list[bool] = []
-    backend, gguf = _memory_mode_preflight_backend(
-        tmp_path, killed, arch = "diffusion-gemma"
-    )
+    backend, gguf = _memory_mode_preflight_backend(tmp_path, killed, arch = "diffusion-gemma")
 
     with pytest.raises(ValueError, match = "host-memory modes are not supported"):
         backend.load_model(
