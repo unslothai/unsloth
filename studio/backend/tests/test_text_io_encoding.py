@@ -152,7 +152,6 @@ def test_text_io_names_its_encoding(path: Path) -> None:
     offenders = _offenders(path)
     assert not offenders, (
         "Text I/O without an explicit encoding falls back to the Windows ANSI "
-        "codepage and corrupts non-ASCII (ä ö ü → 世). Pass encoding = \"utf-8\":\n  "
+        'codepage and corrupts non-ASCII (ä ö ü → 世). Pass encoding = "utf-8":\n  '
         + "\n  ".join(offenders)
     )
-

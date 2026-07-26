@@ -807,7 +807,9 @@ def _rocm_linux_sysfs_power_w() -> Optional[float]:
         ):
             files = glob.glob(pattern)
             if files:
-                watts = sum(int(open(f, encoding = "utf-8").read().strip()) / 1_000_000.0 for f in files)
+                watts = sum(
+                    int(open(f, encoding = "utf-8").read().strip()) / 1_000_000.0 for f in files
+                )
                 return round(watts, 1)
         return None
     except Exception:
