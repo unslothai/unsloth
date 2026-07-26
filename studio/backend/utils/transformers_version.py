@@ -928,9 +928,7 @@ def _check_remote_auto_map_needs_510(model_name: str, hf_token: str | None = Non
 
 
 def _tokenizer_auto_map_needs_v5(
-    data: dict,
-    model_name: str,
-    hf_token: str | None,
+    data: dict, model_name: str, hf_token: str | None
 ) -> tuple[bool, bool]:
     """``(needs_v5, definitive)`` for the tokenizer ``auto_map`` closure.
 
@@ -957,9 +955,7 @@ def _tokenizer_auto_map_needs_v5(
                     return False, False
         # An own-repo entry file that has not been written yet (in-progress checkpoint)
         # means the closure is incomplete, not that it is 4.x-safe.
-        definitive = all(
-            repo is not None or _safe_is_file(local_root / fn) for repo, fn in refs
-        )
+        definitive = all(repo is not None or _safe_is_file(local_root / fn) for repo, fn in refs)
         ext_sources, ext_ok = _collect_external_py_sources(refs, hf_token)
         if any(repo is not None for repo, _ in refs) and not ext_ok:
             return False, False

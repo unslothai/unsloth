@@ -3567,7 +3567,11 @@ class TestRaiseTierForNested:
 _V5_IMPORT = "from transformers.utils.output_capturing import capture_outputs\n"
 
 
-def _auto_map_checkpoint(root: Path, modeling_src: str, model_type: str = "custom_remote"):
+def _auto_map_checkpoint(
+    root: Path,
+    modeling_src: str,
+    model_type: str = "custom_remote",
+):
     """A local custom-code checkpoint whose auto_map points at ``modeling_custom.py``."""
     (root / "config.json").write_text(
         json.dumps(
@@ -3601,9 +3605,7 @@ class TestRemoteImportSpellings:
         assert get_transformers_tier(str(tmp_path)) == "510"
 
     def test_aliased_parent_import_returns_510(self, tmp_path: Path):
-        _auto_map_checkpoint(
-            tmp_path, "from transformers.utils import output_capturing as oc\n"
-        )
+        _auto_map_checkpoint(tmp_path, "from transformers.utils import output_capturing as oc\n")
         assert get_transformers_tier(str(tmp_path)) == "510"
 
     def test_parent_package_alone_stays_default(self, tmp_path: Path):
