@@ -190,6 +190,21 @@ export async function refreshContextUsage(options?: {
             .slice()
             .sort((a, b) => a.createdAt - b.createdAt);
       runMessages = ordered.map(storedMessageToRunMessage);
+
+      const savedUsage = getSavedContextUsageFromMessages(
+        records,
+        capturedCheckpoint,
+        useChatRuntimeStore.getState().ggufContextLength,
+      );
+      if (
+        savedUsage &&
+        generation === refreshGeneration &&
+        useChatRuntimeStore.getState().params.checkpoint === capturedCheckpoint &&
+        (capturedThreadId == null ||
+          useChatRuntimeStore.getState().activeThreadId === capturedThreadId)
+      ) {
+        useChatRuntimeStore.getState().setContextUsage(savedUsage);
+      }
     } else {
       runMessages = runtimeMessagesGetter?.() ?? [];
     }
