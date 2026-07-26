@@ -144,8 +144,14 @@ def test_sanitize_config_rejects_nonscalar_inference_request_value():
 
 def test_sanitize_config_accepts_scalar_inference_request():
     # Well-formed runs must be unaffected by the rejection above.
-    request = {"model": "m", "temperature": 0.7, "topP": 0.9,
-               "maxTokens": 1024, "enableThinking": True, "reasoningEffort": "high"}
+    request = {
+        "model": "m",
+        "temperature": 0.7,
+        "topP": 0.9,
+        "maxTokens": 1024,
+        "enableThinking": True,
+        "reasoningEffort": "high",
+    }
     config = _sanitize_config(_make_payload(inferenceRequest = dict(request)), {"modelId": "other"})
     assert config["inferenceRequest"] == request
 
