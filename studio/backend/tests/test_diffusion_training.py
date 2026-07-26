@@ -1758,3 +1758,17 @@ def test_run_detail_route_non_object_record_is_404(client, _isolated_runs_dir):
 
     r = client.get(f"/api/train/diffusion/runs/{job_id}")
     assert r.status_code == 404, r.text
+
+
+def test_request_model_rejects_non_finite_learning_rate():
+    # 1e309 parses as inf, which satisfies a gt-only bound; the route would then start
+    # AdamW with an infinite rate and save a destroyed adapter while progress looked fine.
+    from pydantic import ValidationError
+
+    from models.training import DiffusionTrainingStartRequest as R
+
+    base = dict(base_model = "b", data_dir = "d", output_dir = "o")
+    assert R(**base, learning_rate = 1e-4).learning_rate == 1e-4
+    for bad in (float("inf"), 1e309, float("nan"), 1.0, 5.0, 0.0):
+        with pytest.raises(ValidationError):
+            R(**base, learning_rate = bad)

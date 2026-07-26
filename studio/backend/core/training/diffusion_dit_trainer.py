@@ -1676,7 +1676,17 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     pcache = None
     if getattr(cfg, "cond_cache_dir", None):
         try:
-            pcache = PersistentConditioningCache(cfg.cond_cache_dir, spec.family, cfg.resolution)
+            # Namespace on the CHECKPOINT, not just the family: keys below carry only the
+            # caption/image content and crop variant, so one cache dir reused for two
+            # checkpoints (or the same repo at a new revision) would let a warm run train
+            # on embeddings and latent stats produced by the other model -- incompatible
+            # shapes at best, silently wrong conditioning at worst.
+            from .diffusion_train_extras import source_revision  # noqa: PLC0415
+
+            namespace = (
+                f"{spec.family}_{cfg.base_model}_{source_revision(cfg.base_model)}"
+            )
+            pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
     # The crop/flip variant plan is seed-deterministic, so the persistent keys are stable

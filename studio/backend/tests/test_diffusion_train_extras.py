@@ -266,3 +266,20 @@ def test_config_ema_decay_validation_and_coercion():
 def test_config_blank_cond_cache_dir_means_off():
     assert _cfg(cond_cache_dir = "   ").normalized().cond_cache_dir is None
     assert _cfg(cond_cache_dir = "/tmp/cc").normalized().cond_cache_dir == "/tmp/cc"
+
+
+def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
+    # The trainer namespaces its conditioning cache on this, so an in-place checkpoint
+    # update must change the marker or a warm run trains on the old encoder's embeddings.
+    from core.training.diffusion_train_extras import source_revision
+
+    d = tmp_path / "ckpt"
+    (d / "text_encoder").mkdir(parents = True)
+    w = d / "text_encoder" / "model.safetensors"
+    w.write_bytes(b"v1")
+    first = source_revision(str(d))
+    assert first == source_revision(str(d))  # stable while untouched
+    w.write_bytes(b"v2-longer")
+    assert source_revision(str(d)) != first
+    for ref in (None, "", "no/such/repo-xyz", "/does/not/exist", 7):
+        assert isinstance(source_revision(ref), str)

@@ -747,7 +747,12 @@ class DiffusionTrainingStartRequest(BaseModel):
             "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
         ),
     )
-    learning_rate: float = Field(1e-4, gt = 0)
+    # Upper bound as well as positive, matching the LLM schema's _parse_lr: JSON accepts
+    # 1e309, which floats to inf and satisfies a gt-only constraint, and the route then
+    # evicts the resident models and starts AdamW with an infinite rate -- the first step
+    # destroys the adapter while the run reports normal progress and saves the result.
+    # (NaN already fails gt.) Values at or above 1.0 always diverge anyway.
+    learning_rate: float = Field(1e-4, gt = 0, lt = 1.0)
     train_batch_size: int = Field(1, ge = 1, le = 64)
     gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
     lora_rank: int = Field(16, ge = 1, le = 320)

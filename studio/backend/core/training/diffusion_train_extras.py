@@ -172,6 +172,61 @@ def _sanitize(token: str) -> str:
     return re.sub(r"[^a-z0-9.]+", "-", str(token).lower()).strip("-")
 
 
+def source_revision(ref: Any) -> str:
+    """Revision/content marker for a checkpoint reference, resolved without loading it.
+
+    A repo id or directory path is not a version: a Hub repo that advances to a new
+    revision, or a directory edited in place, keeps the same string while its encoders
+    change, so cached conditioning from the old encoder would be reused. Shared by the
+    trainer's cache namespace and the inference-side wrapper; deliberately cheap and
+    never touches the encoders, since the point of the cache is that a warm run does
+    not load them.
+    """
+    import os  # noqa: PLC0415 — keep the module import list light for the subprocess
+
+    try:
+        name = str(ref or "").strip()
+        if not name:
+            return "none"
+        if os.path.isdir(name):
+            parts: list[str] = []
+            roots = [name]
+            with os.scandir(name) as it:
+                roots += [
+                    e.path for e in it
+                    if e.is_dir() and e.name.startswith(("text_encoder", "tokenizer"))
+                ]
+            for root in roots:
+                with os.scandir(root) as it:
+                    for e in it:
+                        if not e.is_file():
+                            continue
+                        st = e.stat()
+                        parts.append(
+                            f"{os.path.relpath(e.path, name)}:{st.st_size}:{st.st_mtime_ns}"
+                        )
+            return f"dir-{hashlib.sha256('|'.join(sorted(parts)).encode()).hexdigest()[:16]}"
+        if "/" in name:
+            from huggingface_hub import constants  # noqa: PLC0415
+
+            org, _, repo = name.partition("/")
+            base = os.path.join(constants.HF_HUB_CACHE, f"models--{org}--{repo}")
+            ref_file = os.path.join(base, "refs", "main")
+            if os.path.isfile(ref_file):
+                with open(ref_file, encoding = "utf-8") as fh:
+                    sha = fh.read().strip()
+                if sha:
+                    return f"rev-{sha[:16]}"
+            snaps = os.path.join(base, "snapshots")
+            if os.path.isdir(snaps):
+                names = sorted(os.listdir(snaps))
+                if len(names) == 1:
+                    return f"rev-{names[0][:16]}"
+        return "unresolved"
+    except Exception:  # noqa: BLE001 — best-effort, never block a run
+        return "unresolved"
+
+
 class PersistentConditioningCache:
     """One safetensors file per cached item under ``cache_dir``.
 
