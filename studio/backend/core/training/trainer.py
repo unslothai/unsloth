@@ -2393,6 +2393,7 @@ class UnslothTrainer:
         is_cpt: bool = False,
         s3_config: dict = None,
         training_seed: int = 3407,
+        dataset_revision: Optional[str] = None,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2472,6 +2473,8 @@ class UnslothTrainer:
                             }
                             if entry.get("subset"):
                                 kwargs["name"] = entry["subset"]
+                            if entry.get("revision"):
+                                kwargs["revision"] = entry["revision"]
                             loaded.append(load_dataset(**kwargs, streaming = dataset_streaming))
                         else:
                             files = self._resolve_local_files([entry["local_path"]])
@@ -2534,6 +2537,8 @@ class UnslothTrainer:
                 load_kwargs = {"path": dataset_source, "split": split_name}
                 if subset:
                     load_kwargs["name"] = subset
+                if dataset_revision:
+                    load_kwargs["revision"] = dataset_revision
 
                 if dataset_streaming:
                     self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
@@ -2627,6 +2632,8 @@ class UnslothTrainer:
                         eval_load_kwargs = {"path": dataset_source, "split": eval_split}
                         if subset:
                             eval_load_kwargs["name"] = subset
+                        if dataset_revision:
+                            eval_load_kwargs["revision"] = dataset_revision
 
                         if dataset_streaming:
                             # Probe available splits before the streaming load.
@@ -2638,6 +2645,8 @@ class UnslothTrainer:
                             probe_kwargs = {"path": dataset_source}
                             if subset:
                                 probe_kwargs["config_name"] = subset
+                            if dataset_revision:
+                                probe_kwargs["revision"] = dataset_revision
                             try:
                                 available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:
@@ -2694,6 +2703,7 @@ class UnslothTrainer:
                         eval_dataset = self._auto_detect_eval_split_from_hf(
                             dataset_source = dataset_source,
                             subset = subset,
+                            dataset_revision = dataset_revision,
                         )
                         if eval_dataset is not None:
                             has_separate_eval_source = True
@@ -2884,7 +2894,7 @@ class UnslothTrainer:
                 s3_download.cleanup()
 
     def _auto_detect_eval_split_from_hf(
-        self, dataset_source: str, subset: str
+        self, dataset_source: str, subset: str, dataset_revision: Optional[str] = None
     ) -> Optional[Dataset]:
         """Auto-detect an eval split from an HF dataset (named split only)."""
         try:
@@ -2893,6 +2903,8 @@ class UnslothTrainer:
             load_kwargs = {"path": dataset_source}
             if subset:
                 load_kwargs["config_name"] = subset
+            if dataset_revision:
+                load_kwargs["revision"] = dataset_revision
             available_splits = get_dataset_split_names(**load_kwargs)
             logger.info(f"Available splits: {available_splits}\n")
 
@@ -2902,6 +2914,8 @@ class UnslothTrainer:
                     eval_load_kwargs = {"path": dataset_source, "split": candidate}
                     if subset:
                         eval_load_kwargs["name"] = subset
+                    if dataset_revision:
+                        eval_load_kwargs["revision"] = dataset_revision
                     candidate_ds = load_dataset(**eval_load_kwargs)
                     if len(candidate_ds) >= 16:
                         logger.info(

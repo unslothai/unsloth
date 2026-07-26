@@ -159,6 +159,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "eval_split": values.get("eval_split"),
         "eval_steps": values.get("eval_steps", 0.00),
         "dataset_streaming": values.get("dataset_streaming", False),
+        "portable_resume_data": values.get("portable_resume_data", "metadata"),
         "dataset_slice_start": values.get("dataset_slice_start"),
         "dataset_slice_end": values.get("dataset_slice_end"),
         "custom_format_mapping": values.get("custom_format_mapping"),
