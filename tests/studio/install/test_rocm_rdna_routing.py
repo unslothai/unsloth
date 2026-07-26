@@ -74,8 +74,7 @@ def routed():
     # with mlx installed, so the spoof would be ignored. Force the GPU path to keep
     # the assertion live there instead of skipping it.
     env = {**os.environ, "UNSLOTH_FORCE_GPU_PATH": "1"}
-    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True,
-                          env = env)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
     line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
     assert line, f"child produced no result.\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     return json.loads(line[len("RESULT ") :])
