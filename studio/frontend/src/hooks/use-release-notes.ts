@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth";
+import { getAuthToken, hasAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -18,6 +18,12 @@ export interface ReleaseNotes {
 }
 
 export type ReleaseNotesState = "idle" | "loading" | "ready" | "error";
+
+// Desktop auto-auth installs its token after first paint, so a popup shown at
+// startup can ask before one exists. Wait briefly instead of recording a
+// failure the user would have to clear by hand.
+const AUTH_POLL_MS = 250;
+const AUTH_POLL_LIMIT = 40;
 
 interface UseReleaseNotesOptions {
   version: string | null | undefined;
@@ -108,11 +114,23 @@ export function useReleaseNotes({
   }, []);
 
   useEffect(() => {
-    const pending =
-      enabled && version && requestedVersionRef.current !== version;
-    if (pending) {
-      load(version);
+    if (!enabled || !version || requestedVersionRef.current === version) {
+      return;
     }
+    if (hasAuthToken()) {
+      load(version);
+      return;
+    }
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      if (hasAuthToken() || attempts >= AUTH_POLL_LIMIT) {
+        window.clearInterval(timer);
+        // Out of patience: load anyway so the panel settles on retry.
+        load(version);
+      }
+    }, AUTH_POLL_MS);
+    return () => window.clearInterval(timer);
   }, [enabled, version, load]);
 
   const retry = useCallback(() => {

@@ -193,14 +193,19 @@ function NotesStatus({
     return (
       <NotesMessage
         action={
-          <button
-            type="button"
-            onClick={retry}
-            className={NOTES_LINK_CLASS}
-            data-testid="update-release-notes-retry"
-          >
-            Retry
-          </button>
+          // The changelog page can be reachable even when the lookup is not,
+          // so keep it beside the retry rather than replacing it.
+          <span className="flex shrink-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={retry}
+              className={NOTES_LINK_CLASS}
+              data-testid="update-release-notes-retry"
+            >
+              Retry
+            </button>
+            {link}
+          </span>
         }
       >
         Could not load release notes.

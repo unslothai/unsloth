@@ -221,7 +221,7 @@ def test_commented_out_sections_are_not_releases(changelog_module, text):
 
 
 def test_repo_root_changelog_is_preferred_over_the_build_snapshot(changelog_module):
-    """build.sh writes studio/CHANGELOG.md; the edited root file must win."""
+    """The build backend writes studio/CHANGELOG.md; the root file must win."""
     paths = [str(p) for p in changelog_module._local_changelog_candidates()]
     root = next(
         i
@@ -385,7 +385,7 @@ def test_preview_matches_how_markdown_renders_prose_and_links():
     at an abbreviation."""
     src = PREVIEW.read_text(encoding = "utf-8")
     # Contiguous prose lines accumulate and flush at a paragraph boundary.
-    assert "paragraph = paragraph ?" in src
+    assert "collector.paragraph = collector.paragraph" in src
     # <https://x> renders as link text, so it is not a tag.
     assert "AUTOLINK" in src
     # "e.g. GGUF" is not a sentence boundary.
@@ -585,4 +585,56 @@ def test_preview_joins_an_indented_continuation_line():
     """Four spaces only start code outside a paragraph. Inside one the line is
     a wrapped continuation, so it must not be dropped from the preview."""
     src = PREVIEW.read_text(encoding = "utf-8")
-    assert "current === null && !paragraph && line.indent >= INDENTED_CODE_INDENT" in src
+    assert "!insideBlock && line.indent >= INDENTED_CODE_INDENT" in src
+
+
+def test_every_packaging_path_snapshots_the_changelog():
+    """`python -m build` and `pip install .` must ship the offline copy too,
+    so the snapshot is made by the build backend rather than by build.sh."""
+    pyproject = (REPO / "pyproject.toml").read_text(encoding = "utf-8")
+    assert 'build_py = "_changelog_build.build_py"' in pyproject
+    hook = (REPO / "_changelog_build.py").read_text(encoding = "utf-8")
+    assert "studio" in hook and "CHANGELOG.md" in hook
+    # The hook has to reach the sdist, or building from one loses the snapshot.
+    manifest = (REPO / "MANIFEST.in").read_text(encoding = "utf-8")
+    assert "include _changelog_build.py" in manifest
+    assert "include CHANGELOG.md" in manifest
+
+
+def test_preview_code_spans_need_a_matching_closer():
+    """A closer is a run of the same length, so ``Use `` `x` `` `` keeps the
+    inner backticks the expanded notes show."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "const CODE_SPAN = /(`+)([\\s\\S]*?)\\1(?!`)/g;" in src
+    assert "stripCodeSpanPadding" in src, "one space of padding is dropped, as in Markdown"
+
+
+def test_preview_skips_thematic_breaks():
+    """`- - -` renders as a rule, so it must not take a preview slot."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "THEMATIC_BREAK" in src
+    assert "THEMATIC_BREAK.test(visible)" in src
+
+
+def test_preview_keeps_quoted_examples_out_of_the_headlines():
+    """A quoted list is example output, not a change, so it never competes
+    with the release's own bullets."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "quoted: boolean" in src
+    assert "if (!line.quoted)" in src, "quoted bullets never become headlines"
+
+
+def test_notes_panel_keeps_the_link_when_the_lookup_fails():
+    """Retry is not the only route: the changelog page can be reachable even
+    when the backend lookup is not."""
+    src = PANEL.read_text(encoding = "utf-8")
+    error_branch = src[src.index('if (state === "error")') :]
+    retry = error_branch.index("update-release-notes-retry")
+    assert error_branch.index("{link}") > retry, "link sits beside retry"
+
+
+def test_hook_waits_for_the_desktop_auth_token():
+    """The desktop popup can render before auto-auth installs its token, so a
+    missing token must not be recorded as a failed lookup."""
+    src = NOTES_HOOK.read_text(encoding = "utf-8")
+    assert "hasAuthToken()" in src and "AUTH_POLL_LIMIT" in src

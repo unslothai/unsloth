@@ -103,11 +103,9 @@ else
     STUDIO_STAMPED_VERSION="$(python scripts/stamp_studio_release.py)"
 fi
 
-# 4. Snapshot the changelog into the package so release notes still render
+# 4. Build wheel/sdist. The build backend snapshots CHANGELOG.md into the
+# studio package (see _changelog_build.py), so release notes still render
 # offline. CHANGELOG.md at the repo root stays the one file to edit.
-cp CHANGELOG.md studio/CHANGELOG.md
-
-# 5. Build wheel/sdist
 python -m build
 
 # Drop the snapshot so a source checkout never serves a stale copy.
@@ -120,7 +118,7 @@ fi
 _restore_studio_build_info
 trap - EXIT
 
-# 6. Optionally publish
+# 5. Optionally publish
 if [ "${1:-}" = "publish" ]; then
     python -m twine upload dist/*
 fi

@@ -15,6 +15,9 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const HEADING = /^#{1,6}\s+/;
 const BULLET = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
 const BLOCKQUOTE = /^\s*>\s?/;
+// "- - -" and "***" are horizontal rules, not bullets and not notes.
+const THEMATIC_BREAK =
+  /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
 const IMAGE = /!\[[^\]]*\]\([^)]*\)/g;
 const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 // Real tags only: a name character must follow "<", so a version constraint
@@ -22,7 +25,7 @@ const LINK = /\[([^\]]*)\]\([^)]*\)/g;
 const HTML_TAG = /<\/?[a-zA-Z][^>]*>/g;
 // <https://x> and <a@b.c> are Markdown autolinks: keep the text they render.
 const AUTOLINK = /<([a-zA-Z][a-zA-Z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>/g;
-const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1/g;
+const CODE_SPAN_INLINE = /(`+)[\s\S]*?\1(?!`)/g;
 // CommonMark type 1 HTML blocks render literally until a closing tag, which
 // the spec says need not be the one that opened the block.
 const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
@@ -53,7 +56,8 @@ const BOLD_UNDERSCORE = /(^|[^\w])__(?=\S)([\s\S]*?\S)__(?=[^\w]|$)/g;
 const ITALIC_STAR = /\*(?=\S)([^*\n]*?\S)\*/g;
 const ITALIC_UNDERSCORE = /(^|[^\w])_(?=\S)([^_\n]*?\S)_(?=[^\w]|$)/g;
 const BACKTICK = /`/g;
-const CODE_SPAN = /`+([^`\n]+)`+/g;
+// A closer is a run of the same length, so `` `x` `` keeps its backticks.
+const CODE_SPAN = /(`+)([\s\S]*?)\1(?!`)/g;
 const PARKED = /\uE000(\d+)\uE001/g;
 const WHITESPACE = /\s+/g;
 // Sentence end followed by something that actually starts a sentence.
@@ -116,13 +120,20 @@ interface Bullet {
   indent: number;
 }
 
+/** One space of padding is dropped when a code span has it on both sides. */
+function stripCodeSpanPadding(code: string): string {
+  const padded =
+    code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "";
+  return padded ? code.slice(1, -1) : code;
+}
+
 /** Inline markdown stripped to plain text. */
 function toPlainText(markdown: string): string {
   // Park code spans first: their contents are literal, so tags, links and
   // emphasis inside them must survive every transformation below.
   const codes: string[] = [];
-  const parked = markdown.replace(CODE_SPAN, (_match, code: string) => {
-    codes.push(code);
+  const parked = markdown.replace(CODE_SPAN, (_match, _ticks, code: string) => {
+    codes.push(stripCodeSpanPadding(code));
     return `\uE000${codes.length - 1}\uE001`;
   });
 
@@ -151,6 +162,8 @@ function truncate(text: string): string {
 interface ContentLine {
   text: string;
   indent: number;
+  // Blockquoted lines are quoted examples, not the release's own bullets.
+  quoted: boolean;
 }
 
 /**
@@ -312,18 +325,20 @@ function contentLines(markdown: string): ContentLine[] {
     if (visible === null) {
       continue;
     }
-    if (!visible.trim()) {
+    if (!visible.trim() || THEMATIC_BREAK.test(visible)) {
+      // A rule separates notes, so it breaks a bullet just like a blank line.
       state.afterParagraph = false;
-      lines.push({ text: "", indent: 0 });
+      lines.push({ text: "", indent: 0, quoted: false });
       continue;
     }
+    const quoted = BLOCKQUOTE.test(visible);
     const stripped = visible.replace(BLOCKQUOTE, "");
     const indent = stripped.length - stripped.trimStart().length;
     // Only ordinary text continues a paragraph. A heading, a block or an
     // indented code line (four spaces, outside a paragraph) ends one.
     const startsCode = !state.afterParagraph && indent >= INDENTED_CODE_INDENT;
     state.afterParagraph = !HEADING_LINE.test(stripped) && !startsCode;
-    lines.push({ text: stripped.trim(), indent });
+    lines.push({ text: stripped.trim(), indent, quoted });
   }
   return lines;
 }
@@ -349,61 +364,96 @@ function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
 }
 
 /** Bullets in document order, plus prose for changelogs written as paragraphs. */
+interface Collector {
+  bullets: Bullet[];
+  prose: string[];
+  // Wrapped bullets continue on following lines and belong to one item.
+  current: Bullet | null;
+  paragraph: string;
+}
+
+function flush(collector: Collector): void {
+  if (collector.current?.text) {
+    collector.bullets.push({
+      text: truncate(collector.current.text),
+      indent: collector.current.indent,
+    });
+  }
+  collector.current = null;
+  if (collector.paragraph) {
+    collector.prose.push(truncate(collector.paragraph));
+    collector.paragraph = "";
+  }
+}
+
+function takeBullet(
+  collector: Collector,
+  text: string,
+  line: ContentLine,
+): void {
+  flush(collector);
+  const item = toPlainText(text);
+  // A quoted list is example output, not a change, so it never competes with
+  // the release's own bullets. It stays as prose for a section without any.
+  if (!line.quoted) {
+    collector.current = { text: item, indent: line.indent };
+  } else if (item) {
+    collector.prose.push(truncate(item));
+  }
+}
+
+function takeText(collector: Collector, text: string): void {
+  const plain = toPlainText(text);
+  if (!plain) {
+    return;
+  }
+  if (collector.current === null) {
+    // Wrapped paragraphs render as one block, so preview them as one item.
+    collector.paragraph = collector.paragraph
+      ? `${collector.paragraph} ${plain}`
+      : plain;
+    return;
+  }
+  collector.current = {
+    text: `${collector.current.text} ${plain}`,
+    indent: collector.current.indent,
+  };
+}
+
 function collectBullets(markdown: string): {
   bullets: Bullet[];
   prose: string[];
 } {
-  const bullets: Bullet[] = [];
-  const prose: string[] = [];
-  // Wrapped bullets continue on following lines and belong to one item.
-  let current: Bullet | null = null;
-  let paragraph = "";
-
-  const flush = () => {
-    if (current?.text) {
-      bullets.push({ text: truncate(current.text), indent: current.indent });
-    }
-    current = null;
-    if (paragraph) {
-      prose.push(truncate(paragraph));
-      paragraph = "";
-    }
+  const collector: Collector = {
+    bullets: [],
+    prose: [],
+    current: null,
+    paragraph: "",
   };
 
   for (const line of contentLines(markdown)) {
     if (!line.text || HEADING.test(line.text)) {
-      flush();
+      flush(collector);
       continue;
     }
-
     // An indented code block renders as code, so a "- cmd" line inside one is
     // not a bullet. Indentation cannot start code inside an open bullet or
     // paragraph, where it is just a wrapped line.
-    if (current === null && !paragraph && line.indent >= INDENTED_CODE_INDENT) {
+    const insideBlock =
+      collector.current !== null || collector.paragraph !== "";
+    if (!insideBlock && line.indent >= INDENTED_CODE_INDENT) {
       continue;
     }
-
     const bullet = BULLET.exec(line.text);
     if (bullet) {
-      flush();
-      current = { text: toPlainText(bullet[1] ?? ""), indent: line.indent };
+      takeBullet(collector, bullet[1] ?? "", line);
       continue;
     }
-
-    const text = toPlainText(line.text);
-    if (!text) {
-      continue;
-    }
-    if (current === null) {
-      // Wrapped paragraphs render as one block, so preview them as one item.
-      paragraph = paragraph ? `${paragraph} ${text}` : text;
-    } else {
-      current = { text: `${current.text} ${text}`, indent: current.indent };
-    }
+    takeText(collector, line.text);
   }
-  flush();
+  flush(collector);
 
-  return { bullets, prose };
+  return { bullets: collector.bullets, prose: collector.prose };
 }
 
 /**
