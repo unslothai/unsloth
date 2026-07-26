@@ -4761,6 +4761,12 @@ async def _load_model_impl(
                         ),
                     )
 
+            # A sidecar install can reserve the swap window during the awaits
+            # above (identifier resolution, tier probe, training guard, download
+            # check), and the recheck after the drain would then 409 a load whose
+            # chats the next line has already stopped. Reject it before that.
+            _raise_if_sidecar_swap_in_progress()
+
             # Point of no return for the GGUF path: every check that could still
             # reject this load has passed, so now stop the chats the swap will
             # interrupt (or refuse, if the caller never opted in and one started
@@ -4985,6 +4991,10 @@ async def _load_model_impl(
 
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = get_inference_backend()
+
+        # Same sidecar rejection as the GGUF branch, ahead of the cancel so a
+        # reservation taken during preflight cannot 409 chats already stopped.
+        _raise_if_sidecar_swap_in_progress()
 
         # Point of no return for the Unsloth path: same rule as the GGUF branch
         # above -- cancel only once nothing left can reject the load.
@@ -14281,6 +14291,7 @@ async def _anthropic_passthrough_stream(
     # works without the caller having to know the local message_id.
     # No thread_id: this is the public API surface, not a Studio conversation.
     # It still registers so a reload cannot yank llama-server out from under it.
+    # Built here but entered below, inside the body generator: see _stream().
     _tracker = _TrackedCancel(
         cancel_event,
         cancel_id,
@@ -14288,7 +14299,6 @@ async def _anthropic_passthrough_stream(
         message_id,
         model = model_name,
     )
-    _tracker.__enter__()
 
     async def _stream():
         emitter = AnthropicPassthroughEmitter()
@@ -14338,6 +14348,12 @@ async def _anthropic_passthrough_stream(
         cancel_watcher = None
         disconnect_watcher = None
         try:
+            # Entered inside the body generator, under the finally that exits it
+            # (as in _anthropic_plain_stream / _anthropic_tool_stream). Entering
+            # eagerly leaks: aclose() runs no body on a never-started generator,
+            # so a client that drops before the body starts would leave the run
+            # registered until restart, 409-ing every later /load and /unload.
+            _tracker.__enter__()
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
             )

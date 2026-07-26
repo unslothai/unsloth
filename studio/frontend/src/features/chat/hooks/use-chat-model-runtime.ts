@@ -509,10 +509,11 @@ export function useChatModelRuntime() {
       // as a duplicate), don't start a second concurrent load and don't swallow the
       // request: surface it so the user waits or cancels. Centralized here so every
       // entry point is covered, not just the staged Load button.
-      const inFlightLoad =
-        loadingModelRef.current ??
-        useChatRuntimeStore.getState().loadingModelPick;
-      if (inFlightLoad) {
+      const bailIfLoadInFlight = (): boolean => {
+        const inFlightLoad =
+          loadingModelRef.current ??
+          useChatRuntimeStore.getState().loadingModelPick;
+        if (!inFlightLoad) return false;
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig);
         }
@@ -520,7 +521,7 @@ export function useChatModelRuntime() {
           inFlightLoad.id === modelId &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick) return;
+        if (loadingSamePick) return true;
         const message =
           "Another model is already loading. Wait for it to finish or cancel it first.";
         setModelsError(message);
@@ -528,8 +529,9 @@ export function useChatModelRuntime() {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
         });
-        return;
-      }
+        return true;
+      };
+      if (bailIfLoadInFlight()) return;
 
       // Every chat decodes on the llama-server this load replaces, so a load
       // ends all of them. Ask first, then allow the cancel; the 409 gate stays
@@ -543,6 +545,11 @@ export function useChatModelRuntime() {
         }
         return;
       }
+      // Re-check: the guard above ran before this await, which always GETs
+      // active-generations, so a pick made in that window passed it too and
+      // would start a rival load over the same refs. Nothing between here and
+      // the reservation below awaits, so the first to resume claims the load.
+      if (bailIfLoadInFlight()) return;
       const forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
@@ -1567,13 +1574,15 @@ export function useChatModelRuntime() {
     if (!params.checkpoint) {
       return false;
     }
-    const runtime = useChatRuntimeStore.getState();
-    if (runtime.modelLoading || runtime.loadingModelPick) {
+    const bailIfLoading = (): boolean => {
+      const runtime = useChatRuntimeStore.getState();
+      if (!runtime.modelLoading && !runtime.loadingModelPick) return false;
       toast.info("A model is loading", {
         description: "Wait for it to finish or cancel it first.",
       });
-      return false;
-    }
+      return true;
+    };
+    if (bailIfLoading()) return false;
     setModelsError(null);
     if (isExternalModelId(params.checkpoint)) {
       clearCheckpoint();
@@ -1586,6 +1595,9 @@ export function useChatModelRuntime() {
         "Unloading the model",
       );
       if (!stopDecision.proceed) return false;
+      // Same window as selectModel: the confirm above always awaits a GET, so
+      // a load may have started since the guard.
+      if (bailIfLoading()) return false;
 
       async function performUnload(): Promise<void> {
         await unloadModel({

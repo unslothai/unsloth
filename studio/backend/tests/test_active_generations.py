@@ -981,3 +981,151 @@ def test_colab_launcher_inherits_the_parallel_default():
             ), "colab.py pins llama_parallel_slots to 1; Colab chats would serialise"
     # Whether pinned or inherited, Colab must end up with more than one slot.
     assert consts["_PARALLEL_DEFAULT_PLAIN"] > 1
+
+
+# ── the point of no return ────────────────────────────────────────────
+
+
+def test_a_forced_load_that_loses_to_a_sidecar_install_leaves_the_chats_alone(monkeypatch):
+    # The destructive cancel is the point of no return: by design nothing after
+    # it may still reject the load. A transformers sidecar install can reserve
+    # the swap window during the seconds of preflight (identifier resolution,
+    # the tier probe, the training guard, the download-manager check all await
+    # network work), and the recheck guarding the teardown then 409s. Run after
+    # the cancel, that recheck stops every chat for a model that never loads.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    import contextlib
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    monkeypatch.setattr(
+        inf_mod.ModelConfig,
+        "from_identifier",
+        staticmethod(
+            lambda **kwargs: SimpleNamespace(
+                is_gguf = False,
+                identifier = "org/A",
+                display_name = "A",
+                is_vision = False,
+                is_lora = False,
+                path = None,
+            )
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_mlx_distributed_launch_detected", lambda: False)
+    monkeypatch.setattr(inf_mod, "_guard_chat_load_against_training", lambda *a, **k: None)
+    monkeypatch.setattr(inf_mod, "_resolve_inherited_extra_args", lambda *a, **k: None)
+
+    # An install reserves the window while preflight runs: the two route-level
+    # checks pass, every check after them 409s.
+    seen = {"calls": 0}
+
+    def _sidecar_reserved_during_preflight():
+        seen["calls"] += 1
+        if seen["calls"] > 2:
+            raise HTTPException(
+                status_code = 409,
+                detail = "A transformers installation is in progress. Retry when it completes.",
+            )
+
+    monkeypatch.setattr(
+        inf_mod, "_raise_if_sidecar_swap_in_progress", _sidecar_reserved_during_preflight
+    )
+
+    fastapi_request = SimpleNamespace(
+        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
+    )
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inf_mod.load_model(
+                    LoadRequest(
+                        model_path = "org/A",
+                        load_in_4bit = False,
+                        force_cancel_active = True,
+                    ),
+                    fastapi_request,
+                    "tester",
+                )
+            )
+        # The load was rejected, so the chat must still be streaming.
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+    assert exc.value.status_code == 409
+
+def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
+    # A pass-through response whose body never starts -- the client dropped while
+    # the headers went out, or the request task was cancelled before Starlette
+    # ever called the response -- must leave both registries clean. A tracker
+    # entered eagerly beside the response could never be unregistered: a
+    # never-started async generator runs no body code at all, so neither its
+    # finally, nor aclose(), nor athrow() can exit it (PEP 342 throws "at the
+    # start of its function body if next() has not been called yet"). The run
+    # would sit in the registries until restart and 409 every later non-forced
+    # /load and /unload -- worse than the teardown this tracking guards against.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    import inspect
+    from types import SimpleNamespace
+
+    from starlette.requests import ClientDisconnect
+
+    import routes.inference as inf_mod
+
+    llama_backend = SimpleNamespace(
+        base_url = "http://127.0.0.1:8080",
+        context_length = 4096,
+        count_chat_tokens = lambda messages, _unused, tools: 7,
+    )
+
+    async def _build():
+        return await inf_mod._anthropic_passthrough_stream(
+            SimpleNamespace(),
+            threading.Event(),
+            llama_backend,
+            [{"role": "user", "content": "hi"}],
+            [],
+            0.7, 0.9, 40, 128,
+            "msg_1",
+            "org/A",
+            session_id = "s1",
+            cancel_id = "c1",
+        )
+
+    # The response is built and then abandoned, exactly as it is when the request
+    # task is cancelled before Starlette calls it.
+    asyncio.run(_build())
+    assert active_generations.count() == 0
+    assert not inf_mod._CANCEL_REGISTRY
+
+    # The client is already gone when the headers go out, so the first send fails
+    # and the body generator is never entered.
+    async def _drive():
+        response = await _build()
+
+        async def _receive():
+            return {"type": "http.disconnect"}
+
+        async def _send(message):
+            raise OSError("client disconnected")
+
+        with pytest.raises(ClientDisconnect):
+            await response({"type": "http"}, _receive, _send)
+
+    asyncio.run(_drive())
+    assert active_generations.count() == 0
+    assert not inf_mod._CANCEL_REGISTRY
+
+    # ...and it is still tracked once the body really runs: the enter has to stay
+    # inside the generator, under the finally that exits it, not be dropped.
+    src = inspect.getsource(inf_mod._anthropic_passthrough_stream)
+    assert src.index("async def _stream()") < src.index("_tracker.__enter__()")
+    assert src.index("_tracker.__enter__()") < src.index("_tracker.__exit__(None, None, None)")
