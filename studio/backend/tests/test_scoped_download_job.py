@@ -123,9 +123,7 @@ def test_scoped_files_survive_into_the_registry(monkeypatch):
     assert captured["scoped_files"] == FILES
 
     metadata = dl._registry.get_job_metadata(
-        dl._download_job_key(
-            "black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion", FILES)
-        )
+        dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion", FILES))
     )
     assert metadata is not None and list(metadata.scoped_files) == FILES
 
@@ -147,9 +145,11 @@ def test_scope_keys_differ_per_requested_file_set():
     assert a != b
     assert a.startswith("@diffusion-") and b.startswith("@diffusion-")
     # Order and duplicates must not change the identity (the same set is the same job).
-    assert a == dl._scope_variant("diffusion", ["ae.safetensors", "flux1-dev-Q4_K_M.gguf",
-                                               "flux1-dev-Q4_K_M.gguf"])
+    assert a == dl._scope_variant(
+        "diffusion", ["ae.safetensors", "flux1-dev-Q4_K_M.gguf", "flux1-dev-Q4_K_M.gguf"]
+    )
     # A scope with no files keeps the bare form, and stays valid as a variant slot.
     from hub.utils.paths import is_valid_gguf_variant
+
     assert dl._scope_variant("video", []) == "@video"
     assert is_valid_gguf_variant(a) and is_valid_gguf_variant("@video")
