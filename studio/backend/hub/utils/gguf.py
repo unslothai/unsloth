@@ -472,11 +472,20 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
     triggers a download. Lets callers read header metadata before a load."""
     for snapshot in iter_hf_cache_snapshots(repo_id):
         variants, _ = list_local_gguf_variants(str(snapshot))
+        by_base: dict[str, GgufVariantInfo] = {}
         for variant in variants:
             if gguf_variant is None or variant.quant == gguf_variant:
                 candidate = snapshot / variant.filename
                 if candidate.is_file():
                     return str(candidate)
+            elif _base_quant_for_preference(variant.quant) == gguf_variant.upper():
+                by_base.setdefault(variant.quant.upper(), variant)
+        # Recipes saved before #7460 stored the base quant, so ``Q6_K`` must still
+        # find a lone cached ``...-Q6_K-MTP.gguf``. Ambiguous with several flavors.
+        if len(by_base) == 1:
+            candidate = snapshot / next(iter(by_base.values())).filename
+            if candidate.is_file():
+                return str(candidate)
     return None
 
 

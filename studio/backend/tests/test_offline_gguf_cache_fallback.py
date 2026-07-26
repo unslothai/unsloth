@@ -1112,6 +1112,54 @@ class TestPreUpgradeVariantKeyStillLoads:
         assert _find_local_gguf_by_variant(d, "Q6_K").endswith("00001-of-00002.gguf")
 
 
+class TestPreUpgradeVariantKeyResolvesFromCache:
+    """Same pre-#7460 compatibility gap as ``_find_local_gguf_by_variant``, but on
+    the HF-cache path that validation and diffusion classification read."""
+
+    @staticmethod
+    def _cached(monkeypatch, tmp_path, repo_id, names):
+        import hub.utils.gguf as hub_gguf
+
+        snap = _build_cache(tmp_path, repo_id, dict.fromkeys(names, 1024))
+        monkeypatch.setattr(
+            hub_gguf, "iter_hf_cache_snapshots", lambda _repo_id, root = None: [snap]
+        )
+
+    @pytest.mark.parametrize(
+        "names,variant,expected",
+        [
+            (["model-Q6_K-MTP.gguf"], "Q6_K", "model-Q6_K-MTP.gguf"),
+            (["model-Q6_K-MTP.gguf"], "Q6_K-MTP", "model-Q6_K-MTP.gguf"),
+            (["Q6_K-MTP/model.gguf"], "Q6_K", "model.gguf"),
+            # Exact match still wins when the plain quant is also cached.
+            (["model-Q6_K.gguf", "model-Q6_K-MTP.gguf"], "Q6_K", "model-Q6_K.gguf"),
+        ],
+    )
+    def test_legacy_key_resolves_when_unambiguous(
+        self, monkeypatch, tmp_path, names, variant, expected
+    ):
+        from hub.utils.gguf import resolve_local_gguf_path
+
+        self._cached(monkeypatch, tmp_path, "org/legacy", names)
+        resolved = resolve_local_gguf_path("org/legacy", variant)
+        assert resolved is not None and Path(resolved).name == expected
+
+    @pytest.mark.parametrize(
+        "names,variant",
+        [
+            (["model-Q6_K-MTP.gguf", "model-Q6_K-PT-MTP.gguf"], "Q6_K"),
+            (["model-Q4_K_M-MTP.gguf"], "Q6_K"),
+        ],
+    )
+    def test_ambiguous_or_unrelated_still_returns_none(
+        self, monkeypatch, tmp_path, names, variant
+    ):
+        from hub.utils.gguf import resolve_local_gguf_path
+
+        self._cached(monkeypatch, tmp_path, "org/ambiguous", names)
+        assert resolve_local_gguf_path("org/ambiguous", variant) is None
+
+
 class TestCompanionSearchRootSuffixedQuantDir:
     """A suffixed quant dir is still a quant dir, so companions live one level up.
 
