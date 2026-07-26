@@ -1049,7 +1049,6 @@ class TestSuffixedQuantDirWithRepeatedBasename:
     def test_parent_flavor_is_inherited(self, path, expected):
         assert _extract_quant_label(path) == expected
         from hub.utils.gguf import extract_quant_label as hub_extract
-
         assert hub_extract(path.replace("\\", "/")) == expected
 
     @pytest.mark.parametrize(
@@ -1091,25 +1090,21 @@ class TestPreUpgradeVariantKeyStillLoads:
 
     def test_exact_match_still_wins_over_the_fallback(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
-
         d = self._dir(tmp_path, ["model-Q6_K.gguf", "model-Q6_K-MTP.gguf"])
         assert _find_local_gguf_by_variant(d, "Q6_K").endswith("model-Q6_K.gguf")
 
     def test_several_flavors_stay_ambiguous(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
-
         d = self._dir(tmp_path, ["model-Q6_K-MTP.gguf", "model-Q6_K-PT-MTP.gguf"])
         assert _find_local_gguf_by_variant(d, "Q6_K") is None
 
     def test_fallback_does_not_cross_base_quants(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
-
         d = self._dir(tmp_path, ["model-Q4_K_M-MTP.gguf"])
         assert _find_local_gguf_by_variant(d, "Q6_K") is None
 
     def test_sharded_lone_flavor_returns_the_first_shard(self, tmp_path):
         from utils.models.model_config import _find_local_gguf_by_variant
-
         d = self._dir(
             tmp_path,
             ["m-Q6_K-MTP-00002-of-00002.gguf", "m-Q6_K-MTP-00001-of-00002.gguf"],

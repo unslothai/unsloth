@@ -1660,6 +1660,7 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
     )
+
     def label_for(text: str, m: re.Match) -> str:
         prefix = m.group(1) or ""
         # Keep a trailing bpw / MTP-flavor suffix so files sharing a base quant
