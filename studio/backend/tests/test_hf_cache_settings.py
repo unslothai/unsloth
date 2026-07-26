@@ -319,6 +319,6 @@ def test_diffusion_loader_calls_pin_the_cache_dir():
                 if call not in line:
                     continue
                 window = "\n".join(source.splitlines()[index - 1 : index + 8])
-                assert "cache_dir" in window or "kwargs" in window, (
-                    f"{rel}:{index} calls {call} without a pinned cache_dir"
-                )
+                assert (
+                    "cache_dir" in window or "kwargs" in window
+                ), f"{rel}:{index} calls {call} without a pinned cache_dir"

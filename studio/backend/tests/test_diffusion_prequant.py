@@ -413,7 +413,6 @@ def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
     # and accept only the family-aware set. Pins the offline builder
     # (scripts/build_prequant_checkpoint.py) to exclude_tokens_for_scheme(scheme, fam.name).
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
-
     for family in ("qwen-image", "qwen-image-edit"):
         family_less = _good_ckpt(scheme = "int8")
         family_less["metadata"]["family"] = family

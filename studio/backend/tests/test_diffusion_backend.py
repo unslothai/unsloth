@@ -3755,11 +3755,20 @@ def test_generate_keeps_a_scalar_negative_prompt_off_the_list_paths(fake_runtime
 class _TracingPipe(_CountingPipe):
     """Appends ``("call", n)`` to a shared trace so resets can be interleaved with forwards."""
 
-    def __init__(self, trace, max_images = None):
+    def __init__(
+        self,
+        trace,
+        max_images = None,
+    ):
         super().__init__(max_images = max_images)
         self.trace = trace
 
-    def __call__(self, *, prompt = None, **kwargs):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        **kwargs,
+    ):
         n = kwargs.get("num_images_per_prompt", 1)
         if isinstance(prompt, list):
             n *= len(prompt)
@@ -3776,9 +3785,7 @@ def test_generate_resets_the_step_cache_before_an_oom_retry(fake_runtime, tmp_pa
     backend = _load_zimage_backend(tmp_path)
     trace: list = []
     pipe = _TracingPipe(trace, max_images = 2)
-    pipe.transformer = types.SimpleNamespace(
-        _reset_stateful_cache = lambda: trace.append(("reset",))
-    )
+    pipe.transformer = types.SimpleNamespace(_reset_stateful_cache = lambda: trace.append(("reset",)))
     object.__setattr__(backend._state, "pipe", pipe)
     object.__setattr__(backend._state, "transformer_cache", "fbcache")
     out = backend.generate(prompt = "p", seeds = [1, 2, 3, 4])
@@ -3799,13 +3806,13 @@ def test_generate_resets_the_step_cache_before_every_chunk(fake_runtime, tmp_pat
     backend = _load_zimage_backend(tmp_path)
     trace: list = []
     pipe = _TracingPipe(trace)
-    pipe.transformer = types.SimpleNamespace(
-        _reset_stateful_cache = lambda: trace.append(("reset",))
-    )
+    pipe.transformer = types.SimpleNamespace(_reset_stateful_cache = lambda: trace.append(("reset",)))
     object.__setattr__(backend._state, "pipe", pipe)
     object.__setattr__(backend._state, "transformer_cache", "fbcache")
     backend.generate(prompt = "p", seeds = [1, 2, 3], batch_size = 2)
     assert trace == [("reset",), ("call", 2), ("reset",), ("call", 1)]
+
+
 class _FakeSibling:
     def __init__(self, rfilename, size):
         self.rfilename = rfilename
@@ -3817,7 +3824,7 @@ class _FakeInfo:
         self.siblings = siblings
 
 
-GB = 1024 ** 3
+GB = 1024**3
 # A FLUX-shaped base repo: the packaged root single and the transformer shards are what a
 # plain snapshot_download would drag in and the loader never opens.
 _FLUX_BASE_SIBLINGS = [
@@ -3834,8 +3841,14 @@ _FLUX_BASE_SIBLINGS = [
 
 def _fake_hf_api(monkeypatch, repos):
     """Point HfApi.model_info at a canned sibling list per repo id."""
+
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _FakeInfo(repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())

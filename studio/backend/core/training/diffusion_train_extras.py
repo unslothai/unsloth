@@ -183,7 +183,6 @@ def source_revision(ref: Any) -> str:
     not load them.
     """
     import os  # noqa: PLC0415 — keep the module import list light for the subprocess
-
     try:
         name = str(ref or "").strip()
         if not name:
@@ -193,7 +192,8 @@ def source_revision(ref: Any) -> str:
             roots = [name]
             with os.scandir(name) as it:
                 roots += [
-                    e.path for e in it
+                    e.path
+                    for e in it
                     if e.is_dir() and e.name.startswith(("text_encoder", "tokenizer"))
                 ]
             for root in roots:

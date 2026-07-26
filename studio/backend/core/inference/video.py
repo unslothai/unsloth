@@ -92,6 +92,7 @@ from .video_families import (
     supported_video_family_names,
 )
 from utils.hardware import clear_gpu_cache
+
 # Shared with the image backend so both pin every loader call to the same live cache root.
 from core.inference.diffusion import hub_cache_dir
 
@@ -751,9 +752,7 @@ class VideoBackend:
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
                 size = sum(
-                    int(s.size or 0)
-                    for s in (info.siblings or [])
-                    if s.rfilename == gguf_filename
+                    int(s.size or 0) for s in (info.siblings or []) if s.rfilename == gguf_filename
                 )
                 total += size
                 entries.append(

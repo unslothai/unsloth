@@ -164,9 +164,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
                 detail = "scope_id and gguf_variant are mutually exclusive.",
             )
         if not scoped_files:
-            raise HTTPException(
-                status_code = 400, detail = "scope_id requires a non-empty files list."
-            )
+            raise HTTPException(status_code = 400, detail = "scope_id requires a non-empty files list.")
         if not _is_valid_gguf_variant(scope_variant):
             raise HTTPException(status_code = 400, detail = f"Invalid scope_id: {body.scope_id!r}")
         variant = scope_variant

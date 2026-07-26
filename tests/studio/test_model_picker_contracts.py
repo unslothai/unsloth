@@ -585,9 +585,7 @@ def test_variant_expander_forwards_the_gguf_filename():
     by filename and cannot map a quant label back to one, so without it every hub
     GGUF pick on Images/Video fell through to a silent return and nothing loaded."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
-    handler = re.search(
-        r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S
-    )
+    handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
     assert handler, "handleVariantClick not found"
     assert "ggufFilename: filename," in handler.group(0)
     # The call site has to actually pass it through.
@@ -648,9 +646,7 @@ def test_local_model_sections_respect_the_task_filter():
     for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
         block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
         assert block, f"{memo} not found"
-        assert "passesTaskGate(m.task" in block.group(0), (
-            f"{memo} does not apply the task gate"
-        )
+        assert "passesTaskGate(m.task" in block.group(0), f"{memo} does not apply the task gate"
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():

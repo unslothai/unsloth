@@ -690,8 +690,7 @@ def _download_scoped_snapshot(
         info = _model_info_with_retry(repo_id, hf_token)
     except Exception as e:
         print(
-            f"metadata unavailable for scoped download of {repo_id} "
-            f"({type(e).__name__}: {e})",
+            f"metadata unavailable for scoped download of {repo_id} " f"({type(e).__name__}: {e})",
             file = sys.stderr,
         )
         info = None
@@ -709,6 +708,7 @@ def _download_scoped_snapshot(
             for s in siblings
         ]
         from hub.utils.snapshot_filters import blob_hashes_for_siblings
+
         blob_hashes = blob_hashes_for_siblings(siblings)
         download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
 
@@ -821,7 +821,6 @@ def main() -> None:
     scoped_files: list[str] = []
     if args.files_json:
         import json
-
         try:
             with open(args.files_json, encoding = "utf-8") as handle:
                 scoped_files = [str(f) for f in json.load(handle)]

@@ -1682,10 +1682,7 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
             # on embeddings and latent stats produced by the other model -- incompatible
             # shapes at best, silently wrong conditioning at worst.
             from .diffusion_train_extras import source_revision  # noqa: PLC0415
-
-            namespace = (
-                f"{spec.family}_{cfg.base_model}_{source_revision(cfg.base_model)}"
-            )
+            namespace = f"{spec.family}_{cfg.base_model}_{source_revision(cfg.base_model)}"
             pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")

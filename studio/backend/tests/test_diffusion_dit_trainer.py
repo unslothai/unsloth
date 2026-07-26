@@ -170,15 +170,14 @@ def test_every_train_base_is_deployable_as_an_inference_pipeline():
     # it -- which is what happened to both FLUX.2 families, trusted for training only.
     from core.inference.diffusion import _is_trusted_diffusion_repo
     from core.inference.diffusion_families import _FAMILIES
-
     for fam in _FAMILIES:
         if not fam.trainable:
             continue
         for base in fam.train_base_repos:
             deploy_base = fam.deploy_base_repo or base
-            assert _is_trusted_diffusion_repo(deploy_base), (
-                f"{fam.name}: deploy base {deploy_base!r} is not loadable for inference"
-            )
+            assert _is_trusted_diffusion_repo(
+                deploy_base
+            ), f"{fam.name}: deploy base {deploy_base!r} is not loadable for inference"
 
 
 def test_gated_access_requires_token():

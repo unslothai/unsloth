@@ -115,9 +115,7 @@ def test_scoped_files_survive_into_the_registry(monkeypatch):
     monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
     monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
     monkeypatch.setattr(dl._registry, "claim", _spy_claim)
-    monkeypatch.setattr(
-        download_lifecycle, "launch_worker", lambda *a, **k: "running"
-    )
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
 
     asyncio.run(dl.download_model_response(_request()))
     assert captured["scoped_files"] == FILES
