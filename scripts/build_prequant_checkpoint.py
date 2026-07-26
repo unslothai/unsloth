@@ -86,8 +86,13 @@ def main(argv = None) -> int:
     # Mirror the runtime path EXACTLY (offline == runtime, LPIPS-0 invariant): for int8 also skip
     # the M=1 AdaLN-modulation / conditioning-embedder projections, else the checkpoint bakes them
     # as int8 and crashes (torch._int_mm needs M>16) at the first denoise step on Flux / Qwen. fp8
-    # / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns ().
-    exclude_name_tokens = exclude_tokens_for_scheme(scheme)
+    # / fp4 / mx use scaled_mm (no M limit) -> exclude_tokens_for_scheme returns (). Pass the
+    # family: int8 also carries PER-FAMILY exclusions (Qwen-Image's unpadded text stream runs at
+    # M = prompt tokens, so a short prompt breaks _int_mm), and the loader validates the baked
+    # list against exclude_tokens_for_scheme(scheme, metadata["family"]) -- so building with
+    # family=None both bakes the crashing text-stream linears and yields an artifact the runtime
+    # then rejects (silently falling back to the dense quantise this script exists to avoid).
+    exclude_name_tokens = exclude_tokens_for_scheme(scheme, fam.name)
     # fp8 and mxfp8 assert a bf16 weight, so their filter must skip any non-bf16 Linear the
     # transformer keeps: a mixed-precision DiT (Wan / Hunyuan) keeps its _keep_in_fp32_modules in
     # fp32 even under torch_dtype=bf16, so quantising one raises inside quantize_ and aborts the

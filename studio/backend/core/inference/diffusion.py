@@ -298,6 +298,14 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # Krea's guidance-distilled FLUX.1-dev finetune: same arch/layout as dev (FluxPipeline,
         # CLIP+T5+ae), gated like dev. Detected as the flux.1 family via the "flux.1" token.
         "black-forest-labs/flux.1-krea-dev",
+        # FLUX.2: the LoRA TRAINING bases for the flux.2-dev / flux.2-klein families (dev is
+        # Hub-gated, klein-4B is open). Both ship a safetensors-only diffusers layout
+        # (model_index.json + transformer/text_encoder/vae, no pickled weights, no remote code),
+        # so a pipeline load is the same shape as FLUX.1-dev's. Trusted here too because the Train
+        # tab's "Deploy to Create" reloads the trained-on base as a pipeline: without these the
+        # deploy of every FLUX.2 adapter 400s on this gate.
+        "black-forest-labs/flux.2-dev",
+        "black-forest-labs/flux.2-klein-4b",
         "tongyi-mai/z-image-turbo",
         "qwen/qwen-image",
         "qwen/qwen-image-2512",

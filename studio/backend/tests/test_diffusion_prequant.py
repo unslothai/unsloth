@@ -406,6 +406,28 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
 
 
+def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
+    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens,
+    # under _int_mm's M > 16 floor). An offline artifact that recorded the family but built its
+    # exclusion set with family=None baked those linears as int8, so the loader must reject it --
+    # and accept only the family-aware set. Pins the offline builder
+    # (scripts/build_prequant_checkpoint.py) to exclude_tokens_for_scheme(scheme, fam.name).
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    for family in ("qwen-image", "qwen-image-edit"):
+        family_less = _good_ckpt(scheme = "int8")
+        family_less["metadata"]["family"] = family
+        family_less["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8"))
+        assert _load(monkeypatch, tmp_path, family_less, scheme = "int8") is None
+
+        family_aware = _good_ckpt(scheme = "int8")
+        family_aware["metadata"]["family"] = family
+        family_aware["metadata"]["exclude_name_tokens"] = list(
+            exclude_tokens_for_scheme("int8", family)
+        )
+        assert _load(monkeypatch, tmp_path, family_aware, scheme = "int8") is not None
+
+
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
     # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set
     # than the runtime filter now produces, so it must be rejected rather than loaded.

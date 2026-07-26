@@ -163,6 +163,24 @@ def test_flux2_bases_pass_the_trusted_base_gate():
         _assert_trusted_base_model("someone/random-flux2-finetune")
 
 
+def test_every_train_base_is_deployable_as_an_inference_pipeline():
+    # "Deploy to Create" reloads the trained-on base (or the family's deploy_base) through
+    # /images/load as a PIPELINE, which gates non-GGUF loads on _is_trusted_diffusion_repo. Any
+    # advertised training base that fails that gate makes Deploy 400 for every adapter trained on
+    # it -- which is what happened to both FLUX.2 families, trusted for training only.
+    from core.inference.diffusion import _is_trusted_diffusion_repo
+    from core.inference.diffusion_families import _FAMILIES
+
+    for fam in _FAMILIES:
+        if not fam.trainable:
+            continue
+        for base in fam.train_base_repos:
+            deploy_base = fam.deploy_base_repo or base
+            assert _is_trusted_diffusion_repo(deploy_base), (
+                f"{fam.name}: deploy base {deploy_base!r} is not loadable for inference"
+            )
+
+
 def test_gated_access_requires_token():
     assert "black-forest-labs/flux.1-dev" in _GATED_TRAIN_REPOS
     assert "black-forest-labs/flux.2-dev" in _GATED_TRAIN_REPOS

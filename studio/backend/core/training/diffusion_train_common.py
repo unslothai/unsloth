@@ -1001,9 +1001,11 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
 
 
 # Official safetensors-only TRAINING bases trusted in addition to the inference allowlist
-# (_TRUSTED_NON_GGUF_REPOS in core/inference/diffusion.py): the FLUX.2 bases train LoRAs but
-# are not (yet) non-GGUF inference bases. Exact-match lowercased, same rules as the loader
-# list: extend deliberately; never add pickled weights or remote code.
+# (_TRUSTED_NON_GGUF_REPOS in core/inference/diffusion.py). The FLUX.2 bases are now in that
+# list too (deploying a trained FLUX.2 adapter reloads the base as an inference pipeline), and
+# are kept here so the training gate stays independent of a future edit to the loader list.
+# Exact-match lowercased, same rules as the loader list: extend deliberately; never add pickled
+# weights or remote code.
 _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
     {
         "black-forest-labs/flux.2-dev",

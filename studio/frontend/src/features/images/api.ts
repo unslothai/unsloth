@@ -84,6 +84,11 @@ export interface DiffusionLoadRequest {
     | "aiter";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   transformer_cache?: "off" | "fbcache";
+  // LoRA adapters to BAKE into a torchao int8/fp8 build: the backend can only attach them to
+  // the dense transformer BEFORE quantisation + compilation, so a quantized load that omits
+  // them rejects every generation with "reload the model with the adapter selection". Ignored
+  // by every other load kind (bf16 / bnb-4bit take adapters at generation time).
+  loras?: LoraSpecInput[];
 }
 
 export interface DiffusionGenerateRequest {

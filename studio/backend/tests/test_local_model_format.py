@@ -150,6 +150,32 @@ def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
     assert rows[0].model_format is None
 
 
+def test_scan_models_dir_surfaces_root_single_file_checkpoint(tmp_path):
+    # A scan folder can also point DIRECTLY at a bare single-file checkpoint dir (one loose
+    # .safetensors, no config.json / model_index.json). The child loop admits exactly that shape
+    # and the images route reinterprets it via resolve_local_single_file, so the root must be
+    # surfaced too -- otherwise registering the model folder itself yields no On Device row while
+    # registering its parent works.
+    root = tmp_path / "qwen-image-2509"
+    _touch(root / "qwen-image-2509.safetensors")
+
+    rows = models_route._scan_models_dir(root)
+
+    assert [r.path for r in rows] == [str(root)]
+    assert rows[0].model_format is None
+
+
+def test_scan_models_dir_root_weights_do_not_hide_child_models(tmp_path):
+    # A stray loose .safetensors at a models ROOT must not collapse the scan to a single row and
+    # hide the real model subdirs: the root fallback applies only when nothing else matched.
+    root = tmp_path / "models"
+    _touch(root / "stray.safetensors")
+    _touch(root / "llama" / "config.json")
+    _touch(root / "llama" / "model.safetensors")
+
+    assert [Path(r.path).name for r in models_route._scan_models_dir(root)] == ["llama"]
+
+
 # ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
 

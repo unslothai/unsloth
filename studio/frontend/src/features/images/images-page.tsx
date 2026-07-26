@@ -813,6 +813,18 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 // Which sides to grow when outpainting.
 type ExtendSides = { left: boolean; right: boolean; top: boolean; bottom: boolean };
 
+// Redraw an image/canvas at (w, h). Used to clamp an outpaint source (and the built pair) to a
+// size the browser can actually back and the backend can decode.
+function scaleToCanvas(source: CanvasImageSource, w: number, h: number): HTMLCanvasElement {
+  const dst = document.createElement("canvas");
+  dst.width = w;
+  dst.height = h;
+  const dctx = dst.getContext("2d");
+  if (!dctx) throw new Error("Could not scale the extended canvas");
+  dctx.drawImage(source, 0, 0, w, h);
+  return dst;
+}
+
 // Build the (image, mask) pair for outpaint by reusing the inpaint backend: grow the canvas
 // by `pct` per dimension on the selected sides, edge-bleed the original pixels into the new
 // bands (so the VAE encodes plausible content), and mask the new bands white (= repaint) with
@@ -822,9 +834,28 @@ async function buildOutpaint(
   sides: ExtendSides,
   pct: number,
 ): Promise<{ image: string; mask: string }> {
-  const img = await loadImage(src);
-  const w = img.naturalWidth;
-  const h = img.naturalHeight;
+  const source = await loadImage(src);
+  // Scale the SOURCE so the grown canvas fits MAX_SIDE, before allocating anything. Growing all
+  // four sides by 100% multiplies the source area by 9, and a canvas past the browser's limit is
+  // "unusable -- drawing commands will not work" (MDN): every drawImage silently no-ops, so
+  // Extend posted a fully transparent init_image + mask instead of the user's photo. Measured
+  // Chromium cap is 268,435,456 px of area (a 48MP phone photo grown on four sides is 439M);
+  // iOS caps a canvas at 4096x4096, which a 2048px source at 100% already passes. Pre-scaling
+  // also keeps the two full-size allocations (image + mask) from reaching a gigabyte on a large
+  // source. The backend rounds to /16, so exact dims aren't required.
+  const MAX_SIDE = 4096;
+  const grow = (a: boolean, b: boolean) => 1 + (a ? pct / 100 : 0) + (b ? pct / 100 : 0);
+  const fit = Math.min(
+    1,
+    MAX_SIDE /
+      Math.max(
+        source.naturalWidth * grow(sides.left, sides.right),
+        source.naturalHeight * grow(sides.top, sides.bottom),
+      ),
+  );
+  const w = fit < 1 ? Math.max(1, Math.floor(source.naturalWidth * fit)) : source.naturalWidth;
+  const h = fit < 1 ? Math.max(1, Math.floor(source.naturalHeight * fit)) : source.naturalHeight;
+  const img: CanvasImageSource = fit < 1 ? scaleToCanvas(source, w, h) : source;
   const px = Math.round((pct / 100) * w);
   const py = Math.round((pct / 100) * h);
   const l = sides.left ? px : 0;
@@ -865,28 +896,17 @@ async function buildOutpaint(
   mctx.fillStyle = "#000000"; // ...except the kept original (inset by the seam overlap).
   mctx.fillRect(l + ol, t + ot, w - ol - or, h - ot - ob);
 
-  // The grown canvas can exceed the backend's 4096px-per-side decode limit (e.g. a 2048px
-  // source at 100% on both sides -> 6144px), which would 400 the load. Scale the built pair
-  // down proportionally to fit so Extend still returns an outpaint. The backend rounds to /16,
-  // so exact dims aren't required.
-  const MAX_SIDE = 4096;
+  // The source pre-scale above sizes the canvases to fit MAX_SIDE, but the per-side rounding
+  // (round(pct% * w) on each grown edge) can still overshoot it by a pixel or two, which the
+  // backend's 4096px-per-side decode limit would 400. Trim that slack here.
   const longest = Math.max(nw, nh);
   if (longest > MAX_SIDE) {
     const scale = MAX_SIDE / longest;
     const sw = Math.max(1, Math.round(nw * scale));
     const sh = Math.max(1, Math.round(nh * scale));
-    const scaleCanvas = (source: HTMLCanvasElement): HTMLCanvasElement => {
-      const dst = document.createElement("canvas");
-      dst.width = sw;
-      dst.height = sh;
-      const dctx = dst.getContext("2d");
-      if (!dctx) throw new Error("Could not scale the extended canvas");
-      dctx.drawImage(source, 0, 0, sw, sh);
-      return dst;
-    };
     return {
-      image: scaleCanvas(ic).toDataURL("image/png"),
-      mask: scaleCanvas(mc).toDataURL("image/png"),
+      image: scaleToCanvas(ic, sw, sh).toDataURL("image/png"),
+      mask: scaleToCanvas(mc, sw, sh).toDataURL("image/png"),
     };
   }
 
@@ -1652,6 +1672,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // guard) leaves the previous model resident, so Reapply and the resident-default seeding
       // must keep pointing at it, not the failed pick.
       const prevLastLoad = lastLoad.current;
+      // A torchao int8/fp8 transformer (what the default GGUF fast path resolves to on any
+      // capable GPU) can only take adapters at LOAD time: they attach on the dense transformer
+      // before quantize_ + compile. Generation-time /images/generate then rejects a new adapter
+      // set with "reload the model with the adapter selection", so a reload that drops the
+      // selection leaves the advertised LoRA picker permanently unusable. Carry the same
+      // filtered nonzero list Generate sends, but only when reloading the SAME target (Reapply
+      // or re-picking the loaded model): a fresh pick of a different model can still hold a
+      // cross-family selection that the family-swap effect only clears after the load lands.
+      // Ignored by every other load kind (bf16 / bnb-4bit apply adapters at generation time).
+      const sameTarget = repoId === (prevLastLoad?.repoId ?? status?.repo_id ?? null);
+      const bakeLoras = sameTarget
+        ? loras
+            .map((l) => ({ id: l.id.trim(), weight: l.weight }))
+            .filter((l) => l.id && l.weight > 0)
+        : [];
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails
@@ -1674,6 +1709,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
           transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+          loras: bakeLoras.length > 0 ? bakeLoras : undefined,
         });
       } catch (err) {
         lastLoad.current = prevLastLoad;
@@ -1698,6 +1734,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       attentionBackend,
       memoryMode,
       transformerCache,
+      loras,
+      status?.repo_id,
     ],
   );
 
@@ -1866,6 +1904,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     pollTimer.current = null;
     dismissLoadToast();
     lastLoadSig.current = null;
+    // Drop the Reapply target with the model (like the Video page): the ejected pick is no
+    // longer resident, and leaving it set makes the resident-status seeding effect above skip
+    // repair (it is guarded on lastLoad.current === null) while "Reapply to loaded model"
+    // reloads the ejected model instead of whatever another client/session left loaded.
+    lastLoad.current = null;
+    setCanReapply(false);
     setBusy("unloading");
     try {
       setStatus(await unloadDiffusionModel());

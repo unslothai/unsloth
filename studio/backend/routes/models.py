@@ -391,6 +391,29 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                     ),
                 )
 
+    # A scan folder can also point directly at a BARE single-file checkpoint dir (one loose
+    # .safetensors / weight .bin, no config.json and no model_index.json): both root checks above
+    # reject it, yet the child loop admits exactly that shape via _has_non_gguf_weights and the
+    # Images/Video load path reinterprets such a directory through resolve_local_single_file. So
+    # registering the model folder itself returned no On Device row while registering its parent
+    # worked. Only when nothing else matched, so a models root holding a stray loose weight file
+    # next to real model subdirs still lists those children instead of collapsing to one row.
+    if not found and (limit is None or limit > 0) and _has_non_gguf_weights(models_dir):
+        try:
+            updated_at = models_dir.stat().st_mtime
+        except OSError:
+            updated_at = None
+        found.append(
+            LocalModelInfo(
+                id = str(models_dir),
+                display_name = models_dir.name,
+                path = str(models_dir),
+                source = "models_dir",
+                model_format = _dir_model_format(models_dir),
+                updated_at = updated_at,
+            ),
+        )
+
     return found
 
 
