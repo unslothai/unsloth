@@ -1032,6 +1032,91 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("C:\\models\\snap\\m-Q4_K_M.gguf") == "Q4_K_M"
 
 
+class TestSuffixedQuantDirWithRepeatedBasename:
+    """``Q6_K-MTP/model-Q6_K.gguf``: the basename settles the quant, so without
+    consulting the parent both MTP flavors collapse to one merged variant."""
+
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            ("Q6_K-MTP/model-Q6_K.gguf", "Q6_K-MTP"),
+            ("Q6_K-PT-MTP/model-Q6_K.gguf", "Q6_K-PT-MTP"),
+            ("IQ4_XS-3.53bpw/m-IQ4_XS.gguf", "IQ4_XS-3.53bpw"),
+            ("snap/Q6_K-MTP/model-Q6_K-00001-of-00003.gguf", "Q6_K-MTP"),
+            (r"C:\models\Q6_K-MTP\model-Q6_K.gguf", "Q6_K-MTP"),
+        ],
+    )
+    def test_parent_flavor_is_inherited(self, path, expected):
+        assert _extract_quant_label(path) == expected
+        from hub.utils.gguf import extract_quant_label as hub_extract
+
+        assert hub_extract(path.replace("\\", "/")) == expected
+
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            # Plain parent, or the basename already carrying its own flavor.
+            ("Q6_K/model-Q6_K.gguf", "Q6_K"),
+            ("Q6_K/model-Q6_K-MTP.gguf", "Q6_K-MTP"),
+            ("Q6_K-MTP/model-Q6_K-PT-MTP.gguf", "Q6_K-PT-MTP"),
+            # Parent names a different quant: the basename wins outright.
+            ("Q4_K_M-MTP/model-Q6_K.gguf", "Q6_K"),
+            # Near-miss parent suffixes stay ignored.
+            ("Q6_K-MTPX/model-Q6_K.gguf", "Q6_K"),
+            ("Q6_K-MTP-v2/model-Q6_K.gguf", "Q6_K"),
+        ],
+    )
+    def test_unrelated_parents_do_not_leak(self, path, expected):
+        assert _extract_quant_label(path) == expected
+
+
+class TestPreUpgradeVariantKeyStillLoads:
+    """Recipes saved before #7460 persisted the base quant, so ``Q6_K`` has to
+    keep finding a lone ``...-Q6_K-MTP.gguf`` after the label gained a flavor."""
+
+    @staticmethod
+    def _dir(tmp_path, names):
+        for name in names:
+            f = tmp_path / name
+            f.parent.mkdir(parents = True, exist_ok = True)
+            f.write_bytes(b"\0" * 1024)
+        return str(tmp_path)
+
+    def test_lone_flavor_resolves_from_the_old_key(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        d = self._dir(tmp_path, ["model-Q6_K-MTP.gguf"])
+        assert _find_local_gguf_by_variant(d, "Q6_K") is not None
+        assert _find_local_gguf_by_variant(d, "Q6_K-MTP") is not None
+
+    def test_exact_match_still_wins_over_the_fallback(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        d = self._dir(tmp_path, ["model-Q6_K.gguf", "model-Q6_K-MTP.gguf"])
+        assert _find_local_gguf_by_variant(d, "Q6_K").endswith("model-Q6_K.gguf")
+
+    def test_several_flavors_stay_ambiguous(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        d = self._dir(tmp_path, ["model-Q6_K-MTP.gguf", "model-Q6_K-PT-MTP.gguf"])
+        assert _find_local_gguf_by_variant(d, "Q6_K") is None
+
+    def test_fallback_does_not_cross_base_quants(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        d = self._dir(tmp_path, ["model-Q4_K_M-MTP.gguf"])
+        assert _find_local_gguf_by_variant(d, "Q6_K") is None
+
+    def test_sharded_lone_flavor_returns_the_first_shard(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        d = self._dir(
+            tmp_path,
+            ["m-Q6_K-MTP-00002-of-00002.gguf", "m-Q6_K-MTP-00001-of-00002.gguf"],
+        )
+        assert _find_local_gguf_by_variant(d, "Q6_K").endswith("00001-of-00002.gguf")
+
+
 class TestCompanionSearchRootSuffixedQuantDir:
     """A suffixed quant dir is still a quant dir, so companions live one level up.
 

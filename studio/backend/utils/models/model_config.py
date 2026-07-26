@@ -1660,26 +1660,39 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
     )
+    def label_for(text: str, m: re.Match) -> str:
+        prefix = m.group(1) or ""
+        # Keep a trailing bpw / MTP-flavor suffix so files sharing a base quant
+        # (IQ4_XS at 3.53/3.97 bpw, Qwen MTP grafts) stay distinct variants (#7460).
+        suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(text[m.end() :])
+        return f"{prefix}{m.group(2)}{suffix_match.group(0) if suffix_match else ''}"
+
+    parent_segments = (
+        list(reversed(normalized.rsplit("/", 1)[0].split("/"))) if "/" in normalized else []
+    )
     match = _select_quant_label_match(stem, quant_re)
-    matched_text = stem
+    if match:
+        label = label_for(stem, match)
+        # ``Q6_K-MTP/model-Q6_K.gguf``: the basename settles the quant, so take
+        # the flavor from the nearest quant-named parent when it agrees.
+        if not _POST_QUANT_VARIANT_SUFFIX_RE.search(label):
+            for segment in parent_segments:
+                m = _select_quant_label_match(segment, quant_re)
+                if m is None:
+                    continue
+                if m.group(2).upper() == match.group(2).upper():
+                    suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(segment[m.end() :])
+                    if suffix_match:
+                        label += suffix_match.group(0)
+                break
+        return label
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
     # not the basename. Check parent dirs too so the label matches the
     # snapshot-relative path produced elsewhere.
-    if not match and "/" in normalized:
-        parents = normalized.rsplit("/", 1)[0]
-        for segment in reversed(parents.split("/")):
-            m = _select_quant_label_match(segment, quant_re)
-            if m:
-                match = m
-                matched_text = segment
-                break
-    if match:
-        prefix = match.group(1) or ""
-        # Keep a trailing bpw / MTP-flavor suffix so files sharing a base quant
-        # (IQ4_XS at 3.53/3.97 bpw, Qwen MTP grafts) stay distinct variants (#7460).
-        suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(matched_text[match.end() :])
-        suffix = suffix_match.group(0) if suffix_match else ""
-        return f"{prefix}{match.group(2)}{suffix}"
+    for segment in parent_segments:
+        m = _select_quant_label_match(segment, quant_re)
+        if m:
+            return label_for(segment, m)
     # Fallback: last hyphen-separated segment
     return stem.split("-")[-1]
 
@@ -1999,17 +2012,27 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     # path so the quant label can come from the dir name when the basename
     # omits it.
     matches = []
+    by_base: dict[str, list] = {}
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
         if _is_mmproj(f.name) or _is_mtp_drafter(rel):
             continue
         quant = _extract_quant_label(rel)
-        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+        if _is_big_endian_gguf_path(rel, quant):
             continue
-        matches.append(f)
+        if quant == variant:
+            matches.append(f)
+        elif _POST_QUANT_VARIANT_SUFFIX_RE.sub("", quant).upper() == variant.upper():
+            by_base.setdefault(quant.upper(), []).append(f)
     matches.sort()
     if matches:
         return str(_local_gguf_load_path(matches[0]))
+    # Recipes saved before #7460 persisted the base quant, so ``Q6_K`` must
+    # still find a lone ``...-Q6_K-MTP.gguf``. Only when one flavor is present:
+    # with several, the old key cannot say which was meant.
+    if len(by_base) == 1:
+        only = sorted(next(iter(by_base.values())))
+        return str(_local_gguf_load_path(only[0]))
     return None
 
 

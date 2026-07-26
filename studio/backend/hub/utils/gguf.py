@@ -230,21 +230,39 @@ def _base_quant_for_preference(label: str) -> str:
     return _POST_QUANT_VARIANT_SUFFIX_RE.sub("", label).upper()
 
 
+def _parent_flavor_suffix(normalized: str, match: re.Match) -> str:
+    """Flavor suffix from the nearest quant-named parent dir, if it agrees.
+
+    ``Q6_K-MTP/model-Q6_K.gguf``: the basename settles the quant so the parent
+    is never inspected, and both MTP flavors would collapse to ``Q6_K``.
+    """
+    if "/" not in normalized:
+        return ""
+    for segment in reversed(normalized.rsplit("/", 1)[0].split("/")):
+        parent_match = _select_quant_match(segment)
+        if parent_match is None:
+            continue
+        if parent_match.group(2).upper() != match.group(2).upper():
+            return ""
+        suffix_match = _POST_QUANT_VARIANT_SUFFIX_RE.match(segment[parent_match.end() :])
+        return suffix_match.group(0) if suffix_match else ""
+    return ""
+
+
 def extract_quant_token(filename: str) -> Optional[str]:
     normalized = filename.replace("\\", "/")
     stem = _gguf_stem(normalized)
-    matched_text = stem
     match = _select_quant_match(stem)
-    if not match and "/" in normalized:
-        parents = normalized.rsplit("/", 1)[0]
-        for segment in reversed(parents.split("/")):
+    if match:
+        label = _quant_with_disambiguating_suffix(stem, match)
+        if not _POST_QUANT_VARIANT_SUFFIX_RE.search(label):
+            label += _parent_flavor_suffix(normalized, match)
+        return label
+    if "/" in normalized:
+        for segment in reversed(normalized.rsplit("/", 1)[0].split("/")):
             parent_match = _select_quant_match(segment)
             if parent_match:
-                match = parent_match
-                matched_text = segment
-                break
-    if match:
-        return _quant_with_disambiguating_suffix(matched_text, match)
+                return _quant_with_disambiguating_suffix(segment, parent_match)
     return None
 
 
