@@ -345,7 +345,10 @@ class UnslothTrainer:
                     ),
                 }
                 if not push_to_hub:
-                    emit(state = "skipped", message = "Auto upload disabled", **common)
+                    # A disabled optional upload is not a checkpoint event. In
+                    # particular, Transformers may invoke ``on_save`` for the
+                    # checkpoint being resumed, which otherwise leaves a
+                    # misleading "Not uploaded" banner above the live charts.
                     return
                 if not repository_id:
                     emit(

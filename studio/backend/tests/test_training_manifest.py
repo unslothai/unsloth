@@ -53,6 +53,15 @@ def test_manifest_recursively_redacts_secrets(tmp_path):
         assert secret not in text
 
 
+def test_manifest_preserves_checkpoint_upload_preferences():
+    manifest = build_manifest(
+        _config(push_to_hub = True, hub_model_id = "org/training-checkpoints")
+    )
+
+    assert manifest["training_arguments"]["push_to_hub"] is True
+    assert manifest["training_arguments"]["hub_model_id"] == "org/training-checkpoints"
+
+
 def test_atomic_write_interruption_preserves_previous_file(monkeypatch, tmp_path):
     first = build_manifest(_config(), expected_checkpoint_step = 1)
     path = atomic_write_manifest(tmp_path, first)

@@ -75,6 +75,7 @@ export function LiveTrainingView(): ReactElement {
       selectedModel: state.selectedModel,
       projectName: state.projectName,
       trainingMethod: state.trainingMethod,
+      enableAutoCheckpointUpload: state.enableAutoCheckpointUpload,
     })),
   );
 
@@ -130,6 +131,8 @@ export function LiveTrainingView(): ReactElement {
     };
   }, [runtime.jobId, fetchedRunConfig, fetchAttempt]);
   const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
+  const autoCheckpointUploadEnabled =
+    runConfigOverride?.enableAutoCheckpointUpload ?? config.enableAutoCheckpointUpload;
 
   const activeProjectName =
     runtime.startProjectName !== null
@@ -194,7 +197,7 @@ export function LiveTrainingView(): ReactElement {
             configOverride={runConfigOverride}
           />
         </div>
-        {runtime.checkpointUpload.state !== "idle" ? (
+        {autoCheckpointUploadEnabled && runtime.checkpointUpload.state !== "idle" ? (
           <CheckpointUploadCard
             key={runtime.jobId ?? "no-job"}
             upload={runtime.checkpointUpload}

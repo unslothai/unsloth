@@ -93,6 +93,10 @@ _TRAINING_ARGUMENT_KEYS = (
     "max_steps",
     "save_steps",
     "save_total_limit",
+    # Upload preferences are safe, non-credential configuration. Persist them
+    # so an imported checkpoint retains the user's opt-in and Hub destination.
+    "push_to_hub",
+    "hub_model_id",
     "weight_decay",
     "max_grad_norm",
     "max_grad_value",

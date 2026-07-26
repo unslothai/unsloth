@@ -30,6 +30,7 @@ try:
         get_resume_checkpoint_path,
         preserve_checkpoint_training_target,
         normalize_resume_output_dir,
+        continuation_output_name,
         CheckpointImportError,
         inspect_import_checkpoint,
         validate_import_compatibility,
@@ -48,6 +49,7 @@ except ImportError:
         get_resume_checkpoint_path,
         preserve_checkpoint_training_target,
         normalize_resume_output_dir,
+        continuation_output_name,
         CheckpointImportError,
         inspect_import_checkpoint,
         validate_import_compatibility,
@@ -106,7 +108,9 @@ def _validate_resume_destination(value: Optional[str], source: str, in_place: bo
         destination = source_root
     else:
         destination = resolve_output_dir(
-            f"continuation_{source_root.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            continuation_output_name(
+                source_root.name, datetime.now().strftime("%Y%m%d_%H%M%S")
+            )
         ).resolve(strict = False)
 
     conflicts = (
