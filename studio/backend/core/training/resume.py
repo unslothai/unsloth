@@ -101,6 +101,17 @@ def _checkpoint_state(path: Path) -> Optional[int]:
     return step if directory_step < 0 or step == directory_step else None
 
 
+def _checkpoint_max_steps(path: Path) -> Optional[int]:
+    try:
+        state = json.loads((path / "trainer_state.json").read_text(encoding = "utf-8"))
+        max_steps = state.get("max_steps") if isinstance(state, dict) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
+        return None
+    return max_steps
+
+
 _INDEX_SHARD_SUFFIX = {
     "model.safetensors.index.json": ".safetensors",
     "pytorch_model.bin.index.json": ".bin",
@@ -313,6 +324,7 @@ def inspect_import_checkpoint(path_value: str, approved_roots: Sequence[Path]) -
         "selected_checkpoint": str(checkpoint),
         "output_dir": str(selected if checkpoint == selected else checkpoint.parent),
         "global_step": step,
+        "max_steps": _checkpoint_max_steps(checkpoint),
         "backend_type": backend,
         "configuration": _configuration_metadata(checkpoint),
         "manifest": manifest,
@@ -341,6 +353,16 @@ def validate_import_compatibility(
         errors.append(
             f"Checkpoint model {manifest_model!r} does not match requested {requested_model!r}."
         )
+    checkpoint_step = int(info.get("global_step") or 0)
+    requested_max_steps = int(getattr(request, "max_steps", 0) or 0)
+    checkpoint_max_steps = int(info.get("max_steps") or 0)
+    effective_max_steps = max(requested_max_steps, checkpoint_max_steps)
+    if effective_max_steps > 0 and checkpoint_step >= effective_max_steps:
+        errors.append(
+            f"Checkpoint step {checkpoint_step} has already reached Max Steps "
+            f"({effective_max_steps}). Choose an earlier checkpoint or set Max Steps "
+            f"higher than {checkpoint_step} before resuming."
+        )
     warnings_list = list(info.get("compatibility_warnings") or [])
     for key in ("training_type", "load_in_4bit", "max_seq_length"):
         expected = merged.get(key)
@@ -359,6 +381,13 @@ def validate_import_compatibility(
             ]
         )
     return warnings_list
+
+
+def preserve_checkpoint_training_target(info: dict[str, Any], request: Any) -> None:
+    """Do not shorten a resumed run below the target saved by TrainerState."""
+    checkpoint_max_steps = int(info.get("max_steps") or 0)
+    if checkpoint_max_steps > int(getattr(request, "max_steps", 0) or 0):
+        request.max_steps = checkpoint_max_steps
 
 
 def get_resume_checkpoint_path(

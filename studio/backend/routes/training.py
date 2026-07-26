@@ -28,6 +28,7 @@ try:
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
+        preserve_checkpoint_training_target,
         normalize_resume_output_dir,
         CheckpointImportError,
         inspect_import_checkpoint,
@@ -45,6 +46,7 @@ except ImportError:
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
+        preserve_checkpoint_training_target,
         normalize_resume_output_dir,
         CheckpointImportError,
         inspect_import_checkpoint,
@@ -304,6 +306,11 @@ async def start_training(
                     request.imported_resume_checkpoint or request.resume_checkpoint_path,
                     _resume_browse_roots(),
                 )
+                # A stop checkpoint retains the trainer's original target. Keep
+                # that target when older/partial portable config reconstructs a
+                # smaller max_steps value; otherwise a step-30 checkpoint from a
+                # 2,000-step run immediately exits as "31 / 30" on resume.
+                preserve_checkpoint_training_target(imported, request)
                 validate_import_compatibility(imported, request, _active_backend_type())
             except CheckpointImportError as exc:
                 raise HTTPException(status_code = 400, detail = {"errors": exc.errors}) from exc

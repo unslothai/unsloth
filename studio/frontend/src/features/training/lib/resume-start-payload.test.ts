@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TrainingStartRequest } from "../types/api.ts";
-import { withImportedResumeCheckpoint } from "./resume-start-payload.ts";
+import {
+  getResumeStepConflict,
+  withImportedResumeCheckpoint,
+} from "./resume-start-payload.ts";
 
 test("an inspected checkpoint replaces resume sources restored from older configs", () => {
   const payload = {
@@ -21,4 +24,13 @@ test("an inspected checkpoint replaces resume sources restored from older config
   assert.equal(result.imported_resume_checkpoint, "/chosen/checkpoint-20");
   assert.equal(result.in_place_continuation, false);
   assert.equal(result.model_name, "org/model");
+});
+
+test("reports when a checkpoint has no remaining configured steps", () => {
+  assert.match(
+    getResumeStepConflict(31, 30) ?? "",
+    /already reached Max Steps/,
+  );
+  assert.equal(getResumeStepConflict(20, 30), null);
+  assert.equal(getResumeStepConflict(30, 0), null);
 });

@@ -3,6 +3,16 @@
 
 import type { TrainingStartRequest } from "../types/api";
 
+export function getResumeStepConflict(
+  checkpointStep: number,
+  maxSteps: number | null | undefined,
+): string | null {
+  if (!maxSteps || maxSteps <= 0 || checkpointStep < maxSteps) {
+    return null;
+  }
+  return `Checkpoint step ${checkpointStep} has already reached Max Steps (${maxSteps}). Choose an earlier checkpoint to continue this run.`;
+}
+
 /** Select the inspected import as the request's one authoritative resume source. */
 export function withImportedResumeCheckpoint(
   payload: TrainingStartRequest,
