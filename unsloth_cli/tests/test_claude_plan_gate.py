@@ -46,6 +46,10 @@ def test_plugin_registers_a_pretooluse_hook_on_the_editing_tool(tmp_path):
     assert hook["type"] == "command"
     assert str(plugin / "hooks" / "plan_gate.py") in hook["command"]
     assert sys.executable in hook["command"]
+    # The interpreter is quoted: unquoted, any space in the path splits the command.
+    assert f'"{sys.executable}"' in hook["command"]
+    # A hook with no timeout stalls the parent for as long as it hangs.
+    assert 0 < hook["timeout"] <= 30
 
 
 def test_gate_script_is_written_and_compiles(tmp_path):
@@ -113,3 +117,28 @@ def test_wsl_run_clears_a_gate_left_by_an_earlier_windows_run(tmp_path, monkeypa
 
     assert not gate.exists()
     assert not hooks.exists()
+
+
+def test_hook_command_survives_a_missing_gate_and_a_path_with_spaces(tmp_path):
+    # Handing the path straight to the interpreter makes a missing gate exit 2,
+    # which Claude treats as a blocking error: the editing tool would then be
+    # denied in every mode, not just plan. Going through runpy makes it exit 1.
+    plugin = _plugin(tmp_path / "dir with space")
+    hook = json.loads((plugin / "hooks" / "hooks.json").read_text())
+    command = hook["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    # Works normally through the real shell path Claude uses.
+    denied = subprocess.run(
+        command, input = json.dumps({"permission_mode": "plan"}),
+        shell = True, capture_output = True, text = True, timeout = 30,
+    )
+    assert denied.returncode == 0
+    assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    (plugin / "hooks" / "plan_gate.py").unlink()
+    gone = subprocess.run(
+        command, input = json.dumps({"permission_mode": "default"}),
+        shell = True, capture_output = True, text = True, timeout = 30,
+    )
+    assert gone.returncode != 2, "exit 2 blocks the tool in every mode"
+    assert gone.stdout.strip() == ""

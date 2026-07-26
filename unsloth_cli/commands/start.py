@@ -2070,14 +2070,13 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
             }
         },
     )
-    # Plan mode must not reach the editing agent. SKILL.md only asks the parent
-    # model to pick the read-only tool; this PreToolUse hook reads permission_mode
-    # itself, so the routing holds even when the model forgets. Skipped under the
-    # WSL bridge, where a Windows interpreter path is not runnable in the distro.
+    # Claude already refuses the editing tool in plan mode, since it advertises
+    # readOnlyHint false. This PreToolUse hook replaces that dead end with a reason
+    # naming the read-only tool to call instead. Skipped under the WSL bridge, where
+    # the gate is a Linux path but the hook would run beside the Windows claude.
     gate = plugin / "hooks" / "plan_gate.py"
     if command == "wsl.exe":
-        # A persisted plugin dir may still hold a gate from an earlier non-WSL run,
-        # whose interpreter path the distro cannot run. Drop it rather than ship it.
+        # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
         for stale in (gate, plugin / "hooks" / "hooks.json"):
             stale.unlink(missing_ok = True)
     else:
@@ -2092,7 +2091,18 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
                             "hooks": [
                                 {
                                     "type": "command",
-                                    "command": f'"{sys.executable}" "{gate}"',
+                                    # Run through runpy rather than handing the path to
+                                    # the interpreter: a missing gate is then an
+                                    # ordinary traceback (exit 1, fails open) instead
+                                    # of exit 2, which Claude treats as a blocking
+                                    # error and would deny the tool in every mode.
+                                    "command": (
+                                        f'"{sys.executable}" -c '
+                                        f'"import runpy; runpy.run_path(r\'\'\'{gate}\'\'\')"'
+                                    ),
+                                    # A hook with no timeout stalls the parent for as
+                                    # long as it hangs; measured unbounded past 400s.
+                                    "timeout": 10,
                                 }
                             ],
                         }

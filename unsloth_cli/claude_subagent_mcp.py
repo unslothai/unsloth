@@ -29,6 +29,10 @@ from unsloth_cli.commands.start import (
 _MAX_RESULT_CHARACTERS = 100_000
 _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 2.0
+# A local server that accepts the connection and then never answers leaves the
+# child, and the parent waiting on it, blocked forever. Generous enough not to cut
+# a long legitimate run short; 0 restores the unbounded wait.
+_DEFAULT_TIMEOUT_SECONDS = 1800.0
 
 
 def _required_env(name: str) -> str:
@@ -36,6 +40,18 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing {name}.")
     return value
+
+
+def _timeout_seconds() -> float:
+    """Wall-clock cap on one child run; 0 or unparsable means wait forever."""
+    raw = os.environ.get("UNSLOTH_CLAUDE_SUBAGENT_TIMEOUT")
+    if raw is None or not raw.strip():
+        return _DEFAULT_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw.strip())
+    except ValueError:
+        return _DEFAULT_TIMEOUT_SECONDS
+    return parsed if parsed > 0 else 0.0
 
 
 def _bounded(text: str) -> str:
@@ -196,6 +212,8 @@ def run_local_agent(
         [executable, *command[1:]],
         **popen_kwargs,
     )
+    deadline = _timeout_seconds()
+    started_at = time.monotonic()
     try:
         while True:
             try:
@@ -205,6 +223,13 @@ def run_local_agent(
                 if cancel_event.is_set():
                     _stop_child(process)
                     raise RuntimeError("The local Claude agent was cancelled.")
+                waited = time.monotonic() - started_at
+                if deadline and waited > deadline:
+                    _stop_child(process)
+                    raise RuntimeError(
+                        f"The local Claude agent produced nothing after {waited:.0f}s. "
+                        "The local server is likely wedged; check that a model is loaded."
+                    )
     except BaseException:
         if process.poll() is None:
             _stop_child(process)
