@@ -362,10 +362,12 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset dismissed flag on new stream.
+  // Reset per-round open state. manualOpen is sticky and regenerate reuses this
+  // instance, so a hand-opened block would stay pinned open and never collapse.
   useEffect(() => {
     if (isReasoningStreaming) {
       setDismissedWhileStreaming(false);
+      setManualOpen(false);
     }
   }, [isReasoningStreaming]);
 
