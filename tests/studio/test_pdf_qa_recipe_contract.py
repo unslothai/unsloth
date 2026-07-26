@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import re
 import sys
 import threading
@@ -49,12 +50,12 @@ def test_pdf_qa_recipe_projects_and_cleans_training_columns():
     recipe = _load_payload()["recipe"]
     columns = {column["name"]: column for column in recipe["columns"]}
 
-    assert list(columns) == ["llm_structured_1", "instruction", "output", "metadata"]
+    assert list(columns) == ["llm_structured_1", "instruction", "output", "input"]
     assert columns["llm_structured_1"]["drop"] is True
     assert columns["instruction"]["expr"] == "{{ llm_structured_1.question }}"
     assert columns["output"]["expr"] == "{{ llm_structured_1.answer }}"
-    assert "llm_structured_1.evidence_quote" in columns["metadata"]["expr"]
-    assert "chunk_text" in columns["metadata"]["expr"]
+    assert "llm_structured_1.evidence_quote" in columns["input"]["expr"]
+    assert "chunk_text" in columns["input"]["expr"]
     assert recipe["processors"] == [
         {
             "processor_type": "drop_columns",
@@ -89,7 +90,7 @@ def test_pdf_qa_recipe_sample_row_is_qlora_ready():
     assert row == {
         "instruction": "What is the capital of France?",
         "output": "Paris.",
-        "metadata": (
+        "input": (
             "Evidence quote: Paris is the capital of France.\n\n"
             "Source context: Paris is the capital of France."
         ),
@@ -106,8 +107,8 @@ def test_pdf_qa_canvas_edges_cover_expression_dependencies():
     assert ("seed", "llm_structured_1") in edges
     assert ("llm_structured_1", "instruction") in edges
     assert ("llm_structured_1", "output") in edges
-    assert ("llm_structured_1", "metadata") in edges
-    assert ("seed", "metadata") in edges
+    assert ("llm_structured_1", "input") in edges
+    assert ("seed", "input") in edges
 
     column_names = {column["name"] for column in recipe["columns"]}
     assert {"instruction", "output"} <= column_names
@@ -126,7 +127,7 @@ def test_pdf_qa_fields_are_detected_as_alpaca():
     spec.loader.exec_module(module)
 
     detected = module.detect_dataset_format(
-        [{"instruction": "What is the capital?", "output": "Paris.", "metadata": "source"}]
+        [{"instruction": "What is the capital?", "input": "source", "output": "Paris."}]
     )
     assert detected["format"] == "alpaca"
     assert detected["needs_standardization"] is False
@@ -142,6 +143,8 @@ def test_unstructured_seed_drop_toggle_round_trip_contract():
     assert "selectedDropColumns.length > 0" in builder
     assert ': ["chunk_text", "source_file"];' in builder
     assert "drop: payloadSeedDropColumns.length > 0" in importer
+    assert "payloadSeedSourceIsUnstructured" in importer
+    assert '? ["chunk_text", "source_file"]' in importer
     assert "drop?: boolean;" in parser
     assert "...(options?.drop !== undefined ? { drop: options.drop } : {})" in parser
 
@@ -192,6 +195,9 @@ class _MockOpenAIHandler(BaseHTTPRequestHandler):
 
 @pytest.mark.pdf_qa_integration
 def test_pdf_qa_recipe_runs_with_pinned_data_designer(tmp_path, monkeypatch):
+    if os.environ.get("UNSLOTH_PDF_QA_MANAGED_INTEGRATION") != "1":
+        pytest.skip("set UNSLOTH_PDF_QA_MANAGED_INTEGRATION=1 to run this integration")
+
     backend = REPO / "studio/backend"
     sys.path.insert(0, str(backend))
     pytest.importorskip("data_designer")
@@ -230,7 +236,7 @@ def test_pdf_qa_recipe_runs_with_pinned_data_designer(tmp_path, monkeypatch):
         {
             "instruction": "What is the capital of France?",
             "output": "Paris.",
-            "metadata": (
+            "input": (
                 "Evidence quote: Paris is the capital of France.\n\n"
                 "Source context: Paris is the capital of France."
             ),
