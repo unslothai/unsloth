@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def dockerfile() -> str:
     assert DOCKERFILE.is_file(), f"missing {DOCKERFILE}"
     return DOCKERFILE.read_text()
@@ -39,7 +39,8 @@ def dockerfile() -> str:
 
 def test_cublas_dir_is_registered_with_the_loader(dockerfile: str):
     conf = re.search(
-        r"ld\.so\.conf\.d/zz-unsloth-venv\.conf", dockerfile,
+        r"ld\.so\.conf\.d/zz-unsloth-venv\.conf",
+        dockerfile,
     )
     assert conf, "the venv loader-config layer disappeared"
     block = dockerfile[: conf.end()]
@@ -55,7 +56,8 @@ def test_loader_config_is_not_ld_library_path(dockerfile: str):
     # copies shadow llama.cpp's own $ORIGIN libs. ld.so.conf.d is consulted after.
     assert "ld.so.conf.d/zz-unsloth-venv.conf" in dockerfile
     assert not re.search(
-        r"ENV\s+LD_LIBRARY_PATH=.*site-packages/nvidia", dockerfile,
+        r"ENV\s+LD_LIBRARY_PATH=.*site-packages/nvidia",
+        dockerfile,
     ), "the venv nvidia libs must not go on LD_LIBRARY_PATH"
 
 
@@ -67,9 +69,9 @@ def test_build_fails_on_an_unresolved_cuda_backend(dockerfile: str):
     assert "exit 1" in guard, "an unresolved backend must fail the build"
     # The driver stub is injected by nvidia-container-toolkit at `docker run
     # --gpus`, so it is never resolvable inside the build and must be exempt.
-    assert re.search(r"grep -v .libcuda\\?\.so\\?\.1", guard), (
-        "libcuda.so.1 must be exempt from the guard or every build fails"
-    )
+    assert re.search(
+        r"grep -v .libcuda\\?\.so\\?\.1", guard
+    ), "libcuda.so.1 must be exempt from the guard or every build fails"
 
 
 def test_guard_installs_the_matching_cublas_major(dockerfile: str):
@@ -77,9 +79,9 @@ def test_guard_installs_the_matching_cublas_major(dockerfile: str):
     # the arm64 bundle is CUDA 13. Deriving the major from ldd keeps the two
     # legs correct without hardcoding either.
     guard = dockerfile[dockerfile.index("CUDA_SO=") :]
-    assert "nvidia-cublas-cu${major}" in guard, (
-        "the guard must install the cublas major the bundle actually asks for"
-    )
+    assert (
+        "nvidia-cublas-cu${major}" in guard
+    ), "the guard must install the cublas major the bundle actually asks for"
     assert "libcublas" in guard
 
 
