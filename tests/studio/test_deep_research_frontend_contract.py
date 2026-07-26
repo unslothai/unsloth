@@ -252,6 +252,23 @@ def test_settled_terminal_research_never_stays_disconnected() -> None:
     assert "!isSettledResearchRun(run, session.lastAppliedSeq)" in activity
 
 
+def test_replayed_history_never_borrows_another_attempts_step_result() -> None:
+    # A retry deletes the previous attempt's research_plan_steps rows but keeps its events,
+    # and the SSE route attaches the live run snapshot to every replayed historical event.
+    # Matching a replayed step only by position would show the newest attempt's evidence
+    # (or none) inside the older attempt's preserved activity.
+    coordinator = source("features/chat/stores/research-run-store.ts")
+
+    assert "const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);" in coordinator
+    assert "const snapshot = snapshotIsSameAttempt" in coordinator
+    assert "? event.run.steps.find((step) => step.position === stepPosition)" in coordinator
+    assert "snapshot?.result?.evidenceSources ?? activity.evidenceSources," in coordinator
+    assert "excerpt: snapshot?.result?.excerpt ?? activity.excerpt," in coordinator
+    resumed_gate = coordinator.split('event.event === "run.started" &&', 1)[1].split("{", 1)[0]
+    assert "event.data.resumed" in resumed_gate
+    assert "snapshotIsSameAttempt" in resumed_gate
+
+
 def test_research_stop_is_prompt_only_and_deduplicated() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
     thread = source("components/assistant-ui/thread.tsx")
