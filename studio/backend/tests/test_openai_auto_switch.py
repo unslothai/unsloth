@@ -11,6 +11,7 @@ import asyncio
 import os
 
 import pytest
+from fastapi import HTTPException
 
 import routes.inference as inference_route
 from models.inference import LoadRequest
@@ -116,7 +117,11 @@ def test_flag_off_never_loads(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    _run_hook("unsloth/B-GGUF")
+    # Off means no load, but A must not answer as B either: say why instead.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
     assert rec.calls == []
 
 
@@ -289,9 +294,9 @@ def test_openai_compat_routes_bound_to_handlers_with_auth():
     for key, handler in expected.items():
         assert key in seen, f"route {key} is not registered"
         route = seen[key]
-        assert (
-            route.endpoint.__name__ == handler
-        ), f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        assert route.endpoint.__name__ == handler, (
+            f"{key} bound to {route.endpoint.__name__}, expected {handler}"
+        )
         deps = [d.call.__name__ for d in route.dependant.dependencies]
         assert "get_current_subject" in deps, f"{key} lost its auth dependency"
 
@@ -1870,7 +1875,10 @@ def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatc
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)  # standalone env TTL
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
-    _run_hook("org/B-GGUF")
+    # A is restored, but the request named B, so it is told so rather than served A.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("org/B-GGUF")
+    assert excinfo.value.status_code == 404
     # Resolver skipped (auto-switch off), so only the stash reload runs: the freed A
     # is restored, not the resolves_to target B.
     assert len(rec.calls) == 1
@@ -2940,9 +2948,13 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
     monkeypatch.setattr(
         inference_route, "_target_is_vision", lambda _p: False
     )  # would reject if used
-    asyncio.run(
-        inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "t", require_vision = True)
-    )
+    # 404 because the restored A is not the requested B; the restore still ran.
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "t", require_vision = True
+            )
+        )
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "/cache/snap/A"  # restored despite require_vision
 

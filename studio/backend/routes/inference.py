@@ -3756,6 +3756,99 @@ async def _maybe_auto_download_model(
     )
 
 
+def _loaded_satisfies(requested: str) -> bool:
+    """Whether what is serving right now actually answers to *requested*.
+
+    A bare ``org/model`` is satisfied by any loaded quant of that repo; an
+    explicit ``:QUANT`` must match the loaded one.
+    """
+    from core.inference.openai_auto_download import split_model_ref
+
+    base, variant = split_model_ref(requested)
+    base = base.lower()
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        keys = {
+            candidate.lower()
+            for candidate in (
+                getattr(llama_backend, "model_identifier", None),
+                getattr(llama_backend, "_openai_advertised_id", None),
+                _llama_public_model_id(llama_backend),
+            )
+            if candidate
+        }
+        if base not in keys:
+            return False
+        if not variant:
+            return True
+        return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
+    active = getattr(get_inference_backend(), "active_model_name", None)
+    if not active:
+        return False
+    return base in {active.lower(), (public_model_id(active) or "").lower()}
+
+
+async def _reject_unservable_model(
+    requested_model: Optional[str], fastapi_request: Optional[Request]
+) -> None:
+    """404 rather than answer a named model with a different one.
+
+    ``org/model`` (optionally ``:QUANT``) is a concrete reference: serving it
+    from whatever happens to be resident returns a confident answer from the
+    wrong weights. Ids without a namespace (``gpt-4``) are foreign labels, so
+    they still fall through and drop-in clients are unaffected. Only runs while
+    something is serving; with nothing loaded the caller's own
+    :func:`_no_model_loaded_error` already says the right thing.
+    """
+    from core.inference.openai_auto_download import split_model_ref
+
+    if (
+        not isinstance(requested_model, str)
+        or not requested_model.strip()
+        or requested_model == _RELOAD_ONLY_MODEL
+    ):
+        return
+    base, _variant = split_model_ref(requested_model)
+    if "/" not in base:
+        return
+    try:
+        if _loaded_satisfies(requested_model):
+            return
+        if not (
+            get_llama_cpp_backend().is_loaded
+            or getattr(get_inference_backend(), "active_model_name", None)
+        ):
+            return
+        from core.inference.local_model_resolver import resolve_local_gguf
+        from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+        downloaded = await asyncio.to_thread(resolve_local_gguf, requested_model) is not None
+        if downloaded and get_openai_auto_switch_enabled():
+            # On disk and switching is allowed, so the swap failed (load error,
+            # race). Serving the resident model is the sane fallback.
+            return
+        message = (
+            f"The model '{requested_model}' is downloaded but not loaded, and "
+            "'Switch model by request' is off, so this server can only serve the "
+            "loaded model. Turn it on in Unsloth Studio under Settings > API."
+            if downloaded
+            else await _unavailable_model_message(requested_model)
+        )
+    except Exception as exc:
+        # A diagnosis failure must never break a request the server can answer.
+        logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    raise HTTPException(
+        status_code = 404,
+        detail = (
+            error_body_for_path(path, message, status = 404, code = "model_not_found", param = "model")
+            if isinstance(path, str)
+            else message
+        ),
+    )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -3798,6 +3891,9 @@ async def _maybe_auto_switch_model(
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+        # No switching to do, but a named model still must not be answered by a
+        # different one.
+        await _reject_unservable_model(requested_model, fastapi_request)
         return
 
     async def _resolve_and_switch() -> None:
@@ -3945,6 +4041,9 @@ async def _maybe_auto_switch_model(
                 _note_switch_waiter(key, -1)
 
     await _resolve_and_switch()
+    # The switch may have missed (not downloaded, or a swap that failed): refuse
+    # rather than let the handler answer as whatever is still resident.
+    await _reject_unservable_model(requested_model, fastapi_request)
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):

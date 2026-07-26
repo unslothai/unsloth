@@ -12,6 +12,7 @@ through to the resident model.
 import asyncio
 
 import pytest
+from fastapi import HTTPException
 
 import routes.inference as inference_route
 from core.inference import openai_auto_download as auto_dl
@@ -394,6 +395,152 @@ def test_hook_prefers_the_hub_header_token(hub):
             enabled = True,
         )
     assert hub["started"][0][2] == "hf_from_header"
+
+
+# --- never answer as a different model ----------------------------------------
+
+
+class _Loaded:
+    """Minimal stand-in for the GGUF backend with one model resident."""
+
+    def __init__(
+        self,
+        identifier,
+        variant = None,
+        advertised = None,
+    ):
+        self.is_loaded = True
+        self.model_identifier = identifier
+        self.hf_variant = variant
+        self._openai_advertised_id = advertised
+
+
+def _reject(
+    model,
+    loaded,
+    monkeypatch,
+    *,
+    downloaded = False,
+    auto_switch = False,
+):
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf",
+        lambda name: ("/p", None, name) if downloaded else None,
+    )
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled",
+        lambda: auto_switch,
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    return asyncio.run(inference_route._reject_unservable_model(model, _Req()))
+
+
+async def _fake_unavailable_message(model):
+    return f"The model '{model}' is not downloaded on this server."
+
+
+def test_wrong_quant_is_not_answered_by_the_loaded_one(monkeypatch):
+    # The reported bug: asking for UD-Q6_K_XL while UD-Q4_K_XL is resident used to
+    # return 200 from the wrong weights.
+    loaded = _Loaded("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL")
+    with pytest.raises(HTTPException) as excinfo:
+        _reject("unsloth/gemma-4-E2B-it-GGUF:UD-Q6_K_XL", loaded, monkeypatch)
+    assert excinfo.value.status_code == 404
+
+
+def test_bare_repo_id_is_satisfied_by_any_loaded_quant(monkeypatch):
+    # No quant named means "this model", so the resident quant answers it.
+    loaded = _Loaded("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL")
+    assert _reject("unsloth/gemma-4-E2B-it-GGUF", loaded, monkeypatch) is None
+
+
+def test_matching_quant_is_served(monkeypatch):
+    loaded = _Loaded("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL")
+    assert _reject("unsloth/gemma-4-E2B-it-GGUF:ud-q4_k_xl", loaded, monkeypatch) is None
+
+
+def test_advertised_alias_counts_as_serving(monkeypatch):
+    # Loaded by path, requested by the repo id auto-switch advertised for it.
+    loaded = _Loaded("/cache/snap/abc", "UD-Q4_K_XL", "unsloth/gemma-4-E2B-it-GGUF")
+    assert _reject("unsloth/gemma-4-E2B-it-GGUF", loaded, monkeypatch) is None
+
+
+@pytest.mark.parametrize("foreign", ["gpt-4", "gpt-4o-mini", "claude-3-5-sonnet", "default"])
+def test_foreign_ids_still_fall_through(monkeypatch, foreign):
+    # Drop-in compatibility: an id with no namespace is a label, not a reference.
+    loaded = _Loaded("unsloth/gemma-4-E2B-it-GGUF", "UD-Q4_K_XL")
+    assert _reject(foreign, loaded, monkeypatch) is None
+
+
+def test_downloaded_but_auto_switch_off_says_so(monkeypatch):
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    with pytest.raises(HTTPException) as excinfo:
+        _reject("unsloth/B-GGUF", loaded, monkeypatch, downloaded = True)
+    assert "Switch model by request" in str(excinfo.value.detail)
+
+
+def test_downloaded_with_auto_switch_on_falls_through(monkeypatch):
+    # On disk and switching allowed means the swap failed; the resident model is
+    # the sane fallback rather than a hard error.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    assert _reject("unsloth/B-GGUF", loaded, monkeypatch, downloaded = True, auto_switch = True) is None
+
+
+def test_nothing_loaded_leaves_the_existing_error_alone(monkeypatch):
+    # With no model resident the handler's own no-model-loaded error is already
+    # correct, so this check must not preempt it.
+    idle = type("B", (), {"is_loaded": False, "model_identifier": None, "hf_variant": None})()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF", _Req())) is None
+
+
+def test_reload_only_sentinel_is_ignored(monkeypatch):
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    assert _reject(inference_route._RELOAD_ONLY_MODEL, loaded, monkeypatch) is None
+
+
+def test_diagnosis_failure_never_breaks_a_servable_request(monkeypatch):
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+
+    def _boom(_name):
+        raise RuntimeError("scan exploded")
+
+    monkeypatch.setattr("core.inference.local_model_resolver.resolve_local_gguf", _boom)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    assert asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF", _Req())) is None
+
+
+def test_anthropic_surface_gets_its_own_envelope(monkeypatch):
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr("core.inference.local_model_resolver.resolve_local_gguf", lambda name: None)
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._reject_unservable_model("unsloth/B-GGUF", _Req(path = "/v1/messages"))
+        )
+    assert excinfo.value.detail["type"] == "error"
 
 
 # --- settings ----------------------------------------------------------------
