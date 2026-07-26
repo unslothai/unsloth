@@ -3577,7 +3577,8 @@ async def _available_model_ids() -> list[str]:
     """Sorted ids a /v1 request may name, from the catalog ``GET /v1/models``
     serves, so an error and the listing can't disagree."""
     return sorted(
-        mid for mid in (m.get("id") for m in await _openai_catalog_objects())
+        mid
+        for mid in (m.get("id") for m in await _openai_catalog_objects())
         if isinstance(mid, str) and mid
     )
 
@@ -3624,11 +3625,7 @@ async def _unavailable_model_message(requested_model: str) -> str:
 
 
 async def _no_model_loaded_error(
-    base: str,
-    requested_model: Optional[str],
-    fastapi_request: Optional[Request],
-    *,
-    status: int,
+    base: str, requested_model: Optional[str], fastapi_request: Optional[Request], *, status: int
 ):
     """``(status, detail)`` for the /v1 sites that fail because nothing is loaded.
 

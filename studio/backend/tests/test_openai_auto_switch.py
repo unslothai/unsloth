@@ -409,10 +409,7 @@ def test_describe_local_miss_separates_missing_repo_from_missing_quant(monkeypat
         resolver.MISS_MODEL_NOT_FOUND,
         (),
     )
-    assert resolver.describe_local_miss("unsloth/B-GGUF") == (
-        resolver.MISS_MODEL_NOT_FOUND,
-        (),
-    )
+    assert resolver.describe_local_miss("unsloth/B-GGUF") == (resolver.MISS_MODEL_NOT_FOUND, ())
 
 
 def test_describe_local_miss_is_failsafe(monkeypatch):
@@ -3284,7 +3281,13 @@ def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
     assert inference_route._no_model_loaded_detail(base) == base
 
 
-def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name, resolves_to = None):
+def _run_responses_stream_no_model(
+    monkeypatch,
+    *,
+    enabled,
+    active_model_name,
+    resolves_to = None,
+):
     # Drive _responses_stream's GGUF-not-loaded guard: llama backend unloaded,
     # inference backend maybe holding a non-GGUF model. Returns (status, detail).
     from fastapi import HTTPException
@@ -3333,7 +3336,12 @@ def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeyp
     assert "Model auto-switch" in non_gguf_loaded
 
 
-def _wire_unloaded_chat(monkeypatch, *, enabled, catalog = ("org/A-GGUF", "org/B-GGUF")):
+def _wire_unloaded_chat(
+    monkeypatch,
+    *,
+    enabled,
+    catalog = ("org/A-GGUF", "org/B-GGUF"),
+):
     # Nothing loaded, so a chat request reaches the "no model loaded" error. Pin
     # the catalog so listed ids don't depend on what is cached on the test machine.
     async def _catalog():
@@ -3357,7 +3365,6 @@ def _wire_unloaded_chat(monkeypatch, *, enabled, catalog = ("org/A-GGUF", "org/B
 
 def _chat_error(payload):
     from fastapi import HTTPException
-
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     return exc.value.status_code, exc.value.detail
@@ -3454,9 +3461,7 @@ def test_anthropic_undownloaded_model_uses_the_anthropic_envelope(monkeypatch):
 
     request = type("_R", (), {"url": type("_U", (), {"path": "/v1/messages"})()})()
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route.anthropic_messages(_anthropic_payload(64), request, "tester")
-        )
+        asyncio.run(inference_route.anthropic_messages(_anthropic_payload(64), request, "tester"))
     assert exc.value.status_code == 404
     body = exc.value.detail
     assert body["type"] == "error"
