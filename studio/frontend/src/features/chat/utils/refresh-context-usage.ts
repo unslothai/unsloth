@@ -5,6 +5,7 @@ import type { ThreadMessage } from "@assistant-ui/react";
 import {
   buildLocalTokenCountExtras,
   buildOutboundMessagesForTokenCount,
+  findLatestUserAudioBase64,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
@@ -272,6 +273,12 @@ export async function refreshContextUsage(options?: {
     if (useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint) {
       return;
     }
+
+    // The newest user turn's audio is replayed as audio_base64 by the real
+    // request, but toOpenAIMessages has no audio branch, so counting here would
+    // price a text-only prompt. Decline instead, exactly as the endpoint does
+    // for images, and leave the usage already on the bar.
+    if (findLatestUserAudioBase64(runMessages)) return;
 
     // A completion finishing mid-count writes the exact usage for a turn this
     // count predates, so drop the recount rather than roll the bar backwards.
