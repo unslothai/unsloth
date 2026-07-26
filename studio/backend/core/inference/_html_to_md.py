@@ -193,7 +193,11 @@ class _MarkdownRenderer(HTMLParser):
     how the readability-style main-content pass drops page furniture.
     """
 
-    def __init__(self, scope_tags: frozenset[str] | None = None):
+    def __init__(
+        self,
+        scope_tags: frozenset[str] | None = None,
+        strip_header: bool = False,
+    ):
         super().__init__(convert_charrefs = False)
         self._out: list[str] = []
         self._skip_depth: int = 0
@@ -212,6 +216,15 @@ class _MarkdownRenderer(HTMLParser):
         # an omitted </p>/<li> close cannot leave the renderer stuck hidden.
         self._open_tags: list[str] = []
         self._hidden_marks: list[int] = []
+
+        # <header> is furniture apart from the heading it carries, so it cannot
+        # join _SKIP_TAGS. Marks are stack indices, like _hidden_marks.
+        self._strip_header = strip_header
+        self._header_marks: list[int] = []
+        self._header_heading_marks: list[int] = []
+        self._header_prose_total: int = 0
+        self._seg_header_start: int = 0
+        self.scope_header_prose: list[int] = []
 
         # Link state
         self._link_href: str | None = None
@@ -330,6 +343,16 @@ class _MarkdownRenderer(HTMLParser):
             del self._open_tags[close_at:]
             while self._hidden_marks and self._hidden_marks[-1] >= close_at:
                 self._hidden_marks.pop()
+            self._unwind_header_marks(close_at)
+
+    def _unwind_header_marks(self, depth: int) -> None:
+        while self._header_marks and self._header_marks[-1] >= depth:
+            self._header_marks.pop()
+        while self._header_heading_marks and self._header_heading_marks[-1] >= depth:
+            self._header_heading_marks.pop()
+
+    def _header_suppressed(self) -> bool:
+        return bool(self._header_marks) and not self._header_heading_marks
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """Track open/hidden/scope state; return True when the tag's content
@@ -339,24 +362,34 @@ class _MarkdownRenderer(HTMLParser):
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
+            if self._strip_header:
+                if tag == "header":
+                    self._header_marks.append(len(self._open_tags) - 1)
+                elif tag in _HEADING_TAGS and self._header_marks:
+                    self._header_heading_marks.append(len(self._open_tags) - 1)
         elif _is_hidden_element(attr_dict):
             # Void elements never join the stack, so suppress a hidden one inline.
             return False
         if self._scope_tags is not None and tag in self._scope_tags:
             if self._scope_depth == 0:
                 self._scope_seg_start = len(self._out)
+                self._seg_header_start = self._header_prose_total
             self._scope_depth += 1
         if self._hidden_marks:
             return False
         if self._scope_tags is not None and self._scope_depth == 0:
+            return False
+        if self._header_suppressed():
             return False
         return True
 
     def _exit_tag(self, tag: str) -> bool:
         """Pop to the matching open tag; return True when the end tag should
         be rendered (False = it closed inside a hidden / out-of-scope region)."""
-        suppressed = bool(self._hidden_marks) or (
-            self._scope_tags is not None and self._scope_depth == 0
+        suppressed = (
+            bool(self._hidden_marks)
+            or self._header_suppressed()
+            or (self._scope_tags is not None and self._scope_depth == 0)
         )
         if tag not in _VOID_TAGS:
             # Pop to the innermost matching open tag (recovers omitted closes).
@@ -365,11 +398,15 @@ class _MarkdownRenderer(HTMLParser):
                     del self._open_tags[i:]
                     while self._hidden_marks and self._hidden_marks[-1] >= i:
                         self._hidden_marks.pop()
+                    self._unwind_header_marks(i)
                     break
         if self._scope_tags is not None and tag in self._scope_tags and self._scope_depth > 0:
             self._scope_depth -= 1
             if self._scope_depth == 0 and self._scope_seg_start is not None:
                 self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
+                self.scope_header_prose.append(
+                    self._header_prose_total - self._seg_header_start
+                )
                 self._scope_seg_start = None
         return not suppressed
 
@@ -546,12 +583,21 @@ class _MarkdownRenderer(HTMLParser):
     # Text / entity handlers
     # ------------------------------------------------------------------
     def _text_suppressed(self) -> bool:
-        if self._skip_depth or self._hidden_marks:
+        if self._skip_depth or self._hidden_marks or self._header_suppressed():
             return True
         return self._scope_tags is not None and self._scope_depth == 0
 
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
+            # Only non-anchor prose in scope betrays a swallowed body.
+            if (
+                self._header_suppressed()
+                and not self._skip_depth
+                and not self._hidden_marks
+                and not (self._scope_tags is not None and self._scope_depth == 0)
+                and "a" not in self._open_tags[self._header_marks[0] :]
+            ):
+                self._header_prose_total += len(data.strip())
             return
         if self._in_pre:
             self._pre_parts.append(data)
@@ -714,37 +760,54 @@ def _strip_boilerplate_lines(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
-def _render(source_html: str, scope_tags: frozenset[str] | None) -> str:
-    renderer = _MarkdownRenderer(scope_tags = scope_tags)
+def _render(
+    source_html: str,
+    scope_tags: frozenset[str] | None,
+    strip_header: bool = False,
+) -> tuple[str, int]:
+    renderer = _MarkdownRenderer(scope_tags = scope_tags, strip_header = strip_header)
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
     raw = "".join(renderer._out)
-    return _cleanup(raw)
+    return _cleanup(raw), renderer._header_prose_total
 
 
-def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
-    """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree. Sizing candidates one at a time stops many tiny sibling cards from
-    clearing the threshold together, and returning that one subtree keeps
-    unrelated siblings (related cards, comment threads) out of the output."""
-    renderer = _MarkdownRenderer(scope_tags = frozenset({tag}))
+def _select_main_scope_render(
+    source_html: str,
+    tag: str,
+    strip_header: bool = False,
+) -> tuple[int, str, int]:
+    """Length, boilerplate-stripped render, and dropped-prose count of the
+    largest single ``<tag>`` subtree. Sizing candidates one at a time stops many
+    tiny sibling cards from clearing the threshold together, and returning that
+    one subtree keeps unrelated siblings (related cards, comment threads) out."""
+    renderer = _MarkdownRenderer(scope_tags = frozenset({tag}), strip_header = strip_header)
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
     best_len = 0
     best_render = ""
-    for seg in renderer.scope_segments:
+    best_header_prose = 0
+    header_prose = renderer.scope_header_prose
+    for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
         if len(rendered) > best_len:
             best_len = len(rendered)
             best_render = rendered
-    return best_len, best_render
+            best_header_prose = header_prose[i] if i < len(header_prose) else 0
+    return best_len, best_render, best_header_prose
 
 
 # A scoped conversion below this size is judged not to be the page's main
 # content (e.g. an empty <article> stub) and the next candidate is tried.
 _MIN_MAIN_CONTENT_CHARS = 200
+
+# An unclosed <header> adopts the body (as browsers parse it). Size cannot tell
+# that apart from furniture removal, but link density can: a real header holds
+# a title and links, so only non-anchor prose counts as a swallowed body.
+def _header_strip_backfired(kept_chars: int, header_prose_chars: int) -> bool:
+    return header_prose_chars > kept_chars
 
 
 # Public API
@@ -756,7 +819,8 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
 
     ``main_content=True`` applies a readability-style heuristic for page
     fetches: prefer the ``<article>`` subtree (GitHub renders READMEs there),
-    then ``<main>``, falling back to the whole document, and strip known
+    then ``<main>``, falling back to the whole document, drop ``<header>``
+    furniture while keeping the heading it carries, and strip known
     boilerplate fragments from the result.
     """
     # Normalize line endings before parsing.
@@ -765,8 +829,16 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
         for scope_tag in ("article", "main"):
             # Render only the chosen subtree so sibling <article>/<main>
             # elements do not leak in once the largest passes the size gate.
-            length, rendered = _select_main_scope_render(source_html, scope_tag)
+            length, rendered, header_prose = _select_main_scope_render(
+                source_html, scope_tag, strip_header = True,
+            )
+            if _header_strip_backfired(length, header_prose):
+                length, rendered, _ = _select_main_scope_render(source_html, scope_tag)
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 return rendered
-        return _strip_boilerplate_lines(_render(source_html, None))
-    return _render(source_html, None)
+        rendered, header_prose = _render(source_html, None, strip_header = True)
+        rendered = _strip_boilerplate_lines(rendered)
+        if _header_strip_backfired(len(rendered), header_prose):
+            rendered = _strip_boilerplate_lines(_render(source_html, None)[0])
+        return rendered
+    return _render(source_html, None)[0]
