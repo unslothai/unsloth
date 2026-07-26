@@ -1063,3 +1063,129 @@ def test_llama_backend_flag_beats_conflicting_env(monkeypatch):
     )
     assert repo == UPSTREAM
     assert persist == "vulkan"
+
+
+def _windows_arm64_host(**overrides):
+    defaults = dict(
+        system = "Windows",
+        machine = "ARM64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = False,
+    )
+    defaults.update(overrides)
+    return ilp.HostInfo(**defaults)
+
+
+@pytest.mark.parametrize(
+    "env, flag",
+    [
+        ({"UNSLOTH_LLAMA_BACKEND": "vulkan"}, None),
+        ({"UNSLOTH_FORCE_VULKAN": "1"}, None),
+        ({}, "vulkan"),
+    ],
+)
+def test_vulkan_opt_in_ignored_on_windows_arm64(monkeypatch, env, flag):
+    # ggml-org release.yml builds win-vulkan for x64 only (arm64 gets
+    # win-cpu-arm64 + win-opencl-adreno-arm64), so rewriting the host to
+    # Vulkan-only would just swap the published arm64 bundle for the upstream
+    # CPU one and still never produce Vulkan. Keep the published bundle.
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    host = _windows_arm64_host()
+    routed, repo, tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False, llama_backend = flag
+    )
+    assert routed is host
+    assert (repo, tag) == (FORK, "pin")
+    assert persist is None
+
+
+def test_vulkan_opt_in_still_routes_on_windows_x64(monkeypatch):
+    # Negative control for the arm64 guard: x64 keeps its Vulkan routing.
+    monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
+    host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, FORK, "pin", force_cpu = False
+    )
+    assert repo == UPSTREAM
+    assert persist == "vulkan"
+
+
+def _choice(install_kind, name = "asset.zip"):
+    return ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = name,
+        url = f"https://example/{name}",
+        source_label = "upstream",
+        install_kind = install_kind,
+    )
+
+
+@pytest.mark.parametrize("kind", ["windows-vulkan", "linux-vulkan"])
+def test_persisted_llama_backend_keeps_vulkan_for_a_vulkan_bundle(kind):
+    assert ilp.persisted_llama_backend("vulkan", _choice(kind)) == "vulkan"
+
+
+@pytest.mark.parametrize("kind", ["windows-arm64", "windows-cpu", "linux-cpu", "windows-rocm"])
+def test_persisted_llama_backend_drops_vulkan_for_a_non_vulkan_bundle(kind):
+    # A Vulkan request that fell through to a CPU attempt must not leave a marker
+    # claiming Vulkan: _plan_llama_phase re-asserts the marker's backend on every
+    # later update, pinning the host to a backend it never installed.
+    assert ilp.persisted_llama_backend("vulkan", _choice(kind)) is None
+
+
+def test_persisted_llama_backend_passes_none_through():
+    assert ilp.persisted_llama_backend(None, _choice("windows-vulkan")) is None
+
+
+def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
+    # End to end over write_prebuilt_metadata: the CPU attempt that actually won
+    # must be described honestly, so the next update re-detects instead of
+    # re-asserting Vulkan forever.
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = UPSTREAM,
+        release_tag = "b9925",
+        upstream_tag = "b9925",
+        source_repo = UPSTREAM,
+        source_repo_url = f"https://github.com/{UPSTREAM}",
+    )
+    cpu = _choice("windows-arm64", "llama-b9925-bin-win-cpu-arm64.zip")
+    ilp.write_prebuilt_metadata(
+        tmp_path,
+        requested_tag = "latest",
+        llama_tag = "b9925",
+        release_tag = "b9925",
+        choice = cpu,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        llama_backend = "vulkan",
+    )
+    marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["asset"] == "llama-b9925-bin-win-cpu-arm64.zip"
+    assert marker["llama_backend"] is None
+
+    vulkan = _choice("windows-vulkan", "llama-b9925-bin-win-vulkan-x64.zip")
+    ilp.write_prebuilt_metadata(
+        tmp_path,
+        requested_tag = "latest",
+        llama_tag = "b9925",
+        release_tag = "b9925",
+        choice = vulkan,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        llama_backend = "vulkan",
+    )
+    marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["llama_backend"] == "vulkan"

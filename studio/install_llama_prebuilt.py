@@ -92,6 +92,12 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
+# install_kind values that really are a Vulkan bundle. Used to keep the marker's
+# llama_backend honest: upstream ships no Vulkan archive for Windows arm64, and
+# the x64 selector falls through to the CPU asset when the Vulkan one is missing
+# or fails validation, so a Vulkan request can end on a CPU bundle (#7357).
+VULKAN_INSTALL_KINDS = frozenset({"linux-vulkan", "windows-vulkan"})
+
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
 # elevation (its manifest is asInvoker), so this is just harmless belt-and-
 # suspenders for manifest-elevating tools. The real guard is _amd_smi_allowed():
@@ -5481,6 +5487,21 @@ def _fork_manifest_release_plans(
     raise PrebuiltFallback("no installable published llama.cpp releases were found")
 
 
+def persisted_llama_backend(llama_backend: str | None, choice: AssetChoice) -> str | None:
+    """The backend to record for an install that actually landed ``choice``.
+
+    A Vulkan request can end on a non-Vulkan bundle: Windows arm64 has no upstream
+    Vulkan archive at all (release.yml builds vulkan for x64 and opencl-adreno for
+    arm64), and the x64 branch falls through to win-cpu-x64 when the Vulkan archive
+    is missing or fails validation. Recording "vulkan" for such an install makes
+    the updater re-assert Vulkan on every later run for a backend that was never
+    installed, so the CPU bundle stays pinned to upstream instead of healing back
+    to the published bundle. Mirrors force_cpu: persist the real outcome only."""
+    if llama_backend == "vulkan" and choice.install_kind not in VULKAN_INSTALL_KINDS:
+        return None
+    return llama_backend
+
+
 def write_prebuilt_metadata(
     install_dir: Path,
     *,
@@ -5521,8 +5542,9 @@ def write_prebuilt_metadata(
         # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
         # Deliberate or auto-selected Vulkan backend (#7357). The updater re-asserts it
-        # so AMD hosts are not silently swapped back to HIP on update.
-        "llama_backend": llama_backend,
+        # so AMD hosts are not silently swapped back to HIP on update. Dropped when the
+        # attempt that won is not actually a Vulkan bundle.
+        "llama_backend": persisted_llama_backend(llama_backend, choice),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
         # Binary-side repo/tag for non-fork sources (e.g. the ggml-org upstream
@@ -6136,6 +6158,16 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo) -> bool:
     )
 
 
+def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
+    """Platforms that ship no Vulkan prebuilt at all, so routing there is pointless.
+
+    Upstream release.yml builds win-vulkan for x64 only; Windows arm64 gets
+    win-cpu-arm64 plus win-opencl-adreno-arm64. Rewriting such a host to
+    Vulkan-only just swaps the published arm64 bundle for the upstream CPU one
+    without ever producing Vulkan. macOS is handled separately (Metal)."""
+    return host.is_windows and host.is_arm64
+
+
 def _vulkan_only_host(host: HostInfo) -> HostInfo:
     """Rewrite ``host`` so the asset selectors take their Vulkan branch.
 
@@ -6197,6 +6229,13 @@ def _route_to_vulkan_prebuilt(
             log(
                 "UNSLOTH_LLAMA_BACKEND=vulkan is set but ignored on macOS "
                 "(Metal is used; there is no Vulkan prebuilt)"
+            )
+        return host, published_repo, published_release_tag, None
+    if _has_no_vulkan_prebuilt(host):
+        if forced:
+            log(
+                "Vulkan llama.cpp backend requested but ignored on Windows arm64 "
+                "(upstream ships no Vulkan arm64 prebuilt); keeping the published bundle"
             )
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
@@ -6325,7 +6364,10 @@ def install_prebuilt(
                     # Reused bundle is unchanged, but a fresh --force-cpu still must be
                     # recorded so the updater re-asserts it (#7213).
                     sync_marker_force_cpu(install_dir, persist_force_cpu)
-                    sync_marker_llama_backend(install_dir, persist_llama_backend)
+                    sync_marker_llama_backend(
+                        install_dir,
+                        persisted_llama_backend(persist_llama_backend, current.attempts[0]),
+                    )
                     return
             with tempfile.TemporaryDirectory(prefix = "unsloth-llama-prebuilt-") as tmp:
                 work_dir = Path(tmp)
@@ -6347,7 +6389,10 @@ def install_prebuilt(
                                 f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                             )
                             sync_marker_force_cpu(install_dir, persist_force_cpu)
-                            sync_marker_llama_backend(install_dir, persist_llama_backend)
+                            sync_marker_llama_backend(
+                                install_dir,
+                                persisted_llama_backend(persist_llama_backend, choice),
+                            )
                             return
                     log(
                         "selected "
@@ -6490,7 +6535,8 @@ def parse_args() -> argparse.Namespace:
         choices = ("vulkan",),
         help = (
             "Force the llama.cpp prebuilt backend. vulkan installs the upstream Vulkan "
-            "bundle on any host and records the choice so Studio updates keep it. "
+            "bundle and records the choice so Studio updates keep it; ignored on hosts "
+            "with no Vulkan prebuilt (macOS, Windows arm64). "
             "Same effect as UNSLOTH_LLAMA_BACKEND=vulkan / UNSLOTH_FORCE_VULKAN=1."
         ),
     )
