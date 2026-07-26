@@ -67,6 +67,15 @@ fi
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# Mirrors install.sh's _can_read_tty; defined here too because setup.sh runs
+# as its own process (install.sh invokes it, it does not source it).
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
@@ -1510,25 +1519,46 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         step "gguf deps" "installed"
     elif command -v sudo >/dev/null 2>&1; then
         step "gguf deps" "sudo required for: $_STILL_MISSING" "$C_WARN"
-        printf "  %-15s" ""
-        printf "accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
+        if _can_read_tty; then
+            printf "  %-15s" ""
+            printf "accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline.
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    substep "skipped -- run manually:"
+                    substep "sudo apt-get install -y $_STILL_MISSING"
+                    _SKIP_GGUF_BUILD=true
+                    ;;
+                *)
+                    # Degrade like the no-sudo branch below rather than letting
+                    # set -e abort setup on a bare apt error: missing GGUF build
+                    # deps are recoverable, not fatal.
+                    if sudo apt-get update -y </dev/null &&
+                        sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                        step "gguf deps" "installed"
+                    else
+                        step "gguf deps" "install failed -- run manually:" "$C_WARN"
+                        substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                        _SKIP_GGUF_BUILD=true
+                    fi
+                    ;;
+            esac
         else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
-                substep "skipped -- run manually:"
-                substep "sudo apt-get install -y $_STILL_MISSING"
+            # Nobody can answer a prompt or type a password here, so -n makes
+            # sudo refuse rather than prompt into a closed stdin, and -k ignores
+            # any cached timestamp so only a real NOPASSWD rule gets through.
+            # Same treatment as install.sh's _smart_apt_install. This is the WSL
+            # GGUF-export case noted above, where sudo does want a password.
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                step "gguf deps" "installed (non-interactive sudo)"
+            else
+                step "gguf deps" "needs sudo, no terminal -- run manually:" "$C_WARN"
+                substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 _SKIP_GGUF_BUILD=true
-                ;;
-            *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
-                step "gguf deps" "installed"
-                ;;
-        esac
+            fi
+        fi
     else
         step "gguf deps" "missing (no sudo) -- install manually:" "$C_WARN"
         substep "apt-get install -y $_STILL_MISSING"
