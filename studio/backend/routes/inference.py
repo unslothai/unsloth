@@ -12920,8 +12920,7 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
 
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
-    payload: ChatCountTokensRequest,
-    current_subject: str = Depends(get_current_subject),
+    payload: ChatCountTokensRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer.
 
