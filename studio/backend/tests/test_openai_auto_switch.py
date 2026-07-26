@@ -3982,3 +3982,158 @@ def test_override_route_preserves_launch_flags_across_a_settings_only_update(mon
         "tester",
     )
     assert "unsloth/B-GGUF" not in gone.overrides
+
+
+def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
+    # A local folder or non-active HF cache resolves to a public repo id plus a
+    # concrete path. Settings saved against the path must still be found.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/local/Qwen3-8B-Q4_K_M.gguf", "Q4_K_M", "unsloth/Qwen3-8B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {"/models/local/Qwen3-8B-Q4_K_M.gguf:Q4_K_M": {"max_seq_length": 8192}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/Qwen3-8B-GGUF")
+    assert rec.calls[0].max_seq_length == 8192
+
+
+def test_repo_qualified_override_beats_path_qualified(monkeypatch):
+    # Ordering is most specific first, and the public repo id is the name the
+    # user configured against in the picker.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/local/x.gguf", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192},
+        "/models/local/x.gguf:Q4_K_M": {"max_seq_length": 1024},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].max_seq_length == 8192
+
+
+def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(monkeypatch):
+    # Flags were stored under the bare repo id before per-quant settings existed.
+    # The first save from the settings page writes repo:QUANT, and auto-switch
+    # then prefers that entry, so the flags must come with it or they are
+    # silently disabled with no UI able to show or restore them.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 4096
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_bare_repo_carry_over_does_not_split_a_windows_path(monkeypatch):
+    # "C:\models\x.gguf" has a colon that is not a variant separator. Splitting
+    # naively would look up "C" and, worse, could graft another model's flags on.
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override("C", llama_extra_args = ["--flash-attn"])
+
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = r"C:\models\x.gguf", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert "llama_extra_args" not in resp.overrides[r"C:\models\x.gguf"]
+
+
+def test_windows_path_with_quant_still_carries_over(monkeypatch):
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(r"C:\models\x.gguf", llama_extra_args = ["--flash-attn"])
+
+    resp = settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(
+            model_id = r"C:\models\x.gguf:Q4_K_M", max_seq_length = 4096
+        ),
+        "tester",
+    )
+    assert resp.overrides[r"C:\models\x.gguf:Q4_K_M"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
+    # A pin saved on a two-GPU box, replayed on a one-GPU box. Before this the
+    # whole load 400d; the contract is that one dead field degrades to defaults.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
+    )
+    monkeypatch.setattr(
+        inference_route, "_override_gpu_ids_still_resolve", lambda ids: False
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert not req.gpu_ids
+    # The rest of the config still applies.
+    assert req.max_seq_length == 4096
+
+
+def test_usable_gpu_ids_are_kept(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]}
+    )
+    monkeypatch.setattr(
+        inference_route, "_override_gpu_ids_still_resolve", lambda ids: True
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].gpu_ids == [0, 1]
+
+
+def test_override_gpu_ids_probe_never_raises(monkeypatch):
+    # The probe runs on the load path, so any hardware error must read as
+    # "unusable" rather than escaping as a 500.
+    import utils.hardware.hardware as hw
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("driver exploded")
+
+    monkeypatch.setattr(hw, "resolve_requested_gpu_ids", boom)
+    assert inference_route._override_gpu_ids_still_resolve([0]) is False

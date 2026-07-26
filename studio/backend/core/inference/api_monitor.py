@@ -113,7 +113,9 @@ class ApiMonitor:
             id = f"apireq_{uuid.uuid4().hex[:12]}",
             endpoint = endpoint,
             method = method,
-            model = model or "default",
+            # str(): a raw JSON body can carry any type here, and the field is
+            # rendered in the UI, where a non-string breaks the whole monitor.
+            model = str(model) if model else "default",
             prompt = _trim(prompt, _MAX_PROMPT_CHARS),
             status = "running",
             started_at = now,

@@ -266,9 +266,18 @@ def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
 
 
 def _bounded_int(value: Any, *, minimum: int, maximum: int) -> Optional[int]:
+    # bool is a subclass of int, so `gpu_ids: [true, false]` would otherwise pin
+    # the model to GPUs 1 and 0.
+    if isinstance(value, bool):
+        return None
+    # int(1.5) is 1, which would silently turn a fractional context into a
+    # useless one. Only exact integers count.
+    if isinstance(value, float) and not value.is_integer():
+        return None
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is float("inf"), which json.loads accepts as `Infinity`.
         return None
     if parsed < minimum or parsed > maximum:
         return None
@@ -315,7 +324,13 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
 
     template = payload.get("chat_template_override")
     if isinstance(template, str) and template.strip():
-        if len(template.encode("utf-8")) <= MAX_CHAT_TEMPLATE_OVERRIDE_BYTES:
+        # JSON can carry lone surrogates, which encode() rejects outright. Such a
+        # template can never render, so it is dropped like any other bad field.
+        try:
+            template_bytes = len(template.encode("utf-8"))
+        except UnicodeEncodeError:
+            template_bytes = MAX_CHAT_TEMPLATE_OVERRIDE_BYTES + 1
+        if template_bytes <= MAX_CHAT_TEMPLATE_OVERRIDE_BYTES:
             entry["chat_template_override"] = template
 
     # Only "manual" is a real override: persisting "auto" would pin the model and

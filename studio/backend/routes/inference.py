@@ -3722,12 +3722,13 @@ async def _maybe_auto_switch_model(
                         # speculative decoding, chat template and GPU placement, not
                         # just the two legacy flags. Look the config up under the
                         # variant-qualified id first (two quants of one repo can carry
-                        # different configs), then the bare advertised id, then the
-                        # concrete load path, so a config saved under any of the names
-                        # this model is known by is found.
+                        # different configs), then the bare ids. Both the advertised
+                        # repo id and the concrete load path are tried: a local folder
+                        # or a non-active HF cache is configured against its path.
                         override = {}
                         for override_key in (
                             f"{override_id}:{variant}" if variant else None,
+                            f"{target_id}:{variant}" if variant else None,
                             override_id,
                             target_id,
                         ):
@@ -3745,6 +3746,19 @@ async def _maybe_auto_switch_model(
                                 is_gguf = bool(variant) or target_id.lower().endswith(".gguf"),
                             )
                         )
+                        saved_gpu_ids = load_kwargs.get("gpu_ids")
+                        if saved_gpu_ids and not _override_gpu_ids_still_resolve(
+                            saved_gpu_ids
+                        ):
+                            # A pin saved before a GPU was removed, before a
+                            # visibility-mask change, or on another host. Dropping the
+                            # one dead field beats 400ing the whole load.
+                            load_kwargs.pop("gpu_ids", None)
+                            logger.warning(
+                                "Dropping saved gpu_ids %s for %s: not available here.",
+                                saved_gpu_ids,
+                                override_id,
+                            )
                         # Reuse the load impl so its dedup, tensor fallback, and threading
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
@@ -3963,6 +3977,26 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     # DiffusionGemma name family; otherwise None keeps an unknown remote GGUF guarded
     # as potentially diffusion until its header proves otherwise.
     return True if name_says_diffusion else None
+
+
+def _override_gpu_ids_still_resolve(gpu_ids: List[int]) -> bool:
+    """Whether a per-model GPU pin is usable on this machine right now.
+
+    normalize_model_override cannot know the device list, so it stores whatever
+    was valid where the config was written. This is the load-time reconciliation.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        from utils.hardware.hardware import resolve_requested_gpu_ids
+
+        is_vulkan = LlamaCppBackend._is_vulkan_backend()
+        if get_device() == DeviceType.XPU and not is_vulkan:
+            # gpu_ids is rejected outright on XPU.
+            return False
+        resolve_requested_gpu_ids(gpu_ids, is_vulkan = is_vulkan)
+        return True
+    except Exception:
+        return False
 
 
 async def _resolve_gguf_gpu_ids_for_request(

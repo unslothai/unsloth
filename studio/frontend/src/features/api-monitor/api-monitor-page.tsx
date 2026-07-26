@@ -18,8 +18,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePlatformStore } from "@/config/env";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { useSettingsDialogStore } from "@/features/settings";
+import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -462,6 +464,7 @@ export function ApiMonitorPage(): ReactElement {
     loadingDetails,
     requestDetail,
   } = useApiMonitor();
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -497,8 +500,10 @@ export function ApiMonitorPage(): ReactElement {
     requestDetail(selectedId_);
   }, [selectedId_, selectedUpdatedAt, selectedIsMissing, requestDetail]);
 
-  const baseUrl =
-    typeof window === "undefined" ? "" : `${window.location.origin}/v1`;
+  // The desktop webview's origin is tauri://, not the API server, and the
+  // packaged app picks its port dynamically. Same source as the Agents tab.
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const baseUrl = `${isTauri ? (serverUrl ?? getApiBase()) : origin}/v1`;
   const serverStatus = data?.status ?? "idle";
   const statusCopy =
     serverStatus === "generating"

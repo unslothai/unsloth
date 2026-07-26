@@ -34,7 +34,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
@@ -166,7 +166,10 @@ class ModelOverridePayload(BaseModel):
         # template is accepted or rejected identically on both paths.
         if value is None:
             return None
-        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+        size = chat_template_byte_length(value)
+        if size is None:
+            raise ValueError("Chat template contains unpaired surrogate characters.")
+        if size > MAX_CHAT_TEMPLATE_BYTES:
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
@@ -322,6 +325,21 @@ def get_openai_auto_switch_overrides(
     return ModelOverridesResponse(overrides = get_model_overrides())
 
 
+# A quant suffix, as modelOverrideKey builds it: no path separator and short.
+# Guards against splitting "C:\\models\\x.gguf", where the colon is a drive letter.
+_MAX_VARIANT_SUFFIX_LEN = 64
+
+
+def _bare_model_id(model_id: str) -> Optional[str]:
+    """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
+    head, sep, tail = model_id.rpartition(":")
+    if not sep or not head or not tail:
+        return None
+    if len(tail) > _MAX_VARIANT_SUFFIX_LEN or "/" in tail or "\\" in tail:
+        return None
+    return head
+
+
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -343,6 +361,13 @@ def update_openai_auto_switch_override(
         }
         if requested_extra_args is None and not is_removal:
             requested_extra_args = get_model_override(payload.model_id).get("llama_extra_args")
+            if requested_extra_args is None:
+                # First per-quant save for a model whose flags were stored under the
+                # bare repo id. Auto-switch prefers the qualified entry, so without
+                # this the flags are silently dropped and no UI can restore them.
+                bare_id = _bare_model_id(payload.model_id)
+                if bare_id:
+                    requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
         extra_args = validate_extra_args(requested_extra_args)
         set_model_override(
             payload.model_id,

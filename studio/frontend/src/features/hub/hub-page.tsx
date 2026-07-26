@@ -3,35 +3,23 @@
 
 import { usePlatformStore } from "@/config/env";
 import {
-  isChannelEntryFresh,
-  useHubFeedStore,
-} from "./stores/hub-feed-store";
-import {
   getInferenceStatus,
   isExternalModelId,
   listGgufVariants,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useHubInventory } from "./inventory";
-import type {
-  HfModelSearchChannel,
-  HfSortDirection,
-  HfSortKey,
-} from "./hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub";
 import { useHubInfiniteScroll } from "@/features/hub";
-import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
-import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
 import {
+  type ModelPickTarget,
+  type PerModelConfig,
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   hfModelFitsDevice,
   resolveInitialConfig,
   useActiveModelConfig,
-  type ModelPickTarget,
-  type PerModelConfig,
 } from "@/features/model-picker";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
@@ -47,8 +35,8 @@ import {
 } from "react";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
-import { HubModelSettingsView } from "./catalog/hub-model-settings-view";
 import { HubFeed } from "./catalog/hub-feed";
+import { HubModelSettingsView } from "./catalog/hub-model-settings-view";
 import { HubTopBar } from "./catalog/hub-top-bar";
 import {
   ModelsCatalog,
@@ -72,8 +60,14 @@ import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useHubFeed } from "./hooks/use-hub-feed";
+import type {
+  HfModelSearchChannel,
+  HfSortDirection,
+  HfSortKey,
+} from "./hooks/use-hub-model-search";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
+import { useHubInventory } from "./inventory";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -88,6 +82,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
 import {
   type ModelTypeFilter,
   matchesModelType,
@@ -101,6 +96,8 @@ import {
   matchesCapability,
   matchesFormat,
 } from "./lib/view-models";
+import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
+import { isChannelEntryFresh, useHubFeedStore } from "./stores/hub-feed-store";
 import type {
   CachedInventoryRow,
   CapabilityFilter,
@@ -669,11 +666,7 @@ export function ModelsPage() {
   const visibleResults =
     results.length === 0 &&
     liveListChannel &&
-    isChannelEntryFresh(
-      cachedListEntry,
-      liveListChannel.id,
-      tokenFingerprint,
-    )
+    isChannelEntryFresh(cachedListEntry, liveListChannel.id, tokenFingerprint)
       ? (cachedListEntry?.results ?? results)
       : results;
 
@@ -1237,6 +1230,15 @@ export function ModelsPage() {
     async (row: CachedInventoryRow | LocalInventoryRow) => {
       // loadId is what the loader accepts; repoId is only a display/API alias.
       const id = row.loadId;
+      // Whether the loaded model is this row, under any of the names it goes by.
+      // Gates the "prefer the loaded quant" hint below.
+      const rowAliases =
+        row.kind === "local"
+          ? [id, row.repoId, row.path]
+          : [id, row.repoId, row.cachePath];
+      const rowIsActive = rowAliases.some((alias) =>
+        modelIdsMatch(alias, activeCheckpoint),
+      );
       // Cached repo rows never carry a quant: the inventory emits one row per
       // repo with format_variant null (see cache_inventory.py). Opening settings
       // with a null variant would key the saved config to `repo::` while the
@@ -1250,15 +1252,20 @@ export function ModelsPage() {
           try {
             const res = await listGgufVariants(repoId, hfApiToken(hfToken), {
               preferLocalCache: true,
-              localPath: row.kind === "local" ? row.path : (row.cachePath ?? null),
+              localPath:
+                row.kind === "local" ? row.path : (row.cachePath ?? null),
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
             ggufVariant =
               // Prefer the loaded quant, then the repo default, then whatever is
-              // on disk, mirroring LocalOnDeviceCard's selectedQuant.
-              downloaded.find((v) =>
-                ggufVariantsMatch(v.quant, activeGgufVariant),
-              )?.quant ??
+              // on disk, mirroring LocalOnDeviceCard's selectedQuant. Only when
+              // this row is the loaded model: Q4_K_M exists in most repos, so an
+              // unguarded match would target the wrong quant of the wrong model.
+              (rowIsActive
+                ? downloaded.find((v) =>
+                    ggufVariantsMatch(v.quant, activeGgufVariant),
+                  )?.quant
+                : undefined) ??
               downloaded.find((v) =>
                 ggufVariantsMatch(v.quant, res.default_variant),
               )?.quant ??
@@ -1291,7 +1298,7 @@ export function ModelsPage() {
         },
       });
     },
-    [activeGgufVariant, hfToken],
+    [activeCheckpoint, activeGgufVariant, hfToken],
   );
   // Applying from the settings page loads the model with exactly those settings.
   // ModelConfigPage has already persisted them (locally and, when "remember" is
@@ -1310,7 +1317,9 @@ export function ModelsPage() {
         source: "local",
         ggufVariant: target.ggufVariant ?? undefined,
         isGguf: target.isGguf,
-        isDownloaded: true,
+        // A partial row opens settings too; claiming complete would skip the
+        // loader's download-progress reporting.
+        isDownloaded: target.meta.isDownloaded,
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
@@ -1424,45 +1433,13 @@ export function ModelsPage() {
     ],
   );
 
-  const catalogState = useMemo<ModelsCatalogState>(
-    () => {
-      const typeFilterActive =
-        !isDatasetMode && inventoryTypeFilter !== "all";
-      return {
-        tab,
-        discoverRows: listRows,
-        cachedRows: filteredCachedRows,
-        localRows: filteredLocalRows,
-        selectedId,
-        isLoading,
-        downloadedReady,
-        inventoryError,
-        inventoryWarning,
-        query,
-        activeCheckpoint,
-        activeGgufVariant,
-        searchError,
-        online,
-        isDataset: isDatasetMode,
-        inventoryTokens,
-        scannedCount,
-        loadingIntentCount: discoverFetchIntent,
-        hasMore,
-        manualFetchAvailable: discoverManualFetchAvailable,
-        hasActiveFilters:
-          !isFeedMode &&
-          (deferredFormatFilter !== "all" ||
-            deferredCapabilityFilter !== "all" ||
-            (tab === "downloaded" && typeFilterActive)),
-        typeFilterActive,
-      };
-    },
-    [
+  const catalogState = useMemo<ModelsCatalogState>(() => {
+    const typeFilterActive = !isDatasetMode && inventoryTypeFilter !== "all";
+    return {
       tab,
-      isFeedMode,
-      listRows,
-      filteredCachedRows,
-      filteredLocalRows,
+      discoverRows: listRows,
+      cachedRows: filteredCachedRows,
+      localRows: filteredLocalRows,
       selectedId,
       isLoading,
       downloadedReady,
@@ -1473,17 +1450,45 @@ export function ModelsPage() {
       activeGgufVariant,
       searchError,
       online,
-      isDatasetMode,
+      isDataset: isDatasetMode,
       inventoryTokens,
       scannedCount,
-      discoverFetchIntent,
+      loadingIntentCount: discoverFetchIntent,
       hasMore,
-      discoverManualFetchAvailable,
-      deferredFormatFilter,
-      deferredCapabilityFilter,
-      inventoryTypeFilter,
-    ],
-  );
+      manualFetchAvailable: discoverManualFetchAvailable,
+      hasActiveFilters:
+        !isFeedMode &&
+        (deferredFormatFilter !== "all" ||
+          deferredCapabilityFilter !== "all" ||
+          (tab === "downloaded" && typeFilterActive)),
+      typeFilterActive,
+    };
+  }, [
+    tab,
+    isFeedMode,
+    listRows,
+    filteredCachedRows,
+    filteredLocalRows,
+    selectedId,
+    isLoading,
+    downloadedReady,
+    inventoryError,
+    inventoryWarning,
+    query,
+    activeCheckpoint,
+    activeGgufVariant,
+    searchError,
+    online,
+    isDatasetMode,
+    inventoryTokens,
+    scannedCount,
+    discoverFetchIntent,
+    hasMore,
+    discoverManualFetchAvailable,
+    deferredFormatFilter,
+    deferredCapabilityFilter,
+    inventoryTypeFilter,
+  ]);
 
   const catalogPagination = useMemo<ModelsCatalogPagination>(
     () => ({

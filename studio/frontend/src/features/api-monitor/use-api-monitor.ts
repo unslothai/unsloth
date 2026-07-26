@@ -136,12 +136,19 @@ export function filterEntries(
     }
     // Search the fields a debugging session actually keys off: which model,
     // which endpoint, and the previews/error text visible in the row.
-    return (
-      entry.model.toLowerCase().includes(needle) ||
-      entry.endpoint.toLowerCase().includes(needle) ||
-      entry.prompt_preview.toLowerCase().includes(needle) ||
-      entry.reply_preview.toLowerCase().includes(needle) ||
-      (entry.error ?? "").toLowerCase().includes(needle)
+    //
+    // Coerced, not trusted: these arrive over the network, and one malformed
+    // entry throwing here would blank the whole log.
+    return [
+      entry.model,
+      entry.endpoint,
+      entry.prompt_preview,
+      entry.reply_preview,
+      entry.error,
+    ].some((field) =>
+      String(field ?? "")
+        .toLowerCase()
+        .includes(needle),
     );
   });
 }
