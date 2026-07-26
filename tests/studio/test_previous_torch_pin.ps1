@@ -108,6 +108,21 @@ Check "probe runs before the rollback move" (
 Check "pin decision cites the UNSLOTH_TORCH_UPGRADE escape hatch" ($src -match 'UNSLOTH_TORCH_UPGRADE=1 to get the newest')
 Check "kept-release fallback clears the pin" ($src -match '\$script:PrevTorchPin\s*=\s*\$null')
 Check "kept release exported for setup.ps1" ($src -match 'UNSLOTH_KEPT_TORCH')
+# The probe must read dist metadata: a broken CUDA/ROCm DLL would make "import torch"
+# fail and silently drop the pin (install.sh reads metadata for the same reason).
+Check "probe reads dist metadata, not import torch" (
+    $src -match 'importlib\.metadata as m; print\(m\.version' -and
+    $src -notmatch '-c "import torch; print\(torch\.__version__\)"')
+# Under irm | iex the script scope is the caller's session: a second run with no existing
+# venv must not inherit the earlier run's release or pin.
+Check "preservation state reset before the venv branch" (
+    $src.IndexOf('$script:PrevTorchVer = ""') -ge 0 -and
+    $src.IndexOf('$script:PrevTorchVer = ""') -lt $src.IndexOf('if (Test-Path -LiteralPath $VenvPython) {'))
+Check "preservation pin reset before the venv branch" (
+    $src.IndexOf('$script:PrevTorchPin = $null') -lt $src.IndexOf('if (Test-Path -LiteralPath $VenvPython) {'))
+# A terminating exception must not leave the handoff set in a surviving session.
+Check "outer finally clears the kept-torch handoff" (
+    $src -match '(?s)try \{\s*Install-UnslothStudio @args\s*\} finally \{.*?Remove-Item Env:UNSLOTH_KEPT_TORCH')
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

@@ -1278,6 +1278,11 @@ exit 0
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
+    # Release-preservation state, reset per run: with `irm | iex` the script scope IS the
+    # caller's session, so a second invocation (e.g. a different UNSLOTH_STUDIO_HOME with no
+    # existing venv) must not inherit the previous run's release or pin.
+    $script:PrevTorchVer = ""
+    $script:PrevTorchPin = $null
 
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
@@ -1340,7 +1345,9 @@ exit 0
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            # Dist metadata, not "import torch": a broken CUDA/ROCm DLL or a slow native
+            # import would yield no release and silently drop the pin (parity with install.sh).
+            $psi.Arguments = '-c "import importlib.metadata as m; print(m.version(''torch''))"'
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -1377,7 +1384,6 @@ exit 0
         # a re-run then keeps that release rather than silently jumping torch versions. Opt out with
         # UNSLOTH_TORCH_UPGRADE=1. Only the new-layout replace probes; the legacy-migration branches
         # reuse the venv, so torch survives naturally and needs no pin.
-        $script:PrevTorchVer = ""
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
         }
@@ -2670,4 +2676,11 @@ exit 0
     }
 }
 
-Install-UnslothStudio @args
+try {
+    Install-UnslothStudio @args
+} finally {
+    # UNSLOTH_KEPT_TORCH is a process-scoped handoff to setup.ps1. Under `irm | iex` the
+    # session outlives the installer, so a terminating exception that bypasses the in-flow
+    # clears must not leave an abandoned exact pin for a later `studio setup` / `update`.
+    Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+}
