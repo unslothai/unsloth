@@ -383,7 +383,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             gap, download panel anchored at the corner with banners above.
             Each overlay owns its width: the update banner is wider so its
             notes and buttons fit on one row. */}
-        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex flex-col items-end gap-2">
+        {/* Capped to the viewport: with a long download list and expanded
+            release notes the stack would otherwise push its top off screen. */}
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2">
           <WebUpdateBanner
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}

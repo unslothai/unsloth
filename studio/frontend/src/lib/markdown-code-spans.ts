@@ -66,7 +66,9 @@ export function codeSpans(text: string): CodeSpan[] {
     let cursor = contentStart;
     let closed = false;
     while (cursor < text.length) {
-      if (text[cursor] !== "`" || escaped(text, cursor)) {
+      // Escapes do not apply inside a span, so a run after a backslash still
+      // closes it.
+      if (text[cursor] !== "`") {
         cursor += 1;
         continue;
       }

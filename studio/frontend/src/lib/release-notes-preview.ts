@@ -15,7 +15,7 @@ const INDENTED_CODE_INDENT = 4;
 // At most three leading spaces: deeper is indented code, not a fence.
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 const HEADING = /^#{1,6}\s+/;
-const BULLET = /^(?:[-*+]|\d+[.)])\s+(.*)$/;
+const BULLET = /^(?:[-*+]|(\d{1,9})[.)])[ \t]+(.*)$/;
 const BLOCKQUOTE = /^\s*>\s?/;
 // "- - -" and "***" are horizontal rules, not bullets and not notes.
 const THEMATIC_BREAK =
@@ -27,10 +27,10 @@ const LABEL = "((?:[^\\[\\]\\\\]|\\\\.|\\[(?:[^\\[\\]\\\\]|\\\\.)*\\])*)";
 const IMAGE = new RegExp(`!\\[${LABEL}\\]${DESTINATION}`, "g");
 const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
 // Reference forms: `[text][label]`, `[text][]` and the shortcut `[text]`.
-const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[[^\\]]*\\])?`, "g");
-const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[[^\\]]*\\])?`, "g");
+const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
+const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 // A definition line renders as nothing at all.
-const DEFINITION = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
+const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
 // CommonMark: a backslash escapes ASCII punctuation.
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
 // Private-use sentinels park code spans, so document text cannot contain them.
@@ -73,6 +73,7 @@ const HTML_BLOCK_TAGS = new Set(
 // Only spaces and tabs may follow a closing fence.
 const NON_SPACE = /[^ \t]/;
 const HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
+const COMMENT_BLOCK_OPEN = /^ {0,3}<!--/;
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
 // Paired emphasis only. Underscores inside identifiers are literal, so
@@ -157,6 +158,22 @@ interface Bullet {
 }
 
 /** One space of padding is dropped when a code span has it on both sides. */
+/** Whether a reference points at a definition the document actually has. */
+function definedLabel(
+  labels: Set<string> | undefined,
+  reference: string | undefined,
+  text: string,
+): boolean {
+  if (labels === undefined) {
+    return false;
+  }
+  const label = (reference?.trim() ? reference : text)
+    .trim()
+    .replace(WHITESPACE, " ")
+    .toLowerCase();
+  return labels.has(label);
+}
+
 /** One entity as the character it renders as, or unchanged if unknown. */
 function decodeEntity(match: string, body: string): string {
   if (body.startsWith("#")) {
@@ -173,7 +190,7 @@ function decodeEntity(match: string, body: string): string {
 }
 
 /** Inline markdown stripped to plain text. */
-function toPlainText(markdown: string): string {
+function toPlainText(markdown: string, labels?: Set<string>): string {
   // Park code spans first: their contents are literal, so tags, links and
   // emphasis inside them must survive every transformation below.
   const codes: string[] = [];
@@ -192,8 +209,12 @@ function toPlainText(markdown: string): string {
       .replace(AUTOLINK, "$1")
       .replace(IMAGE, "")
       .replace(LINK, "$1")
-      .replace(IMAGE_REFERENCE, "")
-      .replace(LINK_REFERENCE, "$1"),
+      .replace(IMAGE_REFERENCE, (match, text, ref) =>
+        definedLabel(labels, ref, text) ? "" : match,
+      )
+      .replace(LINK_REFERENCE, (match, text, ref) =>
+        definedLabel(labels, ref, text) ? text : match,
+      ),
   )
     .replace(BOLD_STAR, "$1")
     .replace(BOLD_UNDERSCORE, "$1$2")
@@ -231,20 +252,25 @@ function stripCommentSpans(
   line: string,
   startInComment: boolean,
 ): [string, boolean] {
+  // Only a comment that starts a line opens a block. One written mid-sentence
+  // is inline HTML: a heading or a blank line below ends the paragraph, so it
+  // hides its own line at most.
+  if (startInComment) {
+    // The closing line belongs to the block, tail included.
+    return ["", !line.includes(COMMENT_CLOSE)];
+  }
+  if (COMMENT_BLOCK_OPEN.test(line)) {
+    const close = line.indexOf(
+      COMMENT_CLOSE,
+      line.indexOf(COMMENT_OPEN) + COMMENT_OPEN.length,
+    );
+    return ["", close === -1];
+  }
+
   let visible = "";
   let index = 0;
-  let inComment = startInComment;
   const spans = codeSpans(line);
   while (index < line.length) {
-    if (inComment) {
-      const close = line.indexOf(COMMENT_CLOSE, index);
-      if (close === -1) {
-        return [visible, true];
-      }
-      index = close + COMMENT_CLOSE.length;
-      inComment = false;
-      continue;
-    }
     const open = line.indexOf(COMMENT_OPEN, index);
     if (open === -1) {
       visible += line.slice(index);
@@ -259,11 +285,16 @@ function stripCommentSpans(
       index = span.end;
       continue;
     }
+    const close = line.indexOf(COMMENT_CLOSE, open + COMMENT_OPEN.length);
+    if (close === -1) {
+      // Nothing closes it on this line, so the renderer shows it as text.
+      visible += line.slice(index);
+      break;
+    }
     visible += line.slice(index, open);
-    index = open + COMMENT_OPEN.length;
-    inComment = true;
+    index = close + COMMENT_CLOSE.length;
   }
-  return [visible, inComment];
+  return [visible, false];
 }
 
 /** Strips raw block content. State is the open block's index, or null. */
@@ -272,10 +303,7 @@ function stripRawHtml(
   openBlock: number | null,
 ): [string, number | null] {
   if (openBlock !== null) {
-    const close = RAW_BLOCKS[openBlock]?.[1].exec(line);
-    return close
-      ? [line.slice(close.index + close[0].length), null]
-      : ["", openBlock];
+    return RAW_BLOCKS[openBlock]?.[1].test(line) ? ["", null] : ["", openBlock];
   }
   // A block only opens at the start of a line; mid-line tags are inline HTML.
   for (const [index, [opener, closer]] of RAW_BLOCKS.entries()) {
@@ -284,10 +312,7 @@ function stripRawHtml(
       continue;
     }
     const rest = line.slice(open[0].length);
-    const close = closer.exec(rest);
-    return close
-      ? [rest.slice(close.index + close[0].length), null]
-      : ["", index];
+    return closer.test(rest) ? ["", null] : ["", index];
   }
   return [line, null];
 }
@@ -327,7 +352,12 @@ function visibleText(line: string, state: ScanState): string | null {
     return "";
   }
   const fence = state.inComment ? null : FENCE.exec(line);
-  if (fence) {
+  // A backtick fence whose info string holds a backtick is not a fence, so the
+  // line is prose and the lines below it are not code.
+  if (
+    fence &&
+    (state.openFence !== null || opensFence(fence[1] ?? "", fence[2] ?? ""))
+  ) {
     state.openFence = nextFence(
       state.openFence,
       fence[1] ?? "",
@@ -381,13 +411,18 @@ function closesDeepFence(marker: string, line: ContentLine): boolean {
 }
 
 /** Fence state after a ``` or ~~~ line. A closer carries nothing after it. */
+/** A backtick fence's info string may not contain a backtick. */
+function opensFence(marker: string, rest: string): boolean {
+  return marker[0] !== "`" || !rest.includes("`");
+}
+
 function nextFence(
   open: string | null,
   marker: string,
   rest: string,
 ): string | null {
   if (open === null) {
-    return marker;
+    return opensFence(marker, rest) ? marker : null;
   }
   const closes =
     marker[0] === open[0] &&
@@ -480,9 +515,10 @@ function takeBullet(
   collector: Collector,
   text: string,
   line: ContentLine,
+  labels: Set<string>,
 ): void {
   flush(collector);
-  const item = toPlainText(text);
+  const item = toPlainText(text, labels);
   // A quoted list is example output, not a change, so it never competes with
   // the release's own bullets. It stays as prose for a section without any.
   if (!line.quoted) {
@@ -492,8 +528,12 @@ function takeBullet(
   }
 }
 
-function takeText(collector: Collector, text: string): void {
-  const plain = toPlainText(text);
+function takeText(
+  collector: Collector,
+  text: string,
+  labels: Set<string>,
+): void {
+  const plain = toPlainText(text, labels);
   if (!plain) {
     return;
   }
@@ -521,8 +561,19 @@ function collectBullets(markdown: string): {
     paragraph: "",
   };
 
+  const lines = contentLines(markdown);
+  const labels = new Set<string>();
+  for (const line of lines) {
+    const definition = DEFINITION.exec(line.text);
+    if (definition) {
+      labels.add(
+        (definition[1] ?? "").trim().replace(WHITESPACE, " ").toLowerCase(),
+      );
+    }
+  }
+
   let deepFence: string | null = null;
-  for (const line of contentLines(markdown)) {
+  for (const line of lines) {
     if (!line.text || HEADING.test(line.text)) {
       flush(collector);
       continue;
@@ -553,11 +604,18 @@ function collectBullets(markdown: string): {
       continue;
     }
     const bullet = BULLET.exec(line.text);
-    if (bullet) {
-      takeBullet(collector, bullet[1] ?? "", line);
+    // Only an ordered list starting at 1 may interrupt a paragraph, so
+    // "2. Restart Studio" under prose is part of that prose. A list item is
+    // not a paragraph: the next item starts whatever its number.
+    const interrupts = collector.current === null && collector.paragraph !== "";
+    if (
+      bullet &&
+      !(interrupts && bullet[1] !== undefined && bullet[1] !== "1")
+    ) {
+      takeBullet(collector, bullet[2] ?? "", line, labels);
       continue;
     }
-    takeText(collector, line.text);
+    takeText(collector, line.text, labels);
   }
   flush(collector);
 

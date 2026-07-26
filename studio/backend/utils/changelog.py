@@ -64,6 +64,8 @@ _NOT_PARAGRAPH = re.compile(
     r"|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$"
     r"|\[(?:[^\[\]\\]|\\.)+\]:)"
 )
+# Blocks that are not paragraph text, so a following underline is not setext.
+_PARAGRAPH_TEXT = re.compile(r"^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S")
 # A line of = or - under a paragraph line makes that line a heading.
 _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 _HTML_BLOCK_TAGS = frozenset(
@@ -223,7 +225,11 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             and _NOT_PARAGRAPH.match(visible) is None
             and _SETEXT_UNDERLINE.match(visible) is None
         )
-        previous_visible = visible.strip() if after_paragraph else ""
+        previous_visible = (
+            visible.strip()
+            if after_paragraph and _PARAGRAPH_TEXT.match(visible) is not None
+            else ""
+        )
         if match is None:
             if version is not None:
                 body.append(line)
@@ -444,6 +450,11 @@ def _local_changelog_candidates() -> list[Path]:
     return unique
 
 
+def _opens_fence(marker: str, rest: str) -> bool:
+    """A backtick fence's info string may not contain a backtick."""
+    return marker[0] != "`" or "`" not in rest
+
+
 def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | None:
     """Track the open fence marker.
 
@@ -453,7 +464,7 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
     Only spaces and tabs count as nothing: other Unicode whitespace is content.
     """
     if open_fence is None:
-        return marker
+        return marker if _opens_fence(marker, rest) else None
     closes = marker[0] == open_fence[0] and len(marker) >= len(open_fence)
     if closes and not rest.strip(" \t"):
         return None

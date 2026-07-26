@@ -85,7 +85,7 @@ export function WebUpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : "pointer-events-auto w-[calc(100vw-2rem)] max-w-[448px]",
+              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
           data-testid="web-update-banner"
         >

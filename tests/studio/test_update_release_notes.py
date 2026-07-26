@@ -995,3 +995,68 @@ def test_the_opt_out_beats_the_developer_override():
     still wins, and the value has to parse as a version."""
     source = (BACKEND / "utils/update_status.py").read_text(encoding = "utf-8")
     assert "forced_version and not disabled and _is_version(forced_version)" in source
+
+
+def test_a_list_item_over_dashes_is_not_a_setext_heading(changelog_module):
+    """`- first` followed by `---` is a list and a rule. Reading it as a
+    heading discarded the bullet and the rest of the section with it."""
+    text = "## 1.0\n\n- first\n---\n\n- second\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    body = changelog_module.find_release_notes(text, "1.0").body
+    assert "first" in body and "second" in body
+    # Real setext headings still work.
+    setext = "2.0\n---\n\n- new\n\n1.0\n---\n\n- old\n"
+    assert [e.version for e in changelog_module.parse_changelog(setext)] == ["2.0", "1.0"]
+
+
+def test_a_backtick_in_a_fence_info_string_is_not_a_fence(changelog_module):
+    """CommonMark forbids backticks in a backtick fence's info string, so such
+    a line is prose and must not swallow the releases below it."""
+    text = "## 2.0\n\n```bad`info\n\n## 1.0\n\n- old\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+    # A tilde fence may hold backticks, and a normal fence still hides samples.
+    assert [
+        e.version
+        for e in changelog_module.parse_changelog("## 2.0\n\n```md\n## 9.9.9\n```\n\n## 1.0\n\n- old\n")
+    ] == ["2.0", "1.0"]
+    for source in (PREVIEW, LINKS):
+        assert "info string" in source.read_text(encoding = "utf-8")
+
+
+def test_preview_follows_commonmark_paragraph_rules():
+    """Only an ordered list starting at 1 may interrupt a paragraph, and an
+    unresolved reference keeps its brackets."""
+    src = PREVIEW.read_text(encoding = "utf-8")
+    assert "const interrupts = collector.current === null" in src
+    assert "definedLabel" in src, "a reference only renders as text when defined"
+    # A comment written mid-sentence hides its own line at most.
+    assert "COMMENT_BLOCK_OPEN" in src
+
+
+def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
+    src = LINKS.read_text(encoding = "utf-8")
+    assert "RAW_HTML_OPEN" in src and "inRawHtml" in src
+    assert "isEscaped(line, opener)" in src
+    # A heading ends a paragraph, so a definition under one is a definition.
+    assert "BLOCK_LINE.test(line)" in src
+
+
+def test_code_span_closers_ignore_backslashes():
+    """Escapes are not processed inside a code span, so a run after a
+    backslash still closes it."""
+    src = CODE_SPANS.read_text(encoding = "utf-8")
+    body = src[src.index("export function codeSpans") :]
+    assert body.count("escaped(text") == 1, "only an opener can be escaped"
+
+
+def test_the_overlay_stack_fits_the_viewport():
+    """The update card's own cap does not account for a long download list
+    stacked beneath it."""
+    provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
+    assert "max-h-[calc(100dvh_-_2rem)]" in provider
+    panel = (
+        FRONTEND / "features/hub/download-manager/download-manager-panel.tsx"
+    ).read_text(encoding = "utf-8")
+    # Both overlays scroll internally, so they can give up height.
+    assert "flex min-h-0" in panel
+    assert "flex min-h-0" in WEB_BANNER.read_text(encoding = "utf-8")

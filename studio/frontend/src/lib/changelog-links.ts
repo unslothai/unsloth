@@ -33,6 +33,12 @@ const IMAGE_REFERENCE =
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
 // Four spaces starts an indented code block, unless a paragraph is open.
 const INDENTED_CODE = /^(?: {4}|\t)/;
+// CommonMark type 1 HTML blocks show their contents verbatim.
+const RAW_HTML_OPEN = /^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)/i;
+const RAW_HTML_CLOSE = /<\/(pre|script|style|textarea)\s*>/i;
+// Lines that are blocks in their own right, so no paragraph is open after.
+const BLOCK_LINE =
+  /^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$|>|=+[ \t]*$)/;
 const LINE_ENDINGS = /\r\n?/g;
 // A scheme, a protocol-relative host, or a fragment: already absolute enough.
 // `//` needs a host after it, so `///docs` stays a repository path.
@@ -71,6 +77,15 @@ function absolute(target: string, image: boolean): string {
   }
 }
 
+/** True when the character at `index` is escaped by an odd run of slashes. */
+function isEscaped(line: string, index: number): boolean {
+  let slashes = 0;
+  while (line[index - 1 - slashes] === "\\") {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
 /** The destination itself, without its angle brackets. */
 function unwrap(target: string): string {
   return target.startsWith("<") && target.endsWith(">")
@@ -107,7 +122,9 @@ function rewriteLine(
 
   INLINE_TARGET.lastIndex = 0;
   return line.replace(INLINE_TARGET, (match, bang, text, target, offset) => {
-    if (insideSpan(spans, base + offset)) {
+    // `\\[` is a literal bracket, so the expression is not a link.
+    const opener = offset + (bang ? 1 : 0);
+    if (insideSpan(spans, base + offset) || isEscaped(line, opener)) {
       return match;
     }
     const resolved = absolute(unwrap(target), bang === "!");
@@ -138,15 +155,30 @@ function classify(lines: string[]): Classified {
   const definition = new Set<number>();
   const masked: string[] = [];
   let openFence: string | null = null;
+  let inRawHtml = false;
   let inCode = false;
   let afterParagraph = false;
 
   lines.forEach((line, index) => {
+    if (inRawHtml) {
+      inRawHtml = !RAW_HTML_CLOSE.test(line);
+      masked.push(" ".repeat(line.length));
+      afterParagraph = false;
+      return;
+    }
     const fence = FENCE.exec(line);
     if (fence) {
       const marker = fence[1] ?? "";
       if (openFence === null) {
-        openFence = marker;
+        // A backtick fence's info string may not contain a backtick.
+        openFence =
+          marker[0] !== "`" || !(fence[2] ?? "").includes("`") ? marker : null;
+        if (openFence === null) {
+          text.push(index);
+          masked.push(line);
+          afterParagraph = true;
+          return;
+        }
       } else if (
         // A closer matches the opening character and carries nothing after it.
         marker[0] === openFence[0] &&
@@ -161,6 +193,12 @@ function classify(lines: string[]): Classified {
     }
     if (openFence !== null) {
       masked.push(" ".repeat(line.length));
+      return;
+    }
+    if (RAW_HTML_OPEN.test(line)) {
+      inRawHtml = !RAW_HTML_CLOSE.test(line.replace(RAW_HTML_OPEN, ""));
+      masked.push(" ".repeat(line.length));
+      afterParagraph = false;
       return;
     }
     const blank = !line.trim();
@@ -181,7 +219,7 @@ function classify(lines: string[]): Classified {
     }
     text.push(index);
     masked.push(line);
-    afterParagraph = !blank;
+    afterParagraph = !blank && !BLOCK_LINE.test(line);
   });
 
   return { text, masked: masked.join("\n"), definition };
