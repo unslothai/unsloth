@@ -142,10 +142,7 @@ def test_unstructured_seed_drop_toggle_round_trip_contract():
     assert "if (!config.drop)" in builder
     assert "selectedDropColumns.length > 0" in builder
     assert ': ["chunk_text", "source_file"];' in builder
-    assert (
-        "payloadSeedSourceIsUnstructured && payloadSeedDropColumns.length > 0"
-        in importer
-    )
+    assert "payloadSeedSourceIsUnstructured && payloadSeedDropColumns.length > 0" in importer
     assert "payloadSeedSourceIsUnstructured" in importer
     assert '? ["chunk_text", "source_file"]' in importer
     assert "drop?: boolean;" in parser
