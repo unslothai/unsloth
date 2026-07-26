@@ -1370,6 +1370,25 @@ class ChatCompletionRequest(BaseModel):
         return self
 
 
+class ChatCountTokensRequest(BaseModel):
+    """Count prompt tokens for a local GGUF chat without generating."""
+
+    model_config = {"extra": "allow"}
+
+    model: str = Field(
+        "default",
+        description = "Model identifier (informational; the active model is used)",
+    )
+    messages: list[ChatMessage] = Field(
+        ...,
+        description = "Conversation messages in OpenAI chat form",
+    )
+    tools: Optional[list[dict]] = Field(
+        None,
+        description = "Optional OpenAI tool definitions included in the prompt",
+    )
+
+
 class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None

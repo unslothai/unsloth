@@ -132,6 +132,18 @@ export async function loadModel(
   return parseJsonOrThrow<LoadModelResponse>(response);
 }
 
+export async function countChatInputTokens(payload: {
+  model: string;
+  messages: OpenAIChatCompletionsRequest["messages"];
+}): Promise<{ input_tokens: number }> {
+  const response = await authFetch("/api/inference/chat/count_tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<{ input_tokens: number }>(response);
+}
+
 export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {

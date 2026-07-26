@@ -55,6 +55,7 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   isMultimodalResponse,
@@ -1044,6 +1045,12 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            if (
+              (loadResponse.is_gguf || isGguf || ggufVariant) &&
+              !isExternalModelId(modelId)
+            ) {
+              void refreshContextUsage();
+            }
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&

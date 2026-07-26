@@ -42,6 +42,7 @@ import {
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
+  isExternalModelId,
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
@@ -61,6 +62,7 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
+import { refreshContextUsage } from "./utils/refresh-context-usage";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -1086,36 +1088,44 @@ function useStudioRuntimeAdapters(
           return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
         });
 
-        // Restore context usage from last assistant message if model matches.
-        const lastAssistant = [...msgs]
-          .reverse()
-          .find((m) => m.role === "assistant");
-        const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
-          ?.contextUsage as
-          | {
-              promptTokens: number;
-              completionTokens: number;
-              totalTokens: number;
-              cachedTokens: number;
-              cacheWriteTokens?: number;
-              modelId?: string;
-            }
-          | undefined;
         const store = useChatRuntimeStore.getState();
-        // Window check applies only when a local GGUF window is known; external
-        // providers have ggufContextLength === null.
-        const withinLocalLimit =
-          !store.ggufContextLength ||
-          (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
-        // Legacy unscoped usage (no modelId) is trusted only when a known local
-        // window bounds the totals, so an old local turn can't be misattributed
-        // to a newly-selected external provider.
-        const modelMatches = savedUsage?.modelId
-          ? savedUsage.modelId === store.params.checkpoint
-          : typeof store.ggufContextLength === "number" &&
-            store.ggufContextLength > 0;
-        if (savedUsage && withinLocalLimit && modelMatches) {
-          store.setContextUsage(savedUsage);
+        if (
+          store.ggufContextLength != null &&
+          store.params.checkpoint &&
+          !isExternalModelId(store.params.checkpoint)
+        ) {
+          void refreshContextUsage({ threadId: remoteId });
+        } else {
+          // Restore context usage from last assistant message if model matches.
+          const lastAssistant = [...msgs]
+            .reverse()
+            .find((m) => m.role === "assistant");
+          const savedUsage = (lastAssistant?.metadata as Record<string, unknown>)
+            ?.contextUsage as
+            | {
+                promptTokens: number;
+                completionTokens: number;
+                totalTokens: number;
+                cachedTokens: number;
+                cacheWriteTokens?: number;
+                modelId?: string;
+              }
+            | undefined;
+          // Window check applies only when a local GGUF window is known; external
+          // providers have ggufContextLength === null.
+          const withinLocalLimit =
+            !store.ggufContextLength ||
+            (savedUsage?.totalTokens ?? 0) <= store.ggufContextLength;
+          // Legacy unscoped usage (no modelId) is trusted only when a known local
+          // window bounds the totals, so an old local turn can't be misattributed
+          // to a newly-selected external provider.
+          const modelMatches = savedUsage?.modelId
+            ? savedUsage.modelId === store.params.checkpoint
+            : typeof store.ggufContextLength === "number" &&
+              store.ggufContextLength > 0;
+          if (savedUsage && withinLocalLimit && modelMatches) {
+            store.setContextUsage(savedUsage);
+          }
         }
 
         // If any message has a stored parentId, reconstruct the tree so

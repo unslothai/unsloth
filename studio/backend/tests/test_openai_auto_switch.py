@@ -857,6 +857,7 @@ def test_count_tokens_is_tracked_as_inference_path():
 
     assert _is_inference_path("/v1/messages/count_tokens") is True
     assert _is_inference_path("/api/inference/messages/count_tokens") is True
+    assert _is_inference_path("/api/inference/chat/count_tokens") is True
     assert _is_inference_path("/v1/messages") is True
 
 
@@ -3013,6 +3014,29 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+
+
+def test_chat_count_tokens_returns_input_tokens(monkeypatch):
+    from models.inference import ChatCountTokensRequest, ChatMessage
+
+    backend = _FakeBackend("org/A-GGUF")
+    backend.count_chat_tokens = lambda *args, **kwargs: 42
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    payload = ChatCountTokensRequest(
+        model = "org/A-GGUF",
+        messages = [ChatMessage(role = "user", content = "hello")],
+    )
+    response = asyncio.run(
+        inference_route.chat_count_tokens(payload, object(), "tester")
+    )
+    import json
+
+    assert json.loads(response.body) == {"input_tokens": 42}
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

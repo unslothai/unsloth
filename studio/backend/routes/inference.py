@@ -1702,6 +1702,7 @@ from models.inference import (
     UnloadResponse,
     InferenceStatusResponse,
     ChatCompletionRequest,
+    ChatCountTokensRequest,
     ChatCompletionChunk,
     ChatCompletion,
     ToolConfirmRequest,
@@ -12785,6 +12786,52 @@ def _validate_anthropic_client_tools(tools) -> None:
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",
             )
+
+
+@router.post("/chat/count_tokens")
+async def chat_count_tokens(
+    payload: ChatCountTokensRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Count prompt tokens for OpenAI-form chat messages using the loaded tokenizer."""
+    await _maybe_auto_switch_model(
+        _switch_model_for_payload(payload),
+        request,
+        current_subject,
+        require_vision = _request_has_image(payload),
+    )
+
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(
+            status_code = 503,
+            detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),
+        )
+
+    openai_messages = _coalesce_consecutive_user_turns(
+        _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels(
+                [m.model_dump(exclude_none = True) for m in payload.messages]
+            )
+        )
+    )
+    openai_tools = payload.tools or None
+
+    try:
+        count = await asyncio.to_thread(
+            llama_backend.count_chat_tokens,
+            openai_messages,
+            None,
+            openai_tools,
+            strict = True,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unable to count tokens with the loaded model tokenizer.",
+        )
+    return JSONResponse(content = {"input_tokens": int(count)})
 
 
 @router.post("/messages/count_tokens")
