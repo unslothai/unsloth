@@ -1652,26 +1652,36 @@ class ResearchSupervisor:
         if not question:
             raise ValueError("User message has no text to research")
         max_steps = int(run["config"]["budgets"]["maxSteps"])
+        planner_system = _system_prompt_with_instructions(
+            _planner_system_prompt(max_steps, run["config"].get("websitePolicy")),
+            run["config"],
+        )
+        # Same whole-prompt budget as the decision and synthesis paths. The question is the
+        # request, so it is budgeted before the history, but it is unbounded on its own (a
+        # pasted document arrives here verbatim) and would otherwise overflow before planning.
+        planning_total = _prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)
+        planning_question = question[
+            : _trimmable_budget(planning_total, len(planner_system), _MAX_SYNTHESIS_EVIDENCE_CHARS)
+        ]
+        planning_context = conversation_context[
+            : _trimmable_budget(
+                planning_total, len(planner_system) + len(planning_question), _MAX_CONTEXT_CHARS
+            )
+        ]
         response, planning_reasoning, _finish_reason = await self._stream_completion(
             run,
             [
                 {
                     "role": "system",
-                    "content": _system_prompt_with_instructions(
-                        _planner_system_prompt(
-                            max_steps,
-                            run["config"].get("websitePolicy"),
-                        ),
-                        run["config"],
-                    ),
+                    "content": planner_system,
                 },
                 {
                     "role": "user",
                     "content": (
                         "Prior conversation context as JSON (oldest to newest; use it only to "
                         "resolve references in the latest request):\n"
-                        f"{_shield_untrusted(conversation_context)}\n\n"
-                        f"Latest research request:\n{_shield_untrusted(question)}"
+                        f"{_shield_untrusted(planning_context)}\n\n"
+                        f"Latest research request:\n{_shield_untrusted(planning_question)}"
                     ),
                 },
             ],

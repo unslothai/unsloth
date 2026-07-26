@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -176,6 +177,18 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     assert research_runs._trimmable_budget(total, 0, 1_000) == 1_000
     assert research_runs._trimmable_budget(total, total - 10, 1_000) == 10
     assert research_runs._trimmable_budget(total, total + 5_000, 1_000) == 0
+
+
+def test_every_research_prompt_path_is_budgeted():
+    # Planning, decision and synthesis all build prompts from unbounded inputs (a pasted
+    # question, up to 12k of history, a 40-source catalog). Each must measure its trimmable
+    # sections against the loaded context, else the run dies before or after doing the work.
+    src = Path(research_runs.__file__).read_text(encoding = "utf-8")
+    for budget in ("planning_total = ", "decision_total = ", "total_budget = "):
+        assert f"{budget}_prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)" in src
+    assert "evidence[-60000:]" not in src
+    # The question reaches the planner verbatim, so it is budgeted too.
+    assert "planning_question = question[" in src
 
 
 def _make_payload(**overrides) -> CreateResearchRun:
