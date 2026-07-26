@@ -677,6 +677,14 @@ export async function startJob(
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
+    // Recorded so a later start for the same scope slot can tell whether this running
+    // job is fetching its files or a different quant's. An adopted job keeps whatever
+    // the existing record knew.
+    ...(req.files && req.files.length > 0
+      ? { scopedFiles: [...req.files] }
+      : opts.adopt && existing?.scopedFiles
+        ? { scopedFiles: existing.scopedFiles }
+        : {}),
   });
 
   if (!opts.adopt) {

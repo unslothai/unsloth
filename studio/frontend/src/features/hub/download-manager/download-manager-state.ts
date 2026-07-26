@@ -71,6 +71,10 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     ...(Number.isSafeInteger(value.serverGeneration)
       ? { serverGeneration: Number(value.serverGeneration) }
       : {}),
+    ...(Array.isArray(value.scopedFiles) &&
+    value.scopedFiles.every((f) => typeof f === "string")
+      ? { scopedFiles: value.scopedFiles as string[] }
+      : {}),
   };
 }
 
@@ -109,6 +113,7 @@ function toPersistedJob(
     ...(job.serverGeneration !== undefined
       ? { serverGeneration: job.serverGeneration }
       : {}),
+    ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
   };
 }
 

@@ -25,6 +25,14 @@ export interface ManagedDownload {
   error: string | null;
   startedAt: number;
   serverGeneration?: number;
+  /**
+   * Files a scoped job is fetching, when known. Every file set of one repo rides the same
+   * scope slot (see `scopedVariant`), so this is what separates "my transfer is already
+   * running" from "a different quant of this repo is running": adopting the latter would
+   * report ready for files nobody fetched. Absent means unknown (an unscoped job, or one
+   * hydrated by an older build), and unknown stays adoptable as before.
+   */
+  scopedFiles?: string[];
 }
 
 export interface DownloadRequest {

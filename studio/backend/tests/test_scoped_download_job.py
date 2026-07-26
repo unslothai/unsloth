@@ -22,6 +22,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+from fastapi import HTTPException
+
 from hub.schemas.downloads import DownloadModelRequest
 from hub.services import download_lifecycle
 from hub.services.models import downloads as dl
@@ -91,8 +93,7 @@ def test_scoped_start_spawns_a_file_scoped_worker(monkeypatch):
 
     result = asyncio.run(dl.download_model_response(_request()))
     assert result["accepted"] is True
-    # The scope key carries a digest of the requested file set (see _scope_variant).
-    scope_variant = dl._scope_variant("diffusion", FILES)
+    scope_variant = dl._scope_variant("diffusion")
     assert result["job_key"].endswith(scope_variant)
 
     args = spawned["args"]
@@ -123,7 +124,7 @@ def test_scoped_files_survive_into_the_registry(monkeypatch):
     assert captured["scoped_files"] == FILES
 
     metadata = dl._registry.get_job_metadata(
-        dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion", FILES))
+        dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     )
     assert metadata is not None and list(metadata.scoped_files) == FILES
 
@@ -136,20 +137,43 @@ def test_files_manifest_round_trips():
         Path(path).unlink(missing_ok = True)
 
 
-def test_scope_keys_differ_per_requested_file_set():
-    # Two quants of one repo are two different downloads. Sharing "@diffusion" made the
-    # second request adopt the first job, so the UI waited on the wrong file set and then
-    # loaded a file that had never been fetched.
-    a = dl._scope_variant("diffusion", ["flux1-dev-Q4_K_M.gguf", "ae.safetensors"])
-    b = dl._scope_variant("diffusion", ["flux1-dev-Q2_K.gguf", "ae.safetensors"])
-    assert a != b
-    assert a.startswith("@diffusion-") and b.startswith("@diffusion-")
-    # Order and duplicates must not change the identity (the same set is the same job).
-    assert a == dl._scope_variant(
-        "diffusion", ["ae.safetensors", "flux1-dev-Q4_K_M.gguf", "flux1-dev-Q4_K_M.gguf"]
-    )
-    # A scope with no files keeps the bare form, and stays valid as a variant slot.
-    from hub.utils.paths import is_valid_gguf_variant
+def test_a_different_file_set_is_not_adopted(monkeypatch):
+    # Two quants of one repo are two different downloads that share the "@diffusion" slot.
+    # Adopting the running one made the UI wait on the wrong file set and then load a file
+    # that had never been fetched, so the second request is refused while the first runs.
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
 
-    assert dl._scope_variant("video", []) == "@video"
-    assert is_valid_gguf_variant(a) and is_valid_gguf_variant("@video")
+    key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
+    try:
+        first = asyncio.run(dl.download_model_response(_request()))
+        assert first["accepted"] is True
+
+        with pytest.raises(HTTPException) as other_files:
+            asyncio.run(
+                dl.download_model_response(
+                    _request(files = ["model_index.json", "flux1-dev-Q2_K.gguf"])
+                )
+            )
+        assert other_files.value.status_code == 409
+        assert "different" in other_files.value.detail
+
+        # The same file set is still the same download: it adopts the live job as before,
+        # in any order and with duplicates collapsed.
+        same = asyncio.run(
+            dl.download_model_response(_request(files = [FILES[1], FILES[0], FILES[0]]))
+        )
+        assert same["accepted"] is True and same["job_key"] == key
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
+def test_scope_key_stays_derivable_from_the_scope_alone():
+    # The download manager builds this key client-side (it polls and cancels before any
+    # server round-trip tells it a key), so the scope name alone must produce it.
+    assert dl._scope_variant("diffusion") == "@diffusion"
+    assert dl._scope_variant("video") == "@video"
+    assert dl._scope_variant("  ") is None
+    assert is_valid_gguf_variant("@diffusion")

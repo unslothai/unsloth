@@ -551,6 +551,17 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     playCountRef.current = 0;
   }, [selectedId]);
+  // Pause the preview when this page stops being the visible one. The keep-alive layout only
+  // hides it, and display:none does not pause a media element, so a clip the user unmuted
+  // would keep decoding and playing its audio over whatever page they opened next.
+  const previewRef = useRef<HTMLVideoElement | null>(null);
+  // The media element's own handlers fire while the page is hidden, so they read `active`
+  // through a ref rather than closing over a stale render's value.
+  const activeRef = useRef(active);
+  useEffect(() => {
+    activeRef.current = active;
+    if (!active) previewRef.current?.pause();
+  }, [active]);
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     Object.fromEntries(galleryCache.srcById),
   );
@@ -1119,6 +1130,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           model_path: repoId,
           gguf_filename: opts.filename,
           model_kind: opts.kind,
+          // Same token handleLoad sends: without it the backend's metadata lookup fails on
+          // a gated base and the plan quietly comes back without the companion entry, so
+          // the load pulls those multi-GB files inline, outside this manager.
+          hf_token: hfApiToken(getHfToken()),
         });
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts };
@@ -1149,6 +1164,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
+    // Only the page being shown consumes the query. This hook is loose (`strict: false`)
+    // and both diffusion pages stay mounted once visited, so the hidden one saw
+    // /images?model= too and raced that page: it navigated back to /video and tried to
+    // load an image checkpoint as a video model.
+    if (!active) return;
     const wanted = routeSearch.model;
     // Model AND quant, as on the Images page: this page stays mounted, so a model-only
     // marker turned every later pick of the same repo into a silent no-op.
@@ -1163,7 +1183,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         : { kind: "pipeline" },
       false,
     );
-  }, [routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
+  }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
@@ -1661,6 +1681,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                     it. The counter resets per selection (`key` remounts the element). */}
                 <video
                   key={selected.id}
+                  ref={previewRef}
                   src={selectedSrc}
                   controls
                   autoPlay
@@ -1670,7 +1691,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                     playCountRef.current += 1;
                   }}
                   onEnded={(e) => {
-                    if (playCountRef.current < 3) {
+                    // Not while hidden: a replay here would restart audio on another page.
+                    if (activeRef.current && playCountRef.current < 3) {
                       e.currentTarget.currentTime = 0;
                       void e.currentTarget.play();
                     }

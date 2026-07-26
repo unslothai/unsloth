@@ -1791,6 +1791,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           model_path: repoId,
           gguf_filename: opts.filename,
           model_kind: opts.kind,
+          // The same token and Advanced values handleLoad sends, so the plan describes the
+          // load that will actually run. Without the token the backend's metadata lookup
+          // fails on a gated base and quietly plans no companion entry, leaving the load
+          // to pull those multi-GB files inline, outside this manager; without the memory
+          // and quant controls an explicit Speed/Precision Off or low-VRAM pick stages
+          // base transformer/ shards the load never opens.
+          hf_token: hfApiToken(getHfToken()),
+          cpu_offload: cpuOffload,
+          speed_mode: speedMode === "auto" ? undefined : speedMode,
+          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         });
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts };
@@ -1809,7 +1820,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       return handleLoadRef.current(repoId, opts);
     },
-    [stage],
+    [stage, cpuOffload, speedMode, transformerQuant, memoryMode],
   );
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it
@@ -1821,6 +1832,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
+    // Only the page being shown consumes the query. This hook is loose (`strict: false`)
+    // and both diffusion pages stay mounted once visited, so the hidden one saw
+    // /video?model= too and raced this one: it navigated back to its own route and tried
+    // to load the other page's checkpoint as its own kind of model.
+    if (!active) return;
     const wanted = routeSearch.model;
     // Key on the model AND the quant: this page stays mounted across navigation, so a
     // model-only marker made every later pick of the same repo a no-op -- including a
@@ -1837,7 +1853,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         : { kind: "pipeline" },
       false,
     );
-  }, [routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
+  }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {

@@ -1002,3 +1002,43 @@ def test_status_resolved_defaults_to_null(client):
     # backends and the unloaded state).
     body = client.get("/api/inference/images/status").json()
     assert body["resolved"] is None
+
+
+def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
+    # The plan drives the staged download, so it has to be computed from the SAME
+    # configuration the load will run with. The dense-quant prefetch decision reads the
+    # memory policy, the prequant path and the adapter selection as well as speed/quant:
+    # dropping them stages the base transformer/ shards for a low-VRAM load that never
+    # opens them, or omits them for a baked-LoRA load that does.
+    backend = diffusion_module.get_diffusion_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen["model_path"] = model_path
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "hf_token": "hf_secret",
+            "speed_mode": "off",
+            "transformer_quant": "int8",
+            "memory_mode": "low_vram",
+            "cpu_offload": True,
+            "loras": [{"id": "unsloth/some-lora", "weight": 0.8}],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert seen["hf_token"] == "hf_secret"
+    assert seen["speed_mode"] == "off"
+    assert seen["transformer_quant"] == "int8"
+    assert seen["memory_mode"] == "low_vram"
+    assert seen["cpu_offload"] is True
+    assert len(seen["loras"] or []) == 1

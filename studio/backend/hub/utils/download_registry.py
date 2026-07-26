@@ -1155,6 +1155,17 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
+                # A scope slot is shared by every file set that rides it (two quants of
+                # one repo both key as "@diffusion"), so adopting the live job would let
+                # the caller wait on files it never asked for. Reject instead; checked
+                # here, under the lock, so a concurrent claim cannot slip past it.
+                live = self._metadata.get(key)
+                if (
+                    scoped_files is not None
+                    and live is not None
+                    and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
+                ):
+                    return False, "scope_file_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1

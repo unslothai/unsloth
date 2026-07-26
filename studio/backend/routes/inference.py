@@ -16001,6 +16001,15 @@ async def diffusion_download_plan(
             hf_token = request.hf_token,
             transformer_quant = request.transformer_quant,
             speed_mode = request.speed_mode,
+            # The dense-quant prefetch decision reads the memory policy, the prequant path
+            # and the adapter selection too (an offload policy never runs the dense build;
+            # a baked LoRA always does), so the plan has to see the same values the load
+            # will. Without them it stages the base transformer/ shards for a low-VRAM
+            # load that never opens them, or omits them for a baked-LoRA load that does.
+            memory_mode = request.memory_mode,
+            cpu_offload = request.cpu_offload,
+            transformer_prequant_path = request.transformer_prequant_path,
+            loras = request.loras,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
