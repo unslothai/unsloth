@@ -3165,7 +3165,12 @@ def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
     backend.supports_tools = True
     captured = {}
 
-    def _count(messages, system, tools, strict = False):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+    ):
         captured["messages"] = messages
         return 11
 
@@ -3186,7 +3191,7 @@ def test_chat_count_tokens_strips_stale_tool_xml_from_history(monkeypatch):
             ChatMessage(role = "user", content = "search for cats"),
             ChatMessage(
                 role = "assistant",
-                content = "<tool_call>{\"name\": \"web_search\"}</tool_call>Here you go.",
+                content = '<tool_call>{"name": "web_search"}</tool_call>Here you go.',
             ),
         ],
         enable_tools = True,
