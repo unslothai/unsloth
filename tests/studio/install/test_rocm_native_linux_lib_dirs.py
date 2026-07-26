@@ -260,6 +260,20 @@ class TestNativeLinuxRootResolution:
         for where, impl in _impls().items():
             assert self._run(impl, bundle_dir, present) == ["/opt/rocm/lib64"], where
 
+    def test_nested_llvm_runtime_follows_system_rocm_lib(self, bundle_dir):
+        """#7446: libamd_comgr depends on ROCm's versioned LLVM runtime, which is
+        installed below lib/llvm/lib rather than directly in lib."""
+        present = {
+            "/dev/kfd",
+            "/opt/rocm/lib/libhsa-runtime64.so",
+            "/opt/rocm/lib/llvm/lib",
+        }
+        for where, impl in _impls().items():
+            assert self._run(impl, bundle_dir, present) == [
+                "/opt/rocm/lib",
+                "/opt/rocm/lib/llvm/lib",
+            ], where
+
     def test_lib_precedes_lib64_when_both_exist(self, bundle_dir):
         present = {
             "/dev/kfd",
