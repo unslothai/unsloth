@@ -2518,9 +2518,8 @@ export function createOpenAIStreamAdapter(
       const runAbort = new AbortController();
       const runSignal = runAbort.signal;
       const forwardAbort = () => runAbort.abort(abortSignal.reason);
-      // Declared here rather than at its registration below because it doubles
-      // as this run's identity token on the per-thread maps, which the
-      // streaming path writes first. See registerThreadServerCancel.
+      // Declared here, not at its registration below: it doubles as this run's
+      // identity token on the per-thread maps (see registerThreadServerCancel).
       const serverCancel = () => runAbort.abort();
       if (abortSignal.aborted) {
         forwardAbort();
@@ -2790,11 +2789,10 @@ export function createOpenAIStreamAdapter(
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
-        // assistant-ui aborts with AbortError(detach=true) when a thread's
-        // runtime unmounts (deleting a conversation, tearing the provider down)
-        // and detach=false for an explicit Stop. Switching threads unmounts
-        // nothing, so it does not abort at all. Only a real Stop cancels the
-        // backend run; runSignal forwards the reason so a detach reads as one.
+        // assistant-ui aborts with detach=true when a thread's runtime unmounts
+        // (deleted conversation, provider teardown) and detach=false for an
+        // explicit Stop; switching threads never aborts. Only a real Stop cancels
+        // the backend run; runSignal forwards the reason so a detach reads as one.
         if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
@@ -4094,9 +4092,8 @@ export function createOpenAIStreamAdapter(
             cachedTokens,
             cacheWriteTokens,
           };
-          // Always file it under this run's own thread, even when the gate
-          // below blocks the visible write: switching back re-applies it, so a
-          // background run no longer leaves the bar blank until the next turn.
+          // File it under this run's own thread even when the gate below blocks
+          // the visible write, so switching back re-applies it.
           if (resolvedThreadKey !== null) {
             useChatRuntimeStore
               .getState()
@@ -4231,9 +4228,8 @@ export function createOpenAIStreamAdapter(
             settleFirstTokenErr(new Error("No tokens received"));
           }
         }
-        // Passing serverCancel keeps a sibling's state: every run with no
-        // resolved thread id shares the "__default" key, so neither clear may
-        // drop an entry another run owns.
+        // serverCancel narrows both clears: runs with no resolved thread id share
+        // the "__default" key, so a blind clear could drop a sibling's entry.
         runtime.setThreadRunning(threadKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(threadKey, serverCancel);
       }

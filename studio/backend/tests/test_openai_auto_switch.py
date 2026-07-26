@@ -1499,11 +1499,10 @@ def test_load_route_holds_lifecycle_gate(monkeypatch):
 
 def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
     # Both replacement directions drain active inference, then recheck whether a
-    # sidecar install reserved the lifecycle gate during that wait. That recheck is
-    # the last thing that can reject the load, so the destructive cancel has to come
-    # after it: cancelling first strands every chat behind a 409 for a model that
-    # never loads. Exact-model reuse exits earlier, so an already-loaded model never
-    # waits on unrelated inference.
+    # sidecar install reserved the gate meanwhile. That recheck is the last thing that
+    # can reject the load, so the destructive cancel must come after it: cancelling
+    # first strands every chat behind a 409 for a model that never loads. Exact-model
+    # reuse exits earlier, so an already-loaded model never waits on unrelated work.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)

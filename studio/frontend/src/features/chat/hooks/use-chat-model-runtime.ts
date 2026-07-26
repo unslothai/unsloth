@@ -833,17 +833,15 @@ export function useChatModelRuntime() {
 
             if (currentCheckpoint) {
               // With chats generating, skip this preliminary unload: it cancels
-              // them ahead of the load's identifier resolution, GPU/training
-              // guards and download check, so a rejected target truncates
-              // replies for a model that never loads. /load evicts the resident
-              // model itself past those checks. With nothing running there is
-              // nothing to truncate, so unload first and free VRAM early.
+              // them ahead of /load's identifier resolution, GPU/training guards
+              // and download check, so a rejected target truncates replies for a
+              // model that never loads. /load evicts past those checks itself.
+              // Idle, nothing can truncate: unload first and free VRAM early.
               if (!forceCancelActive) {
                 await unloadModel({ model_path: currentCheckpoint });
               }
               // Set either way: /load can still leave no model resident, and an
-              // unneeded rollback re-requests the loaded model, which /load
-              // answers already_loaded before reaching its gate.
+              // unneeded rollback hits /load's already_loaded before its gate.
               previousWasUnloaded = true;
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");

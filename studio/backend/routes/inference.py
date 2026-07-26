@@ -4656,10 +4656,9 @@ async def _load_model_impl(
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = False)
 
-        # True when a destructive cancel is still owed at the teardown below. Only a
-        # forced swap cancels: without force the refusal above already 409'd, and
-        # auto-switch passes no hook at all. The drains key off this so the cancel can
-        # be deferred past every check that can still reject the load.
+        # Destructive cancel still owed at the teardown below; the drains key off it
+        # so it can be deferred past every check that can still reject the load. Only
+        # a forced swap cancels: unforced already 409'd above, auto-switch has no hook.
         cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
@@ -4775,23 +4774,20 @@ async def _load_model_impl(
                         ),
                     )
 
-            # Fast path only: a swap can still be reserved while the drain below
-            # runs, so the decisive check is the one after it.
+            # Fast path: a swap can still be reserved during the drain, so the
+            # check after it is the decisive one.
             _raise_if_sidecar_swap_in_progress()
 
-            # Keep the resident model alive until every active generation finishes;
-            # the caller's lifecycle gate blocks new starts. A forced swap has not
-            # cancelled yet, so the generations it is about to stop are excluded here
-            # rather than waited out.
+            # Drain active generations first (the lifecycle gate blocks new starts);
+            # a forced swap excludes the ones it is about to cancel rather than
+            # waiting them out.
             await _wait_for_model_switch_idle(
                 current_request_counted = current_request_counted,
                 cancel_pending = cancel_pending,
             )
-            # A sidecar install can reserve the gate while inference drains, after the
-            # route-level checks above, so recheck before replacing either backend.
+            # A sidecar install can reserve the gate during the drain, so recheck.
             # Last thing that can reject this load, so it runs BEFORE the cancel:
-            # rejecting after it would leave every chat stopped for a model that never
-            # loads.
+            # rejecting after would stop every chat for a model that never loads.
             _raise_if_sidecar_swap_in_progress()
 
             # Point of no return for the GGUF path: nothing left can reject this load,
@@ -4800,9 +4796,8 @@ async def _load_model_impl(
             if on_reload_confirmed is not None:
                 on_reload_confirmed(cancel = True)
 
-            # Let the cancelled generations unwind before the teardown replaces the
-            # server under them. No check follows, so this wait can never strand a
-            # cancelled chat behind a 409.
+            # Let the cancelled generations unwind before the teardown. No check
+            # follows, so this wait cannot strand a cancelled chat behind a 409.
             if cancel_pending:
                 await _wait_for_model_switch_idle(current_request_counted = current_request_counted)
 
@@ -5016,8 +5011,7 @@ async def _load_model_impl(
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = get_inference_backend()
 
-        # Same sidecar rejection as GGUF: a fast path ahead of the drain, rechecked
-        # after it.
+        # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
 
         llama_backend = get_llama_cpp_backend()
@@ -11155,13 +11149,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return _sse_streaming_response(_stream())
     else:
-        # ``stream`` defaults to false here, so this is the common shape of the
-        # route: register it with the swap gate exactly like the streaming branch
-        # above. Without an entry a non-forced /unload counts zero generations and
-        # tears llama-server down mid-request (/unload runs no idle drain), and
-        # force_cancel_active has no event to signal. A dedicated (unpooled) client
-        # so closing it on cancel interrupts this call only -- same shape as the
-        # chat-completions non-streaming pass-through.
+        # ``stream`` defaults to false, so this is the route's common shape: register
+        # it with the swap gate like the streaming branch. /unload runs no idle drain,
+        # so an unregistered request lets it count zero generations and tear
+        # llama-server down mid-request, and force_cancel_active has no event to
+        # signal. Dedicated (unpooled) client so a cancel-close hits this call only.
         _cancel_event = threading.Event()
         _client = _cancelable_nonstreaming_client()
         _tracker = _TrackedCancel(_cancel_event, model = monitor_model)
@@ -11297,10 +11289,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             subject = current_subject,
         )
 
-    # Same gate registration as the completions proxy: /unload runs no idle
-    # drain, so an unregistered request lets a non-forced unload count zero
-    # generations and kill llama-server mid-embedding. A dedicated (unpooled)
-    # client so closing it on cancel interrupts this call only.
+    # Same gate registration as the completions proxy: /unload runs no idle drain, so
+    # an unregistered request lets a non-forced unload count zero generations and kill
+    # llama-server mid-embedding. Unpooled client so a cancel-close hits this call only.
     _cancel_event = threading.Event()
     _client = _cancelable_nonstreaming_client()
     _tracker = _TrackedCancel(

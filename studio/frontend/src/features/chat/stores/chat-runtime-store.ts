@@ -981,12 +981,9 @@ type ChatRuntimeStore = {
   contextUsage: ContextUsageSnapshot | null;
   /**
    * Per-thread copy of the above, so the bar survives a switch away and back.
-   *
    * `contextUsage` is the VISIBLE conversation's usage and a background run is
-   * barred from writing it, so a run that finishes while another chat is on
-   * screen would otherwise leave nothing to restore: `setActiveThreadId` clears
-   * the single value, and a still-mounted thread runtime does not re-run the
-   * history loader on the way back. Keyed like `toolStatusByThreadId`.
+   * barred from writing it, so without this a run finishing off-screen leaves
+   * nothing to restore. Keyed like `toolStatusByThreadId`.
    */
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
@@ -1008,13 +1005,10 @@ type ChatRuntimeStore = {
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   /**
-   * `local` defaults to true: an unqualified caller is a llama-server run, so
-   * the model-swap gate keeps counting it.
-   *
-   * `owner` narrows the clear to the run that set the flag, like
-   * `clearThreadServerCancel`. A run whose thread id is not yet resolved is
-   * keyed "__default", so two of them (concurrent compare panes) share one
-   * entry and a blind delete would drop the live one's spinner and stop handle.
+   * `local` defaults to true: an unqualified caller is a llama-server run, so the
+   * model-swap gate keeps counting it. `owner` narrows the clear to the run that
+   * set the flag, like `clearThreadServerCancel`: unresolved thread ids share the
+   * "__default" key, so a blind delete would drop a sibling's live entry.
    */
   setThreadRunning: (
     threadId: string,
@@ -1110,10 +1104,7 @@ type ChatRuntimeStore = {
   ) => void;
   clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
-  /**
-   * Remember a finished run's usage against its own thread, whether or not that
-   * thread is the visible one. Switching back re-applies it.
-   */
+  /** A finished run's usage, kept per thread so switching back re-applies it. */
   setThreadContextUsage: (
     threadId: string,
     usage: ContextUsageSnapshot,
@@ -1594,9 +1585,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next[threadId] = cancel;
       return { serverCancelByThreadId: next };
     }),
-  // `cancel` narrows removal to the run that registered it. A run whose thread
-  // id is not yet resolved is keyed "__default", so two of them (concurrent
-  // compare panes) share one entry and a blind delete would drop the live one.
+  // `cancel` narrows removal to the run that registered it: unresolved thread ids
+  // share the "__default" key, so a blind delete would drop a live sibling.
   clearThreadServerCancel: (threadId, cancel) =>
     set((state) => {
       const current = state.serverCancelByThreadId[threadId];

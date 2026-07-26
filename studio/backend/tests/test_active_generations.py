@@ -402,12 +402,11 @@ def _stub_standard_load_route(monkeypatch):
 
 
 def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(monkeypatch):
-    # The pre-teardown drain awaits, and a sidecar install/repair reserves the swap
-    # window while it does (the installer reserves BEFORE waiting on the lifecycle
-    # gate this load holds). The recheck after that drain is the last thing that can
-    # reject the load, so it has to run ahead of the destructive cancel: rejecting
-    # after it would hand back a 409 with every chat already stopped and no new
-    # model loaded.
+    # A sidecar install/repair can reserve the swap window while the pre-teardown drain
+    # awaits (it reserves BEFORE waiting on the lifecycle gate this load holds). The
+    # recheck after that drain is the last thing that can reject the load, so it must
+    # run ahead of the destructive cancel: rejecting after would return a 409 with
+    # every chat already stopped and no new model loaded.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     import time
@@ -424,9 +423,8 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
     reserved = {"v": False}
     monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: reserved["v"])
 
-    # Two tracked inference requests: the chat registered below, plus one a forced
-    # cancel cannot stop (an embeddings call, say). The install reserves the window
-    # the moment that second request finishes, i.e. while the drain is still awaiting.
+    # Two tracked requests: the chat registered below, plus one a forced cancel cannot
+    # stop. The install reserves the window when that second one finishes, mid-drain.
     monkeypatch.setattr(kw, "_inflight", 2)
 
     def _installer():
@@ -451,8 +449,7 @@ def test_a_sidecar_swap_reserved_during_the_drain_never_strands_cancelled_chats(
                         "tester",
                     )
                 )
-            # Rejected, so the chat the user agreed to trade for a model it never
-            # got must still be streaming.
+            # Rejected, so the chat traded for a model it never got must still stream.
             assert not ev.is_set()
             assert active_generations.count() == 1
         assert exc.value.status_code == 409
@@ -848,11 +845,10 @@ def test_forced_reload_stops_a_completions_proxy_stream(monkeypatch):
 
 
 def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
-    # ``stream`` defaults to false on /v1/completions, so the non-streaming branch
-    # is the common shape of the route. It decodes on llama-server for the whole
-    # request, and /unload runs no idle drain: without its own registration a
-    # non-forced /unload counts zero generations and tears the server down
-    # mid-request, and force_cancel_active has no event to signal.
+    # ``stream`` defaults to false, so the non-streaming branch is the route's common
+    # shape. It holds llama-server for the whole request and /unload runs no idle drain:
+    # unregistered, a non-forced /unload counts zero generations and tears the server
+    # down mid-request, and force_cancel_active has no event to signal.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
@@ -864,8 +860,7 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     seen = {}
 
     def handler(request):
-        # Sampled while the upstream call is in flight: exactly the window a
-        # concurrent /unload would tear llama-server down in.
+        # Sampled mid-flight: exactly the window a concurrent /unload would tear down in.
         seen["count"] = active_generations.count()
         seen["snapshot"] = active_generations.snapshot()
         # And the gate must reach this run, not just see it.
@@ -879,8 +874,8 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
         "AsyncClient",
         lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
     )
-    # The pooled client too, so a route that never took a per-request one still
-    # reaches this transport (keeps the pre-fix behaviour observable, not a 502).
+    # The pooled client too, so a route that never took a per-request one still reaches
+    # this transport (keeps the pre-fix behaviour observable, not a 502).
     monkeypatch.setattr(
         inf_mod, "nonstreaming_client", lambda: real_async_client(transport = transport)
     )
@@ -929,10 +924,9 @@ class _EmbeddingsRequest(_NeverDisconnectedRequest):
 
 
 def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
-    # /v1/embeddings occupies llama-server for its whole HTTP call, and /unload
-    # runs no idle drain: without its own registration a non-forced /unload
-    # counts zero generations and kills the server mid-request. Middleware
-    # in-flight counting does not help here, only /load waits on that.
+    # /v1/embeddings holds llama-server for its whole HTTP call and /unload runs no idle
+    # drain: unregistered, a non-forced /unload counts zero generations and kills the
+    # server mid-request. Middleware in-flight counting does not help, only /load waits.
     _route_gate()  # skips when the inference stack is unavailable
     import asyncio
     from types import SimpleNamespace
