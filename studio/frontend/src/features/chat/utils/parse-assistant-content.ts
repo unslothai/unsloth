@@ -104,10 +104,146 @@ export type ParseOptions = {
    * Mid-stream only: a close tag whose fence decision was deferred, at that
    * index. It may still turn out literal, so callers must not act on it until
    * the final parse confirms it - but recording when it arrived lets the
-   * reasoning timer stop there instead of at end of stream (#7334).
+   * reasoning timer stop there instead of at end of stream (#7334). Reported
+   * once per index, on the delta the scan first reaches it.
    */
   onDeferredClose?: (index: number) => void;
+  /**
+   * Scratch space letting the scan resume where the previous delta left off,
+   * so a streaming parse costs O(new text) instead of O(buffer) (#7334).
+   *
+   * Pass the same cache only while `raw` is APPEND-ONLY apart from truncation
+   * at the end; that is the one shape the scan can verify for itself. Text
+   * rewritten in place would resume from a stale boundary, so mint a fresh
+   * cache for anything else. Omitting it is always correct, just O(buffer).
+   */
+  resume?: ScanResumeCache;
 };
+
+const FENCE = "```";
+/** `nextFence` sentinel: the next marker has not been looked up yet. */
+const FENCE_UNSCANNED = -2;
+
+/**
+ * Monotone cursors summarizing the prefix a previous scan already inspected.
+ *
+ * The parser re-runs over the whole cumulative buffer on every SSE delta, so
+ * restarting at `spanStart` each time re-walked the same fences and quotes --
+ * O(n^2) over reasoning that repeatedly quotes `</think>` (#7334).
+ */
+type ScanResume = {
+  /** Length of the buffer this state was built from. */
+  rawLen: number;
+  /** Use stamp; the lowest is evicted when the table is full. */
+  used: number;
+  spanStart: number;
+  from: number;
+  streaming: boolean;
+  isKnownClose: ((index: number) => boolean) | undefined;
+  onDeferredClose: ((index: number) => void) | undefined;
+  /** Where the next candidate search starts; earlier verdicts are settled. */
+  resumeFrom: number;
+  fences: number;
+  nextFence: number;
+  fenceFrom: number;
+  dq: number;
+  dqFrom: number;
+  sq: number;
+  sqFrom: number;
+  bt: number;
+  btFrom: number;
+};
+
+/** Opaque per-stream scratch; see `ParseOptions.resume`. */
+export type ScanResumeCache = { slots: ScanResume[] };
+
+/** Scratch for one append-only buffer. */
+export function createScanResumeCache(): ScanResumeCache {
+  return { slots: [] };
+}
+
+// One slot per (call site, reasoning span): every delta is parsed, polled for
+// the close tag and rebuilt into content parts, each with its own options.
+const RESUME_SLOTS = 8;
+let resumeClock = 0;
+
+function resetResume(slot: ScanResume): void {
+  slot.rawLen = 0;
+  slot.resumeFrom = slot.from;
+  slot.fences = 0;
+  slot.nextFence = FENCE_UNSCANNED;
+  slot.fenceFrom = slot.spanStart;
+  slot.dq = 0;
+  slot.dqFrom = slot.spanStart;
+  slot.sq = 0;
+  slot.sqFrom = slot.spanStart;
+  slot.bt = 0;
+  slot.btFrom = slot.spanStart;
+}
+
+/**
+ * Slot for this call's options, least recently used evicted. Callbacks match
+ * by identity, so a caller minting a fresh arrow per delta just starts cold
+ * (chat-adapter holds one reference per reasoning base). Without a cache every
+ * call gets its own slot, i.e. no resume at all. Eviction and a cold start
+ * only cost a rescan; neither can change a verdict.
+ */
+function resumeSlotFor(
+  cache: ScanResumeCache | undefined,
+  spanStart: number,
+  from: number,
+  streaming: boolean,
+  isKnownClose: ((index: number) => boolean) | undefined,
+  onDeferredClose: ((index: number) => void) | undefined,
+): ScanResume {
+  resumeClock += 1;
+  const slots = cache?.slots;
+  if (slots) {
+    for (const slot of slots) {
+      if (
+        slot.spanStart === spanStart &&
+        slot.from === from &&
+        slot.streaming === streaming &&
+        slot.isKnownClose === isKnownClose &&
+        slot.onDeferredClose === onDeferredClose
+      ) {
+        slot.used = resumeClock;
+        return slot;
+      }
+    }
+  }
+  const slot: ScanResume = {
+    rawLen: 0,
+    used: resumeClock,
+    spanStart,
+    from,
+    streaming,
+    isKnownClose,
+    onDeferredClose,
+    resumeFrom: from,
+    fences: 0,
+    nextFence: FENCE_UNSCANNED,
+    fenceFrom: spanStart,
+    dq: 0,
+    dqFrom: spanStart,
+    sq: 0,
+    sqFrom: spanStart,
+    bt: 0,
+    btFrom: spanStart,
+  };
+  if (slots) {
+    if (slots.length < RESUME_SLOTS) {
+      slots.push(slot);
+    } else {
+      let lru = 0;
+      for (let i = 1; i < slots.length; i += 1) {
+        if (slots[i].used < slots[lru].used) lru = i;
+      }
+      slots[lru] = slot;
+    }
+  }
+  return slot;
+}
 
 /**
  * First structural (non-quoted, non-fenced) close tag at or after `from`.
@@ -121,6 +257,16 @@ export type ParseOptions = {
  * with many literal `"</think>"` mentions. Restarting the quote scan at
  * `spanStart` per candidate was O(candidates x length), and this runs on the
  * cumulative string for every SSE delta (#7334).
+ *
+ * Across deltas the pass resumes from `ScanResume` instead of `spanStart`, so
+ * a delta costs O(added text) rather than O(buffer). Only a verdict the
+ * inspected prefix already settles may be resumed past; a tag whose trailing
+ * flank sits at the very edge of the buffer, or whose fenced verdict reads
+ * ahead to the end of the stream, is re-examined every delta.
+ *
+ * `onDeferredClose` therefore fires when the scan first reaches a candidate
+ * rather than once per delta after it. The first report is the one callers
+ * time the thought from, and it lands on the same delta either way.
  *
  * `streaming` marks a mid-stream parse, where `raw` can still grow: an
  * enclosing ``` fence that has not closed yet may still close in a later
@@ -138,27 +284,40 @@ function findStructuralThinkClose(
   streaming = false,
   isKnownClose?: (index: number) => boolean,
   onDeferredClose?: (index: number) => void,
+  resume?: ScanResumeCache,
 ): number {
-  const FENCE = "```";
-  let closeIndex = raw.indexOf(THINK_CLOSE_TAG, from);
-  if (closeIndex === -1) return -1;
+  const slot = resumeSlotFor(
+    resume,
+    spanStart,
+    from,
+    streaming,
+    isKnownClose,
+    onDeferredClose,
+  );
+  // The cache only promises an append-only buffer, so a shorter one was
+  // truncated and nothing inspected past its end still holds. Comparing the
+  // text instead would cost O(buffer) per delta, which is the very scan this
+  // exists to avoid.
+  if (raw.length < slot.rawLen) resetResume(slot);
 
   // Greedy non-overlapping fence scan (matches Python str.count): `fences` is
-  // the number of fence markers starting strictly before `nextFence`.
-  let fences = 0;
-  let nextFence = raw.indexOf(FENCE, spanStart);
+  // the number of fence markers starting strictly before `nextFence`, looked up
+  // from `fenceFrom` on first use so a span with no candidate never pays for it.
+  let fences = slot.fences;
+  let nextFence = slot.nextFence;
+  let fenceFrom = slot.fenceFrom;
   // Last fence marker in `raw`; only the odd-parity branch needs it, so it is
   // computed at most once and reused.
   let lastFence: number | undefined;
   // Running quote counts over [spanStart, cursor) per quote char, advanced
   // lazily with indexOf rather than a char-by-char loop (same answer, far less
   // work on ordinary prose, which is mostly quote-free).
-  let dq = 0;
-  let dqFrom = spanStart;
-  let sq = 0;
-  let sqFrom = spanStart;
-  let bt = 0;
-  let btFrom = spanStart;
+  let dq = slot.dq;
+  let dqFrom = slot.dqFrom;
+  let sq = slot.sq;
+  let sqFrom = slot.sqFrom;
+  let bt = slot.bt;
+  let btFrom = slot.btFrom;
   const quoteCount = (ch: string, end: number): number => {
     let n = ch === '"' ? dq : ch === "'" ? sq : bt;
     const cursor = ch === '"' ? dqFrom : ch === "'" ? sqFrom : btFrom;
@@ -203,10 +362,23 @@ function findStructuralThinkClose(
     return seekHit !== -1;
   };
 
+  let searchFrom = slot.resumeFrom;
+  let closeIndex = raw.indexOf(THINK_CLOSE_TAG, searchFrom);
+  // Cleared once a verdict rests on text that has not arrived, so the resume
+  // point never moves past a tag a later delta could reclassify.
+  let resumable = true;
+  // First structural close found, or -1. Never cached: a tag at the very end
+  // reads as unflanked now and may read as quoted next delta.
+  let structural = -1;
+
   while (closeIndex !== -1) {
+    if (nextFence === FENCE_UNSCANNED) {
+      nextFence = raw.indexOf(FENCE, fenceFrom);
+    }
     while (nextFence !== -1 && nextFence < closeIndex) {
       fences += 1;
-      nextFence = raw.indexOf(FENCE, nextFence + FENCE.length);
+      fenceFrom = nextFence + FENCE.length;
+      nextFence = raw.indexOf(FENCE, fenceFrom);
     }
 
     let literal: boolean;
@@ -227,6 +399,9 @@ function findStructuralThinkClose(
         onDeferredClose?.(closeIndex);
         literal = true;
       } else {
+        // The look-ahead below reads to the end of `raw`, so the inspected
+        // prefix does not settle this verdict and cannot be resumed past.
+        resumable = false;
         // Where the enclosing fence would close. The greedy cursor answers this
         // directly; only fall back to the O(n) scan when it is exhausted, since
         // overlapping runs such as "````" can hide a marker from it.
@@ -265,13 +440,44 @@ function findStructuralThinkClose(
       }
     }
 
-    if (!literal) return closeIndex;
-    closeIndex = raw.indexOf(
-      THINK_CLOSE_TAG,
-      closeIndex + THINK_CLOSE_TAG.length,
-    );
+    if (!literal) {
+      structural = closeIndex;
+      break;
+    }
+    searchFrom = closeIndex + THINK_CLOSE_TAG.length;
+    // Settled only once the trailing flank -- the char after the tag, or after
+    // its escaping backslash -- is inside the inspected text.
+    if (resumable && searchFrom + 1 < raw.length) {
+      slot.resumeFrom = searchFrom;
+      slot.fences = fences;
+      // A -1 lookup only proves there is no marker before the last 2 chars,
+      // where the next delta could still complete one.
+      slot.nextFence = nextFence === -1 ? FENCE_UNSCANNED : nextFence;
+      slot.fenceFrom =
+        nextFence === -1
+          ? Math.max(fenceFrom, raw.length - (FENCE.length - 1))
+          : fenceFrom;
+      slot.dq = dq;
+      slot.dqFrom = dqFrom;
+      slot.sq = sq;
+      slot.sqFrom = sqFrom;
+      slot.bt = bt;
+      slot.btFrom = btFrom;
+    }
+    closeIndex = raw.indexOf(THINK_CLOSE_TAG, searchFrom);
   }
-  return -1;
+
+  if (structural === -1 && resumable) {
+    // No tag starts in the text just searched, so the next delta re-reads only
+    // the tail one straddling the end could still start in. Leaving the fence
+    // and quote cursors behind is safe: they stay self-consistent and simply
+    // catch up on the next candidate.
+    const tail = raw.length - (THINK_CLOSE_TAG.length - 1);
+    if (searchFrom > slot.resumeFrom) slot.resumeFrom = searchFrom;
+    if (tail > slot.resumeFrom) slot.resumeFrom = tail;
+  }
+  slot.rawLen = raw.length;
+  return structural;
 }
 
 /**
@@ -309,6 +515,7 @@ export function parseAssistantContent(
       streaming,
       options?.isKnownClose,
       options?.onDeferredClose,
+      options?.resume,
     );
     if (closeIndex === -1) {
       appendReasoningPart(parts, raw.slice(reasoningStart));
@@ -360,5 +567,6 @@ export function structuralThinkCloseIndex(
     options?.streaming ?? false,
     options?.isKnownClose,
     options?.onDeferredClose,
+    options?.resume,
   );
 }

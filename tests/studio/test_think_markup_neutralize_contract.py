@@ -36,6 +36,7 @@ def test_chat_adapter_neutralizes_reasoning_before_think_wrap():
 
 _HARNESS = """
 import {
+  createScanResumeCache,
   parseAssistantContent,
   hasClosedThinkTag,
   structuralThinkCloseIndex,
@@ -134,6 +135,99 @@ const deferred = {
   })(),
 };
 
+// A resumed scan (`resume`) must answer exactly like a cold one (no `resume`)
+// on every delta of every chunking, or it silently reintroduces #7066 by
+// skipping a close tag it decided about too early (#7334).
+const RESUME_CASES = [
+  cases.quoted_literal,
+  cases.mismatched_flanks,
+  cases.contraction_quoted,
+  cases.escaped_quoted,
+  cases.closed_fence_literal,
+  cases.unclosed_fence,
+  cases.answer_fence,
+  cases.literal_only,
+  "<think>a `</think>` b `</think>` c </think>done",
+  "<think>```\\n</think>\\n```\\n```\\n</think>\\n```\\ntail</think>answer",
+  '<think>mixed `</think>" and "</think>` then </think>visible',
+  '<think>he wrote \\\\"</think>\\\\" and then ```\\n</think>\\n``` </think>ok',
+];
+const resumeMismatches = [];
+function checkResume(raw, cuts, cache, label) {
+  // Stable identity, as the adapter's is: a fresh arrow per delta would miss
+  // the slot and hide the very thing under test.
+  const known = () => false;
+  const warm = { streaming: true, isKnownClose: known, resume: cache };
+  // No `resume` means a fresh slot per call, i.e. the full O(buffer) scan.
+  const cold = { streaming: true, isKnownClose: known };
+  for (const end of cuts) {
+    const cum = raw.slice(0, end);
+    const got = [
+      JSON.stringify(parseAssistantContent(cum, warm)),
+      hasClosedThinkTag(cum, warm),
+      structuralThinkCloseIndex(cum, warm),
+    ];
+    const want = [
+      JSON.stringify(parseAssistantContent(cum, cold)),
+      hasClosedThinkTag(cum, cold),
+      structuralThinkCloseIndex(cum, cold),
+    ];
+    for (let i = 0; i < got.length; i++) {
+      if (got[i] !== want[i]) {
+        resumeMismatches.push(`${label} end=${end} #${i}: ${got[i]} != ${want[i]}`);
+      }
+    }
+  }
+}
+for (const raw of RESUME_CASES) {
+  for (const step of [1, 3, 8, 9, raw.length]) {
+    const cuts = [];
+    for (let end = step; end < raw.length; end += step) cuts.push(end);
+    cuts.push(raw.length);
+    checkResume(raw, cuts, createScanResumeCache(), `step=${step}`);
+  }
+  // Truncation at the end is the one non-append the cache detects itself, so
+  // the same cache must survive it (chat-adapter trims a trailing `${...}`).
+  const shared = createScanResumeCache();
+  const half = Math.max(1, raw.length >> 1);
+  checkResume(raw, [half, raw.length, half - 1, raw.length], shared, "truncate");
+}
+
+// The adapter keeps ONE onDeferredClose reference per stream, so the resumed
+// scan reports a candidate on the delta it first reaches it and not again.
+// Timing the thought off that first report must be unaffected (#7334).
+const FIRE_DELTAS = [
+  "<think>reasoning ```\\n",
+  "</think>\\n",
+  "still inside the fence, ",
+  "</think>\\n",
+  "more reasoning ",
+  "and the answer follows",
+];
+function replayDeferred(deltas, useCache) {
+  const resume = useCache ? createScanResumeCache() : undefined;
+  const perStep = [];
+  const firstAt = {};
+  let cum = "";
+  let step = 0;
+  const record = (index) => {
+    perStep[step].push(index);
+    if (!(index in firstAt)) firstAt[index] = step;
+  };
+  const opts = { streaming: true, onDeferredClose: record, resume };
+  for (const delta of deltas) {
+    cum += delta;
+    perStep.push([]);
+    hasClosedThinkTag(cum, opts);
+    step += 1;
+  }
+  return { perStep, firstAt, total: perStep.reduce((n, s) => n + s.length, 0) };
+}
+const firing = {
+  warm: replayDeferred(FIRE_DELTAS, true),
+  cold: replayDeferred(FIRE_DELTAS, false),
+};
+
 const streaming = {
   streamClosed,
   streamTypes,
@@ -141,6 +235,8 @@ const streaming = {
   unclosedStreaming,
   synthetic,
   deferred,
+  resumeMismatches,
+  firing,
 };
 
 // Perf guard for #7334: literal mentions must not make the parse super-linear.
@@ -175,10 +271,33 @@ function fencedSpan(nLit) {
 const clean = `<think>${span(0)}</think>${words(4000)}`;
 const many = `<think>${span(200)}</think>${words(4000)}`;
 const fenced = `<think>${fencedSpan(200)}</think>${words(4000)}`;
+// Replaying a whole stream: without `resume` every delta re-walks the buffer,
+// which is the O(n^2) #7334 is about.
+function replayStream(raw, useCache) {
+  const opts = { streaming: true, resume: useCache ? createScanResumeCache() : undefined };
+  let n = 0;
+  for (let end = 4; end <= raw.length; end += 4) {
+    n += parseAssistantContent(raw.slice(0, end), opts).length;
+  }
+  return n;
+}
+function timeMsFew(fn) {
+  fn();
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const t0 = process.hrtime.bigint();
+    fn();
+    best = Math.min(best, Number(process.hrtime.bigint() - t0) / 1e6);
+  }
+  return best;
+}
+const streamRaw = `<think>${span(200)}${span(200)}`;
 const perf = {
   clean_us: timeUs(() => parseAssistantContent(clean)),
   many_us: timeUs(() => parseAssistantContent(many)),
   fenced_us: timeUs(() => parseAssistantContent(fenced)),
+  stream_cached_ms: timeMsFew(() => replayStream(streamRaw, true)),
+  stream_cold_ms: timeMsFew(() => replayStream(streamRaw, false)),
 };
 console.log(JSON.stringify({ parsed, closed, perf, streaming }));
 """
@@ -331,7 +450,8 @@ def test_deferred_close_is_reported_for_reasoning_timing(tmp_path):
     """
     deferred = _run_parse_harness(tmp_path)["streaming"]["deferred"]
 
-    # Reported every delta while held, always at the real close offset.
+    # This replay passes no `resume` cache, so every delta rescans from the top
+    # and re-reports; either way the offset is the real close.
     close_at = len("<think>draft ```")
     assert deferred["seen"], "deferred close was never reported"
     assert set(deferred["seen"]) == {close_at}
@@ -345,6 +465,42 @@ def test_deferred_close_is_reported_for_reasoning_timing(tmp_path):
     # LATER offset, so the recorded timestamp is never applied.
     assert deferred["literalFirstDeferred"] != -1
     assert deferred["literalConfirmed"] != deferred["literalFirstDeferred"]
+
+
+def test_streaming_resume_matches_a_cold_scan(tmp_path):
+    """A resumed scan must answer exactly like a full rescan, every delta.
+
+    The scan carries fence and quote cursors across SSE deltas so a delta costs
+    O(new text) instead of O(buffer) (#7334). Resuming past a tag whose verdict
+    the inspected prefix does not settle would skip the real close and put the
+    visible answer back in the thinking drawer, i.e. #7066 again.
+    """
+    streaming = _run_parse_harness(tmp_path)["streaming"]
+    assert streaming["resumeMismatches"] == []
+
+
+def test_deferred_close_first_report_is_unchanged_by_resume(tmp_path):
+    """Resuming drops repeat reports, never the FIRST one.
+
+    `chat-adapter` records the arrival instant of a deferred close the first
+    time it hears about it, so only the first report per index is observable.
+    A resumed scan reports each candidate once, on the same delta a cold scan
+    first reports it, which is when the tag arrived (#7334).
+    """
+    firing = _run_parse_harness(tmp_path)["streaming"]["firing"]
+    warm, cold = firing["warm"], firing["cold"]
+
+    # The observable part: same offsets, first seen on the same delta.
+    assert warm["firstAt"] == cold["firstAt"]
+    fence_open = "<think>reasoning ```\n"
+    second = fence_open + "</think>\n" + "still inside the fence, "
+    assert warm["firstAt"] == {str(len(fence_open)): 1, str(len(second)): 3}
+
+    # ... while the repeats are gone: each candidate is reported exactly once.
+    reported = [index for step in warm["perStep"] for index in step]
+    assert sorted(reported) == sorted(set(reported))
+    assert warm["total"] == 2
+    assert cold["total"] > warm["total"]
 
 
 def test_chat_adapter_times_reasoning_from_the_deferred_close(tmp_path):
@@ -400,3 +556,38 @@ def test_parse_assistant_content_literal_scan_is_single_pass(tmp_path):
     # worse as the trailing span grows).
     fenced_ratio = perf["fenced_us"] / perf["clean_us"]
     assert fenced_ratio < 60, f"fenced {perf['fenced_us']:.1f}us vs clean {perf['clean_us']:.3f}us"
+
+
+def test_streaming_replay_is_not_quadratic(tmp_path):
+    """Replaying a stream must cost O(text), not O(text) per delta.
+
+    Without the resume cache every SSE delta re-walks the whole cumulative
+    buffer, so streaming a 16k reasoning span holding 400 literal mentions cost
+    ~50x what resuming does. The bound is loose because CI timing is noisy; the
+    real gap is one to two orders of magnitude (#7334).
+    """
+    perf = _run_parse_harness(tmp_path)["perf"]
+    ratio = perf["stream_cold_ms"] / max(perf["stream_cached_ms"], 1e-6)
+    assert ratio > 4, (
+        f"cached {perf['stream_cached_ms']:.1f}ms vs cold {perf['stream_cold_ms']:.1f}ms"
+    )
+
+
+def test_chat_adapter_resume_caches_are_per_stream(tmp_path):
+    """The caches must be minted per stream, and their keys must be stable.
+
+    A cache is only valid while the buffer it scans grows by appending, so it
+    belongs to one stream; and the slot is keyed on the callbacks by identity,
+    so a fresh arrow per delta would silently disable the resume (#7334).
+    """
+    src = ADAPTER_TS.read_text(encoding = "utf-8")
+    assert "createScanResumeCache" in src
+    assert "resume: pollResume" in src
+    assert "resume: buildResume" in src
+    # Two call sites, both inside the per-stream scope.
+    assert src.count("createScanResumeCache()") == 2
+    assert src.index("createScanResumeCache()") > src.index('let cumulativeText = "";')
+    # The callbacks the slot is keyed on are hoisted, not rebuilt per delta.
+    assert "const knownCloseAt = " in src
+    assert "isKnownClose: (index) =>" not in src
+    assert "onDeferredClose: (index) =>" not in src

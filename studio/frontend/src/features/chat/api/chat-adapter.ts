@@ -83,6 +83,7 @@ import {
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  createScanResumeCache,
   drainThinkMarkupBuffer,
   hasClosedThinkTag,
   neutralizeThinkMarkup,
@@ -2624,6 +2625,31 @@ export function createOpenAIStreamAdapter(
       // would run until then and report the whole answer as thought time
       // (#7334). Read back only for the index the final parse confirms.
       const deferredCloseTimes = new Map<number, number>();
+      // `cumulativeText` only ever grows by appending (the one trim below cuts
+      // from the end), so the parser may resume its close-tag scan across
+      // deltas instead of re-walking the buffer every time (#7334). One cache
+      // per call site, since they scan the same span with different options.
+      const pollResume = createScanResumeCache();
+      const buildResume = createScanResumeCache();
+      // The resume slot is keyed on these callbacks by identity, so mint them
+      // once per reasoning base: a fresh arrow per delta restarted the scan at
+      // the top of the buffer (#7334).
+      const knownCloseByBase = new Map<number, (index: number) => boolean>();
+      const knownCloseAt = (base: number): ((index: number) => boolean) => {
+        let known = knownCloseByBase.get(base);
+        if (!known) {
+          known = (index: number) => syntheticCloses.has(index + base);
+          knownCloseByBase.set(base, known);
+        }
+        return known;
+      };
+      // First report wins: the parser reports a candidate once, on the delta
+      // its scan first reaches it, which is when the tag arrived.
+      const recordDeferredClose = (index: number): void => {
+        if (!deferredCloseTimes.has(index)) {
+          deferredCloseTimes.set(index, Date.now());
+        }
+      };
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -2720,7 +2746,8 @@ export function createOpenAIStreamAdapter(
           assembled.push(
             ...parseAssistantContent(rawText.slice(base, nextCursor), {
               ...options,
-              isKnownClose: (index) => syntheticCloses.has(index + base),
+              isKnownClose: knownCloseAt(base),
+              resume: buildResume,
             }),
           );
           textCursor = nextCursor;
@@ -4026,7 +4053,8 @@ export function createOpenAIStreamAdapter(
               }
               const textParts = parseAssistantContent(cumulativeText, {
                 streaming: true,
-                isKnownClose: (index) => syntheticCloses.has(index),
+                isKnownClose: knownCloseAt(0),
+                resume: pollResume,
               });
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -4039,12 +4067,9 @@ export function createOpenAIStreamAdapter(
               if (
                 hasClosedThinkTag(cumulativeText, {
                   streaming: true,
-                  isKnownClose: (index) => syntheticCloses.has(index),
-                  onDeferredClose: (index) => {
-                    if (!deferredCloseTimes.has(index)) {
-                      deferredCloseTimes.set(index, Date.now());
-                    }
-                  },
+                  isKnownClose: knownCloseAt(0),
+                  onDeferredClose: recordDeferredClose,
+                  resume: pollResume,
                 }) &&
                 reasoningStartAt &&
                 !reasoningDuration
@@ -4155,7 +4180,7 @@ export function createOpenAIStreamAdapter(
         if (reasoningStartAt && !reasoningDuration) {
           const confirmedClose = deferredCloseTimes.size
             ? structuralThinkCloseIndex(cumulativeText, {
-                isKnownClose: (index) => syntheticCloses.has(index),
+                isKnownClose: knownCloseAt(0),
               })
             : -1;
           const closedAt =
