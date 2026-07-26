@@ -267,7 +267,9 @@ export function SettingsDialog() {
           </DialogDescription>
           {/* Keep tab content from expanding the dialog grid. */}
           <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
+            {/* Match the app shell: tabs on the sidebar fill, content on the
+                page fill, so both track the active palette. */}
+            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
@@ -412,7 +414,7 @@ export function SettingsDialog() {
               </nav>
             </aside>
 
-            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
               <button
                 type="button"
                 onClick={closeDialog}
