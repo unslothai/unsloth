@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Spinner } from "@/components/ui/spinner";
@@ -94,17 +95,59 @@ export function CheckpointResumePicker({ disabled, onInspectionChange }: Checkpo
   );
 
   return (
-    <div className="space-y-3 rounded-lg border border-border/60 p-3" data-testid="checkpoint-resume-picker">
-      <Label className="text-sm font-medium">Resume from checkpoint</Label>
-      <RadioGroup value={source} onValueChange={(value) => choose(value as Source)} disabled={disabled}>
-        <label className="flex items-start gap-2"><RadioGroupItem value="none" /> <span className="text-sm">Start a new training run</span></label>
-        <label className="flex items-start gap-2"><RadioGroupItem value="latest" /> <span className="text-sm">Latest Studio checkpoint<span className="block max-w-72 truncate font-mono text-xs text-muted-foreground" title={configuredPath}>{configuredPath || "Configured checkpoint location"}</span></span></label>
-        <label className="flex items-center gap-2"><RadioGroupItem value="browse" /> <span className="text-sm">Browse directory</span></label>
-        <label className="flex items-start gap-2"><RadioGroupItem value="mounted" /> <span className="text-sm">Mounted-storage path<span className="block text-xs text-muted-foreground">Use paths such as /content/drive/MyDrive/… on Colab or /kaggle/working/… on Kaggle.</span></span></label>
-      </RadioGroup>
+    <div className="space-y-3 rounded-xl border border-border/60 bg-muted/10 p-3" data-testid="checkpoint-resume-picker">
+      <div className="flex items-center gap-1.5">
+        <Label className="text-sm font-medium">How should training start?</Label>
+        <InfoHint>
+          Resume restores model, optimizer, scheduler, and step state from a complete checkpoint. Use New training when you do not need previous trainer state.
+        </InfoHint>
+      </div>
+
+      <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/60 p-1" role="group" aria-label="Training start mode">
+        <Button
+          type="button"
+          size="sm"
+          variant={source === "none" ? "secondary" : "ghost"}
+          className={source === "none" ? "bg-background shadow-sm hover:bg-background" : "text-muted-foreground"}
+          aria-pressed={source === "none"}
+          disabled={disabled}
+          onClick={() => choose("none")}
+        >
+          New training
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={source !== "none" ? "secondary" : "ghost"}
+          className={source !== "none" ? "bg-background shadow-sm hover:bg-background" : "text-muted-foreground"}
+          aria-pressed={source !== "none"}
+          disabled={disabled}
+          onClick={() => choose(source === "none" ? "latest" : source)}
+        >
+          Resume checkpoint
+        </Button>
+      </div>
+
+      {source !== "none" && <div className="space-y-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+        <p className="text-xs text-muted-foreground">Choose where Studio should look for the most recent complete checkpoint.</p>
+        <RadioGroup className="grid gap-2" value={source} onValueChange={(value) => choose(value as Source)} disabled={disabled}>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-background/60 p-3 transition-colors hover:border-primary/40 has-[[data-state=checked]]:border-primary/60 has-[[data-state=checked]]:bg-primary/5">
+            <RadioGroupItem value="latest" className="mt-0.5" />
+            <span className="min-w-0 text-sm font-medium">Studio checkpoint folder<span className="mt-0.5 block max-w-full truncate font-mono text-[11px] font-normal text-muted-foreground" title={configuredPath}>{configuredPath || "Configured checkpoint location"}</span></span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-background/60 p-3 transition-colors hover:border-primary/40 has-[[data-state=checked]]:border-primary/60 has-[[data-state=checked]]:bg-primary/5">
+            <RadioGroupItem value="browse" className="mt-0.5" />
+            <span className="text-sm font-medium">Browse this system<span className="mt-0.5 block text-xs font-normal text-muted-foreground">Pick a checkpoint folder using the file browser.</span></span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border/60 bg-background/60 p-3 transition-colors hover:border-primary/40 has-[[data-state=checked]]:border-primary/60 has-[[data-state=checked]]:bg-primary/5">
+            <RadioGroupItem value="mounted" className="mt-0.5" />
+            <span className="text-sm font-medium">Enter a mounted-storage path<span className="mt-0.5 block text-xs font-normal leading-relaxed text-muted-foreground">For example, Google Drive on Colab or persistent storage on Kaggle. Web links are not supported.</span></span>
+          </label>
+        </RadioGroup>
+      </div>}
 
       {source === "mounted" && <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void inspect(path); }}>
-        <Input aria-label="Absolute mounted-storage path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/content/drive/MyDrive/checkpoints" />
+        <Input className="min-w-0 font-mono text-xs" aria-label="Absolute mounted-storage path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/content/drive/MyDrive/checkpoints" />
         <Button type="submit" variant="outline" disabled={loading}>Inspect</Button>
       </form>}
       {loading && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" />Inspecting checkpoint…</div>}
