@@ -129,6 +129,15 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     return _GGUF_KNOWN_QUANT_RE.fullmatch(variant.strip()) is not None
 
 
+def _hub_token(hf_token: Optional[str]):
+    """The caller's token, or an explicit False.
+
+    None makes huggingface_hub fall back to a cached login, which here would be
+    the server owner's. False is what actually means anonymous.
+    """
+    return hf_token or False
+
+
 def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
     """Cache key, per credential.
 
@@ -180,7 +189,7 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
 
     try:
         from huggingface_hub import auth_check
-        auth_check(repo_id, token = hf_token)
+        auth_check(repo_id, token = _hub_token(hf_token))
     except Exception as exc:
         return hf_error_status(exc) in (401, 403)
     return False
@@ -375,6 +384,11 @@ async def maybe_auto_download(
             _active = provisional
 
     if adopted is not None:
+        if adopted.variant is None:
+            # Still probing, so it owns the slot and has no job to look up yet.
+            # Reading the whole-repo key here could find an older error and
+            # release a slot the probe is still using.
+            return _downloading_refusal(adopted.repo_id, None)
         state, error = await _job_state(adopted.repo_id, adopted.variant)
         if state in ("running", "cancelling", "unknown"):
             return _downloading_refusal(
@@ -391,9 +405,6 @@ async def maybe_auto_download(
                 code = "model_download_failed",
                 message = f"Downloading '{requested_model}' failed: {error or 'unknown error'}",
             )
-        if adopted.variant is None:
-            # Another request is still probing this same repo.
-            return _downloading_refusal(adopted.repo_id, None)
         # complete/idle/cancelled: the watcher is about to free the slot, so retry once more.
         return _downloading_refusal(
             _public_label(adopted.repo_id, adopted.variant),
@@ -422,7 +433,7 @@ async def _admit_and_start(
 
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = hf_token).model_info(
+        return HfApi(token = _hub_token(hf_token)).model_info(
             repo_id, files_metadata = True, timeout = _MODEL_INFO_TIMEOUT_S
         )
 
@@ -570,7 +581,9 @@ async def _dispatch(
     )
     try:
         dispatched = await downloads.download_model_response(
-            DownloadModelRequest(repo_id = repo_id, gguf_variant = variant), hf_token
+            DownloadModelRequest(repo_id = repo_id, gguf_variant = variant),
+            hf_token,
+            allow_ambient_token = False,
         )
     except Exception as exc:
         _release(active)

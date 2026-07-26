@@ -58,6 +58,7 @@ def spawn_worker(
     use_xet: bool,
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[Mapping[str, str]] = None,
+    allow_ambient_token: bool = True,
 ) -> subprocess.Popen:
     """Spawn the download worker.
 
@@ -83,7 +84,9 @@ def spawn_worker(
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
-    if not hf_token:
+    # Not for a repo an API caller named: that would lend them the owner's Hub
+    # identity, so those dispatches opt out and stay anonymous.
+    if not hf_token and allow_ambient_token:
         hf_token = os.environ.get("HF_TOKEN") or None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
     # hf_transfer's parallel Range chunks can leave sparse partials even in
@@ -244,8 +247,7 @@ def finalize_worker_exit(
         if stderr_text:
             if download_manifest.MANIFEST_DEGRADED_MARKER in stderr_text:
                 logger.warning(
-                    f"{log_prefix} complete with degraded diagnostics for "
-                    f"{label}: {stderr_text}"
+                    f"{log_prefix} complete with degraded diagnostics for {label}: {stderr_text}"
                 )
             else:
                 logger.info(f"{log_prefix} worker diagnostics for {label}: {stderr_text}")

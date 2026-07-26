@@ -48,8 +48,11 @@ def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
     """
     if not path:
         return None
-    for part in str(path).replace("\\", "/").split("/"):
-        if part.startswith("models--"):
+    parts = str(path).replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        # Only inside the real cache layout: an ordinary directory that merely
+        # starts with "models--" is not an encoded repo id.
+        if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
             return part[len("models--") :].replace("--", "/")
     return None
 

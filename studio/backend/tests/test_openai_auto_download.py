@@ -111,6 +111,7 @@ def hub(monkeypatch):
         "on_probe": None,
         "probes": 0,
         "auth_denied": False,
+        "allow_ambient": None,
     }
 
     class _FakeApi:
@@ -125,8 +126,14 @@ def hub(monkeypatch):
                 raise state["raise"]
             return state["info"]
 
-    async def _start(body, hf_token = None):
+    async def _start(
+        body,
+        hf_token = None,
+        *,
+        allow_ambient_token = True,
+    ):
         state["started"].append((body.repo_id, body.gguf_variant, hf_token))
+        state["allow_ambient"] = allow_ambient_token
         return state["dispatch_result"]
 
     async def _no_watch(active, hf_token):
@@ -936,3 +943,51 @@ def test_a_quant_cannot_be_satisfied_by_a_non_gguf_backend(monkeypatch):
     assert inference_route._loaded_satisfies("org/model:Q4_K_M") is False
     # An Ollama-style tag is not a claim about the weights, so it still matches.
     assert inference_route._loaded_satisfies("org/model:latest") is True
+
+
+def test_the_worker_is_never_given_the_servers_own_token(hub):
+    # download_lifecycle substitutes the backend's HF_TOKEN for a falsy one, so
+    # passing None here would hand an API caller the owner's Hub identity.
+    assert _run("unsloth/x-GGUF").code == "model_downloading"
+    assert hub["started"][0][2] is None
+    assert hub["allow_ambient"] is False
+
+
+def test_the_metadata_probe_is_explicitly_anonymous(hub):
+    # huggingface_hub treats token=None as "use a cached login"; only False is
+    # anonymous, and the cached login here would be the server owner's.
+    _run("unsloth/x-GGUF")
+    assert hub["token"] is False
+    auto_dl.reset_for_tests()
+    _run("unsloth/y-GGUF", hf_token = "hf_caller_own")
+    assert hub["token"] == "hf_caller_own"
+
+
+def test_an_ollama_tag_still_matches_the_resident_gguf(monkeypatch):
+    # looks_like_quant() calls these foreign tags, so the llama.cpp branch must
+    # not compare them against hf_variant and refuse the resident model.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("unsloth/A-GGUF:latest") is True
+    assert inference_route._loaded_satisfies("unsloth/A-GGUF:8b") is True
+    assert inference_route._loaded_satisfies("unsloth/A-GGUF:UD-Q4_K_XL") is True
+    assert inference_route._loaded_satisfies("unsloth/A-GGUF:Q8_0") is False
+
+
+def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):
+    # A second request arriving while the first is still probing must not read
+    # the whole-repo job key: a stale error there would free the probe's slot.
+    hub["on_probe"] = lambda: _run_nested()
+    seen = {}
+
+    def _run_nested():
+        async def _stale(repo, variant):
+            seen["queried"] = True
+            return "error", "an older failure"
+
+        monkeypatch.setattr(auto_dl, "_job_state", _stale)
+        seen["refusal"] = _run("unsloth/x-GGUF")
+
+    assert _run("unsloth/x-GGUF").code == "model_downloading"
+    assert seen["refusal"].code == "model_downloading"
+    assert "queried" not in seen  # the stale job key was never consulted
