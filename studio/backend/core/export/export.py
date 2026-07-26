@@ -81,6 +81,82 @@ _PYTORCH_MISSING_MESSAGE = (
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+def _multi_gpu_device_map_kwargs() -> dict:
+    """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
+
+    unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
+    the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
+    Returns ``{"device_map": "balanced"}`` only on a real multi-GPU CUDA/ROCm host
+    (mirroring the inference loader's ``get_device_map``), else empty so single-GPU, CPU
+    and MLX loads keep the loader default."""
+    if _IS_MLX:
+        return {}
+    try:
+        from utils.hardware import get_device_map, get_parent_visible_gpu_ids
+
+        visible = get_parent_visible_gpu_ids()
+        if len(visible) > 1:
+            device_map = get_device_map(visible)
+        elif not visible:
+            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back
+            # to the visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            device_map = get_device_map(None)
+        else:
+            return {}
+        if device_map == "balanced":
+            return {"device_map": device_map}
+    except Exception as exc:
+        logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
+    return {}
+
+
+def _is_oom_error(exc: BaseException) -> bool:
+    """True for an accelerator OOM, however it is spelled.
+
+    accelerate and transformers re-raise it as a plain ``RuntimeError`` on several paths
+    and ROCm/XPU use their own classes, so match the message too.
+    """
+    if torch is not None:
+        oom_types = tuple(
+            t
+            for t in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None),
+                getattr(getattr(torch, "xpu", None), "OutOfMemoryError", None),
+            )
+            if isinstance(t, type)
+        )
+        if oom_types and isinstance(exc, oom_types):
+            return True
+    return "out of memory" in f"{type(exc).__name__}: {exc}".lower()
+
+
+def _is_cpu_spill_rejection(exc: BaseException) -> bool:
+    """bitsandbytes refuses a map that spills to CPU/disk with a plain ``ValueError``.
+
+    Busy secondary GPUs can make ``balanced`` spill to CPU even where the old sequential
+    load fit on GPU0, and that message says nothing about memory, so the retry has to
+    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
+    """
+    return "dispatched on the cpu or the disk" in str(exc).lower()
+
+
+class _CpuSpillRetry(Exception):
+    """A multi-GPU load that succeeded but left modules offloaded to CPU/disk."""
+
+
+def _cpu_offloaded_modules(model) -> int:
+    """Count the modules a load parked on CPU or disk.
+
+    Only bitsandbytes refuses such a map; a full-precision load accepts it, leaves the
+    parameters on meta and dies much later in safetensors with "Cannot copy out of meta
+    tensor". Nothing raises at load time, so inspect the map directly. PEFT re-dispatches
+    when attaching an adapter, so in practice this catches merged checkpoints.
+    """
+    device_map = getattr(model, "hf_device_map", None) or {}
+    return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -271,6 +347,7 @@ class ExportBackend:
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
         hf_token: Optional[str] = None,
+        _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
@@ -303,6 +380,14 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on
+            # single-GPU/CPU/MLX. _device_map_override is the single-device retry below.
+            _device_map_kw = (
+                _multi_gpu_device_map_kwargs()
+                if _device_map_override is None
+                else _device_map_override
+            )
+
             # Run the type-detection probes in the forced-offline window (else a gated
             # base 404s); it covers is_vision_model's Hub reads + the transformers-5
             # subprocess, and local_files_only makes detect_audio_type's requests.get skip.
@@ -328,6 +413,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -343,6 +429,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -355,6 +442,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "bicodec":
@@ -368,6 +456,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "dac":
@@ -380,6 +469,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self.is_vision:
@@ -392,6 +482,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -405,7 +496,15 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
+
+            # Only when we asked for the multi-GPU map: a single-GPU host has no second
+            # placement to retry on, so leave its behaviour untouched.
+            _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
+            if _device_map_override is None and _offloaded:
+                del model
+                raise _CpuSpillRetry(f"{_offloaded} module(s) offloaded to CPU/disk")
 
             if _IS_MLX:
                 # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
@@ -429,11 +528,41 @@ class ExportBackend:
             return True, f"Loaded {model_type} model{peft_info} successfully"
 
         except Exception as e:
-            logger.error(f"Error loading checkpoint: {e}")
-            import traceback
+            # Sharding is an optimisation, never a requirement. "balanced" budgets from the
+            # free memory read BEFORE this process opens a CUDA context on each GPU, so when
+            # a training or chat job already owns the others the shard can OOM, or spill to
+            # CPU and be refused by bitsandbytes, where the old single-device load succeeded.
+            # Fall back once before giving up.
+            if (
+                _device_map_override is None
+                and (
+                    isinstance(e, _CpuSpillRetry) or _is_oom_error(e) or _is_cpu_spill_rejection(e)
+                )
+                and _multi_gpu_device_map_kwargs()
+            ):
+                # Retry outside this block: the live traceback pins the half-built model's
+                # frames, so an in-block retry inherits the exhausted device.
+                retry_reason = str(e)
+            else:
+                logger.error(f"Error loading checkpoint: {e}")
+                import traceback
 
-            logger.error(traceback.format_exc())
-            return False, f"Failed to load checkpoint: {str(e)}"
+                logger.error(traceback.format_exc())
+                return False, f"Failed to load checkpoint: {str(e)}"
+
+        logger.warning(
+            f"Multi-GPU export load unusable ({retry_reason}); retrying on "
+            f"the single-device loader default."
+        )
+        self.cleanup_memory()
+        return self.load_checkpoint(
+            checkpoint_path,
+            max_seq_length = max_seq_length,
+            load_in_4bit = load_in_4bit,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            _device_map_override = {},
+        )
 
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
