@@ -772,3 +772,30 @@ def test_relative_changelog_links_point_at_the_repository():
     assert "ABSOLUTE" in src and "CODE_SPAN" in src and "FENCE" in src
     panel = PANEL.read_text(encoding = "utf-8")
     assert "resolveChangelogLinks" in panel
+
+
+@pytest.mark.parametrize("query", ["latest", "main", "not-a-version", "abc"])
+def test_unparseable_versions_are_rejected(changelog_module, query):
+    """Sections are indexed only when their version parses, so a query that
+    cannot parse can never match and is a bad request, not an empty result."""
+    assert changelog_module.is_supported_version_query(query) is False
+
+
+@pytest.mark.parametrize("query", ["2026.7.5", "v2026.7.5", "2026.07.5", "1.0.0rc1"])
+def test_real_versions_are_still_accepted(changelog_module, query):
+    assert changelog_module.is_supported_version_query(query) is True
+
+
+def test_reference_style_images_resolve_to_the_raw_host():
+    """`![alt][arch]` with `[arch]: docs/arch.png` needs the raw file: the blob
+    URL is an HTML page, so the image would not load."""
+    src = LINKS.read_text(encoding = "utf-8")
+    assert "IMAGE_REFERENCE" in src
+    assert "imageLabels" in src
+
+
+def test_collapsed_notes_surface_is_hidden_when_nothing_previews():
+    """Notes that are only a fenced command block preview as nothing, and an
+    empty muted strip is worse than no strip."""
+    src = PANEL.read_text(encoding = "utf-8")
+    assert "preview?.items.length === 0" in src

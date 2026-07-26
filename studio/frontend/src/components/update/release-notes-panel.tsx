@@ -77,6 +77,13 @@ export function ReleaseNotesPanel({
     [source],
   );
 
+  // Notes that are only a code block or a table preview as nothing, and an
+  // empty surface is worse than no surface.
+  const preview = useMemo(
+    () => (markdown === null ? null : releaseNotesPreview(markdown)),
+    [markdown],
+  );
+
   // Start at the top on expand, and again once async notes land.
   useEffect(() => {
     if (open && markdown && scrollRef.current) {
@@ -89,8 +96,15 @@ export function ReleaseNotesPanel({
   const notesUrl = releaseNotesUrl ?? notes?.releaseNotesUrl;
   const link = notesUrl ? <ChangelogLink href={notesUrl} /> : null;
 
-  // Nothing to preview yet: keep the collapsed popup compact.
-  if (!open && (!markdown || state === "loading" || state === "idle")) {
+  // Nothing to preview yet, or nothing previewable at all: keep the collapsed
+  // popup compact.
+  if (
+    !open &&
+    (!markdown ||
+      state === "loading" ||
+      state === "idle" ||
+      preview?.items.length === 0)
+  ) {
     return null;
   }
 
@@ -129,7 +143,7 @@ export function ReleaseNotesPanel({
               ) : null}
             </section>
           ) : (
-            <ReleaseNotesSummary markdown={markdown} />
+            <ReleaseNotesSummary preview={preview} />
           )
         ) : (
           <NotesStatus
@@ -149,14 +163,14 @@ export function ReleaseNotesPanel({
 
 /** Collapsed view: the first few bullets, one line each where possible. */
 function ReleaseNotesSummary({
-  markdown,
+  preview,
 }: {
-  markdown: string;
+  preview: ReturnType<typeof releaseNotesPreview> | null;
 }): ReactElement | null {
-  const { items, remaining } = releaseNotesPreview(markdown);
-  if (items.length === 0) {
+  if (preview === null || preview.items.length === 0) {
     return null;
   }
+  const { items, remaining } = preview;
 
   return (
     <ul

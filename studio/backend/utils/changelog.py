@@ -122,8 +122,14 @@ def reset_changelog_cache() -> None:
 
 
 def is_supported_version_query(version: str) -> bool:
-    """Whether `version` is shaped like something we can look up at all."""
-    return bool(_SAFE_VERSION_PATTERN.match(version.strip()))
+    """Whether `version` is shaped like something we can look up at all.
+
+    Sections are indexed only when their version parses, so a query that does
+    not parse (`latest`, `main`) can never match and is rejected outright."""
+    candidate = version.strip()
+    if not _SAFE_VERSION_PATTERN.match(candidate):
+        return False
+    return _parse_version(candidate) is not None
 
 
 def parse_changelog(text: str) -> list[ChangelogEntry]:
