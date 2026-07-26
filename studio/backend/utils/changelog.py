@@ -69,6 +69,14 @@ _NOT_PARAGRAPH = re.compile(
 _PARAGRAPH_TEXT = re.compile(r"^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S")
 # A line of = or - under a paragraph line makes that line a heading.
 _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+# A list item holds the lines indented to where its own content starts, so a
+# heading at that column belongs to the item, not to the document. The marker
+# needs whitespace after it, so `2.0` is a version rather than an item.
+_LIST_ITEM = re.compile(r"^[ \t]*(?P<marker>[-*+]|\d{1,9}[.)])(?P<space>[ \t]+|$)")
+_THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
+# Content indented more than this after a marker is an indented code block, so
+# the item's content starts one column past the marker instead.
+_MAX_ITEM_PADDING = 4
 _HTML_BLOCK_TAGS = frozenset(
     """
 address article aside base basefont blockquote body caption center col colgroup
@@ -95,6 +103,15 @@ _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
 _VERSION_TOKEN_PATTERN = re.compile(r"^[\[(]?v?(?P<version>[0-9][0-9A-Za-z.!+-]*?)[\])]?$")
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
+
+
+@dataclass(frozen = True)
+class _ListState:
+    """The open list items, innermost last, by the column their content starts."""
+
+    columns: tuple[int, ...] = ()
+    # True while the innermost item has had no content since its marker.
+    empty_item: bool = False
 
 
 @dataclass(frozen = True)
@@ -162,6 +179,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
     in_html_block = False
     after_paragraph = False
     previous_visible = ""
+    lists = _ListState()
 
     def flush() -> None:
         if version is not None and heading is not None:
@@ -174,6 +192,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             )
 
     for line in text.splitlines():
+        # The line as list tracking sees it: blank where the renderer shows
+        # nothing, so hidden lines neither open nor close an item.
+        structural = ""
         # Raw HTML first: its contents are literal, so a fence inside it is not
         # a fence. Only the text after the closing tag can carry a heading.
         if in_raw_html is not None:
@@ -184,7 +205,10 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             visible = ""
         elif (fence := _FENCE_PATTERN.match(line)) and not in_comment:
             open_fence = _next_fence_state(open_fence, fence.group("marker"), fence.group("rest"))
+            # Hidden from heading matching, but its indent still closes a list
+            # item it sits to the left of.
             visible = ""
+            structural = line
         elif open_fence:
             visible = ""
         else:
@@ -195,6 +219,7 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             if visible and in_raw_html is None and _opens_html_block(visible, after_paragraph):
                 in_html_block = True
                 visible = ""
+            structural = visible
         # A `##` inside a fenced block is sample markdown, not a real heading.
         match = _HEADING_PATTERN.match(visible) if visible else None
         # `1.0` over a line of dashes is the same heading written setext style.
@@ -204,6 +229,9 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             and previous_visible != ""
             and _SETEXT_UNDERLINE.match(visible) is not None
             and (visible.strip()[:1] == "-")
+            # Dedented out of the list item holding the paragraph, it is a
+            # thematic break that closes the item instead.
+            and not (lists.columns and _indent_width(visible) < lists.columns[0])
         )
         if setext:
             if version is not None and body:
@@ -216,15 +244,33 @@ def parse_changelog(text: str) -> list[ChangelogEntry]:
             previous_visible = ""
             after_paragraph = False
             continue
+        # A dashed underline is not a list marker, so lists are tracked only
+        # once setext is ruled out.
+        lists = _open_lists(structural, lists, after_paragraph)
+        # Indented to an open item's content column, a heading belongs to that
+        # item and is not a release boundary.
+        if lists.columns and _indent_width(visible) >= lists.columns[0]:
+            match = None
+        # The line at its own nesting level: past the container's indentation
+        # and past a marker on the same line, so `- ## 2.0` reads as a heading.
+        content = _strip_indent(visible, lists.columns[-1] if lists.columns else 0)
+        if (item := _LIST_ITEM.match(content)) is not None:
+            content = content[item.end() :]
         # Only ordinary text continues a paragraph. A heading, a block or an
         # indented code line (four spaces, outside a paragraph) ends one.
         indented_code = not after_paragraph and line[:4] == "    "
+        # `===` with no paragraph above it is ordinary text, not an underline.
+        # A row of dashes there is a thematic break either way.
+        underline = _SETEXT_UNDERLINE.match(visible) is not None and (
+            after_paragraph or visible.strip()[:1] == "-"
+        )
         after_paragraph = (
             bool(visible.strip())
             and match is None
+            and _HEADING_PATTERN.match(content) is None
             and not indented_code
             and _NOT_PARAGRAPH.match(visible) is None
-            and _SETEXT_UNDERLINE.match(visible) is None
+            and not underline
         )
         previous_visible = (
             visible.strip()
@@ -575,6 +621,76 @@ def _strip_comments(line: str, in_comment: bool) -> tuple[str, bool]:
             break
         index = close + len(_COMMENT_CLOSE)
     return "".join(visible), False
+
+
+def _indent_width(line: str) -> int:
+    """Columns of leading whitespace, counting a tab to the next stop of four."""
+    width = 0
+    for char in line:
+        if char == " ":
+            width += 1
+        elif char == "\t":
+            width += 4 - width % 4
+        else:
+            break
+    return width
+
+
+def _strip_indent(line: str, columns: int) -> str:
+    """`line` with up to `columns` columns of leading whitespace removed."""
+    width = 0
+    index = 0
+    while index < len(line) and width < columns and line[index] in " \t":
+        width += 1 if line[index] == " " else 4 - width % 4
+        index += 1
+    return line[index:]
+
+
+def _may_be_lazy(line: str) -> bool:
+    """Whether `line` can continue a paragraph it is indented out of.
+
+    Only plain text can: a heading, a fence, a break or an underline starts a
+    block of its own, which closes the item instead."""
+    return (
+        _PARAGRAPH_TEXT.match(line) is not None
+        and _NOT_PARAGRAPH.match(line) is None
+        and _SETEXT_UNDERLINE.match(line) is None
+        and _FENCE_PATTERN.match(line) is None
+    )
+
+
+def _open_lists(line: str, state: _ListState, after_paragraph: bool) -> _ListState:
+    """The list items still open after `line`.
+
+    A dedented line closes an item, unless it is a lazy paragraph continuation.
+    A new marker nests under a deeper column and replaces a sibling.
+    """
+    columns = state.columns
+    if not line.strip():
+        # A blank line leaves the list open, unless the item is still empty:
+        # an item may begin with one blank line, and content after that is
+        # outside it.
+        return _ListState(columns[:-1] if state.empty_item else columns)
+    indent = _indent_width(line)
+    if not (after_paragraph and _may_be_lazy(line)):
+        while columns and indent < columns[-1]:
+            columns = columns[:-1]
+    if _THEMATIC_BREAK.match(line) or (item := _LIST_ITEM.match(line)) is None:
+        return _ListState(columns)
+    marker = item.group("marker")
+    empty = not line[item.end() :].strip()
+    ordered = marker[-1] in ".)"
+    if after_paragraph and (empty or (ordered and marker[:-1] != "1")):
+        # An item interrupts a paragraph only when it has content, and an
+        # ordered one only when it starts at 1.
+        return _ListState(columns)
+    padding = _indent_width(item.group("space"))
+    if padding == 0 or padding > _MAX_ITEM_PADDING:
+        # An empty or over-indented item still holds one column of content.
+        padding = 1
+    while columns and columns[-1] > indent:
+        columns = columns[:-1]
+    return _ListState((*columns, indent + len(marker) + padding), empty_item = empty)
 
 
 def _opens_html_block(line: str, after_paragraph: bool) -> bool:

@@ -354,7 +354,7 @@ def test_hook_never_returns_another_versions_notes():
 def test_headings_and_fences_allow_commonmark_indentation(changelog_module, indent):
     """Markdown renders up to three leading spaces, so the parser must agree
     or an indented release is unreachable and its notes join the one above."""
-    text = f"## 1.0\n\n- one\n\n{indent}## 2.0\n\n- two\n"
+    text = f"## 1.0\n\nOne.\n\n{indent}## 2.0\n\nTwo.\n"
     assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0", "2.0"]
     fenced = f"## 1.0\n\n{indent}```\n{indent}## 9.9.9\n{indent}```\n\n- real\n"
     assert [e.version for e in changelog_module.parse_changelog(fenced)] == ["1.0"]
@@ -1095,3 +1095,42 @@ def test_one_slow_read_cannot_outlast_the_fetch_budget(changelog_module):
     source = (BACKEND / "utils/changelog.py").read_text(encoding = "utf-8")
     assert "_limit_read(response, remaining)" in source
     assert "sock.settimeout(max(remaining, _CHANGELOG_MIN_READ_SECONDS))" in source
+
+
+def test_a_heading_indented_into_a_list_item_is_not_a_release(changelog_module):
+    """CommonMark keeps a heading at the item's content column inside the item.
+    Treating it as a boundary truncated the real release and indexed a version
+    that does not exist. Checked against markdown-it (commonmark preset)."""
+    text = "## 1.0\n\n- Example:\n  ## 9.9.9\n\n- after\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["1.0"]
+    body = changelog_module.find_release_notes(text, "1.0").body
+    assert "9.9.9" in body and "after" in body
+    # One space short of the content column, the list ends and it is a release.
+    left = "## 1.0\n\n- Example:\n ## 2.0\n"
+    assert [e.version for e in changelog_module.parse_changelog(left)] == ["1.0", "2.0"]
+
+
+def test_a_closed_list_stops_holding_headings(changelog_module):
+    """Only an open item nests a heading, so a dedented paragraph, heading,
+    break or fence hands the following indentation back to the document."""
+
+    def versions(text):
+        return [e.version for e in changelog_module.parse_changelog(text)]
+
+    assert versions("## 1.0\n\n- Example:\n\nText.\n\n  ## 2.0\n") == ["1.0", "2.0"]
+    assert versions("## 1.0\n\n- Example:\n## 2.0\n  ## 3.0\n") == ["1.0", "2.0", "3.0"]
+    assert versions("## 1.0\n\n- Example:\n  Text.\n---\n  ## 2.0\n") == ["1.0", "2.0"]
+    assert versions("## 1.0\n\n- Example:\n```\n```\n  ## 2.0\n") == ["1.0", "2.0"]
+    # An item may begin with one blank line; content after that is outside it.
+    assert versions("## 1.0\n\n-\n\n  ## 2.0\n") == ["1.0", "2.0"]
+
+
+def test_a_version_line_is_not_an_ordered_list_marker(changelog_module):
+    """`2.` needs whitespace after it to be a marker, or list tracking would
+    read every setext version as a list item and lose the heading."""
+    text = "2.0\n---\n\n- new\n\n1.0\n---\n\n- old\n"
+    assert [e.version for e in changelog_module.parse_changelog(text)] == ["2.0", "1.0"]
+    # An ordered item interrupts a paragraph only when it starts at 1.
+    assert [
+        e.version for e in changelog_module.parse_changelog("## 1.0\n\nText.\n9) one\n   ## 2.0\n")
+    ] == ["1.0", "2.0"]
