@@ -773,7 +773,12 @@ class _ReachedServerStart(Exception):
     """Marks a load getting past the pre-teardown preflight."""
 
 
-def _write_gguf_header(path: Path, architecture: str, *, diffusion: bool = False) -> str:
+def _write_gguf_header(
+    path: Path,
+    architecture: str,
+    *,
+    diffusion: bool = False,
+) -> str:
     """Smallest GGUF the header probe can classify: arch, plus the canvas marker."""
 
     def _kv_str(key: str, value: str) -> bytes:
