@@ -54,7 +54,9 @@ def apply(gfx: str = "gfx1100", device_count: int = 1) -> None:
         raise KeyError(f"Unknown gfx {gfx!r}; known: {', '.join(_PROFILES)}")
     name, cap, hip = _PROFILES[gfx]
 
-    _cuda_spoof().apply()  # is_available/device_count/streams/rng/amp/...
+    # is_available/device_count/streams/rng/amp/..., and the bitsandbytes
+    # pre-import that has to happen before torch looks like a GPU host.
+    _cuda_spoof().apply()
 
     # Overlay the AMD identity on top of the (NVIDIA-shaped) CUDA spoof.
     torch.version.hip = hip

@@ -15,12 +15,35 @@ import types
 from typing import Any
 
 
+def _preimport_bitsandbytes() -> None:
+    """Import the real bitsandbytes BEFORE the spoof flips torch.cuda.is_available().
+
+    bitsandbytes picks its backend at import time: `if torch.cuda.is_available():
+    from .backends.cuda import ops`, and that module binds
+    torch._C._cuda_getCurrentRawStream, which a CPU-only torch build does not
+    have. Under the spoof the probe answers True, so a later `import
+    bitsandbytes` (unsloth_zoo.temporary_patches.moe_utils, unsloth.models._utils)
+    takes the CUDA/ROCm branch and dies with AttributeError on a GPU-less runner.
+    Importing first pins the CPU backend; every later import reuses the cached
+    module. tests/conftest.py gets this ordering for free (it imports unsloth at
+    collection, before any fixture spoofs), subprocess children do not.
+    """
+    if "bitsandbytes" in sys.modules:
+        return
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        pass  # not installed, or a genuinely broken build: leave it to the caller
+
+
 def apply() -> None:
     """Apply the spoof. Idempotent: calling again has no effect."""
     import torch
 
     if getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
         return
+
+    _preimport_bitsandbytes()  # must run while the device probes are still honest
 
     # Device probes (cheap, value-returning)
     torch.cuda.is_available = lambda: True
