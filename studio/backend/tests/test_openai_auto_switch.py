@@ -3213,7 +3213,12 @@ def test_chat_count_tokens_honours_auto_heal_off(monkeypatch):
     backend.supports_tools = True
     captured = {}
 
-    def _count(messages, system, tools, strict = False):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+    ):
         captured["messages"] = messages
         return 12
 
@@ -3234,7 +3239,7 @@ def test_chat_count_tokens_honours_auto_heal_off(monkeypatch):
             ChatMessage(role = "user", content = "search for cats"),
             ChatMessage(
                 role = "assistant",
-                content = "<tool_call>{\"name\": \"web_search\"}</tool_call>Here you go.",
+                content = '<tool_call>{"name": "web_search"}</tool_call>Here you go.',
             ),
         ],
         enable_tools = True,
@@ -3255,7 +3260,12 @@ def test_chat_count_tokens_collapses_system_turns(monkeypatch):
     backend = _FakeBackend("org/A-GGUF")
     captured = {}
 
-    def _count(messages, system, tools, strict = False):
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+    ):
         captured["messages"] = messages
         return 13
 

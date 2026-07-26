@@ -12995,9 +12995,7 @@ async def chat_count_tokens(
             # next completion would have removed.
             # Auto-Heal off means the real prompt keeps that markup, so the count must too.
             _count_auto_heal = (
-                payload.auto_heal_tool_calls
-                if payload.auto_heal_tool_calls is not None
-                else True
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
             _count_history_gate = _display_tool_name_gate(tools_to_use)
             openai_messages = [dict(msg) for msg in openai_messages]
