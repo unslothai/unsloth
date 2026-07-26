@@ -378,7 +378,14 @@ def test_terminal_classifier(command, unsafe):
         ("timeout 5 rm -rf cache", True),
         # --- prompt: non-shell interpreter running inline code ---
         ('python -c "import shutil; shutil.rmtree(chr(46))"', True),
-        ("python3 -c 'pass'", True),
+        # A python payload is screened with the analyzer the python tool uses,
+        # so a harmless one-liner runs and a destructive one still asks.
+        ("python3 -c 'pass'", False),
+        ("python -c 'print(1 + 1)'", False),
+        ("python -c 'import torch; print(torch.__version__)'", False),
+        ("python -c 'import os; os.remove(chr(120))'", True),
+        # ...and a payload that does not parse fails closed.
+        ("python -c 'this is not valid python('", True),
         ("node -e \"require('fs')\"", True),
         ("node --eval x", True),
         ("ruby -e 'puts 1'", True),
@@ -386,8 +393,9 @@ def test_terminal_classifier(command, unsafe):
         ("php -r 'echo 1;'", True),
         # --- prompt: versioned interpreter binaries run inline code too ---
         ("python3.11 -c \"import os; os.remove('x')\"", True),
-        ("python3.12 -c 'pass'", True),
-        ("pypy3.10 -c 'pass'", True),
+        ("python3.12 -c 'pass'", False),
+        ("pypy3.10 -c 'pass'", False),
+        ("python3.12 -c \"import shutil; shutil.rmtree('x')\"", True),
         # --- prompt: Windows cmd.exe delete built-ins (the terminal runs cmd /c
         # there; these are not in the hard-block set) ---
         ("del /q important.csv", True),
@@ -460,7 +468,15 @@ def test_terminal_classifier(command, unsafe):
         ("docker run --rm -v /:/host alpine touch /host/pwned", True),
         ("podman run -v /:/h alpine sh", True),
         ("kubectl exec -it pod -- sh", True),
-        ("docker ps", True),  # gated wholesale: the escape lives in the args
+        # A container CLI reading its own state is inspection; starting or
+        # entering a container is not.
+        ("docker ps", False),
+        ("docker images", False),
+        ("docker logs web", False),
+        ("docker --version", False),
+        ("kubectl get pods", False),
+        ("docker rm -f web", True),
+        ("docker system prune -af", True),
         # --- prompt: a command hidden in an exec-valued flag ---
         ('tar --checkpoint=1 --checkpoint-action="exec=rm -rf /tmp/x" -cf out.tar .', True),
         ("tar czf out.tgz .", False),  # ordinary archiving runs
@@ -693,6 +709,17 @@ def test_terminal_classifier(command, unsafe):
         ("slogin user@host", True),
         ("curl -O http://x/f.tar.gz", False),
         ("wget http://x/f.tar.gz", False),
+        # --- an assignment with no command runs nothing; the shell exits ---
+        ("export PATH=/usr/local/bin:$PATH", False),
+        ("export FOO=bar", False),
+        ("PYTHONPATH=. pytest", False),
+        ("PYTHONPATH=src pytest", False),
+        ("PYTHONPATH=/tmp/evil python train.py", True),
+        ("PATH=. ls", True),
+        ("PATH=/tmp/evil:$PATH ls", True),
+        ("LD_PRELOAD=/tmp/x.so ls", True),
+        # --- a command far longer than any real one cannot be screened cheaply ---
+        ("echo " + "a" * 5000, True),
         ("chroot / /bin/sh", True),
         ("nsenter -t 1 -m sh", True),
         ("unshare -r sh", True),
@@ -743,7 +770,9 @@ def test_terminal_classifier(command, unsafe):
         # --- prompt: a high-risk command wrapped in a shell -c payload ---
         ("bash -c 'git clean -fd'", True),
         ("sh -c 'truncate -s 0 results.txt'", True),
-        ("bash -c \"python -c 'import os'\"", True),
+        ("bash -c \"python -c 'import shutil; shutil.rmtree(chr(47))'\"", True),
+        # a nested harmless payload is still harmless
+        ("bash -c \"python -c 'print(1)'\"", False),
         # --- prompt: combined shell -c flag clusters (bash -lc, -xc) and the
         # attached form still carry the -c payload ---
         ("bash -lc 'git clean -fd'", True),

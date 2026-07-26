@@ -206,17 +206,62 @@ _AUTO_UNSAFE_ENV_ASSIGN = frozenset(
 )
 
 
-def _env_assignment_is_unsafe(name: str) -> bool:
+# A search-path entry that can shadow a real binary or module: an absolute
+# path, a home path or a parent escape. A relative entry (`PYTHONPATH=.`,
+# `PYTHONPATH=src`) points inside the session workdir, which is the agent's own
+# directory, and is the common spelling in ordinary work.
+_PATH_ENTRY_ESCAPES_RE = re.compile(r"(?:^|:)\s*(?:/|~|\$|[A-Za-z]:[\\/]|\.\.)")
+
+
+def _env_assignment_is_unsafe(name: str, value: str = "") -> bool:
     """True if a NAME=value prefix affects command lookup/loading."""
-    return (
-        name in _AUTO_UNSAFE_ENV_ASSIGN
-        or name.startswith(("LD_", "DYLD_"))
-        or name.endswith("PATH")
-    )
+    if name in _AUTO_UNSAFE_ENV_ASSIGN or name.startswith(("LD_", "DYLD_")):
+        return True
+    if name == "PATH":
+        # PATH itself changes which BINARY a bare name resolves to, and a
+        # relative entry is the sharpest form of that (`PATH=. ls` runs ./ls),
+        # so every value counts here.
+        return True
+    # For the other search paths (PYTHONPATH, NODE_PATH, ...) a relative entry
+    # points inside the session workdir, which is the agent's own directory and
+    # the common spelling in ordinary work; an absolute or escaping entry can
+    # shadow a real module.
+    return name.endswith("PATH") and bool(_PATH_ENTRY_ESCAPES_RE.search(value))
 
 
 # Windows `if exist FILE cmd` / `if defined VAR cmd` put an operand between
 # the keyword and the command, so the command word is two tokens along.
+# Container CLIs start or reach into a container (docker run -v /:/host), but
+# their read subcommands are ordinary inspection and must not interrupt.
+# An unrecognised subcommand still asks, so the list can only be too small.
+# The container CLIs themselves, so the read carve-out applies only to them.
+_CONTAINER_CLIS = frozenset({"docker", "podman", "nerdctl", "ctr", "crictl", "lxc", "kubectl"})
+_CONTAINER_READ_SUBCOMMANDS = frozenset(
+    {
+        "ps",
+        "images",
+        "logs",
+        "inspect",
+        "version",
+        "info",
+        "stats",
+        "top",
+        "port",
+        "diff",
+        "history",
+        "search",
+        "events",
+        "ls",
+        "list",
+        "get",
+        "describe",
+        "df",
+        "help",
+        "explain",
+        "api-resources",
+        "api-versions",
+    }
+)
 _WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
@@ -1415,9 +1460,20 @@ _BRACE_ANY_RE = re.compile(r"\{[^{}]*,[^{}]*\}|\{[^{}]+\.\.[^{}]+(?:\.\.-?\d+)?\
 _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 
 
+# The credential-path pattern is superlinear in the length of the text it is
+# given, and a real path is short. Text far past any real path cannot be screened
+# cheaply, so it fails closed: the caller asks rather than spending unbounded
+# time deciding. Ordinary commands and arguments are orders of magnitude below
+# these bounds.
+_MAX_PATH_SCAN_CHARS = 2048
+_MAX_TERMINAL_SCAN_CHARS = 4096
+
+
 def _references_sensitive_path(text: str) -> bool:
     """True if a command or string literal reads a credential path or escapes
     the sandbox workdir via parent traversal."""
+    if len(text) > _MAX_PATH_SCAN_CHARS:
+        return True
     norm = _REDUNDANT_SLASH_RE.sub("", text)
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
     return bool(
@@ -3733,6 +3789,31 @@ def _command_is_network_exec_or_exfil(command: str) -> bool:
 _GIT_CLEAN_DRY_RUN_FLAGS = frozenset({"-n", "--dry-run"})
 
 
+def _container_subcommand_is_read_only(tokens: list, start: int) -> bool:
+    """Whether a container CLI's first positional is a read subcommand. A bare
+    `docker` or `docker --version` prints help and runs nothing."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t.startswith("-"):
+            continue
+        return t.lower() in _CONTAINER_READ_SUBCOMMANDS
+    return True
+
+
+def _segment_has_command_after(tokens: list, start: int) -> bool:
+    """Whether a command word follows an assignment in the same segment. A bare
+    `export PATH=...` or `FOO=bar` runs nothing: every terminal call gets its own
+    shell process, so an assignment with no command dies with it."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            return False
+        if _ASSIGNMENT_RE.match(t) or t.startswith("-"):
+            continue
+        return True
+    return False
+
+
 def _segment_has_flag(
     tokens: list,
     start: int,
@@ -3766,12 +3847,29 @@ def _segment_is_recursive(tokens: list, start: int) -> bool:
     return False
 
 
+def _inline_python_is_high_risk(code: str) -> bool:
+    """Screen a `python -c` payload with the same analyzer the python tool uses,
+    so an ordinary one-liner runs and a destructive one still asks. Source that
+    does not parse fails closed: shell quoting may have mangled it, leaving
+    nothing to screen."""
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return True
+    return _python_is_high_risk(code)
+
+
 def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
     """High-risk terminal command for auto mode: credential/secret access,
     privilege escalation, destructive/persistence changes, or network
     exec/exfil. Ordinary dev commands run without a prompt. Fails closed
     (prompts) on an unparseable command. ``_depth`` bounds the recursion into
     shell ``-c`` payloads."""
+    if len(command) > _MAX_TERMINAL_SCAN_CHARS:
+        # Far longer than any ordinary command. Screening it is superlinear, so
+        # it asks instead, which is what the previous classifier did with
+        # anything it could not place in its read-only set.
+        return True
     if not command or not command.strip():
         return False
     # A credential/secret path read or write, or a sandbox escape (../), asks.
@@ -3871,6 +3969,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         git_checkout_positionals = 0  # positionals seen after `git checkout`
         git_worktree_action = ""  # the action after `git worktree`
         win_operand_pending = False  # operand of a Windows `if exist`/`if defined`
+        inline_python_pending = False  # next token is a `python -c` payload
         git_config_alias_pending = False  # `git config alias.x` precedes its body
         git_glob_pending = False  # a git global option (-C repo) precedes its value
         chdir_pending = False  # a cd/pushd precedes its target directory
@@ -3890,9 +3989,15 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 git_subcommand = ""
                 git_worktree_action = ""
                 win_operand_pending = False
+                inline_python_pending = False
                 shell_c_pending = False
                 git_glob_pending = False
                 chdir_pending = False
+                continue
+            if inline_python_pending:
+                inline_python_pending = False
+                if _depth >= 3 or _inline_python_is_high_risk(token):
+                    return True
                 continue
             if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
                 # `if exist FILE del FILE`: the operand sits where the command
@@ -3940,9 +4045,25 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     if _is_inline_code_interpreter(current_command)
                     else None
                 )
+                _current_is_python_family = current_command.startswith(("python", "pypy"))
                 if _inline_spec is not None and (
                     flag in _inline_spec[0] or _short_flag_arg(token, _inline_spec[1]) is not None
                 ):
+                    # Python payloads can be screened with the same analyzer the
+                    # python tool uses, so `python -c 'import torch; print(...)'`
+                    # runs while a destructive one-liner still asks. The other
+                    # runtimes have no analyzer here, so they stay gated.
+                    if _current_is_python_family:
+                        # A bare `-c` yields an EMPTY attached value, not None,
+                        # so the payload is the next token; only a non-empty
+                        # value is the attached form (python -c'print(1)').
+                        _attached = _short_flag_arg(token, _inline_spec[1])
+                        if _attached:
+                            if _depth >= 3 or _inline_python_is_high_risk(_attached):
+                                return True
+                            continue
+                        inline_python_pending = True
+                        continue
                     return True
                 # node/bun -p / --print evaluate and print arbitrary source, the
                 # same inline-code risk as -e/--eval (attached node -p'...' too).
@@ -4066,8 +4187,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 if current_command == "alias" and _assign_value:
                     if _depth >= 3 or _terminal_is_high_risk(_assign_value, _depth + 1):
                         return True
-                # PATH/LD_PRELOAD-style assignments hijack command lookup/loading.
-                if _env_assignment_is_unsafe(_assign_name):
+                # PATH/LD_PRELOAD-style assignments hijack command lookup/loading,
+                # but only for the command they prefix: a bare `export PATH=...`
+                # runs nothing, and the shell it set it in exits immediately.
+                if _env_assignment_is_unsafe(
+                    _assign_name, _assign_value
+                ) and _segment_has_command_after(tokens, _tok_idx):
                     return True
                 continue
             raw = token.strip(";&|()`{}")
@@ -4138,7 +4263,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 continue
             if expect_command or prefix_pending or scan_forward:
                 if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
-                    return True
+                    # A container CLI reading its own state (docker ps, docker
+                    # logs) inspects; anything else starts or enters a container.
+                    if not (
+                        base in _CONTAINER_CLIS
+                        and _container_subcommand_is_read_only(tokens, _tok_idx)
+                    ):
+                        return True
                 # Bash expands a command-position glob after this scan, so the
                 # name here is not the one that runs (`/bin/r[m] -rf x`). It
                 # cannot be screened, so it asks.
