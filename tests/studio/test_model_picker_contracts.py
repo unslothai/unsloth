@@ -710,9 +710,7 @@ def test_autoload_deduplicates_cached_and_local_candidates():
     assert "const seenLoadTargets = new Set<string>()" in auto_load
     # Keys carry the model kind: a folder emitting both GGUF and safetensors
     # rows shares a path while holding two different models.
-    assert (
-        "seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(value)}`)" in auto_load
-    )
+    assert "seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(value)}`)" in auto_load
     assert 'markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
     assert 'markSeen("model", repo.load_id || repo.repo_id, repo.cache_path)' in auto_load
     assert "isSeen(localCandidate.kind, row.load_id, row.id, row.path)" in auto_load
