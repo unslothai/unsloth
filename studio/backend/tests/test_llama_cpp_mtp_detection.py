@@ -2197,7 +2197,10 @@ def test_mtp_reserve_sees_underscore_spec_type(extra_args):
     assert _extra_args_requests_mtp(extra_args, {}) is True
     # A CLI flag beats the env in llama.cpp, so a stale MTP env must not survive
     # an underscore-spelled override that turns MTP off.
-    assert _extra_args_requests_mtp(["--spec_type", "ngram"], {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is False
+    assert (
+        _extra_args_requests_mtp(["--spec_type", "ngram"], {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
+        is False
+    )
 
 
 def test_draft_sizing_parsers_see_underscore_aliases():

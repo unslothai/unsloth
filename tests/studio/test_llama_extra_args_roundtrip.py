@@ -32,9 +32,7 @@ def _source_path(relative_path: str) -> Path:
     return WORKDIR / "unsloth_repo" / relative_path
 
 
-MODULE = _source_path(
-    "studio/frontend/src/features/model-picker/model-config/llama-extra-args.ts"
-)
+MODULE = _source_path("studio/frontend/src/features/model-picker/model-config/llama-extra-args.ts")
 TEMP = WORKDIR / "temp" / "llama_extra_args_roundtrip"
 
 
@@ -62,8 +60,7 @@ def _run(body: str):
         "  formatLlamaExtraArgs,\n"
         "  normalizeLlamaExtraArgs,\n"
         "  llamaExtraArgsForLoad,\n"
-        f'}} from "{module_path}";\n'
-        + textwrap.dedent(body)
+        f'}} from "{module_path}";\n' + textwrap.dedent(body)
     )
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--no-warnings", "run.mts"],
