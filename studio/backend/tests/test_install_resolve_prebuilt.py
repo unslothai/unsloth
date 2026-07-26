@@ -848,8 +848,7 @@ def test_route_to_vulkan_prebuilt_keeps_hip_when_one_gpu_is_supported():
 
 
 def test_route_to_vulkan_prebuilt_auto_fallback_uses_active_gfx_only():
-    # HIP_VISIBLE_DEVICES can hide a supported dGPU; fallback must follow the
-    # active arch (_pick_rocm_gfx_target), not every physical GPU in hipinfo.
+    # HIP_VISIBLE_DEVICES can hide a supported dGPU, so follow the active arch.
     host = _windows_amd_host(
         rocm_gfx_target = "gfx803",
         rocm_gfx_targets = ["gfx1201", "gfx803"],
@@ -889,8 +888,7 @@ def test_route_to_vulkan_prebuilt_gfx1103_keeps_rocm():
 
 
 def test_route_to_vulkan_prebuilt_gfx1034_keeps_rocm():
-    # gfx1034 (RX 6500/6400-class) is covered by the fork windows-rocm gfx103X
-    # bundle, so it must stay on the ROCm path rather than fall back to Vulkan.
+    # gfx1034 (RX 6500/6400-class) is covered by the fork's gfx103X bundle.
     host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert routed is host
@@ -934,9 +932,8 @@ def test_llama_backend_env_requests_vulkan(monkeypatch):
 
 
 def test_llama_cpp_backend_env_does_not_trigger_vulkan(monkeypatch):
-    # UNSLOTH_LLAMA_CPP_BACKEND is a separate setup variable (auto/cpu); setup
-    # warns and ignores any other value, so the installer must not read a
-    # "vulkan" out of it or the opt-in would fire behind that warning.
+    # UNSLOTH_LLAMA_CPP_BACKEND is a separate setup variable (auto/cpu) whose other values
+    # setup warns about and ignores, so reading it here would opt in behind that warning.
     monkeypatch.delenv("UNSLOTH_LLAMA_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
@@ -945,9 +942,8 @@ def test_llama_cpp_backend_env_does_not_trigger_vulkan(monkeypatch):
 
 
 def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
-    # A CUDA-masked NVIDIA card (has_physical_nvidia True, has_usable_nvidia
-    # False) alongside a legacy AMD gfx must NOT auto-route to Vulkan: Vulkan
-    # ignores CUDA_VISIBLE_DEVICES and could grab the reserved NVIDIA GPU.
+    # Vulkan ignores CUDA_VISIBLE_DEVICES, so a CUDA-masked NVIDIA card next to a legacy
+    # AMD gfx must not auto-route: Vulkan could grab the reserved NVIDIA GPU.
     host = _windows_amd_host(
         rocm_gfx_target = "gfx803",
         rocm_gfx_targets = ["gfx803"],
@@ -961,8 +957,7 @@ def test_route_to_vulkan_prebuilt_hidden_physical_nvidia_amd_not_rerouted():
 
 
 def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkeypatch):
-    # The physical-NVIDIA guard only gates the AMD AUTO path; an explicit opt-in
-    # still forces Vulkan (the user asked for it).
+    # The physical-NVIDIA guard only gates the AMD auto path; an explicit opt-in wins.
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "vulkan")
     host = _windows_amd_host(
         rocm_gfx_target = "gfx803",
@@ -975,9 +970,8 @@ def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkey
     assert persist == "vulkan"
 
 
-# The gfx archs the fork's llama-prebuilt-manifest.json maps to a windows-rocm
-# bundle (gfx103X / gfx110X / gfx1150 / gfx1151 / gfx120X / gfx908 / gfx90a).
-# Auto-Vulkan must never steal a host one of these already covers.
+# The gfx archs the fork's llama-prebuilt-manifest.json maps to a windows-rocm bundle
+# (gfx103X / gfx110X / gfx1150 / gfx1151 / gfx120X / gfx908 / gfx90a).
 _FORK_WINDOWS_ROCM_GFX = (
     "gfx908",
     "gfx90a",
@@ -997,9 +991,8 @@ _FORK_WINDOWS_ROCM_GFX = (
 
 
 def test_windows_hip_gfx_floor_covers_every_fork_windows_rocm_bundle():
-    # A gfx missing here routes to Vulkan and bypasses the fork manifest entirely,
-    # silently downgrading a hash-approved windows-rocm bundle to an unhashed
-    # upstream Vulkan build. Keep this in sync with the published manifest.
+    # A gfx missing here bypasses the fork manifest, downgrading a hash-approved
+    # windows-rocm bundle to an unhashed upstream Vulkan build. Keep both in sync.
     missing = [
         gfx for gfx in _FORK_WINDOWS_ROCM_GFX if gfx not in ilp.WINDOWS_HIP_PREBUILT_GFX_TARGETS
     ]
@@ -1019,8 +1012,7 @@ def test_route_to_vulkan_prebuilt_keeps_every_fork_windows_rocm_arch(gfx, monkey
 
 
 def test_llama_backend_hip_opts_out_of_auto_vulkan(monkeypatch):
-    # UNSLOTH_LLAMA_BACKEND names a backend, so hip must keep the HIP/fork path
-    # even on an arch the auto-fallback would otherwise route to Vulkan.
+    # hip names a backend, so it keeps the fork path even on an auto-fallback arch.
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "hip")
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
@@ -1031,8 +1023,7 @@ def test_llama_backend_hip_opts_out_of_auto_vulkan(monkeypatch):
 
 
 def test_explicit_backend_beats_legacy_force_vulkan(monkeypatch):
-    # The specific variable wins: a stale UNSLOTH_FORCE_VULKAN must not overrule
-    # an explicit UNSLOTH_LLAMA_BACKEND=hip (rocm is the same backend).
+    # A stale UNSLOTH_FORCE_VULKAN must not overrule UNSLOTH_LLAMA_BACKEND=rocm (== hip).
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "rocm")
     assert ilp.resolved_llama_backend() == "hip"
@@ -1044,8 +1035,7 @@ def test_explicit_backend_beats_legacy_force_vulkan(monkeypatch):
 
 
 def test_unknown_llama_backend_value_falls_through_to_legacy_flag(monkeypatch):
-    # An unrecognised value is ignored (not an error), so the legacy flag and the
-    # auto-fallback both keep working exactly as they did without it.
+    # An unrecognised value is ignored, not an error, so the legacy flag still works.
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND", "banana")
     assert ilp.resolved_llama_backend() is None
     assert ilp.force_vulkan_requested() is False
@@ -1096,10 +1086,9 @@ def _windows_arm64_host(**overrides):
     ],
 )
 def test_vulkan_opt_in_ignored_on_windows_arm64(monkeypatch, env, flag):
-    # ggml-org release.yml builds win-vulkan for x64 only (arm64 gets
-    # win-cpu-arm64 + win-opencl-adreno-arm64), so rewriting the host to
-    # Vulkan-only would just swap the published arm64 bundle for the upstream
-    # CPU one and still never produce Vulkan. Keep the published bundle.
+    # ggml-org release.yml builds win-vulkan for x64 only (arm64 gets win-cpu-arm64 +
+    # win-opencl-adreno-arm64), so rewriting the host would only swap the published
+    # arm64 bundle for the upstream CPU one. Keep the published bundle.
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     host = _windows_arm64_host()
@@ -1138,9 +1127,8 @@ def test_persisted_llama_backend_keeps_vulkan_for_a_vulkan_bundle(kind):
 
 @pytest.mark.parametrize("kind", ["windows-arm64", "windows-cpu", "linux-cpu", "windows-rocm"])
 def test_persisted_llama_backend_drops_vulkan_for_a_non_vulkan_bundle(kind):
-    # A Vulkan request that fell through to a CPU attempt must not leave a marker
-    # claiming Vulkan: _plan_llama_phase re-asserts the marker's backend on every
-    # later update, pinning the host to a backend it never installed.
+    # _plan_llama_phase re-asserts the marker's backend on every later update, so a
+    # Vulkan request that fell through to CPU must not leave a marker claiming Vulkan.
     assert ilp.persisted_llama_backend("vulkan", _choice(kind)) is None
 
 
@@ -1149,9 +1137,8 @@ def test_persisted_llama_backend_passes_none_through():
 
 
 def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
-    # End to end over write_prebuilt_metadata: the CPU attempt that actually won
-    # must be described honestly, so the next update re-detects instead of
-    # re-asserting Vulkan forever.
+    # End to end over write_prebuilt_metadata: describe the CPU attempt that actually
+    # won, so the next update re-detects instead of re-asserting Vulkan forever.
     checksums = ilp.ApprovedReleaseChecksums(
         repo = UPSTREAM,
         release_tag = "b9925",
