@@ -3049,6 +3049,12 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
     r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
     r"sendBeacon|serviceWorker)[\"']\s*\]|"
+    # The same for the navigation sinks: location['assign'](...),
+    # location["href"] = URL. Anchored to location (dotted or bracketed) so an
+    # ordinary str['replace'](...) or obj['href'] read stays static.
+    r"(?:\blocation|\[\s*[\"']location[\"']\s*\])\s*\[\s*[\"'](?:assign|replace)[\"']\s*\]\s*\(|"
+    r"(?:\blocation|\[\s*[\"']location[\"']\s*\])\s*\[\s*[\"']href[\"']\s*\]"
+    r"\s*=\s*[\"'`]?\s*(?:https?:|/)|"
     # Computed bracket key spliced at runtime on a global host object
     # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
     # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.

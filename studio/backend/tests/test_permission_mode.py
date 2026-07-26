@@ -1782,6 +1782,18 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>window.location='https://x'</script>") is True
     assert rh("<script>location.reload()</script>") is False  # reload is not navigation
     assert rh("<script>history.back()</script>") is False
+    # The same sinks reached by bracket access, including a fully bracketed host.
+    assert rh("<script>location['assign']('https://x')</script>") is True
+    assert rh("<script>location[\"replace\"]('https://x')</script>") is True
+    assert rh("<script>location['href']='https://x'</script>") is True
+    assert rh("<script>window.location['href']='https://x'</script>") is True
+    assert rh("<script>document.location['assign']('https://x')</script>") is True
+    assert rh("<script>window['location']['href']='https://x'</script>") is True
+    # ...but the names are anchored to location, so ordinary bracket keys stay
+    # static, and reading href navigates nowhere.
+    assert rh("<script>const s='abc';s['replace']('a','b')</script>") is False
+    assert rh("<script>const o={href:1};console.log(o['href'])</script>") is False
+    assert rh("<script>const x=location['href'];console.log(x)</script>") is False
     # Obfuscated egress: a block comment splitting fetch(, or bracket access.
     assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
