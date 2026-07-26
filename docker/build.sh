@@ -44,8 +44,10 @@ echo "  llama.cpp      ${LLAMA_PREBUILT_TAG}"
 # Read the arch list back out of the Dockerfile rather than repeating it: the
 # hand-copied banner had already drifted, dropping 7.5 and so under-reporting
 # Turing support to anyone reading this output.
+# Bare filename: the script cd'd to its own directory above, so $0's dirname
+# would be applied a second time and break every relative invocation.
 ARCH_LIST="$(sed -n 's/^[[:space:]]*TORCH_CUDA_ARCH_LIST="\([^"]*\)".*/\1/p' \
-             "$(dirname "$0")/Dockerfile" | head -n1)"
+             Dockerfile | head -n1)"
 echo "  arch list      ${ARCH_LIST:-unknown}"
 echo
 
