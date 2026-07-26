@@ -98,6 +98,24 @@ function stripHtmlTags(text: string): string {
   return out;
 }
 
+export interface ReleaseNotesPreviewItem {
+  // Leading sentence, highlighted in the preview.
+  lead: string;
+  // Rest of the bullet, de-emphasised. Empty for single-sentence bullets.
+  rest: string;
+}
+
+export interface ReleaseNotesPreview {
+  items: ReleaseNotesPreviewItem[];
+  // Bullets past the preview limit, for a "+N more" affordance.
+  remaining: number;
+}
+
+interface Bullet {
+  text: string;
+  indent: number;
+}
+
 /** Inline markdown stripped to plain text. */
 function toPlainText(markdown: string): string {
   // Park code spans first: their contents are literal, so tags, links and
