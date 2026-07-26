@@ -98,6 +98,10 @@ import {
   unloadDiffusionModel,
 } from "./api";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
+import {
+  TrainBaseSelector,
+  type TrainFamilyOption,
+} from "./train/train-base-selector";
 
 // Curated models come from the shared catalog: one canonical group per model, its artifacts
 // (GGUF / FP8 / bnb-4bit / BF16) as data, and the load kind per artifact via loadSpecFor
@@ -1050,6 +1054,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Page mode: "create" is the generation workspace; "train" is the full-page LoRA
   // training workspace. Independent of the loaded generation model.
   const [pageMode, setPageMode] = useState<"create" | "train">("create");
+  // Train's family + base live here so the top bar can pick them: on Train it replaces the
+  // generation model selector, which only ever offers GGUFs and none of those can be trained.
+  const [trainFamilies, setTrainFamilies] = useState<TrainFamilyOption[]>([]);
+  const [trainFamilyName, setTrainFamilyName] = useState("flux.1");
+  const [trainBaseChoice, setTrainBaseChoice] = useState("");
   // Bumped when a training run completes, to force the LoRA discovery effect to rescan so
   // a freshly-trained adapter appears in the picker without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
@@ -1800,7 +1809,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        if (!filename.toLowerCase().endsWith(".gguf")) return;
+        if (!filename.toLowerCase().endsWith(".gguf")) {
+          // A repo pick that reached here has no filename to load, and the backend
+          // can't map a quant label back to one. Say so instead of doing nothing.
+          toast.error("Pick a quantization for this model to load it");
+          return;
+        }
         // A direct pick carries no curated variant label; surface the filename so
         // the selector stops advertising the previously loaded quant. Optimistic,
         // reverted if the load fails to start OR fails later in the poll (mirrors the
@@ -2294,19 +2308,33 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           not here. ── */}
       <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-2 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
-          <ModelSelector
-            models={MODELS}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
-            activeGgufVariant={quant}
-            onValueChange={handleModelSelect}
-            onEject={status?.loaded ? handleUnload : undefined}
-            variant="ghost"
-            className="!h-[34px]"
-            task={IMAGE_GEN_TASKS}
-            catalog={IMAGE_CATALOG}
-            open={active && selectorOpen}
-            onOpenChange={(o) => setSelectorOpen(active && o)}
-          />
+          {pageMode === "train" ? (
+            <TrainBaseSelector
+              families={trainFamilies}
+              familyName={trainFamilyName}
+              base={trainBaseChoice}
+              onSelect={(family, repo) => {
+                // Set both together: the panel's reseed effect keeps a base that is
+                // valid for the new family, so the pick survives the family switch.
+                setTrainFamilyName(family);
+                setTrainBaseChoice(repo);
+              }}
+            />
+          ) : (
+            <ModelSelector
+              models={MODELS}
+              value={status?.loaded ? status.repo_id ?? undefined : undefined}
+              activeGgufVariant={quant}
+              onValueChange={handleModelSelect}
+              onEject={status?.loaded ? handleUnload : undefined}
+              variant="ghost"
+              className="!h-[34px]"
+              task={IMAGE_GEN_TASKS}
+              catalog={IMAGE_CATALOG}
+              open={active && selectorOpen}
+              onOpenChange={(o) => setSelectorOpen(active && o)}
+            />
+          )}
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the
             selector's width (the selector stays leftmost: its position is shared with
@@ -2380,6 +2408,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           }
           onTrainingComplete={() => setLoraRefreshKey((k) => k + 1)}
           onDeploy={handleDeployAdapter}
+          familyName={trainFamilyName}
+          onFamilyNameChange={setTrainFamilyName}
+          baseChoice={trainBaseChoice}
+          onBaseChoiceChange={setTrainBaseChoice}
+          onFamiliesChange={setTrainFamilies}
         />
       ) : (
       /* ── Controls rail + preview canvas. No cards: both sit on the page background,

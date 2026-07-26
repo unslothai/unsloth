@@ -578,3 +578,29 @@ def test_legacy_migration_is_idempotent_and_non_destructive():
     # Layer 3: non-overwriting merge skips an existing (or default) key, so even a
     # forced re-run cannot duplicate or clobber a user's config.
     assert "if (isDefaultConfig(migrated) || Object.hasOwn(map, key)) {" in src
+
+
+def test_variant_expander_forwards_the_gguf_filename():
+    """A quant pick must carry the exact .gguf filename. The diffusion pages load
+    by filename and cannot map a quant label back to one, so without it every hub
+    GGUF pick on Images/Video fell through to a silent return and nothing loaded."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    handler = re.search(
+        r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S
+    )
+    assert handler, "handleVariantClick not found"
+    assert "ggufFilename: filename," in handler.group(0)
+    # The call site has to actually pass it through.
+    assert "handleVariantClick(v.quant, v.downloaded, expectedBytes, v.filename)" in src
+
+
+def test_diffusion_pages_never_drop_a_gguf_pick_silently():
+    """The fallback branch splits a local path; a repo pick reaching it has no
+    filename. It must say so instead of returning with no request and no toast."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        branch = re.search(
+            r'if \(!filename\.toLowerCase\(\)\.endsWith\("\.gguf"\)\) \{.*?\}', src, re.S
+        )
+        assert branch, f"{rel}: gguf extension guard not found"
+        assert "toast.error(" in branch.group(0), f"{rel}: guard returns silently"

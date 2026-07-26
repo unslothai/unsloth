@@ -1140,7 +1140,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        if (!filename.toLowerCase().endsWith(".gguf")) return;
+        if (!filename.toLowerCase().endsWith(".gguf")) {
+          // No filename to load, and a quant label can't be mapped back to one.
+          toast.error("Pick a quantization for this model to load it");
+          return;
+        }
         const prevQuant = quant;
         quantRevert.current = { prev: prevQuant };
         setQuant(filename);
