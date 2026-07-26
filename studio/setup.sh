@@ -1224,6 +1224,7 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+_LLAMA_CPP_NO_SPACE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -1451,6 +1452,13 @@ else
         fi
         substep "close Unsloth or other llama.cpp users and retry"
         exit 3
+    elif [ "$_PREBUILT_STATUS" -eq 4 ]; then
+        step "llama.cpp" "not enough disk space to install llama.cpp" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
+        _LLAMA_CPP_NO_SPACE=true
+        _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
     else
         step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
@@ -1946,7 +1954,14 @@ else
                     --validate-install "$_BUILD_TMP"
                 )
                 [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
-                if ! run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}"; then
+                _SMOKE_RC=0
+                run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
+                # Exit 4 is a full disk, not a bad build: the CPU rebuild needs even
+                # more space, so keep what we already have.
+                if [ "$_SMOKE_RC" -eq 4 ]; then
+                    substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
+                    _LLAMA_CPP_NO_SPACE=true
+                elif [ "$_SMOKE_RC" -ne 0 ]; then
                     substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
                     _TRY_METAL_CPU_FALLBACK=false
                     rm -rf "$_BUILD_TMP/build"
@@ -2003,8 +2018,10 @@ fi  # end _SKIP_GGUF_BUILD check
 # An arm64 Linux GPU host source-builds for the GPU above. If that produced no
 # binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
 # instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
-# attributes so the CPU bundle is selected rather than re-attempting CUDA.
+# attributes so the CPU bundle is selected rather than re-attempting CUDA. Skipped
+# on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
