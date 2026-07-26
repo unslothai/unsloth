@@ -4288,7 +4288,12 @@ def _raise_if_sidecar_swap_in_progress() -> None:
         )
 
 
-def _raise_or_cancel_active_generations(*, force: bool, action: str) -> int:
+def _raise_or_cancel_active_generations(
+    *,
+    force: bool,
+    action: str,
+    cancel: bool = True,
+) -> int:
     """Gate a model swap on the chats currently generating.
 
     Every open conversation decodes on the single llama-server this route is
@@ -4296,6 +4301,12 @@ def _raise_or_cancel_active_generations(*, force: bool, action: str) -> int:
     instead stops them through the same events an explicit Stop uses. Returns
     how many were cancelled. The frontend guard is bypassable from a second tab
     or curl; this one is not.
+
+    ``cancel = False`` runs the refusal half only. /load calls it that way once
+    up front, so a non-forced swap still fails fast, and again with cancel just
+    before teardown: cancelling is destructive and unrecoverable, so it must not
+    run ahead of preflight checks that can still reject the load (see
+    _load_model_impl).
     """
     if not active_generations.count():
         return 0
@@ -4316,6 +4327,10 @@ def _raise_or_cancel_active_generations(*, force: bool, action: str) -> int:
                 "thread_ids": thread_ids,
             },
         )
+    if not cancel:
+        # Refusal-only pass for a forced swap: the caller cancels later, once no
+        # remaining check can still reject the load.
+        return 0
     cancelled = active_generations.cancel_all()
     if cancelled:
         logger.info(
@@ -4331,9 +4346,9 @@ async def get_active_generations(
 ):
     """Conversations currently generating, plus how many can decode at once.
 
-    Restores the sidebar's background-run spinners after a page reload and lets
-    the model picker name the chats an Apply would interrupt. parallel_slots is
-    the slot count actually in use, which the VRAM fit may have cut below the
+    Lets a model swap name the chats it would interrupt, including runs this tab
+    cannot see (another tab, or a reload behind a proxy). parallel_slots is the
+    slot count actually in use, which the VRAM fit may have cut below the
     requested --parallel; chats beyond it queue rather than fail.
     """
     entries = active_generations.snapshot()
@@ -4388,8 +4403,10 @@ async def load_model(
             request,
             fastapi_request,
             current_subject,
-            on_reload_confirmed = lambda: _raise_or_cancel_active_generations(
-                force = request.force_cancel_active, action = "Loading a model"
+            on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                force = request.force_cancel_active,
+                action = "Loading a model",
+                cancel = cancel,
             ),
         )
 
@@ -4597,10 +4614,15 @@ async def _load_model_impl(
 
         # Past every already_loaded fast return: this request really will replace
         # the running model, so now let the caller gate it on the chats that would
-        # stop (the /load route refuses with 409, or cancels them when the user
-        # opted in). Auto-switch passes no hook and keeps its current behaviour.
+        # stop. Refusal only here -- a non-forced swap fails fast, before the HF
+        # resolve below -- because everything between this point and the teardown
+        # (identifier resolution, GPU validation, the training guard, the download
+        # -manager check) can still reject the load, and a cancel that ran first
+        # would have stopped every chat for a model that never gets loaded. The
+        # matching destructive pass runs just before each teardown below.
+        # Auto-switch passes no hook and keeps its current behaviour.
         if on_reload_confirmed is not None:
-            on_reload_confirmed()
+            on_reload_confirmed(cancel = False)
 
         # is_lora auto-detected from adapter_config.json on disk/HF.
         # DNS-probe wrap so offline loads skip 30-60s of soft-failed network
@@ -4714,6 +4736,14 @@ async def _load_model_impl(
                             "finish (or cancel it), then load the model."
                         ),
                     )
+
+            # Point of no return for the GGUF path: every check that could still
+            # reject this load has passed, so now stop the chats the swap will
+            # interrupt (or refuse, if the caller never opted in and one started
+            # while the checks above ran). Must precede the drain below, which
+            # would otherwise wait out the very generations force is meant to end.
+            if on_reload_confirmed is not None:
+                on_reload_confirmed(cancel = True)
 
             # Keep the resident model alive until every active generation finishes;
             # the caller's lifecycle gate blocks new starts.
@@ -4931,6 +4961,11 @@ async def _load_model_impl(
 
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = get_inference_backend()
+
+        # Point of no return for the Unsloth path: same rule as the GGUF branch
+        # above -- cancel only once nothing left can reject the load.
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = True)
 
         # Unload any active GGUF model first
         llama_backend = get_llama_cpp_backend()

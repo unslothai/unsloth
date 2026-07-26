@@ -337,6 +337,44 @@ def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
     assert not ev.is_set()
 
 
+def test_a_forced_load_that_fails_preflight_leaves_the_chats_alone(monkeypatch):
+    # force_cancel_active is the retry the 409 asks for, so by the time it
+    # arrives the user has approved stopping their chats -- but only in exchange
+    # for the new model. Preflight (identifier resolution, GPU validation, the
+    # training-coexistence guard, the download-manager check) all runs after the
+    # confirmation and can still reject the load, and the resident model is
+    # untouched when it does. Cancelling before those checks would end every
+    # chat and then hand back an error, losing the runs for nothing.
+    _route_gate()  # skips when the inference stack is unavailable
+    import asyncio
+    import contextlib
+
+    from fastapi import HTTPException
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/OTHER")
+    monkeypatch.setattr(inf_mod, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    # Stands in for any preflight refusal; from_identifier returning None is the
+    # route's own "Invalid model identifier" 400.
+    monkeypatch.setattr(inf_mod.ModelConfig, "from_identifier", staticmethod(lambda **kwargs: None))
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inf_mod.load_model(
+                    LoadRequest(model_path = "org/A", force_cancel_active = True),
+                    object(),
+                    "tester",
+                )
+            )
+        # The load was rejected, so the chat must still be streaming.
+        assert not ev.is_set()
+        assert active_generations.count() == 1
+    assert exc.value.status_code == 400
+
+
 def _stub_unload_backends(monkeypatch, *, llama, backend):
     """Point the /unload route at in-memory backends."""
     import routes.inference as inf_mod

@@ -41,17 +41,25 @@ export async function confirmStopRunningChatsIfNeeded(
     .map(([threadId]) => threadId);
   let count = running.length;
 
-  if (count === 0) {
-    // runningByThreadId is this tab's in-memory state: empty after a reload and
-    // blind to a second tab. Without this the backend gate would 409 a swap the
-    // user was never given the chance to approve, with no way to retry.
-    try {
-      const active = await getActiveGenerations();
-      count = Math.max(active.count ?? 0, active.thread_ids?.length ?? 0);
-      running = active.thread_ids ?? [];
-    } catch {
-      // Backend unreachable / older build: fall back to the local map only.
+  // Merge the backend snapshot in every time, not only when this tab looks
+  // idle: runningByThreadId is this tab's in-memory state, so it is empty after
+  // a reload and blind to a second tab, and confirming here sends
+  // force_cancel_active, which cancels every backend run rather than only the
+  // ones listed. Reconciling first means the dialog names what will actually
+  // stop. External-provider runs are never registered in active_generations, so
+  // the union stays local-only.
+  try {
+    const active = await getActiveGenerations();
+    const merged = new Set(running);
+    for (const threadId of active.thread_ids ?? []) {
+      merged.add(threadId);
     }
+    running = [...merged];
+    // A first turn that started before its thread id was persisted is counted
+    // but cannot be named, so never claim fewer chats than the backend reports.
+    count = Math.max(active.count ?? 0, running.length);
+  } catch {
+    // Backend unreachable / older build: fall back to the local map only.
   }
 
   if (count === 0) {
