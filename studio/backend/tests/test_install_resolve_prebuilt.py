@@ -979,10 +979,20 @@ def test_route_to_vulkan_prebuilt_explicit_opt_in_overrides_hidden_nvidia(monkey
 # bundle (gfx103X / gfx110X / gfx1150 / gfx1151 / gfx120X / gfx908 / gfx90a).
 # Auto-Vulkan must never steal a host one of these already covers.
 _FORK_WINDOWS_ROCM_GFX = (
-    "gfx908", "gfx90a",
-    "gfx1030", "gfx1031", "gfx1032", "gfx1034",
-    "gfx1100", "gfx1101", "gfx1102", "gfx1103",
-    "gfx1150", "gfx1151", "gfx1200", "gfx1201",
+    "gfx908",
+    "gfx90a",
+    "gfx1030",
+    "gfx1031",
+    "gfx1032",
+    "gfx1034",
+    "gfx1100",
+    "gfx1101",
+    "gfx1102",
+    "gfx1103",
+    "gfx1150",
+    "gfx1151",
+    "gfx1200",
+    "gfx1201",
 )
 
 
@@ -1028,9 +1038,7 @@ def test_explicit_backend_beats_legacy_force_vulkan(monkeypatch):
     assert ilp.resolved_llama_backend() == "hip"
     assert ilp.force_vulkan_requested() is False
     host = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
-    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
-        host, FORK, "pin", force_cpu = False
-    )
+    _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
     assert persist is None
 
