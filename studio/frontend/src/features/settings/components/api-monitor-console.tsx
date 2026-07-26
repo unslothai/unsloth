@@ -25,6 +25,7 @@ import {
   unloadModel,
 } from "../../chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "../../chat/lib/apply-inference-status-to-store";
+import { useChatRuntimeStore } from "../../chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry, ApiMonitorResponse } from "../../chat/types/api";
 
 const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
@@ -292,6 +293,9 @@ export function ApiMonitorConsole(): ReactElement {
         return;
       }
       await unloadModel({ model_path: checkpoint });
+      // Same as the chat eject flow: the store still holds the checkpoint this
+      // just freed, and the usage examples would keep naming it.
+      useChatRuntimeStore.getState().clearCheckpoint();
       setError(null);
       await loadMonitor();
     } catch (err: unknown) {

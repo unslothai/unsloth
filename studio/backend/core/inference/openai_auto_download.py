@@ -131,15 +131,28 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     return _GGUF_KNOWN_QUANT_RE.fullmatch(variant.strip()) is not None
 
 
-def _mark_not_servable(repo_id: str) -> None:
+def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
+    """Cache key, per credential.
+
+    The Hub answers 404 for a private repo the caller cannot see, so a verdict
+    reached without a token says nothing about a caller who has one. Keyed on a
+    digest so the token itself is never held here.
+    """
+    import hashlib
+
+    seen_as = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
+    return f"{repo_id.lower()}\n{seen_as}"
+
+
+def _mark_not_servable(repo_id: str, hf_token: Optional[str]) -> None:
     with _cache_lock:
         if len(_not_servable) >= _NOT_SERVABLE_MAX:
             _not_servable.clear()
-        _not_servable[repo_id.lower()] = time.monotonic() + _NOT_SERVABLE_TTL_S
+        _not_servable[_servable_key(repo_id, hf_token)] = time.monotonic() + _NOT_SERVABLE_TTL_S
 
 
-def _is_not_servable(repo_id: str) -> bool:
-    key = repo_id.lower()
+def _is_not_servable(repo_id: str, hf_token: Optional[str]) -> bool:
+    key = _servable_key(repo_id, hf_token)
     with _cache_lock:
         expires = _not_servable.get(key)
         if expires is None:
@@ -155,8 +168,9 @@ def _gated_refusal(repo_id: str) -> AutoDownloadRefusal:
         status = 403,
         code = "model_access_denied",
         message = (
-            f"'{repo_id}' is gated on Hugging Face. Accept its licence and add an "
-            "access token in Unsloth Studio, then retry."
+            f"'{repo_id}' is gated on Hugging Face. Accept its licence, then retry with "
+            "your own token in the X-Unsloth-HF-Token header: automatic download never "
+            "uses this server's Hugging Face identity."
         ),
     )
 
@@ -341,7 +355,7 @@ async def maybe_auto_download(
     repo_id, wanted_variant = split_model_ref(requested_model)
     if not is_downloadable_ref(requested_model):
         return None
-    if _is_not_servable(repo_id) and not looks_like_quant(wanted_variant):
+    if _is_not_servable(repo_id, hf_token) and not looks_like_quant(wanted_variant):
         return None
 
     # Adopt or reject against the single in-flight slot before touching the
@@ -429,7 +443,7 @@ async def _admit_and_start(
         if status == 403:
             return _gated_refusal(repo_id)
         if status == 404:
-            _mark_not_servable(repo_id)
+            _mark_not_servable(repo_id, hf_token)
             # An id the Hub does not know is a foreign label, not a miss: pass it
             # to the resident model as before rather than 404 every LiteLLM and
             # OpenRouter "vendor/model". An explicit quant is a deliberate GGUF
@@ -440,7 +454,10 @@ async def _admit_and_start(
             return AutoDownloadRefusal(
                 status = 404,
                 code = "model_not_found",
-                message = f"'{repo_id}' was not found on Hugging Face, or is not accessible.",
+                message = (
+                    f"'{repo_id}' was not found on Hugging Face, or is not accessible. "
+                    "If it is private, send a token in the X-Unsloth-HF-Token header."
+                ),
             )
         logger.warning("auto-download: Hub lookup failed for %r: %s", repo_id, exc)
         return AutoDownloadRefusal(
@@ -460,7 +477,7 @@ async def _admit_and_start(
     variants = _gguf_variants(getattr(info, "siblings", None))
     if not variants:
         _release(active)
-        _mark_not_servable(repo_id)
+        _mark_not_servable(repo_id, hf_token)
         if not looks_like_quant(wanted_variant):
             return None
         return AutoDownloadRefusal(

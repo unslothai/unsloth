@@ -293,6 +293,39 @@ def test_a_foreign_id_is_probed_once_then_cached(hub):
     assert hub["probes"] == 1
 
 
+def test_an_anonymous_404_does_not_silence_an_authorised_caller(hub):
+    # The Hub answers 404 for a private repo the caller cannot see, so caching
+    # that verdict globally would let one anonymous request hide a private repo
+    # from the token holder for the whole TTL.
+    hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
+    assert _run("myorg/private-GGUF") is None
+    assert hub["probes"] == 1
+
+    hub["raise"] = None
+    refusal = _run("myorg/private-GGUF", hf_token = "hf_caller_own")
+    assert hub["probes"] == 2
+    assert refusal.code == "model_downloading"
+
+
+def test_the_cache_is_per_token(hub):
+    hub["raise"] = _hub_error(_repo_not_found_error(), 404, "nope")
+    assert _run("myorg/private-GGUF", hf_token = "hf_a") is None
+    assert _run("myorg/private-GGUF", hf_token = "hf_a") is None
+    assert hub["probes"] == 1
+    # A different credential gets its own verdict.
+    assert _run("myorg/private-GGUF", hf_token = "hf_b") is None
+    assert hub["probes"] == 2
+
+
+def test_the_gated_message_names_the_header_that_actually_works(hub):
+    # Auto-download never uses the server's ambient token, so pointing the
+    # caller at a Studio setting would loop them on the same 403.
+    hub["info"] = _Info(_gguf_repo_info().siblings, gated = "manual")
+    hub["auth_denied"] = True
+    refusal = _run("meta-llama/Llama-2-7b-hf")
+    assert "X-Unsloth-HF-Token" in refusal.message
+
+
 def test_gated_repo_is_403(hub):
     hub["raise"] = _hub_error(_gated_error(), 403, "gated")
     refusal = _run("meta-llama/Llama-2-7b-hf")
