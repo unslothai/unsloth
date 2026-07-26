@@ -4638,7 +4638,8 @@ def _accelerate_dispatch_root(model):
         children = getattr(node, "__dict__", {}).get("_modules") or {}
         nxt = next(
             (
-                children[a] for a in ("base_model", "model")
+                children[a]
+                for a in ("base_model", "model")
                 if hasattr(children.get(a), "named_modules")
             ),
             None,
@@ -4836,6 +4837,7 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
                 _restore_dispatch_state(root, snapshot)
             else:
                 from accelerate import dispatch_model
+
                 # skip_keys matters: without it accelerate moves every forward kwarg
                 # to the executing device, wrong for device-invariant cache tensors.
                 dispatch_model(

@@ -120,7 +120,8 @@ def _is_oom_error(exc: BaseException) -> bool:
     """
     if torch is not None:
         oom_types = tuple(
-            t for t in (
+            t
+            for t in (
                 getattr(torch, "OutOfMemoryError", None),
                 getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None),
                 getattr(getattr(torch, "xpu", None), "OutOfMemoryError", None),
@@ -502,11 +503,7 @@ class ExportBackend:
             # GPU, so when a training or chat job already owns the others (which
             # routes/export.py deliberately allows) the shard can OOM where the pre-#7053
             # single-device load succeeded. Fall back once before giving up.
-            if (
-                _device_map_override is None
-                and _is_oom_error(e)
-                and _multi_gpu_device_map_kwargs()
-            ):
+            if _device_map_override is None and _is_oom_error(e) and _multi_gpu_device_map_kwargs():
                 # Retry outside this block: the live traceback pins the half-built
                 # model's frames, so an in-block retry inherits the exhausted device.
                 oom_retry_reason = str(e)

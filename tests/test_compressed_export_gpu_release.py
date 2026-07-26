@@ -43,13 +43,12 @@ class _FakeLogger:
 def _load_helpers(fake_torch, fake_logger):
     tree = ast.parse(_SAVE_PY.read_text(encoding = "utf-8"))
     keep = [
-        node for node in tree.body
+        node
+        for node in tree.body
         if (isinstance(node, ast.FunctionDef) and node.name in _WANTED)
         or (
             isinstance(node, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id in _WANTED_ASSIGNS for t in node.targets
-            )
+            and any(isinstance(t, ast.Name) and t.id in _WANTED_ASSIGNS for t in node.targets)
         )
     ]
     n_fns = sum(1 for node in keep if isinstance(node, ast.FunctionDef))
@@ -101,9 +100,7 @@ def _fake_accelerate(monkeypatch):
     accel.dispatch_model = _dispatch
     hooks = types.ModuleType("accelerate.hooks")
     hooks.remove_hook_from_submodules = lambda model: calls["removed"].append(model)
-    hooks.add_hook_to_module = lambda module, hook: calls["hooks_added"].append(
-        (module, hook)
-    )
+    hooks.add_hook_to_module = lambda module, hook: calls["hooks_added"].append((module, hook))
     accel.hooks = hooks
     monkeypatch.setitem(sys.modules, "accelerate", accel)
     monkeypatch.setitem(sys.modules, "accelerate.hooks", hooks)
@@ -341,7 +338,11 @@ def test_torchao_export_uses_the_shared_release():
 class _Child:
     """Minimal stand-in for an nn.Module leaf, enough for the dispatch walk."""
 
-    def __init__(self, name = "inner", device_map = None):
+    def __init__(
+        self,
+        name = "inner",
+        device_map = None,
+    ):
         self._modules = {}
         self.__dict__["_name"] = name
         if device_map is not None:
@@ -449,11 +450,11 @@ def test_snapshot_restores_a_forward_patched_after_the_dispatch(_fake_accelerate
     mlp = _Child(name = "mlp")
     root._modules["mlp"] = mlp
 
-    stock_forward = lambda *a, **k: "stock"          # noqa: E731
+    stock_forward = lambda *a, **k: "stock"  # noqa: E731
     fused_forward = lambda *a, **k: "unsloth-fused"  # noqa: E731
     mlp._hf_hook = object()
-    mlp._old_forward = stock_forward   # captured by accelerate at dispatch time
-    mlp.forward = fused_forward        # installed by unsloth afterwards
+    mlp._old_forward = stock_forward  # captured by accelerate at dispatch time
+    mlp.forward = fused_forward  # installed by unsloth afterwards
 
     snapshot = ns["_snapshot_dispatch_state"](root)
 
